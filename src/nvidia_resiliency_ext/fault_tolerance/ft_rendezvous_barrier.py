@@ -71,6 +71,7 @@ from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
+from .node_state import NodeStateCycleReporter, NodeStateCycleStatus
 
 # Conditionally import failure injector (only active when NVRX_INJECT_GPU_FAILURE is set)
 if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
@@ -420,6 +421,7 @@ class _PreviousActiveLastCallGate:
         participants: List[Participant],
         now: float,
         unhealthy_replacement_groups: Optional[Set[str]] = None,
+        unhealthy_infra_ranks: Optional[Set[int]] = None,
     ) -> _CloseRoundDecision:
         if not self._enabled:
             return _CloseRoundDecision(should_close=True)
@@ -428,6 +430,7 @@ class _PreviousActiveLastCallGate:
             infra_rank for _, infra_rank, _, _ in participants if infra_rank >= 0
         }
         unhealthy_replacement_groups = unhealthy_replacement_groups or set()
+        unhealthy_infra_ranks = unhealthy_infra_ranks or set()
         # The last-call gate should only wait for previous active nodes that can
         # still be eligible in this round. If a previous active node belonged to a
         # replacement group already marked unhealthy, waiting for it would delay the
@@ -435,8 +438,11 @@ class _PreviousActiveLastCallGate:
         expected_previous_active = {
             infra_rank
             for infra_rank, replacement_group_id in self._previous_active_by_infra_rank.items()
-            if replacement_group_id is None
-            or replacement_group_id not in unhealthy_replacement_groups
+            if infra_rank not in unhealthy_infra_ranks
+            and (
+                replacement_group_id is None
+                or replacement_group_id not in unhealthy_replacement_groups
+            )
         }
         missing = tuple(sorted(expected_previous_active - current_infra_ranks))
         if not missing:
@@ -635,11 +641,18 @@ class _RendezvousBarrierState:
         self.shutdown_key = f"{self.prefix}:shutdown"
         self._attribution_service: Optional[AttributionService] = None
         self._attribution_settled_for_round: int = -1
+        self._node_state_reporter: Optional[NodeStateCycleReporter] = None
+        self._scheduler_avoid_nodes_by_round: Dict[int, Set[str]] = {}
+        self._scheduler_avoid_replacement_groups_by_round: Dict[int, Set[str]] = {}
+        self._scheduler_avoid_infra_ranks_by_round: Dict[int, Set[int]] = {}
+        self._scheduler_avoid_settled_rounds: Set[int] = set()
         # Job-level unhealthy counter; persists across all rounds.
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
         # Latest closed round's active membership. This is host-local by design:
         # the barrier rendezvous currently has a single long-lived rendezvous host.
         self._previous_active_by_infra_rank: Optional[Dict[int, Optional[str]]] = None
+        self._previous_active_infra_rank_by_node_addr: Dict[str, int] = {}
+        self._previous_active_replacement_group_by_node_addr: Dict[str, Optional[str]] = {}
 
         # Per-round open/close indicator. round_done_key value:
         #   0 = round is OPEN (accepting new participants)
@@ -747,6 +760,126 @@ class _RendezvousBarrierState:
         if not self.store.check([key]):
             return set()
         return self._unpack_unhealthy_replacement_groups(self.store.get(key))
+
+    def _record_scheduler_avoids_for_round(
+        self,
+        round_id: int,
+        status: Optional[NodeStateCycleStatus],
+    ) -> None:
+        """Record scheduler-state hard avoids for the next rendezvous round."""
+        if status is None or not status.available:
+            return
+
+        scheduler_avoid_nodes = {node for node in status.scheduler_avoid_nodes if node}
+        if not scheduler_avoid_nodes:
+            self._scheduler_avoid_nodes_by_round.pop(round_id, None)
+            self._scheduler_avoid_replacement_groups_by_round.pop(round_id, None)
+            self._scheduler_avoid_infra_ranks_by_round.pop(round_id, None)
+            return
+
+        replacement_group_by_node = getattr(
+            self, "_previous_active_replacement_group_by_node_addr", {}
+        )
+        infra_rank_by_node = getattr(self, "_previous_active_infra_rank_by_node_addr", {})
+        scheduler_avoid_replacement_groups = {
+            str(replacement_group_id)
+            for node in scheduler_avoid_nodes
+            for replacement_group_id in [replacement_group_by_node.get(node)]
+            if replacement_group_id is not None
+        }
+        scheduler_avoid_infra_ranks = {
+            int(infra_rank_by_node[node])
+            for node in scheduler_avoid_nodes
+            if node in infra_rank_by_node
+        }
+
+        self._scheduler_avoid_nodes_by_round[round_id] = scheduler_avoid_nodes
+        self._scheduler_avoid_replacement_groups_by_round[round_id] = (
+            scheduler_avoid_replacement_groups
+        )
+        self._scheduler_avoid_infra_ranks_by_round[round_id] = scheduler_avoid_infra_ranks
+        self._evict_old_scheduler_avoids(round_id)
+        log.warning(
+            "Scheduler-state hard avoids for round %s: nodes=%s replacement_groups=%s",
+            round_id,
+            sorted(scheduler_avoid_nodes),
+            sorted(scheduler_avoid_replacement_groups),
+        )
+
+    def _refresh_scheduler_avoids_for_round(self, round_id: int) -> bool:
+        """Probe node-state service status for ``round_id`` and cache hard avoids.
+
+        Cycle ``N`` ends when round ``N+1`` opens. The cycle-end POST happens in
+        the round-open path and only enqueues service-side materialization. The
+        store host calls this method from the close-round loop, where a pending
+        decision can naturally delay placement without blocking failure-open
+        notification.
+        """
+        if round_id <= 0:
+            return True
+
+        if round_id in getattr(self, "_scheduler_avoid_settled_rounds", set()):
+            return True
+
+        node_state_reporter = getattr(self, "_node_state_reporter", None)
+        if node_state_reporter is None:
+            return True
+
+        cycle_id = str(round_id - 1)
+        status = node_state_reporter.get_cycle_status(cycle_id)
+        if status is None:
+            return False
+
+        self._record_scheduler_avoids_for_round(round_id, status)
+        self._scheduler_avoid_settled_rounds.add(round_id)
+        return True
+
+    def _evict_old_scheduler_avoids(self, current_round: int) -> None:
+        min_round_to_keep = current_round - 1
+        for cache in (
+            self._scheduler_avoid_nodes_by_round,
+            self._scheduler_avoid_replacement_groups_by_round,
+            self._scheduler_avoid_infra_ranks_by_round,
+        ):
+            for round_id in list(cache):
+                if round_id < min_round_to_keep:
+                    del cache[round_id]
+        self._scheduler_avoid_settled_rounds = {
+            round_id
+            for round_id in self._scheduler_avoid_settled_rounds
+            if round_id >= min_round_to_keep
+        }
+
+    def _scheduler_avoid_nodes_for_round(self, round_id: int) -> Set[str]:
+        return set(getattr(self, "_scheduler_avoid_nodes_by_round", {}).get(round_id, set()))
+
+    def _scheduler_avoid_replacement_groups_for_round(self, round_id: int) -> Set[str]:
+        return set(
+            getattr(self, "_scheduler_avoid_replacement_groups_by_round", {}).get(round_id, set())
+        )
+
+    def _scheduler_avoid_infra_ranks_for_round(self, round_id: int) -> Set[int]:
+        return set(getattr(self, "_scheduler_avoid_infra_ranks_by_round", {}).get(round_id, set()))
+
+    @staticmethod
+    def _split_by_placement_avoids(
+        participants: List[Participant],
+        avoid_nodes: Set[str],
+        avoid_replacement_groups: Set[str],
+    ) -> Tuple[List[Participant], List[Participant]]:
+        eligible_participants: List[Participant] = []
+        avoided_participants: List[Participant] = []
+        for participant in participants:
+            node_desc, _, _, replacement_group_id = participant
+            avoid_group = (
+                replacement_group_id is not None
+                and str(replacement_group_id) in avoid_replacement_groups
+            )
+            if node_desc.addr in avoid_nodes or avoid_group:
+                avoided_participants.append(participant)
+            else:
+                eligible_participants.append(participant)
+        return eligible_participants, avoided_participants
 
     def _split_by_complete_replacement_groups(
         self,
@@ -1038,6 +1171,8 @@ class _RendezvousBarrierState:
         unstable and the previous-active last-call gate will be disabled.
         """
         active_by_infra_rank: Dict[int, Optional[str]] = {}
+        infra_rank_by_node_addr: Dict[str, int] = {}
+        replacement_group_by_node_addr: Dict[str, Optional[str]] = {}
         for node_desc, infra_rank, _, replacement_group_id in active_candidate_participants:
             group_rank = assigned_group_ranks.get(node_desc)
             if group_rank is None or group_rank >= world_size:
@@ -1048,8 +1183,12 @@ class _RendezvousBarrierState:
                     "last-call wait until stable infrastructure ranks are available."
                 )
                 self._previous_active_by_infra_rank = None
+                self._previous_active_infra_rank_by_node_addr = {}
+                self._previous_active_replacement_group_by_node_addr = {}
                 return
             active_by_infra_rank[infra_rank] = replacement_group_id
+            infra_rank_by_node_addr[node_desc.addr] = infra_rank
+            replacement_group_by_node_addr[node_desc.addr] = replacement_group_id
 
         if len(active_by_infra_rank) != world_size:
             log.warning(
@@ -1059,9 +1198,13 @@ class _RendezvousBarrierState:
                 world_size,
             )
             self._previous_active_by_infra_rank = None
+            self._previous_active_infra_rank_by_node_addr = {}
+            self._previous_active_replacement_group_by_node_addr = {}
             return
 
         self._previous_active_by_infra_rank = active_by_infra_rank
+        self._previous_active_infra_rank_by_node_addr = infra_rank_by_node_addr
+        self._previous_active_replacement_group_by_node_addr = replacement_group_by_node_addr
 
     def _make_previous_active_last_call_gate(
         self,
@@ -1446,6 +1589,10 @@ class _RendezvousBarrierState:
                 # Loop: _check_timeout_and_closure will raise RendezvousClosedError next iteration.
                 continue
 
+            if not self._refresh_scheduler_avoids_for_round(self._round):
+                time.sleep(0.1)
+                continue
+
             if not self.store.check([self.join_count_key]):
                 time.sleep(0.1)
                 continue
@@ -1529,9 +1676,21 @@ class _RendezvousBarrierState:
             ]
 
             # Check if the segment/replacement-group constraint is satisfied.
-            unhealthy_replacement_groups = self._get_unhealthy_replacement_groups()
+            scheduler_avoid_nodes = self._scheduler_avoid_nodes_for_round(self._round)
+            scheduler_avoid_replacement_groups = self._scheduler_avoid_replacement_groups_for_round(
+                self._round
+            )
+            scheduler_avoid_infra_ranks = self._scheduler_avoid_infra_ranks_for_round(self._round)
+            unhealthy_replacement_groups = (
+                self._get_unhealthy_replacement_groups() | scheduler_avoid_replacement_groups
+            )
+            eligible_participants, placement_avoided_participants = self._split_by_placement_avoids(
+                current_round_participants,
+                scheduler_avoid_nodes,
+                unhealthy_replacement_groups,
+            )
             complete_replacement_group_participants, incomplete_replacement_group_participants = (
-                self._split_by_complete_replacement_groups(current_round_participants)
+                self._split_by_complete_replacement_groups(eligible_participants)
             )
             check_start = time.monotonic()
             constraint_satisfied = self._can_meet_segment_constraint(
@@ -1543,7 +1702,10 @@ class _RendezvousBarrierState:
                 continue
 
             decision = close_gate.evaluate(
-                current_round_participants, time.monotonic(), unhealthy_replacement_groups
+                current_round_participants,
+                time.monotonic(),
+                unhealthy_replacement_groups,
+                unhealthy_infra_ranks=scheduler_avoid_infra_ranks,
             )
             if not decision.should_close:
                 if decision.last_call_deadline != last_call_logged_deadline:
@@ -1609,11 +1771,20 @@ class _RendezvousBarrierState:
                 unhealthy_replacement_group_info = (
                     f", unhealthy_replacement_groups={sorted(unhealthy_replacement_groups)}"
                 )
+            scheduler_avoid_info = ""
+            if scheduler_avoid_nodes or scheduler_avoid_replacement_groups:
+                scheduler_avoid_info = (
+                    f", scheduler_avoid_nodes={sorted(scheduler_avoid_nodes)} "
+                    f"scheduler_avoid_replacement_groups="
+                    f"{sorted(scheduler_avoid_replacement_groups)} "
+                    f"placement_avoided_participants={len(placement_avoided_participants)}"
+                )
 
             log.info(
                 f"[slot={self._slot}] [Step 2] Constraint ok: {len(current_round_participants)} "
                 f"participants{replacement_group_info}{unhealthy_replacement_group_info}, "
-                f"min={min_nodes} (fetch {fetch_elapsed*1000:.1f}ms, check {check_elapsed*1000:.1f}ms)"
+                f"min={min_nodes}{scheduler_avoid_info} "
+                f"(fetch {fetch_elapsed*1000:.1f}ms, check {check_elapsed*1000:.1f}ms)"
             )
             # Assign ranks BEFORE setting round_done=1 so Step 3 readers can get their rank
             # immediately without any additional waiting.
@@ -1626,7 +1797,9 @@ class _RendezvousBarrierState:
                 node_desc,
                 slot_participants=slot_participants,
                 active_candidate_participants=complete_replacement_group_participants,
-                standby_only_participants=incomplete_replacement_group_participants,
+                standby_only_participants=(
+                    incomplete_replacement_group_participants + placement_avoided_participants
+                ),
             )
             self._report_cycle_start_as_host(self._round)
             self.store.set(self.round_done_key, "1".encode('utf-8'))
@@ -1634,6 +1807,7 @@ class _RendezvousBarrierState:
 
     def _report_cycle_start_as_host(self, round_id: int) -> None:
         """Report cycle start from the rendezvous-host rank assignment snapshot."""
+        self._report_node_state_cycle_start_as_host(round_id)
         if self._cycle_info_reporter is None:
             return
         try:
@@ -1655,6 +1829,7 @@ class _RendezvousBarrierState:
 
     def _report_cycle_end_as_host(self, opened_round_id: int) -> None:
         """Report cycle end from the rendezvous host when a later round is observed."""
+        self._report_node_state_cycle_end_as_host(opened_round_id)
         if self._cycle_info_reporter is None:
             return
         try:
@@ -1666,6 +1841,22 @@ class _RendezvousBarrierState:
                 e,
                 exc_info=True,
             )
+
+    def _report_node_state_cycle_start_as_host(self, round_id: int) -> None:
+        node_state_reporter = getattr(self, "_node_state_reporter", None)
+        if node_state_reporter is None:
+            return
+
+        active_node_addrs = list(self._active_node_addrs or [])
+        node_state_reporter.report_cycle_start(str(round_id), active_node_addrs)
+
+    def _report_node_state_cycle_end_as_host(self, opened_round_id: int) -> None:
+        node_state_reporter = getattr(self, "_node_state_reporter", None)
+        if node_state_reporter is None:
+            return
+
+        cycle_id = str(max(0, opened_round_id - 1))
+        node_state_reporter.request_cycle_end(cycle_id)
 
     def _wait_for_round_done(self, node_desc: _NodeDesc, rank_key: str) -> Tuple[int, int]:
         """Step 3 (all participants): Wait for round_done_key=1 then read the assigned rank.
@@ -2269,6 +2460,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         attribution_decision_timeout: Optional[float] = None,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
+        node_state_url: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -2305,6 +2497,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 Endpoint of the attribution service.
             attribution_decision_timeout:
                 Launcher-side attribution decision budget in seconds.
+            node_state_url:
+                HTTP URL for nvrx-nodestatesvc.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -2335,6 +2529,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             attribution_decision_timeout=attribution_decision_timeout,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
+            node_state_url=node_state_url,
         )
 
     def __init__(
@@ -2352,6 +2547,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         attribution_decision_timeout: Optional[float] = None,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
+        node_state_url: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
             raise ValueError("The run id must be a non-empty string.")
@@ -2432,6 +2628,17 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         else:
             self._attribution_service = None
         self._barrier_state._attribution_service = self._attribution_service
+
+        self._node_state_reporter: Optional[NodeStateCycleReporter] = (
+            NodeStateCycleReporter(
+                node_state_url,
+                job_id=settings.run_id,
+                is_enabled=is_store_host,
+            )
+            if node_state_url
+            else None
+        )
+        self._barrier_state._node_state_reporter = self._node_state_reporter
 
     @property
     def _rendezvous_round(self) -> int:
@@ -2980,6 +3187,7 @@ def create_handler(
             attribution_decision_timeout = float(attribution_decision_timeout)
         cycle_info_dir = params.config.get('cycle_info_dir', None)
         cycle_log_prefix = params.config.get('cycle_log_prefix', None)
+        node_state_url = params.config.get('node_state_url', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -3001,6 +3209,7 @@ def create_handler(
             attribution_decision_timeout=attribution_decision_timeout,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
+            node_state_url=node_state_url,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

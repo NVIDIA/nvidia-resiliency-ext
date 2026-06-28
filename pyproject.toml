@@ -70,6 +70,7 @@ nvrx-control = "nvidia_resiliency_ext.fault_tolerance.control_plane:main"
 nvrx-mcp-analysis = "nvidia_resiliency_ext.attribution.mcp_integration.server_launcher:main"
 nvrx-attrsvc = "nvidia_resiliency_ext.services.attrsvc.__main__:main"
 nvrx-smonsvc = "nvidia_resiliency_ext.services.smonsvc.__main__:main"
+nvrx-nodestatesvc = "nvidia_resiliency_ext.services.nodestatesvc.__main__:main"
 
 [tool.poetry.extras]
 attribution = [

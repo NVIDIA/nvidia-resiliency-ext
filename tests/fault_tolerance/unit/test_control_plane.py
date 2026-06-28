@@ -92,6 +92,40 @@ def test_nvrx_control_does_not_start_attribution_without_endpoint(tmp_path):
     manager_cls.assert_not_called()
 
 
+def test_nvrx_control_starts_node_state_reporter():
+    args = control_plane.parse_args(
+        [
+            "--nnodes",
+            "2",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--rdzv-id",
+            "job-a",
+            "--ft-enable-log-server",
+            "false",
+            "--ft-node-state-url",
+            "http://node-state.test:8000",
+        ]
+    )
+    reporter = MagicMock()
+
+    with (
+        patch.object(control_plane, "_create_tcp_store", return_value=object()),
+        patch.object(
+            control_plane, "NodeStateCycleReporter", return_value=reporter
+        ) as reporter_cls,
+        patch.object(control_plane, "_run_control_rendezvous_loop") as run_loop,
+    ):
+        control_plane.run(args)
+
+    reporter_cls.assert_called_once_with(
+        "http://node-state.test:8000",
+        job_id="job-a",
+        is_enabled=True,
+    )
+    assert run_loop.call_args.args[3].node_state_reporter is reporter
+
+
 def test_control_parser_rejects_log_server_without_diagnostic_prefix():
     args = control_plane.parse_args(
         [
@@ -212,6 +246,7 @@ def test_control_rendezvous_loop_submits_attribution_and_reports_cycle_info(tmp_
     services = control_plane.ControlServices(
         attribution_service=attribution_service,
         cycle_info_reporter=MagicMock(),
+        node_state_reporter=MagicMock(),
     )
     stop_event = threading.Event()
     states = []
@@ -262,5 +297,6 @@ def test_control_rendezvous_loop_submits_attribution_and_reports_cycle_info(tmp_
     ]
     assert reported_rounds == [0, 1]
     assert states[0]._cycle_info_reporter is services.cycle_info_reporter
+    assert states[0]._node_state_reporter is services.node_state_reporter
     attribution_service._submit_log.assert_any_call(str(tmp_path / "train_cycle0.log"))
     attribution_service._submit_log.assert_any_call(str(tmp_path / "train_cycle1.log"))

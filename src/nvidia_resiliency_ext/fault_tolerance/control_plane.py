@@ -59,6 +59,7 @@ from nvidia_resiliency_ext.fault_tolerance.launcher import (
     parse_min_max_nnodes,
     stop_grpc_log_servers,
 )
+from nvidia_resiliency_ext.fault_tolerance.node_state import NodeStateCycleReporter
 from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import (
     rdzv_config_get_as_float,
     rdzv_config_get_as_int,
@@ -75,6 +76,7 @@ class ControlServices:
     attribution_manager: Optional[AttributionManager] = None
     attribution_service: Optional[AttributionService] = None
     cycle_info_reporter: Optional[CycleInfoReporter] = None
+    node_state_reporter: Optional[NodeStateCycleReporter] = None
 
 
 def get_args_parser() -> argparse.ArgumentParser:
@@ -159,6 +161,12 @@ def _start_control_services(
                 cycle_info_job_id=args.ft_cycle_info_job_id,
                 attempt_index=0,
             )
+        if ft_cfg.node_state_url:
+            services.node_state_reporter = NodeStateCycleReporter(
+                ft_cfg.node_state_url,
+                job_id=args.rdzv_id,
+                is_enabled=True,
+            )
 
         applog_prefix = args.ft_per_cycle_applog_prefix
         log_funnel_ports = None
@@ -226,6 +234,9 @@ def _run_control_rendezvous_loop(
     segment = ft_cfg.segment
     if segment is None:
         segment = rdzv_config_get_as_int(rdzv_configs, "segment", 0) or None
+    replacement_group_size = (
+        rdzv_config_get_as_int(rdzv_configs, "replacement_group_size", 0) or None
+    )
 
     state = _RendezvousBarrierState(
         store=store,
@@ -234,6 +245,7 @@ def _run_control_rendezvous_loop(
         join_timeout_seconds=join_timeout,
         last_call_timeout_seconds=last_call_timeout,
         segment=segment,
+        replacement_group_size=replacement_group_size,
     )
     node = _NodeDescGenerator().generate(args.local_addr)
 
@@ -246,6 +258,7 @@ def _run_control_rendezvous_loop(
     if services.cycle_info_reporter is not None:
         state._cycle_info_reporter = services.cycle_info_reporter
     state._attribution_service = services.attribution_service
+    state._node_state_reporter = services.node_state_reporter
 
     while not stop_event.is_set():
         if services.attribution_service is not None:

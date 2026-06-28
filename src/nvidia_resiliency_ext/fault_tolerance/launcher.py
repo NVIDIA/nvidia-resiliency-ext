@@ -2573,6 +2573,17 @@ def get_args_parser() -> ArgumentParser:
 
     add_attribution_args(parser)
     add_cycle_info_args(parser)
+    parser.add_argument(
+        "--ft-node-state-url",
+        "--ft_node_state_url",
+        type=str,
+        default=None,
+        dest="ft_node_state_url",
+        help=(
+            "HTTP URL for nvrx-nodestatesvc. If set, the rendezvous host reports "
+            "cycle start/end and uses scheduler-bad nodes as hard avoids."
+        ),
+    )
 
     parser.add_argument(
         "--ft-ignore-missing-cfg",
@@ -2892,6 +2903,8 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     # Pass NIC health check configs to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
     rdzv_configs['link_state_path_template'] = fault_tol_cfg.link_state_path_template
+    if fault_tol_cfg.node_state_url:
+        rdzv_configs['node_state_url'] = fault_tol_cfg.node_state_url
 
     # Pass enable_nic_healthcheck and link_state_path_template from fault tolerance config to rendezvous config
     rdzv_configs['enable_nic_healthcheck'] = fault_tol_cfg.enable_nic_healthcheck
