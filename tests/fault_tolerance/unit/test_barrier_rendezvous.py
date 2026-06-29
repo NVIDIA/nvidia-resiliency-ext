@@ -47,6 +47,7 @@ from nvidia_resiliency_ext.fault_tolerance import (
     ft_rendezvous_barrier as ft_rendezvous_barrier_module,
 )
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
+    RDZV_SHUTDOWN_REASON_FAILURE,
     FtRendezvousBarrierHandler,
     GroupRankStatus,
     RendezvousParticipantInfo,
@@ -751,6 +752,147 @@ class Step2CompletionTest(BaseRendezvousTest):
             for slot in range(1, min_nodes + 1)
         ]
         self.assertEqual(ranks, [0, 1])
+
+    def test_step2_accepts_surplus_beyond_max_nodes_as_standby(self):
+        """join_count > max_nodes must not fail: surplus becomes standby.
+
+        Over-subscription (e.g. survivors of a failed array task co-joining) leaves
+        more joined slots than max_nodes. The host must still close the round,
+        select the active set, and assign the surplus standby ranks -- not raise.
+        """
+        min_nodes = 2
+        max_nodes = 2  # but three participants join (surplus of 1)
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+            (_NodeDesc("node2", 102, 0), 2, "none", None),  # surplus
+        ]
+        _seed_joined_participants(self.store, state, participants)
+
+        state._rendezvous_start_time = time.monotonic()
+        state._host_close_round(
+            _NodeDesc("control", 10, 0),
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=_test_segment_check_interval(),
+        )
+
+        self.assertFalse(state.is_shutdown())
+        self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
+        ranks = [
+            state._unpack_rank_value(self.store.get(f"{state.prefix}:slot_{slot}_rank"))[0]
+            for slot in range(1, len(participants) + 1)
+        ]
+        # Two active ranks (< world_size) and one standby rank (>= world_size).
+        self.assertEqual(sorted(ranks), [0, 1, 2])
+        self.assertEqual(sorted(r for r in ranks if r < min_nodes), [0, 1])
+        self.assertTrue(any(r >= min_nodes for r in ranks))
+
+    def test_step2_closes_with_missing_slot_dead_survivor(self):
+        """Dead-survivor window: a node bumps join_count then dies before writing.
+
+        join_count is inflated relative to the slots actually written. The host must
+        not block on the exact count; it closes once the present nodes satisfy the
+        constraint, excluding the missing slot (left UNASSIGNED).
+        """
+        min_nodes = 2
+        max_nodes = 4
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        participants = [
+            (_NodeDesc("node0", 100, 0), 0, "none", None),
+            (_NodeDesc("node1", 101, 0), 1, "none", None),
+        ]
+        _seed_joined_participants(self.store, state, participants)
+        # Dead survivor: incremented join_count (slot 3) but never wrote slot_3.
+        self.store.add(state.join_count_key, 1)
+
+        state._rendezvous_start_time = time.monotonic()
+        state._host_close_round(
+            _NodeDesc("control", 10, 0),
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=_test_segment_check_interval(),
+        )
+
+        self.assertFalse(state.is_shutdown())
+        self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
+        ranks = [
+            state._unpack_rank_value(self.store.get(f"{state.prefix}:slot_{slot}_rank"))[0]
+            for slot in range(1, min_nodes + 1)
+        ]
+        self.assertEqual(sorted(ranks), [0, 1])
+        # The dead survivor's slot_3 rank key was never written by the host.
+        self.assertFalse(self.store.check([f"{state.prefix}:slot_3_rank"]))
+
+    def test_step2_duplicate_addr_is_fatal_misconfiguration(self):
+        """Two ft_launchers on one node (same addr) is a fatal misconfiguration."""
+        os.environ.pop("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE", None)
+        min_nodes = 2
+        max_nodes = 2
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        # Same addr, distinct pids/infra_ranks => two launchers on the same node.
+        participants = [
+            (_NodeDesc("samehost", 100, 0), 0, "none", None),
+            (_NodeDesc("samehost", 101, 1), 1, "none", None),
+        ]
+        _seed_joined_participants(self.store, state, participants)
+
+        state._rendezvous_start_time = time.monotonic()
+        with self.assertRaises(RendezvousClosedError):
+            state._host_close_round(
+                _NodeDesc("control", 10, 0),
+                min_nodes=min_nodes,
+                max_nodes=max_nodes,
+                segment_check_interval=_test_segment_check_interval(),
+            )
+        self.assertTrue(state.is_shutdown())
+        self.assertEqual(state.get_shutdown_reason(), RDZV_SHUTDOWN_REASON_FAILURE)
+
+    def test_step2_duplicate_addr_allowed_in_simulation(self):
+        """Duplicate addr is tolerated when multi-launcher simulation is enabled."""
+        os.environ["NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE"] = "1"
+        try:
+            min_nodes = 2
+            max_nodes = 2
+            state = _RendezvousBarrierState(
+                store=self.store,
+                run_id=self.run_id,
+                is_store_host=True,
+                join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            )
+            participants = [
+                (_NodeDesc("samehost", 100, 0), 0, "none", None),
+                (_NodeDesc("samehost", 101, 1), 1, "none", None),
+            ]
+            _seed_joined_participants(self.store, state, participants)
+
+            state._rendezvous_start_time = time.monotonic()
+            state._host_close_round(
+                _NodeDesc("control", 10, 0),
+                min_nodes=min_nodes,
+                max_nodes=max_nodes,
+                segment_check_interval=_test_segment_check_interval(),
+            )
+            self.assertFalse(state.is_shutdown())
+            self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
+        finally:
+            os.environ.pop("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE", None)
 
     def test_step2_rechecks_close_state_after_attribution_resolves(self):
         """Restart attribution resolution forces one fresh close-loop pass."""
@@ -2353,23 +2495,28 @@ class ErrorCaseTest(BaseRendezvousTest):
         """Clean up test fixtures."""
         super().tearDown()  # Restores environment variables
 
-    def test_exceed_max_nodes_raises_error(self):
-        """Test that exceeding max_nodes raises RendezvousClosedError.
+    def test_slot_beyond_max_nodes_is_not_fatal(self):
+        """A slot index beyond max_nodes must NOT shut down the rendezvous.
 
-        Seed join_count at max_nodes and let the next participant take slot
-        max_nodes + 1. The error is raised before any Step 2 polling.
+        Seed join_count at max_nodes so the next participant takes slot
+        max_nodes + 1. This is benign over-subscription (e.g. surviving nodes of a
+        failed array task briefly co-joining): the node writes its slot and waits
+        for the store host, rather than poisoning the shared rendezvous. With no
+        host to close the round, it eventually times out -- but with
+        RendezvousTimeoutError, NOT RendezvousClosedError, and the rendezvous is
+        never marked shut down.
         """
         min_nodes = 2
-        max_nodes = 2  # Set max to 2; third participant must see count 3 and raise
+        max_nodes = 2  # third participant takes slot 3 > max_nodes
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
             is_store_host=False,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            join_timeout_seconds=1.0,
         )
         self.store.add(state.join_count_key, max_nodes)
 
-        with self.assertRaises(RendezvousClosedError):
+        with self.assertRaises(RendezvousTimeoutError):
             state.perform_rendezvous(
                 self.node_desc_gen.generate(),
                 min_nodes,
@@ -2377,8 +2524,17 @@ class ErrorCaseTest(BaseRendezvousTest):
                 _test_segment_check_interval(),
             )
 
-    def test_exceed_max_nodes_raises_error_in_slurm_job_array(self):
-        """SLURM job-array mode still treats max_nodes as a hard admission cap."""
+        # Surplus node joined benignly: not a fatal shutdown, and its slot was written.
+        self.assertFalse(state.is_shutdown())
+        self.assertEqual(state._slot, max_nodes + 1)
+        self.assertTrue(self.store.check([f"{state.prefix}:slot_{max_nodes + 1}"]))
+
+    def test_slot_beyond_max_nodes_in_slurm_job_array_is_not_fatal(self):
+        """Same as above for SLURM job-array mode, the deployment that triggers it.
+
+        Surviving nodes of a failed array task can inflate join_count and push a
+        legitimate node past max_nodes. This must not shut down the whole job.
+        """
         os.environ["SLURM_ARRAY_TASK_ID"] = "4"
         min_nodes = 2
         max_nodes = 2
@@ -2386,18 +2542,18 @@ class ErrorCaseTest(BaseRendezvousTest):
             store=self.store,
             run_id=self.run_id,
             is_store_host=False,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            join_timeout_seconds=1.0,
         )
         self.store.add(state.join_count_key, max_nodes)
 
-        with self.assertRaises(RendezvousClosedError):
+        with self.assertRaises(RendezvousTimeoutError):
             state.perform_rendezvous(
                 self.node_desc_gen.generate(),
                 min_nodes,
                 max_nodes,
                 _test_segment_check_interval(),
             )
-        self.assertTrue(state.is_shutdown())
+        self.assertFalse(state.is_shutdown())
 
     def test_timeout_raises_error(self):
         """Test that join timeout raises RendezvousTimeoutError.
