@@ -134,6 +134,24 @@ _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 _ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
 
 
+def _append_attribution_startup_failure(log_file: Optional[str], error: Exception) -> None:
+    """Best-effort direct append before the normal launcher log path is available."""
+    if not log_file:
+        return
+    record = (
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} [ERROR] [{socket.gethostname()}] "
+        f"Agent run ended with exception, e={error!r}. Agent's exit code = 1\n"
+    )
+    try:
+        with open(log_file, "a", encoding="utf-8") as stream:
+            stream.write(record)
+            stream.flush()
+    except Exception:
+        # The caller owns availability and integrity of --ft-nvrx-logfile. Never
+        # replace the original launcher failure with an emergency logging error.
+        pass
+
+
 def _shutdown_cycle_info_reporter_safely(rdzv_handler: Any) -> None:
     shutdown_cycle_info_reporter = getattr(rdzv_handler, "shutdown_cycle_info_reporter", None)
     if not callable(shutdown_cycle_info_reporter):
@@ -2998,19 +3016,25 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         if getattr(args, 'ft_enable_log_server', False):
             log_funnel_ports = LogFunnelPorts.from_launcher_args(args)
 
-        attribution_cfg = AttributionConfig.from_args(args, base_log_file, fault_tol_cfg)
-        if log_funnel_ports is not None and attribution_cfg.is_managed:
-            _validate_managed_attribution_listen_port_not_in_log_funnel(
-                DEFAULT_ATTRIBUTION_PORT, log_funnel_ports
-            )
+        try:
+            attribution_cfg = AttributionConfig.from_args(args, base_log_file, fault_tol_cfg)
+            if log_funnel_ports is not None and attribution_cfg.is_managed:
+                _validate_managed_attribution_listen_port_not_in_log_funnel(
+                    DEFAULT_ATTRIBUTION_PORT, log_funnel_ports
+                )
 
-        attribution_manager = AttributionManager(
-            attribution_cfg,
-            is_store_host=is_tcp_store_host,
-        )
-        global _ATTRIBUTION_MANAGER
-        _ATTRIBUTION_MANAGER = attribution_manager
-        attribution_endpoint = attribution_manager.start_if_needed()
+            attribution_manager = AttributionManager(
+                attribution_cfg,
+                is_store_host=is_tcp_store_host,
+            )
+            global _ATTRIBUTION_MANAGER
+            _ATTRIBUTION_MANAGER = attribution_manager
+            attribution_endpoint = attribution_manager.start_if_needed()
+        except Exception as e:
+            if is_tcp_store_host:
+                _append_attribution_startup_failure(launcher_log_file, e)
+            raise
+
         if attribution_endpoint is not None:
             rdzv_configs['attribution_endpoint'] = attribution_endpoint.endpoint
             decision_timeout = getattr(attribution_endpoint, "decision_timeout", None)
