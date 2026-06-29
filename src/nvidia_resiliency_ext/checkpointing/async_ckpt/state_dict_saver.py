@@ -241,6 +241,7 @@ def save_state_dict_async_plan(
     planner: Optional[Union[SavePlanner, DefaultSavePlanner]] = None,
     enable_cache: bool = False,
     metadata_cache: Optional[CheckpointMetadataCache] = None,
+    reuse_metadata_obj: Optional[Metadata] = None,
 ) -> Tuple['FileSystemWriterAsync', Union[Metadata, None], _DistWrapper]:
     """
     First stage of saving a state dict to storage.
@@ -333,19 +334,29 @@ def save_state_dict_async_plan(
         storage_writer, 'can_run_decentralized_global_plan', False
     ):
         local_plan = local_step()
-        global_md_verify_reuse = verify_global_md_reuse(
-            loaded_all_plans, local_plan, rank, dist_wrapper
-        )
-
-        if not loaded_all_plans or not global_md_verify_reuse:
-            logger.debug(f"rank: {rank}, Passed cache non-reusable")
-            all_local_plans = dist_wrapper.gather_object(local_plan)
-            if dist_wrapper.is_coordinator:
-                _, global_metadata = planner.create_global_plan(all_local_plans)
-                global_metadata.all_local_plans = all_local_plans
-        else:
-            logger.debug(f"rank: {rank}, Passed cached global metadata, {global_md_verify_reuse}")
+        if reuse_metadata_obj is not None:
+            # `--ckpt-metadata`: the full global metadata is supplied, so there is
+            # nothing to build. Skip BOTH the `verify_global_md_reuse` all_reduce
+            # and the `gather_object(local_plan)` entirely — planning becomes
+            # purely local. The prepared metadata is written verbatim in finalize.
+            logger.debug(f"rank: {rank}, reusing prepared metadata - skipping plan gather")
             global_metadata = None
+        else:
+            global_md_verify_reuse = verify_global_md_reuse(
+                loaded_all_plans, local_plan, rank, dist_wrapper
+            )
+
+            if not loaded_all_plans or not global_md_verify_reuse:
+                logger.debug(f"rank: {rank}, Passed cache non-reusable")
+                all_local_plans = dist_wrapper.gather_object(local_plan)
+                if dist_wrapper.is_coordinator:
+                    _, global_metadata = planner.create_global_plan(all_local_plans)
+                    global_metadata.all_local_plans = all_local_plans
+            else:
+                logger.debug(
+                    f"rank: {rank}, Passed cached global metadata, {global_md_verify_reuse}"
+                )
+                global_metadata = None
         local_plan = planner.create_decentralized_global_plan(local_plan)
         local_plan = storage_writer.prepare_decentralized_global_plan(local_plan)
         central_plan = local_plan
@@ -414,9 +425,85 @@ def verify_global_md_reuse(
     return global_md_verify_reuse
 
 
+def _write_metadata_only(storage_writer: 'FileSystemWriterAsync', metadata: Metadata) -> None:
+    """Write a *complete* Metadata (already carrying ``storage_data``) to ``.metadata``.
+
+    Used by the prepared-metadata reuse path: we bypass ``storage_writer.finish``
+    because that rebuilds ``storage_data`` from the gathered per-rank write
+    results — exactly the gather we are skipping. The prepared metadata already
+    describes the (constant) on-disk layout, so we serialize it atomically
+    (temp file + rename).
+    """
+    import os
+    import pickle
+
+    if getattr(storage_writer, "use_msc", False):
+        import multistorageclient as msc
+
+        path = os.path.join(storage_writer.checkpoint_dir, ".metadata")
+        with msc.open(path, "wb") as f:
+            pickle.dump(metadata, f)
+        return
+
+    fs = storage_writer.fs
+    tmp_path = fs.concat_path(storage_writer.path, ".metadata.tmp")
+    with fs.create_stream(tmp_path, "wb") as f:
+        pickle.dump(metadata, f)
+        try:
+            os.fsync(f.fileno())
+        except (AttributeError, OSError):
+            os.sync()
+    metadata_path = storage_writer._get_metadata_path()
+    if fs.exists(metadata_path):
+        fs.rm_file(metadata_path)
+    fs.rename(tmp_path, metadata_path)
+
+
+def _atomic_pickle_write(obj, path: str) -> None:
+    """Atomically pickle `obj` to an arbitrary local `path` (temp + os.replace).
+
+    Used by the `--ckpt-metadata` *create* mode to persist the just-built
+    complete metadata to a container-local path so future jobs can reuse it.
+    """
+    import os
+    import pickle
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "wb") as f:
+        pickle.dump(obj, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _read_written_metadata(storage_writer: 'FileSystemWriterAsync') -> Metadata:
+    """Read back the complete `.metadata` that `storage_writer.finish` just wrote.
+
+    `finish` fills `storage_data` on an internal copy of the metadata, so the
+    only reliable source of the *complete* metadata is the file it produced.
+    Used by `--ckpt-metadata` create mode to capture/persist it.
+    """
+    import pickle
+
+    if getattr(storage_writer, "use_msc", False):
+        import os
+
+        import multistorageclient as msc
+
+        with msc.open(os.path.join(storage_writer.checkpoint_dir, ".metadata"), "rb") as f:
+            return pickle.load(f)
+    with open(storage_writer._get_metadata_path(), "rb") as f:
+        return pickle.load(f)
+
+
 def save_state_dict_async_finalize(
-    storage_writer: 'FileSystemWriterAsync', global_metadata: Metadata, dist_wrapper: _DistWrapper
-) -> None:
+    storage_writer: 'FileSystemWriterAsync',
+    global_metadata: Metadata,
+    dist_wrapper: _DistWrapper,
+    reuse_metadata_obj: Optional[Metadata] = None,
+    create_metadata_path: Optional[str] = None,
+) -> Optional[Metadata]:
     """
     Finalization of save_state_dict_async_plan.
 
@@ -427,10 +514,39 @@ def save_state_dict_async_finalize(
         storage_writer (FileSystemWriterAsync): storage writer used for planning
         global_metadata (Metadata): metadata created during planning
         dist_wrapper (_DistWrapper): distributed wrapper created during planning
+        reuse_metadata_obj (Metadata, optional): a prepared, *complete* Metadata
+            (carrying storage_data) supplied via Megatron's ``--ckpt-metadata``.
+            When provided, the finalize SKIPS the ``gather_object(write_results)``
+            collective (its only purpose is to rebuild storage_data on the
+            coordinator, which this metadata already has) and writes this object
+            verbatim as the checkpoint's ``.metadata``. Write failures are still
+            surfaced, but via a single ``all_reduce`` of a success flag instead
+            of gathering the (large) per-rank write-result lists. Valid only when
+            the structure / world size / dist-ckpt-workers match the run that
+            produced the prepared metadata (the caller owns this guarantee).
 
     Returns: None
     """
     write_results = storage_writer.retrieve_write_results()
+
+    if reuse_metadata_obj is not None:
+        # `retrieve_write_results` returns a list[WriteResult] on success or a
+        # WRAPPED_EXCEPTION (a tuple) if this rank's write raised.
+        local_ok = 1 if isinstance(write_results, list) else 0
+        flag = torch.tensor(
+            [local_ok], dtype=torch.int, device=torch.cuda.current_device()
+        )
+        torch.distributed.all_reduce(
+            flag, op=torch.distributed.ReduceOp.MIN, group=dist_wrapper.group
+        )
+        if flag.item() != 1:
+            node_failures = {} if local_ok else {dist_wrapper.get_rank(): write_results}
+            raise CheckpointException("write", node_failures)
+        if dist_wrapper.is_coordinator:
+            write_start = time()
+            _write_metadata_only(storage_writer, reuse_metadata_obj)
+            logger.debug(f"{time()}, metadata_write (prepared/reused): {time() - write_start}")
+        return None
 
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
@@ -462,3 +578,30 @@ def save_state_dict_async_finalize(
     )
     if failures_occurred:
         raise CheckpointException("write", node_failures)
+
+    # `--ckpt-metadata` *create* mode: this was a full (collective) save; the
+    # coordinator now holds the complete metadata (storage_data filled by
+    # `finish`). Share it with every rank (one-time broadcast) so subsequent
+    # saves in this job can reuse it (the caller stashes the returned object as
+    # the strategy's `prepared_metadata`), and persist it to the container-local
+    # path so future jobs can `--ckpt-metadata` it. Returns the complete metadata
+    # on all ranks (or None when not creating).
+    if create_metadata_path is not None:
+        # NOTE: `storage_writer.finish` fills `storage_data` on an internal
+        # `dataclasses.replace` copy, not on our `global_metadata` variable, so
+        # we must take the *complete* metadata from the file finish just wrote
+        # (the coordinator) rather than from `global_metadata`.
+        if dist_wrapper.is_coordinator:
+            complete_metadata = _read_written_metadata(storage_writer)
+        else:
+            complete_metadata = None
+        obj = [complete_metadata]
+        torch.distributed.broadcast_object_list(
+            obj, src=dist_wrapper.coordinator_rank, group=dist_wrapper.group
+        )
+        complete_metadata = obj[0]
+        if dist_wrapper.is_coordinator:
+            _atomic_pickle_write(complete_metadata, create_metadata_path)
+            logger.debug(f"{time()}, created prepared metadata at {create_metadata_path}")
+        return complete_metadata
+    return None

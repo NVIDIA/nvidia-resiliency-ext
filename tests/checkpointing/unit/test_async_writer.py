@@ -173,6 +173,131 @@ class TestAsyncSave:
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
 
+    def _save_and_finalize(
+        self,
+        checkpoint_dir,
+        state_dict,
+        async_queue,
+        *,
+        reuse_metadata_obj=None,
+        create_metadata_path=None,
+    ):
+        """Drive plan -> async write -> finalize, threading the prepared-metadata
+        reuse/create kwargs into ``save_state_dict_async_finalize`` and returning
+        whatever finalize returns (the complete ``Metadata`` in create mode)."""
+        writer = FileSystemWriterAsync(checkpoint_dir, thread_count=1)
+        save_state_dict_ret = save_state_dict_async_plan(
+            state_dict,
+            writer,
+            None,
+            0,
+            planner=DefaultSavePlanner(),
+            reuse_metadata_obj=reuse_metadata_obj,
+        )
+        save_fn, preload_fn, save_args = writer.get_save_function_and_args()
+        finalize_result = {}
+
+        def finalize_fn():
+            finalize_result['metadata'] = save_state_dict_async_finalize(
+                *save_state_dict_ret,
+                reuse_metadata_obj=reuse_metadata_obj,
+                create_metadata_path=create_metadata_path,
+            )
+
+        async_request = AsyncRequest(
+            save_fn, save_args, [finalize_fn], preload_fn=preload_fn, async_fn_kwargs={}
+        )
+        async_queue.schedule_async_request(async_request)
+        async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+        return finalize_result.get('metadata')
+
+    def test_prepared_metadata_reuse_roundtrip(self, tmp_path_dist_ckpt):
+        """Prepared-metadata reuse (the ``--ckpt-metadata`` backend).
+
+        A first ``create`` save persists the complete ``Metadata``; a second
+        save reuses it, which must skip the finalize ``gather_object`` collective
+        and still write a ``.metadata`` that loads back to the same state.
+        """
+        import os
+
+        from torch.distributed.checkpoint.utils import _DistWrapper
+
+        Utils.initialize_distributed()
+
+        class _GatherObjectSpy:
+            """Counts ``_DistWrapper.gather_object`` calls -- the collective the
+            reuse path is meant to eliminate."""
+
+            def __enter__(self):
+                self.count = 0
+                self._orig = _DistWrapper.gather_object
+
+                def _wrapped(inner_self, obj, *args, **kwargs):
+                    self.count += 1
+                    return self._orig(inner_self, obj, *args, **kwargs)
+
+                _DistWrapper.gather_object = _wrapped
+                return self
+
+            def __exit__(self, *exc):
+                _DistWrapper.gather_object = self._orig
+
+        model = FSDP(Model((1024, 1024), 8))
+        state_dict = model.state_dict()
+        async_queue = AsyncCallsQueue(is_daemon=False)
+        try:
+            with (
+                TempNamedDir(tmp_path_dist_ckpt / 'meta_create', sync=True) as create_dir,
+                TempNamedDir(tmp_path_dist_ckpt / 'meta_reuse', sync=True) as reuse_dir,
+            ):
+                prepared_path = str(create_dir / 'prepared.metadata')
+
+                # (1) CREATE: full collective save that also persists the metadata.
+                with _GatherObjectSpy() as create_spy:
+                    prepared_metadata = self._save_and_finalize(
+                        create_dir,
+                        state_dict,
+                        async_queue,
+                        create_metadata_path=prepared_path,
+                    )
+                # Create mode runs the normal collective finalize (gathers >= 1).
+                assert create_spy.count >= 1
+                assert prepared_metadata is not None
+                # A *complete* metadata: per-chunk storage_data is populated.
+                assert getattr(prepared_metadata, 'storage_data', None)
+                if torch.distributed.get_rank() == 0:
+                    assert os.path.isfile(prepared_path)
+
+                # (2) REUSE: the prepared metadata drives a collective-free finalize.
+                with _GatherObjectSpy() as reuse_spy:
+                    reuse_ret = self._save_and_finalize(
+                        reuse_dir,
+                        state_dict,
+                        async_queue,
+                        reuse_metadata_obj=prepared_metadata,
+                    )
+                # The reuse path eliminates the finalize `gather_object(write_results)`.
+                # With `DefaultSavePlanner` (no decentralized planning) the planning
+                # step still gathers once via `_DistWrapper.reduce_scatter` (which is
+                # gather_object + scatter_object) -- that gather is only skipped on the
+                # real mcore decentralized path. So reuse drops exactly one gather (the
+                # finalize one) versus the create/normal save.
+                assert reuse_spy.count == create_spy.count - 1, (
+                    f"reuse should drop exactly the finalize gather_object "
+                    f"(create={create_spy.count}, reuse={reuse_spy.count})"
+                )
+                assert reuse_ret is None
+                # The checkpoint's `.metadata` was written (verbatim, by rank 0).
+                assert (reuse_dir / '.metadata').exists()
+
+                # (3) ROUND-TRIP: the reuse checkpoint loads back to the same state.
+                loaded = self.load_checkpoint(reuse_dir, deepcopy(state_dict))
+                assert loaded.keys() == state_dict.keys()
+                for key in state_dict:
+                    assert torch.equal(loaded[key], state_dict[key]), f"mismatch for '{key}'"
+        finally:
+            async_queue.close()
+
     @pytest.mark.parametrize(
         ('persistent_is_daemon', 'is_multiproc_io'),
         [(True, True)],
