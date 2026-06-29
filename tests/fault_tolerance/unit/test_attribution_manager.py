@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import sys
 from types import SimpleNamespace
 
@@ -8,12 +9,14 @@ import pytest
 
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     DEFAULT_ATTRIBUTION_PORT,
+    DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS,
     AttributionConfig,
     AttributionManager,
     _attribution_command,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
+from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 
 def _args(**overrides):
@@ -33,11 +36,24 @@ def _args(**overrides):
 
 
 class _FakeProcess:
-    def __init__(self, returncode=None):
+    def __init__(self, returncode=None, *, pid=123):
         self.returncode = returncode
-        self.pid = 123
+        self.pid = pid
+        self.terminated = False
+        self.killed = False
 
     def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
         return self.returncode
 
 
@@ -504,3 +520,186 @@ def test_wait_until_ready_raises_when_process_exits_early(tmp_path):
 
     with pytest.raises(RuntimeError, match="returncode=1"):
         manager._wait_until_ready()
+
+
+def test_recover_exited_managed_process_restarts_dead_child(tmp_path, monkeypatch, caplog):
+    manager = AttributionManager(_managed_cfg(tmp_path), is_store_host=True)
+    old_process = _FakeProcess(returncode=-9, pid=111)
+    new_process = _FakeProcess(returncode=None, pid=222)
+    manager.process = old_process
+    api_key_file = tmp_path / "llm.key"
+    api_key_file.write_text("dummy-key\n")
+    monkeypatch.setenv("LLM_API_KEY_FILE", str(api_key_file))
+
+    popen_calls = []
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append(kwargs)
+        return new_process
+
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.attribution_manager.subprocess.Popen",
+        fake_popen,
+    )
+    monkeypatch.setattr(
+        AttributionManager,
+        "_wait_until_ready",
+        lambda self, *, deadline=None: None,
+    )
+
+    with caplog.at_level(logging.INFO, logger=LogConfig.name):
+        recovered = manager.recover_exited_managed_process()
+
+    assert recovered is True
+    assert manager.process is new_process
+    assert len(popen_calls) == 1
+    assert popen_calls[0]["stdout"].mode == "a"
+    assert "exited unexpectedly with returncode=-9" in caplog.text
+    assert "attempting restart" in caplog.text
+    assert "Restarted managed attribution service is ready" in caplog.text
+
+
+def test_recover_exited_managed_process_waits_for_healthz(tmp_path, monkeypatch):
+    manager = AttributionManager(_managed_cfg(tmp_path), is_store_host=True)
+    old_process = _FakeProcess(returncode=-9, pid=111)
+    new_process = _FakeProcess(returncode=None, pid=222)
+    manager.process = old_process
+    api_key_file = tmp_path / "llm.key"
+    api_key_file.write_text("dummy-key\n")
+    monkeypatch.setenv("LLM_API_KEY_FILE", str(api_key_file))
+
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.attribution_manager.subprocess.Popen",
+        lambda *args, **kwargs: new_process,
+    )
+    healthz_requests = []
+
+    def fake_urlopen(url, *, timeout):
+        healthz_requests.append((url, timeout))
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.attribution_manager.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    recovered = manager.recover_exited_managed_process()
+
+    assert recovered is True
+    assert manager.process is new_process
+    assert healthz_requests == [(f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}/healthz", 1.0)]
+
+
+def test_recover_exited_managed_process_leaves_live_child(tmp_path):
+    process = _FakeProcess(returncode=None)
+    manager = AttributionManager(_managed_cfg(tmp_path), is_store_host=True)
+    manager.process = process
+
+    assert manager.recover_exited_managed_process() is False
+    assert manager.process is process
+
+
+def test_recover_exited_managed_process_retries_once_after_failed_restart(
+    tmp_path, monkeypatch, caplog
+):
+    manager = AttributionManager(_managed_cfg(tmp_path), is_store_host=True)
+    old_process = _FakeProcess(returncode=-9, pid=111)
+    failed_restart = _FakeProcess(returncode=None, pid=222)
+    successful_restart = _FakeProcess(returncode=None, pid=333)
+    manager.process = old_process
+    api_key_file = tmp_path / "llm.key"
+    api_key_file.write_text("dummy-key\n")
+    monkeypatch.setenv("LLM_API_KEY_FILE", str(api_key_file))
+    popen_processes = iter([failed_restart, successful_restart])
+
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.attribution_manager.subprocess.Popen",
+        lambda *args, **kwargs: next(popen_processes),
+    )
+    ready_calls = 0
+    ready_deadlines = []
+
+    def flaky_ready(self, *, deadline=None):
+        nonlocal ready_calls
+        ready_calls += 1
+        ready_deadlines.append(deadline)
+        if ready_calls == 1:
+            raise TimeoutError("not ready yet")
+
+    monkeypatch.setattr(AttributionManager, "_wait_until_ready", flaky_ready)
+
+    with caplog.at_level(logging.WARNING, logger=LogConfig.name):
+        recovered = manager.recover_exited_managed_process()
+
+    assert recovered is True
+    assert manager.process is successful_restart
+    assert failed_restart.terminated is True
+    assert ready_calls == 2
+    assert ready_deadlines[0] is not None
+    assert ready_deadlines[0] == ready_deadlines[1]
+    assert f"attempt 1/{DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS}" in caplog.text
+
+
+def test_recover_exited_managed_process_ignores_non_store_host(tmp_path):
+    process = _FakeProcess(returncode=-9)
+    manager = AttributionManager(_managed_cfg(tmp_path), is_store_host=False)
+    manager.process = process
+
+    assert manager.recover_exited_managed_process() is False
+    assert manager.process is process
+
+
+def test_recover_exited_managed_process_ignores_external_attribution(tmp_path):
+    cfg = AttributionConfig.from_args(
+        _args(ft_attribution_endpoint="http://attribution.external:50123"),
+        str(tmp_path / "train.log"),
+        FaultToleranceConfig(),
+    )
+    process = _FakeProcess(returncode=-9)
+    manager = AttributionManager(cfg, is_store_host=True)
+    manager.process = process
+
+    assert manager.recover_exited_managed_process() is False
+    assert manager.process is process
+
+
+def test_recover_exited_managed_process_clears_process_when_restart_fails(
+    tmp_path, monkeypatch, caplog
+):
+    manager = AttributionManager(_managed_cfg(tmp_path), is_store_host=True)
+    old_process = _FakeProcess(returncode=-9, pid=111)
+    new_process = _FakeProcess(returncode=None, pid=222)
+    manager.process = old_process
+    api_key_file = tmp_path / "llm.key"
+    api_key_file.write_text("dummy-key\n")
+    monkeypatch.setenv("LLM_API_KEY_FILE", str(api_key_file))
+
+    popen_calls = []
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append(kwargs)
+        return new_process
+
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.attribution_manager.subprocess.Popen",
+        fake_popen,
+    )
+
+    def fail_ready(self, *, deadline=None):
+        raise TimeoutError("not ready")
+
+    monkeypatch.setattr(AttributionManager, "_wait_until_ready", fail_ready)
+
+    with (
+        caplog.at_level(logging.WARNING, logger=LogConfig.name),
+        pytest.raises(TimeoutError, match="not ready"),
+    ):
+        manager.recover_exited_managed_process()
+
+    assert manager.process is None
+    assert new_process.terminated is True
+    assert len(popen_calls) == DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS
+    assert (
+        f"recovery exhausted after {DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS} attempts"
+    ) in caplog.text
+    assert "attribution service will remain unavailable" in caplog.text
