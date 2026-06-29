@@ -1165,6 +1165,7 @@ def test_store_host_writes_attribution_startup_failure_to_nvrx_log(tmp_path):
 
     args = _managed_attribution_args(launcher, tmp_path)
     with (
+        patch.object(launcher, "_ATTRIBUTION_MANAGER", None),
         patch.object(launcher, "_matches_machine_hostname", return_value=True),
         pytest.raises(ValueError, match="is not a file"),
     ):
@@ -1173,7 +1174,6 @@ def test_store_host_writes_attribution_startup_failure_to_nvrx_log(tmp_path):
     record = (tmp_path / "nvrx.log").read_text(encoding="utf-8")
     assert "managed attribution service LLM API key file is not a file" in record
     assert "Agent's exit code = 1" in record
-    launcher._ATTRIBUTION_MANAGER = None
 
 
 def test_non_store_host_does_not_write_attribution_startup_failure(tmp_path):
@@ -1200,6 +1200,7 @@ def test_attribution_startup_log_failure_does_not_mask_original_error(tmp_path):
     args = _managed_attribution_args(launcher, tmp_path)
     original_error = ValueError("bad attribution config")
     with (
+        patch.object(launcher, "_ATTRIBUTION_MANAGER", None),
         patch.object(launcher, "_matches_machine_hostname", return_value=True),
         patch.object(
             launcher.AttributionManager,
@@ -1212,7 +1213,6 @@ def test_attribution_startup_log_failure_does_not_mask_original_error(tmp_path):
         launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
 
     assert exc_info.value is original_error
-    launcher._ATTRIBUTION_MANAGER = None
 
 
 def _make_launch_agent_config(**overrides):
