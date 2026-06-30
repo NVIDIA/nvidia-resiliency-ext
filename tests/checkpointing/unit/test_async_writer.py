@@ -214,9 +214,13 @@ class TestAsyncSave:
     def test_prepared_metadata_reuse_roundtrip(self, tmp_path_dist_ckpt):
         """Prepared-metadata reuse (the ``--ckpt-metadata`` backend).
 
-        A first ``create`` save persists the complete ``Metadata``; a second
-        save reuses it, which must skip the finalize ``gather_object`` collective
-        and still write a ``.metadata`` that loads back to the same state.
+        A first ``create`` save persists the complete ``Metadata``; the model
+        weights are then re-randomized (emulating a later training iteration --
+        same structure, new data) and a second save reuses that metadata. The
+        reuse save must skip the finalize ``gather_object`` collective and still
+        write a ``.metadata`` that loads back to the *new* weights, which proves
+        the reused per-chunk offsets/lengths depend only on the checkpoint
+        structure and not on the tensor values.
         """
         import os
 
@@ -268,11 +272,22 @@ class TestAsyncSave:
                 if torch.distributed.get_rank() == 0:
                     assert os.path.isfile(prepared_path)
 
-                # (2) REUSE: the prepared metadata drives a collective-free finalize.
+                # Emulate a later training iteration: keep the checkpoint
+                # structure (shapes/dtypes) but give every parameter new values.
+                with torch.no_grad():
+                    for p in model.parameters():
+                        p.copy_(torch.randn_like(p))
+                new_state_dict = model.state_dict()
+                assert any(
+                    not torch.equal(state_dict[k], new_state_dict[k]) for k in state_dict
+                ), "weights should differ between the create and reuse saves"
+
+                # (2) REUSE: the prepared metadata drives a collective-free finalize
+                # of the *new* weights.
                 with _GatherObjectSpy() as reuse_spy:
                     reuse_ret = self._save_and_finalize(
                         reuse_dir,
-                        state_dict,
+                        new_state_dict,
                         async_queue,
                         reuse_metadata_obj=prepared_metadata,
                     )
@@ -290,11 +305,13 @@ class TestAsyncSave:
                 # The checkpoint's `.metadata` was written (verbatim, by rank 0).
                 assert (reuse_dir / '.metadata').exists()
 
-                # (3) ROUND-TRIP: the reuse checkpoint loads back to the same state.
-                loaded = self.load_checkpoint(reuse_dir, deepcopy(state_dict))
-                assert loaded.keys() == state_dict.keys()
-                for key in state_dict:
-                    assert torch.equal(loaded[key], state_dict[key]), f"mismatch for '{key}'"
+                # (3) ROUND-TRIP: the reuse checkpoint loads back to the *new*
+                # state, proving the reused metadata's offsets/lengths held across
+                # the weight change.
+                loaded = self.load_checkpoint(reuse_dir, deepcopy(new_state_dict))
+                assert loaded.keys() == new_state_dict.keys()
+                for key in new_state_dict:
+                    assert torch.equal(loaded[key], new_state_dict[key]), f"mismatch for '{key}'"
         finally:
             async_queue.close()
 

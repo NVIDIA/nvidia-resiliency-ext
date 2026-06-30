@@ -449,13 +449,19 @@ def _write_metadata_only(storage_writer: 'FileSystemWriterAsync', metadata: Meta
     tmp_path = fs.concat_path(storage_writer.path, ".metadata.tmp")
     with fs.create_stream(tmp_path, "wb") as f:
         pickle.dump(metadata, f)
+        # Drain Python's userspace buffer before fsync: os.fsync on the fd flushes
+        # the OS page cache but not the file object's own buffer, so the pickle
+        # tail could otherwise reach disk only on close() -- with no fsync after.
+        # (matches the sibling _atomic_pickle_write.)
+        f.flush()
         try:
             os.fsync(f.fileno())
         except (AttributeError, OSError):
             os.sync()
+    # POSIX rename atomically replaces an existing destination, so we rename
+    # directly rather than unlink-then-rename (the latter opens a window in
+    # which `.metadata` is absent if the process dies between the two calls).
     metadata_path = storage_writer._get_metadata_path()
-    if fs.exists(metadata_path):
-        fs.rm_file(metadata_path)
     fs.rename(tmp_path, metadata_path)
 
 
@@ -524,8 +530,17 @@ def save_state_dict_async_finalize(
             of gathering the (large) per-rank write-result lists. Valid only when
             the structure / world size / dist-ckpt-workers match the run that
             produced the prepared metadata (the caller owns this guarantee).
+            On a write failure the failing rank raises a ``CheckpointException``
+            carrying its own traceback; because the per-rank result gather is
+            skipped, peer ranks raise without that detail (consult the failing
+            rank's logs).
+        create_metadata_path (str, optional): when set, persist the complete
+            metadata produced by this (collective) save to this path so later
+            jobs can reuse it via ``reuse_metadata_obj``.
 
-    Returns: None
+    Returns:
+        Optional[Metadata]: the complete ``Metadata`` object (on all ranks) when
+        ``create_metadata_path`` is set, otherwise ``None``.
     """
     write_results = storage_writer.retrieve_write_results()
 
@@ -533,14 +548,24 @@ def save_state_dict_async_finalize(
         # `retrieve_write_results` returns a list[WriteResult] on success or a
         # WRAPPED_EXCEPTION (a tuple) if this rank's write raised.
         local_ok = 1 if isinstance(write_results, list) else 0
-        flag = torch.tensor(
-            [local_ok], dtype=torch.int, device=torch.cuda.current_device()
-        )
+        flag = torch.tensor([local_ok], dtype=torch.int, device=torch.cuda.current_device())
         torch.distributed.all_reduce(
             flag, op=torch.distributed.ReduceOp.MIN, group=dist_wrapper.group
         )
         if flag.item() != 1:
-            node_failures = {} if local_ok else {dist_wrapper.get_rank(): write_results}
+            if local_ok:
+                # This rank wrote successfully but a peer reported a failure. We
+                # intentionally skip the gather that would collect the peer's
+                # traceback, so log a pointer before raising a detail-less
+                # exception here (the failing rank raises with its own detail).
+                logger.warning(
+                    "Prepared-metadata save: a peer rank failed its checkpoint "
+                    "write while this rank succeeded; see the failing rank's logs "
+                    "for the traceback."
+                )
+                node_failures = {}
+            else:
+                node_failures = {dist_wrapper.get_rank(): write_results}
             raise CheckpointException("write", node_failures)
         if dist_wrapper.is_coordinator:
             write_start = time()
