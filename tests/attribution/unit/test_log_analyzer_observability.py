@@ -405,3 +405,39 @@ def test_log_fr_analyzer_mcp_uses_top_level_log_contract(monkeypatch):
         assert merged_summary == "ignored unless merge_llm=true"
 
     asyncio.run(run())
+
+
+def test_log_fr_analyzer_mcp_uses_cycle_counter_for_per_cycle_log(monkeypatch):
+    _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    runner = object.__new__(module.LogSageRunner)
+    runner.config = LogSageExecutionConfig(use_lib_log_analysis=False)
+    runner._log_analysis_lock = asyncio.Lock()
+    captured: dict[str, Any] = {}
+
+    class FakeMCPClient:
+        session = object()
+
+        async def run_module_resilient(self, name: str, **kwargs: Any) -> dict[str, Any]:
+            captured["name"] = name
+            captured["kwargs"] = kwargs
+            return {
+                "module": "log_fr_analyzer",
+                "result": _log_result()["result"],
+                "recommendation": {"action": "RESTART", "source": "log_analyzer"},
+                "fr": {"result": None, "state": "CONTINUE"},
+            }
+
+    runner._mcp_client = FakeMCPClient()
+
+    async def run() -> None:
+        await runner.fetch_log_fr_analyzer_mcp(
+            "/tmp/train_cycle5.log",
+            "/tmp/fr",
+        )
+
+        assert captured["name"] == "log_fr_analyzer"
+        assert captured["kwargs"]["is_per_cycle"] is True
+        assert captured["kwargs"]["cycle_counter"] == 5
+
+    asyncio.run(run())
