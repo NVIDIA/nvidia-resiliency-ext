@@ -156,3 +156,26 @@ def test_attrsvc_result_formats_launcher_log_message():
         "recommendation=CONTINUE reason=training cycle still running "
         "should_stop=False result preview: ERRORS NOT FOUND"
     )
+
+
+def test_attrsvc_result_launcher_log_message_flattens_multiline_preview():
+    parsed = parse_attrsvc_response(
+        {
+            "status": "completed",
+            "recommendation": {
+                "action": "CONTINUE",
+                "reason": "",
+                "source": "log_analyzer",
+            },
+            "result": {
+                "module": "log_analyzer",
+                "result": [_item("ERRORS NOT FOUND\nERRORS NOT FOUND\nFalse", "CONTINUE")],
+            },
+        },
+        log_path="/tmp/train.log",
+    )
+
+    message = parsed.format_log_message()
+
+    assert "\n" not in message
+    assert message.endswith("result preview: ERRORS NOT FOUND | ERRORS NOT FOUND | False")
