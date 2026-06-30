@@ -542,6 +542,16 @@ def save_state_dict_async_finalize(
         Optional[Metadata]: the complete ``Metadata`` object (on all ranks) when
         ``create_metadata_path`` is set, otherwise ``None``.
     """
+    # Reuse and create are mutually exclusive: reuse skips the collective save
+    # that create needs to build the complete metadata. Reject the combination
+    # explicitly rather than silently taking the reuse path (which would drop the
+    # create/persist step and return None).
+    if reuse_metadata_obj is not None and create_metadata_path is not None:
+        raise ValueError(
+            "reuse_metadata_obj and create_metadata_path are mutually exclusive: "
+            "reuse skips the collective save that create needs to build the metadata."
+        )
+
     write_results = storage_writer.retrieve_write_results()
 
     if reuse_metadata_obj is not None:
