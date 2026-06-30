@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from nvidia_resiliency_ext.attribution.coalescing import LogAnalysisCoalesced
@@ -34,7 +33,7 @@ from nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer import Trac
 from .analysis_pipeline import AnalysisPipelineMode, run_attribution_pipeline
 from .config import MODULE_LOG_FR_ANALYZER, ErrorCode, LogSageExecutionConfig
 from .job import Job
-from .log_path_metadata import CYCLE_LOG_PATTERN
+from .log_path_metadata import CYCLE_NUM_PATTERN, extract_job_metadata
 from .progressive import (
     MODULE_LOG_ANALYZER_PROGRESSIVE_START,
     PROGRESSIVE_STATUS_UNSUPPORTED,
@@ -128,6 +127,16 @@ class LogSageRunner:
         """Run the in-process LogSage coroutine on this worker thread's event loop."""
         return asyncio.run(analyzer.run(dict(run_kwargs)))
 
+    @staticmethod
+    def _per_cycle_log_kwargs(path: str) -> Dict[str, Any]:
+        is_per_cycle = bool(CYCLE_NUM_PATTERN.search(path))
+        kwargs: Dict[str, Any] = {"is_per_cycle": is_per_cycle}
+        if is_per_cycle:
+            kwargs["cycle_counter"] = extract_job_metadata(
+                path, warn_on_missing_job_id=False
+            ).cycle_id
+        return kwargs
+
     async def _run_lib_log_analyzer_serialized(
         self, analyzer: Any, run_kwargs: Dict[str, Any]
     ) -> Any:
@@ -209,11 +218,10 @@ class LogSageRunner:
             return self._lib_log_analyzer
 
     async def _fetch_log_result_lib(self, path: str) -> Dict[str, Any]:
-        is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
         run_kwargs = {
             "log_path": path,
             "exclude_nvrx_logs": False,
-            "is_per_cycle": is_per_cycle,
+            **self._per_cycle_log_kwargs(path),
             **self.config.llm_runtime_overrides(),
         }
         analyzer = await self._get_lib_log_analyzer(run_kwargs)
@@ -224,11 +232,10 @@ class LogSageRunner:
     async def _fetch_log_result_mcp(self, path: str) -> Dict[str, Any]:
         self._ensure_mcp_ready()
 
-        is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
         run_kwargs = {
             "log_path": path,
             "exclude_nvrx_logs": False,
-            "is_per_cycle": is_per_cycle,
+            **self._per_cycle_log_kwargs(path),
             **self.config.llm_runtime_overrides(),
         }
 
@@ -265,10 +272,9 @@ class LogSageRunner:
         job_id: str | None = None,
     ) -> ProgressiveStartResult:
         self._ensure_mcp_ready()
-        is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, path))
         run_kwargs: Dict[str, Any] = {
             "log_path": path,
-            "is_per_cycle": is_per_cycle,
+            **self._per_cycle_log_kwargs(path),
             "user": user,
             **self.config.llm_runtime_overrides(),
         }
@@ -321,12 +327,11 @@ class LogSageRunner:
     ) -> Tuple[Dict[str, Any], Optional[FRAnalysisResult], Optional[str]]:
         """Single MCP ``log_fr_analyzer`` call: collect log+FR, optionally merge with LLM."""
         self._ensure_mcp_ready()
-        is_per_cycle = bool(re.search(CYCLE_LOG_PATTERN, log_path))
         kwargs: Dict[str, Any] = {
             "log_path": log_path,
             "fr_path": fr_dump_path,
             "exclude_nvrx_logs": False,
-            "is_per_cycle": is_per_cycle,
+            **self._per_cycle_log_kwargs(log_path),
             "pattern": "_dump_*",
             "verbose": False,
             "health_check": False,

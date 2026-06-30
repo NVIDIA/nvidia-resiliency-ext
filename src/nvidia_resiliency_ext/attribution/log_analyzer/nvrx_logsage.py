@@ -109,11 +109,11 @@ def _previous_path(path: str) -> str | None:
 
 
 def _cycle_counter_key(path: str) -> str:
-    """Strip a trailing ``_<digits>`` from the filename stem so per-cycle
-    paths (``nvrx_0.log``, ``nvrx_1.log``, ...) share one
+    """Strip a per-cycle suffix from the filename stem so cycle paths share one
     ``cycle_counter_dict`` entry.
     """
     stem, ext = os.path.splitext(path)
+    stem = re.sub(r"_cycle\d+$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"_\d+$", "", stem)
     return stem + ext
 
@@ -242,6 +242,13 @@ def _result_item_from_logsage_fields(
         primary_issues=primary_issues,
         secondary_issues=secondary_issues,
     )
+
+
+def _attribution_text_from_logsage_field(attribution_field: Any) -> str:
+    text = str(attribution_field)
+    if "Attribution:" in text:
+        return text.split("Attribution:", 1)[1].strip().replace('"\\', "").replace('\\"', "")
+    return text.strip()
 
 
 def attribution_from_finished_status(
@@ -901,6 +908,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg.get("log_path")
+        is_per_cycle = bool(cfg.get("is_per_cycle", self.is_per_cycle))
         if path and self.job_inline_data_dict.get(path) and len(output_list) == 1:
             rt_result = self._streaming_attribution(output_list[0], cfg, path)
             # Final attribution has consumed the progressive state (and already
@@ -958,12 +966,29 @@ class NVRxLogAnalyzer(NVRxAttribution):
                 )
             else:
                 if len(output.application_errors_list_full):
-                    result.append(
-                        _with_exponential_backoff(
-                            lambda: get_proposed_solution_cat(self.llm, output),
-                            checkpoint_saved=output.checkpoint_saved,
-                        )
+                    fields = _with_exponential_backoff(
+                        lambda: get_proposed_solution_cat(self.llm, output),
+                        checkpoint_saved=output.checkpoint_saved,
                     )
+                    if path and is_per_cycle and len(output_list) == 1:
+                        auto_resume_output, auto_resume_verbose = (
+                            self._apply_cross_cycle_repeated_policy(
+                                path=path,
+                                cfg=cfg,
+                                attribution_output=_attribution_text_from_logsage_field(fields[2]),
+                                auto_resume_output=str(fields[0]),
+                                auto_resume_verbose=str(fields[1]),
+                                checkpoint_saved=bool(output.checkpoint_saved),
+                            )
+                        )
+                        fields = (
+                            auto_resume_output,
+                            auto_resume_verbose,
+                            fields[2],
+                            fields[3],
+                            fields[4],
+                        )
+                    result.append(fields)
                 else:
                     if output.finished == FINISHED_STATUS_LLM_FAILURE:
                         result.append(
@@ -1027,6 +1052,85 @@ class NVRxLogAnalyzer(NVRxAttribution):
                         )
         return result
 
+    def _apply_cross_cycle_repeated_policy(
+        self,
+        *,
+        path: str,
+        cfg: Mapping[str, Any],
+        attribution_output: str,
+        auto_resume_output: str,
+        auto_resume_verbose: str,
+        checkpoint_saved: bool,
+    ) -> tuple[str, str]:
+        """Apply the FT repeated-attribution policy across per-cycle log files."""
+        path_previous = _previous_path(path)
+        attribution_previous = self.attribution_dict.get(path_previous, '') if path_previous else ''
+        cycle_counter = int(cfg.get("cycle_counter", 0))
+        cycle_counter_key = _cycle_counter_key(path)
+        if cycle_counter == 0:
+            self.cycle_counter_dict.setdefault(cycle_counter_key, cycle_counter)
+
+        logger.info(
+            f"[ckpt] repeated-attribution policy entry: "
+            f"checkpoint_saved={checkpoint_saved}, "
+            f"cycle_counter={cycle_counter}, "
+            f"cycle_counter_dict[{cycle_counter_key}]="
+            f"{self.cycle_counter_dict.get(cycle_counter_key)}",
+        )
+
+        self.attribution_dict[path] = attribution_output
+
+        is_attribution_current_last = get_auto_resume_postprocessing(
+            attribution_output,
+            attribution_previous,
+            cycle_counter,
+            self.llm,
+        )
+        logger.info(
+            f"[ckpt] repeated-attribution policy: post-processing → "
+            f"is_attribution_current_last={is_attribution_current_last} "
+            f"(checkpoint_saved={checkpoint_saved}, "
+            f"cycle_counter={cycle_counter})",
+        )
+
+        if checkpoint_saved and cycle_counter > 0:
+            is_attribution_current_last = False
+            logger.info(
+                "[ckpt] repeated-attribution policy: checkpoint_saved bypass FIRED "
+                "→ is_attribution_current_last forced to False; "
+                "repeated-issue STOP override will be skipped",
+            )
+
+        if (
+            is_attribution_current_last
+            and self.cycle_counter_dict.get(cycle_counter_key, 0) == self.repeated_amount - 1
+        ):
+            auto_resume_output = 'STOP - DONT RESTART IMMEDIATE'
+            auto_resume_verbose = "Stop job due to repeated issue"
+
+        if is_attribution_current_last:
+            if auto_resume_verbose != "Stop job due to repeated issue":
+                self.cycle_counter_dict[cycle_counter_key] = (
+                    self.cycle_counter_dict.get(cycle_counter_key, 0) + 1
+                )
+        else:
+            self.cycle_counter_dict[cycle_counter_key] = 1
+
+        if checkpoint_saved:
+            if len(auto_resume_verbose) > 0 and "STOP" in auto_resume_output:
+                logger.info(
+                    "[ckpt] repeated-attribution policy: checkpoint_saved override "
+                    f"FIRED; flipping {auto_resume_output!r} → 'RESTART IMMEDIATE'",
+                )
+                auto_resume_output = "RESTART IMMEDIATE"
+                auto_resume_verbose = (
+                    auto_resume_verbose[0]
+                    + "Restart immediate, due to checkpoint saved. "
+                    + auto_resume_verbose[1:]
+                )
+
+        return auto_resume_output, auto_resume_verbose
+
     def _streaming_attribution(
         self,
         last_with_errors: ApplicationData,
@@ -1041,20 +1145,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
         """
         s_time = time.time()
         llm = self.llm
-
-        path_previous = _previous_path(path)
-        attribution_previous = self.attribution_dict.get(path_previous, '') if path_previous else ''
-        cycle_counter = int(cfg.get("cycle_counter", 0))
-        cycle_counter_key = _cycle_counter_key(path)
-
-        logger.info(
-            f"[ckpt] _streaming_attribution entry: "
-            f"input checkpoint_saved="
-            f"{getattr(last_with_errors, 'checkpoint_saved', False)}, "
-            f"cycle_counter={cycle_counter}, "
-            f"cycle_counter_dict[{cycle_counter_key}]="
-            f"{self.cycle_counter_dict.get(cycle_counter_key)}",
-        )
 
         last_attribution_dict_chunk = None
         last_attribution_raw_chunk = None
@@ -1126,7 +1216,6 @@ class NVRxLogAnalyzer(NVRxAttribution):
             )
 
         attribution_output = last_attribution_dict_chunk["attribution"]
-        self.attribution_dict[path] = attribution_output
         auto_resume_output, auto_resume_verbose = get_auto_resume(
             llm,
             last_with_errors,
@@ -1136,54 +1225,14 @@ class NVRxLogAnalyzer(NVRxAttribution):
             last_application_log_chunk,
         )
 
-        is_attribution_current_last = get_auto_resume_postprocessing(
-            attribution_output,
-            attribution_previous,
-            cycle_counter,
-            llm,
+        auto_resume_output, auto_resume_verbose = self._apply_cross_cycle_repeated_policy(
+            path=path,
+            cfg=cfg,
+            attribution_output=str(attribution_output),
+            auto_resume_output=str(auto_resume_output),
+            auto_resume_verbose=str(auto_resume_verbose),
+            checkpoint_saved=bool(last_with_errors.checkpoint_saved),
         )
-        logger.info(
-            f"[ckpt] _streaming_attribution: post-processing → "
-            f"is_attribution_current_last={is_attribution_current_last} "
-            f"(checkpoint_saved={last_with_errors.checkpoint_saved}, "
-            f"cycle_counter={cycle_counter})",
-        )
-
-        if last_with_errors.checkpoint_saved and cycle_counter > 0:
-            is_attribution_current_last = False
-            logger.info(
-                "[ckpt] _streaming_attribution: checkpoint_saved bypass FIRED "
-                "→ is_attribution_current_last forced to False; "
-                "repeated-issue STOP override will be skipped",
-            )
-
-        if (
-            is_attribution_current_last
-            and self.cycle_counter_dict.get(cycle_counter_key, 0) == self.repeated_amount - 1
-        ):
-            auto_resume_output = 'STOP - DONT RESTART IMMEDIATE'
-            auto_resume_verbose = "Stop job due to repeated issue"
-
-        if is_attribution_current_last:
-            if auto_resume_verbose != "Stop job due to repeated issue":
-                self.cycle_counter_dict[cycle_counter_key] = (
-                    self.cycle_counter_dict.get(cycle_counter_key, 0) + 1
-                )
-        else:
-            self.cycle_counter_dict[cycle_counter_key] = 1
-
-        if last_with_errors.checkpoint_saved:
-            if len(auto_resume_verbose) > 0 and "STOP" in auto_resume_output:
-                logger.info(
-                    "[ckpt] _streaming_attribution: checkpoint_saved override "
-                    f"FIRED; flipping {auto_resume_output!r} → 'RESTART IMMEDIATE'",
-                )
-                auto_resume_output = "RESTART IMMEDIATE"
-                auto_resume_verbose = (
-                    auto_resume_verbose[0]
-                    + "Restart immediate, due to checkpoint saved. "
-                    + auto_resume_verbose[1:]
-                )
 
         logger.info("Policy recommendation and error attribution:")
         logger.info("Recommendation: ", auto_resume_output)
