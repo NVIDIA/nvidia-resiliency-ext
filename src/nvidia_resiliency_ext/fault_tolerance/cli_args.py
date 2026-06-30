@@ -451,6 +451,17 @@ def add_control_services_args(parser: argparse.ArgumentParser) -> None:
     add_attribution_args(parser)
     add_cycle_info_args(parser)
     parser.add_argument(
+        "--ft-node-state-url",
+        "--ft_node_state_url",
+        type=str,
+        default=None,
+        dest="ft_node_state_url",
+        help=(
+            "HTTP URL for nvrx-nodestatesvc. If set, the rendezvous host reports "
+            "cycle start/end and uses scheduler-bad nodes as hard avoids."
+        ),
+    )
+    parser.add_argument(
         "--ft-cycle-info-job-id",
         "--ft_cycle_info_job_id",
         type=str,

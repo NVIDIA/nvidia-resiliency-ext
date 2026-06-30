@@ -108,6 +108,10 @@ class FaultToleranceConfig:
       to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
       Default: None (disabled).
 
+    * `node_state_url` [str|None] HTTP URL for nvrx-nodestatesvc. If set, the
+      rendezvous host reports cycle start/end and logs scheduler-bad nodes for the
+      cycle. Default: None (disabled).
+
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
     """
@@ -155,6 +159,7 @@ class FaultToleranceConfig:
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None
+    node_state_url: Optional[str] = None
 
     @property
     def is_progress_tracking_enabled(self) -> bool:

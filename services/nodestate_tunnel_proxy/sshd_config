@@ -1,0 +1,26 @@
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PermitRootLogin no
+AllowUsers tunnel
+
+AllowTcpForwarding remote
+GatewayPorts no
+PermitTTY no
+X11Forwarding no
+AllowAgentForwarding no
+PermitTunnel no
+PermitUserEnvironment no
+
+AuthorizedKeysFile .ssh/authorized_keys
+PidFile /tmp/sshd.pid
+LogLevel VERBOSE
+
+Match User tunnel
+    ForceCommand /bin/false

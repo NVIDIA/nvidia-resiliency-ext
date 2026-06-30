@@ -281,6 +281,38 @@ service dependencies.
        --ft-attribution-endpoint http://attribution.service.internal:8000 \
        train.py
 
+Scheduler node-state service
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``ft_launcher`` can report cycle start/end to an external
+``nvrx-nodestatesvc`` instance and consume scheduler-bad nodes at
+failure/restart boundaries. This is the slow-path split-brain check: if Slurm
+already marks one of the cycle nodes ``DRAIN``, ``DOWN``, ``FAIL``, or
+``NO_RESPOND``, the launcher can use that scheduler-visible signal for restart
+handling.
+Scheduler-bad nodes, and their replacement group when NVRx can map one from the
+prior active cycle, are hard avoids for active-rank selection.
+
+* CLI: ``--ft-node-state-url <URL>`` (alias: ``--ft_node_state_url``), default disabled
+* YAML: ``node_state_url`` under the ``fault_tolerance`` section
+
+The service queries Slurm, so the node names sent by ``ft_launcher`` must match
+the names returned by Slurm. If the launcher's default node address is a fully
+qualified domain name or another form that differs from the Slurm node name,
+pass the Slurm-visible name with ``--local-addr``, for example
+``--local-addr "$(hostname -s)"`` from each launcher process.
+
+.. code-block:: yaml
+
+   fault_tolerance:
+     node_state_url: "http://node-state.service.internal:8000"
+
+.. code-block:: bash
+
+   ft_launcher \
+     --ft-node-state-url http://node-state.service.internal:8000 \
+     train.py
+
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^
 

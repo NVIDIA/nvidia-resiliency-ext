@@ -33,7 +33,7 @@ import time
 import uuid
 from datetime import timedelta
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from torch.distributed import TCPStore
 from torch.distributed.elastic.multiprocessing import SignalException
@@ -60,6 +60,7 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _RendezvousBarrierState,
     _StaleRendezvousRoundError,
 )
+from nvidia_resiliency_ext.fault_tolerance.node_state import NodeStateCycleStatus
 
 # Test timeout configuration - use short timeouts to make tests run faster
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
@@ -1486,6 +1487,22 @@ class GroupRankAssignmentTest(TestCase):
 
         reporter.report_cycle_end.assert_called_once_with()
 
+    def test_open_rendezvous_requests_node_state_cycle_end_without_polling(self):
+        """Opening the next round only enqueues node-state materialization."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        state._node_state_reporter = reporter
+
+        state.open_rendezvous()
+
+        reporter.request_cycle_end.assert_called_once_with("0")
+        reporter.get_cycle_status.assert_not_called()
+
     def test_open_rendezvous_reports_cycle_end_when_round_already_exists(self):
         """Store host closes the current cycle even if another node opened the next round."""
         state = _RendezvousBarrierState(
@@ -1697,6 +1714,167 @@ class GroupRankAssignmentTest(TestCase):
         )
 
         self.assertEqual(state._previous_active_by_infra_rank, {10: None, 20: None})
+        self.assertEqual(
+            state._previous_active_infra_rank_by_node_addr,
+            {"node0": 10, "node1": 20},
+        )
+
+    def test_scheduler_state_result_maps_to_next_round_avoids(self):
+        """Cycle-end scheduler state becomes a hard-avoid set for the opened round."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._previous_active_replacement_group_by_node_addr = {
+            "node-a": "rg-a",
+            "node-b": "rg-b",
+        }
+        state._previous_active_infra_rank_by_node_addr = {
+            "node-a": 10,
+            "node-b": 20,
+        }
+
+        status = NodeStateCycleStatus(
+            job_id="job-123",
+            cycle_id="3",
+            available=True,
+            bad_nodes=("node-a",),
+            unknown_nodes=("node-missing",),
+        )
+        state._record_scheduler_avoids_for_round(4, status)
+
+        self.assertEqual(
+            state._scheduler_avoid_nodes_for_round(4),
+            {"node-a", "node-missing"},
+        )
+        self.assertEqual(state._scheduler_avoid_replacement_groups_for_round(4), {"rg-a"})
+        self.assertEqual(state._scheduler_avoid_infra_ranks_for_round(4), {10})
+
+    def test_scheduler_state_refresh_waits_while_service_is_materializing(self):
+        """The store host waits to place ranks while node-state status is pending."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        status = NodeStateCycleStatus(
+            job_id="job-123",
+            cycle_id="3",
+            available=True,
+            bad_nodes=("node-a",),
+        )
+        reporter.get_cycle_status.side_effect = [None, status]
+        state._node_state_reporter = reporter
+
+        self.assertFalse(state._refresh_scheduler_avoids_for_round(4))
+        self.assertEqual(state._scheduler_avoid_nodes_for_round(4), set())
+
+        self.assertTrue(state._refresh_scheduler_avoids_for_round(4))
+        reporter.get_cycle_status.assert_has_calls([call("3"), call("3")])
+        self.assertEqual(state._scheduler_avoid_nodes_for_round(4), {"node-a"})
+
+    def test_scheduler_state_refresh_caches_resolved_status(self):
+        """Resolved node-state status is consumed once per round."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        reporter = MagicMock()
+        reporter.get_cycle_status.return_value = NodeStateCycleStatus(
+            job_id="job-123",
+            cycle_id="3",
+            available=True,
+        )
+        state._node_state_reporter = reporter
+
+        self.assertTrue(state._refresh_scheduler_avoids_for_round(4))
+        self.assertTrue(state._refresh_scheduler_avoids_for_round(4))
+
+        reporter.get_cycle_status.assert_called_once_with("3")
+
+    def test_host_close_avoids_scheduler_bad_node_when_assigning_active_ranks(self):
+        """Scheduler-bad nodes are assigned standby ranks, not active ranks."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._compute_step2_poll_interval = lambda min_nodes, segment_check_interval: 0.0
+        state._round = 1
+        participants = [
+            (_NodeDesc("node-a", 100, 0), 0, "none", None),
+            (_NodeDesc("node-b", 101, 0), 1, "none", None),
+            (_NodeDesc("node-c", 102, 0), 2, "none", None),
+        ]
+        _seed_joined_participants(self.store, state, participants, round_id=1)
+        state._scheduler_avoid_nodes_by_round[1] = {"node-b"}
+        state._scheduler_avoid_infra_ranks_by_round[1] = {1}
+        state._rendezvous_start_time = time.monotonic()
+
+        state._host_close_round(
+            _NodeDesc("control", 10, 0),
+            min_nodes=2,
+            max_nodes=3,
+            segment_check_interval=0.0,
+        )
+
+        ranks = {
+            participant[0].addr: state._unpack_rank_value(
+                self.store.get(f"{state.prefix}:slot_{slot}_rank")
+            )[0]
+            for slot, participant in enumerate(participants, start=1)
+        }
+        self.assertLess(ranks["node-a"], 2)
+        self.assertGreaterEqual(ranks["node-b"], 2)
+        self.assertLess(ranks["node-c"], 2)
+
+    def test_host_close_avoids_scheduler_bad_replacement_group(self):
+        """If one node in a replacement group is bad, the group is not selected active."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            replacement_group_size=2,
+        )
+        state._compute_step2_poll_interval = lambda min_nodes, segment_check_interval: 0.0
+        state._round = 1
+        participants = [
+            (_NodeDesc("rg-a-0", 100, 0), 0, "none", "rg-a"),
+            (_NodeDesc("rg-a-1", 101, 0), 1, "none", "rg-a"),
+            (_NodeDesc("rg-b-0", 102, 0), 2, "none", "rg-b"),
+            (_NodeDesc("rg-b-1", 103, 0), 3, "none", "rg-b"),
+        ]
+        _seed_joined_participants(self.store, state, participants, round_id=1)
+        state._scheduler_avoid_nodes_by_round[1] = {"rg-a-0"}
+        state._scheduler_avoid_replacement_groups_by_round[1] = {"rg-a"}
+        state._scheduler_avoid_infra_ranks_by_round[1] = {0}
+        state._rendezvous_start_time = time.monotonic()
+
+        state._host_close_round(
+            _NodeDesc("control", 10, 0),
+            min_nodes=2,
+            max_nodes=4,
+            segment_check_interval=0.0,
+        )
+
+        ranks = {
+            participant[0].addr: state._unpack_rank_value(
+                self.store.get(f"{state.prefix}:slot_{slot}_rank")
+            )[0]
+            for slot, participant in enumerate(participants, start=1)
+        }
+        self.assertGreaterEqual(ranks["rg-a-0"], 2)
+        self.assertGreaterEqual(ranks["rg-a-1"], 2)
+        self.assertLess(ranks["rg-b-0"], 2)
+        self.assertLess(ranks["rg-b-1"], 2)
 
     def test_host_close_waits_for_previous_active_before_accepting_spare(self):
         """A hot spare that arrives first does not close the round before last_call."""
@@ -1738,8 +1916,19 @@ class GroupRankAssignmentTest(TestCase):
                 self._gate = gate
                 self.injected = False
 
-            def evaluate(self, participants, now, unhealthy_replacement_groups=None):
-                decision = self._gate.evaluate(participants, now, unhealthy_replacement_groups)
+            def evaluate(
+                self,
+                participants,
+                now,
+                unhealthy_replacement_groups=None,
+                unhealthy_infra_ranks=None,
+            ):
+                decision = self._gate.evaluate(
+                    participants,
+                    now,
+                    unhealthy_replacement_groups,
+                    unhealthy_infra_ranks,
+                )
                 if not decision.should_close and not self.injected:
                     slot = state.store.add(state.join_count_key, 1)
                     state.store.set(

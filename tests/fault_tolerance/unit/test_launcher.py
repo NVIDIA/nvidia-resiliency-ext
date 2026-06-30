@@ -801,6 +801,15 @@ def test_cli_cycle_info_dir_does_not_require_per_cycle_applog():
     _validate_args(args)
 
 
+def test_cli_node_state_url_reaches_rendezvous_config():
+    config, _, _, _ = _config_from_launcher_cli(
+        ['--ft-node-state-url', 'http://node-state.test:8000', 'train.py']
+    )
+
+    assert config.fault_tol_cfg.node_state_url == 'http://node-state.test:8000'
+    assert config.rdzv_configs['node_state_url'] == 'http://node-state.test:8000'
+
+
 def test_cli_attribution_endpoint_requires_per_cycle_applog():
     from nvidia_resiliency_ext.fault_tolerance.launcher import (
         _validate_attribution_requires_per_cycle_applog,
