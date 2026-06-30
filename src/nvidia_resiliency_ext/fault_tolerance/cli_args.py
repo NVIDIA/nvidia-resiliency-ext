@@ -212,6 +212,9 @@ def add_log_funnel_args(
         dest="ft_nvrx_logfile",
         help="Optional: Path for NVRx process logs (must be absolute path if specified). "
         "ft_launcher routes these logs through the same infrastructure as worker logs. "
+        "Before that infrastructure is ready, only the TCPStore host may append a managed-attribution "
+        "startup error directly. The caller is responsible for keeping this path available and "
+        "writable; no stderr fallback is provided if the path itself fails. "
         "nvrx-control also uses this path as a fallback source for gRPC server diagnostic logs. "
         "Example: --ft-nvrx-logfile /lustre/logs/launcher.log",
     )

@@ -1138,6 +1138,83 @@ def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
     assert config.logs_specs.grpc_server_address == "control.host:50051"
 
 
+def _managed_attribution_args(launcher, tmp_path):
+    return launcher.get_args_parser().parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "localhost:29500",
+            "--ft-per-cycle-applog-prefix",
+            str(tmp_path / "train.log"),
+            "--ft-nvrx-logfile",
+            str(tmp_path / "nvrx.log"),
+            "--ft-attribution-endpoint",
+            "localhost",
+            "--ft-attribution-llm-api-key-file",
+            "/no/such/missing_key",
+            "train.py",
+        ]
+    )
+
+
+def test_store_host_writes_attribution_startup_failure_to_nvrx_log(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = _managed_attribution_args(launcher, tmp_path)
+    with (
+        patch.object(launcher, "_ATTRIBUTION_MANAGER", None),
+        patch.object(launcher, "_matches_machine_hostname", return_value=True),
+        pytest.raises(ValueError, match="is not a file"),
+    ):
+        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+
+    record = (tmp_path / "nvrx.log").read_text(encoding="utf-8")
+    assert "managed attribution service LLM API key file is not a file" in record
+    assert "Agent's exit code = 1" in record
+
+
+def test_non_store_host_does_not_write_attribution_startup_failure(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = _managed_attribution_args(launcher, tmp_path)
+    with (
+        patch.object(launcher, "_matches_machine_hostname", return_value=False),
+        patch.object(
+            launcher.AttributionConfig,
+            "from_args",
+            side_effect=ValueError("bad attribution config"),
+        ),
+        pytest.raises(ValueError, match="bad attribution config"),
+    ):
+        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+
+    assert not (tmp_path / "nvrx.log").exists()
+
+
+def test_attribution_startup_log_failure_does_not_mask_original_error(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = _managed_attribution_args(launcher, tmp_path)
+    original_error = ValueError("bad attribution config")
+    with (
+        patch.object(launcher, "_ATTRIBUTION_MANAGER", None),
+        patch.object(launcher, "_matches_machine_hostname", return_value=True),
+        patch.object(
+            launcher.AttributionManager,
+            "start_if_needed",
+            side_effect=original_error,
+        ),
+        patch("builtins.open", side_effect=OSError("network filesystem unavailable")),
+        pytest.raises(ValueError) as exc_info,
+    ):
+        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+
+    assert exc_info.value is original_error
+
+
 def _make_launch_agent_config(**overrides):
     from types import SimpleNamespace
 
