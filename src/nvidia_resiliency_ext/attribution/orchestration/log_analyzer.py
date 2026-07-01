@@ -223,6 +223,7 @@ class LogSageRunner:
             "exclude_nvrx_logs": False,
             **self._per_cycle_log_kwargs(path),
             **self.config.llm_runtime_overrides(),
+            **self.config.endpoint_retry_overrides(),
         }
         analyzer = await self._get_lib_log_analyzer(run_kwargs)
         result = await self._run_lib_log_analyzer_serialized(analyzer, run_kwargs)
@@ -237,6 +238,7 @@ class LogSageRunner:
             "exclude_nvrx_logs": False,
             **self._per_cycle_log_kwargs(path),
             **self.config.llm_runtime_overrides(),
+            **self.config.endpoint_retry_overrides(),
         }
 
         async with self._log_analysis_lock:
@@ -339,6 +341,7 @@ class LogSageRunner:
             "merge_llm": merge_llm,
             "threshold": 0,
             **self.config.llm_runtime_overrides(),
+            **self.config.endpoint_retry_overrides(),
         }
 
         async with self._log_analysis_lock:

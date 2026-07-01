@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Re-export ErrorCode from library layer so service consumers can use:
@@ -160,6 +160,25 @@ class Settings(BaseSettings):
     )
     LLM_TOP_P: float | None = Field(default=None, description="LLM top-p for nucleus sampling")
     LLM_MAX_TOKENS: int | None = Field(default=None, description="Max tokens for LLM response")
+    LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES: int | None = Field(
+        default=None,
+        description=(
+            "Additional NVRx retries when LogSage reports LLM ENDPOINT FAILED "
+            "after its internal endpoint retries"
+        ),
+        validation_alias=AliasChoices(
+            "NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES",
+            "NVRX_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES",
+        ),
+    )
+    LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC: float | None = Field(
+        default=None,
+        description="Seconds to wait between NVRx endpoint outer retries",
+        validation_alias=AliasChoices(
+            "NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC",
+            "NVRX_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC",
+        ),
+    )
 
     # Log + FR analysis backend: "lib" = in-process, "mcp" = subprocess MCP (same stdio client)
     ANALYSIS_BACKEND: str = Field(
@@ -309,6 +328,20 @@ class Settings(BaseSettings):
     def validate_llm_max_tokens(cls, v: int | None) -> int | None:
         if v is not None and v <= 0:
             raise ValueError(f"LLM_MAX_TOKENS must be positive, got {v}")
+        return v
+
+    @field_validator("LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES")
+    @classmethod
+    def validate_log_analysis_endpoint_outer_retries(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError(f"LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES must be >= 0, got {v}")
+        return v
+
+    @field_validator("LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC")
+    @classmethod
+    def validate_log_analysis_endpoint_outer_backoff_sec(cls, v: float | None) -> float | None:
+        if v is not None and v < 0:
+            raise ValueError(f"LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC must be >= 0, got {v}")
         return v
 
     @field_validator("ALLOWED_ROOT")

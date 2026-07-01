@@ -210,6 +210,9 @@ class CombinedLogFRMCPOrchestrator:
             "is_per_cycle": is_per_cycle,
             **llm_kwargs,
         }
+        for key in ("endpoint_outer_retries", "endpoint_outer_backoff_sec"):
+            if key in arguments:
+                log_kw[key] = arguments[key]
         if is_per_cycle:
             log_kw["cycle_counter"] = int(arguments.get("cycle_counter", 0))
         fr_kw: dict[str, Any] = {

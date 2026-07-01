@@ -63,6 +63,8 @@ def _controller_config_from_settings(cfg: Settings) -> AttributionControllerConf
             llm_temperature=cfg.LLM_TEMPERATURE,
             llm_top_p=cfg.LLM_TOP_P,
             llm_max_tokens=cfg.LLM_MAX_TOKENS,
+            endpoint_outer_retries=cfg.LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES,
+            endpoint_outer_backoff_sec=cfg.LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC,
         ),
         cache=AttributionCacheConfig(
             compute_timeout=cfg.COMPUTE_TIMEOUT,

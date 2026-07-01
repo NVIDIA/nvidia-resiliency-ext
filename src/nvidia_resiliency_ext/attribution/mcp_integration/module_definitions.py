@@ -139,6 +139,23 @@ def _llm_runtime_properties(*, model_description: str) -> dict[str, dict[str, An
     }
 
 
+def _endpoint_retry_properties() -> dict[str, dict[str, Any]]:
+    """Input-schema properties for NVRx-owned final attribution endpoint retries."""
+    return {
+        "endpoint_outer_retries": {
+            "type": "integer",
+            "description": (
+                "Additional NVRx retries when LogSage returns LLM ENDPOINT FAILED "
+                "after its internal endpoint retries"
+            ),
+        },
+        "endpoint_outer_backoff_sec": {
+            "type": "number",
+            "description": "Seconds to wait between NVRx endpoint outer retries",
+        },
+    }
+
+
 def _cycle_counter_property() -> dict[str, Any]:
     return {
         "type": "integer",
@@ -153,6 +170,7 @@ def _log_analyzer_input_schema() -> dict[str, Any]:
         "properties": {
             "log_path": {"type": "string", "description": "Path to log files"},
             **_llm_runtime_properties(model_description="LLM model to use for analysis"),
+            **_endpoint_retry_properties(),
             "exclude_nvrx_logs": {
                 "type": "boolean",
                 "description": "Exclude NVRX internal logs",
@@ -374,6 +392,7 @@ def register_all_modules():
                 "temperature": {"type": "number", "default": DEFAULT_LLM_TEMPERATURE},
                 "top_p": {"type": "number", "default": DEFAULT_LLM_TOP_P},
                 "max_tokens": {"type": "integer", "default": DEFAULT_LLM_MAX_TOKENS},
+                **_endpoint_retry_properties(),
                 "threshold": {"type": "integer", "default": 0},
                 "merge_llm": {
                     "type": "boolean",
