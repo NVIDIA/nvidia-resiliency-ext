@@ -16,6 +16,7 @@ from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ANALYSIS_INTENT_PROGRESSIVE,
     ANALYSIS_INTENT_TERMINAL,
     MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+    PROGRESSIVE_STATUS_STARTED,
     PROGRESSIVE_STATUS_UNSUPPORTED,
     ProgressiveLogAnalysisStartTool,
     ProgressiveStartResult,
@@ -350,6 +351,55 @@ def test_terminal_get_nonblocking_reports_in_flight_without_joining(monkeypatch,
     asyncio.run(run())
 
 
+def test_dev_progressive_submit_then_terminal_get_records_evidence(monkeypatch, tmp_path):
+    Analyzer = _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    log_analyzer = FakeLogAnalyzer()
+    analyzer = Analyzer(
+        allowed_root=str(tmp_path),
+        log_analyzer=log_analyzer,
+        progressive_analysis_enabled=True,
+    )
+    log_path = str(tmp_path / "train_cycle0.log")
+
+    async def run() -> dict[str, Any]:
+        log_analyzer.progressive_started = asyncio.Event()
+        log_analyzer.progressive_release = asyncio.Event()
+
+        post_result = await asyncio.wait_for(
+            analyzer.submit(
+                log_path,
+                user="dev",
+                analysis_intent=ANALYSIS_INTENT_PROGRESSIVE,
+            ),
+            timeout=0.5,
+        )
+        await asyncio.wait_for(log_analyzer.progressive_started.wait(), timeout=0.5)
+
+        terminal_result = await asyncio.wait_for(analyzer.analyze(log_path), timeout=0.5)
+        log_analyzer.progressive_release.set()
+        await asyncio.sleep(0)
+
+        return {
+            "post_submitted": post_result.submitted,
+            "post_mode": post_result.mode,
+            "progressive_starts": list(log_analyzer.progressive_starts),
+            "terminal_runs": list(log_analyzer.terminal_runs),
+            "terminal_status": terminal_result.status,
+            "recommendation_action": terminal_result.recommendation["action"],
+        }
+
+    evidence = asyncio.run(run())
+
+    assert evidence == {
+        "post_submitted": True,
+        "post_mode": JobMode.SINGLE.value,
+        "progressive_starts": [(log_path, "dev", None)],
+        "terminal_runs": [(log_path, "dev", None)],
+        "terminal_status": "completed",
+        "recommendation_action": "RESTART",
+    }
+
+
 def test_nonblocking_get_does_not_start_analysis_on_pending_result(monkeypatch, tmp_path):
     Analyzer = _import_analyzer_with_optional_dependency_stubs(monkeypatch)
     log_analyzer = FakeLogAnalyzer()
@@ -422,6 +472,100 @@ def test_progressive_start_tool_returns_unsupported_without_final_result():
     }
 
 
+def test_progressive_start_tool_schedules_analyzer_without_waiting():
+    calls: list[dict[str, Any]] = []
+
+    async def run() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class BlockingAnalyzer:
+            async def analyze_logs_rt_start(
+                self,
+                args: dict[str, Any] | None = None,
+            ) -> dict[str, str | None]:
+                calls.append(dict(args or {}))
+                started.set()
+                await release.wait()
+                return ProgressiveStartResult(status=PROGRESSIVE_STATUS_STARTED).as_payload()
+
+        tool = ProgressiveLogAnalysisStartTool({}, analyzer=BlockingAnalyzer())
+        result = await asyncio.wait_for(
+            tool.run({"log_path": "/tmp/train_cycle0.log", "is_per_cycle": True}),
+            timeout=0.1,
+        )
+
+        assert result == {
+            "module": MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            "status": PROGRESSIVE_STATUS_STARTED,
+            "message": "progressive analysis started for /tmp/train_cycle0.log",
+            "handle": "/tmp/train_cycle0.log",
+        }
+
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        task = next(iter(tool._tasks.values()))
+        release.set()
+        await asyncio.wait_for(task, timeout=0.5)
+        await asyncio.sleep(0)
+        assert tool._tasks == {}
+
+    asyncio.run(run())
+
+    assert calls == [{"log_path": "/tmp/train_cycle0.log", "is_per_cycle": True}]
+
+
+def test_progressive_start_replaces_closed_state(monkeypatch, tmp_path):
+    _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    nvrx_logsage = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    )
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(nvrx_logsage, "ChatOpenAI", lambda **_kwargs: object())
+    monkeypatch.setattr(nvrx_logsage, "LRUCache", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        nvrx_logsage,
+        "return_application_errors_rt",
+        lambda *_args, **_kwargs: types.SimpleNamespace(
+            finished=nvrx_logsage.FINISHED_STATUS_APPLICATION_DONE,
+            checkpoint_saved=False,
+        ),
+    )
+
+    log_path = tmp_path / "train_cycle0.log"
+    log_path.write_text("cycle output\n", encoding="utf-8")
+    analyzer = nvrx_logsage.NVRxLogAnalyzer(
+        {
+            "log_path": str(log_path),
+            "chunks_per_time": 0,
+            "stop_accumulating_count": 1,
+        }
+    )
+    stale_state = nvrx_logsage._ProgressiveLogState(analyzer._history_window())
+    stale_state.request_close()
+    analyzer.job_inline_data_dict[str(log_path)] = stale_state
+
+    async def run() -> dict[str, str | None]:
+        return await analyzer.analyze_logs_rt_start({"log_path": str(log_path)})
+
+    result = asyncio.run(run())
+    fresh_state = analyzer.job_inline_data_dict[str(log_path)]
+    evidence = {
+        "stale_state_was_closed": stale_state.closed,
+        "result_status": result["status"],
+        "fresh_state_replaced_stale": fresh_state is not stale_state,
+        "fresh_state_poll_count": fresh_state.poll_count,
+        "fresh_state_closed": fresh_state.closed,
+    }
+
+    assert evidence == {
+        "stale_state_was_closed": True,
+        "result_status": PROGRESSIVE_STATUS_STARTED,
+        "fresh_state_replaced_stale": True,
+        "fresh_state_poll_count": 1,
+        "fresh_state_closed": False,
+    }
+
+
 def test_progressive_start_uses_mcp_loganalysis_tool(monkeypatch, tmp_path):
     _import_analyzer_with_optional_dependency_stubs(monkeypatch)
     module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
@@ -434,7 +578,9 @@ def test_progressive_start_uses_mcp_loganalysis_tool(monkeypatch, tmp_path):
         }
     )
     monkeypatch.setattr(module, "create_mcp_client", lambda **_kwargs: fake_client)
-    runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=False))
+    runner = module.LogSageRunner(
+        LogSageExecutionConfig(use_lib_log_analysis=False, progressive_chunks_per_time=0.01)
+    )
 
     async def run() -> ProgressiveStartResult:
         return await runner.start_progressive_analysis(
@@ -457,8 +603,7 @@ def test_progressive_start_uses_mcp_loganalysis_tool(monkeypatch, tmp_path):
                 "log_path": str(tmp_path / "train_cycle3.log"),
                 "is_per_cycle": True,
                 "cycle_counter": 3,
-                "user": "alice",
-                "job_id": "123",
+                "chunks_per_time": 0.01,
             },
         )
     ]
@@ -475,7 +620,9 @@ def test_terminal_log_analyzer_mcp_uses_cycle_counter(monkeypatch, tmp_path):
         }
     )
     monkeypatch.setattr(module, "create_mcp_client", lambda **_kwargs: fake_client)
-    runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=False))
+    runner = module.LogSageRunner(
+        LogSageExecutionConfig(use_lib_log_analysis=False, progressive_chunks_per_time=0.01)
+    )
 
     async def run() -> dict[str, Any]:
         return await runner.fetch_log_result(str(tmp_path / "train_CYCLE4.log"))
@@ -492,6 +639,7 @@ def test_terminal_log_analyzer_mcp_uses_cycle_counter(monkeypatch, tmp_path):
                 "exclude_nvrx_logs": False,
                 "is_per_cycle": True,
                 "cycle_counter": 4,
+                "chunks_per_time": 0.01,
             },
         )
     ]
