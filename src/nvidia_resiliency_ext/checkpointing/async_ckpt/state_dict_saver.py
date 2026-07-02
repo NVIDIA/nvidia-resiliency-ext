@@ -26,6 +26,7 @@ from torch.distributed.checkpoint import CheckpointException
 from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.metadata import STATE_DICT_TYPE, Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner
+from torch.distributed.checkpoint.storage import WriteResult
 from torch.distributed.checkpoint.utils import _DistWrapper, _get_failure_dict
 
 if TYPE_CHECKING:
@@ -503,6 +504,54 @@ def _read_written_metadata(storage_writer: 'FileSystemWriterAsync') -> Metadata:
         return pickle.load(f)
 
 
+def _find_layout_mismatch(
+    write_results: List[WriteResult], prepared_metadata: Metadata
+) -> Optional[Tuple[str, str]]:
+    """Return ``(fqn, detail)`` for the first locally-written item whose on-disk
+    location disagrees with ``prepared_metadata``, or ``None`` if the whole local
+    layout matches (i.e. ``local_layout_matches_prepared``).
+
+    Why this is needed. On the reuse path each rank rewrites its data with offsets
+    recomputed from the bytes actually written (``stream.tell()`` in
+    ``_write_item``), yet the *prepared* metadata is published verbatim as
+    ``.metadata``. That is only correct if every item still lands at the same
+    ``(relative_path, offset, length)`` the prepared metadata records. Tensors are
+    stored raw so their length is fixed by ``(shape, dtype)`` -- but non-tensor
+    (BYTE_IO) items are ``torch.save``-pickled, and a pickled length can drift
+    across a run: e.g. the distributed optimizer stores ``param_groups[*].step`` as
+    a Python int (``DistributedOptimizer.state_dict``), so when ``step`` crosses a
+    pickle size band (256 / 65536 / 2**31 ...) that item -- and every item written
+    after it in the same file -- shifts, which would make a reused ``.metadata``
+    address the wrong bytes and load corrupt. Comparing this rank's freshly
+    computed ``write_results`` against the prepared ``storage_data`` catches exactly
+    that, using only local data (no collective).
+    """
+    prepared = prepared_metadata.storage_data
+    for write_result in write_results:
+        expected = prepared.get(write_result.index)
+        actual = write_result.storage_data
+        if expected is None:
+            return (
+                str(write_result.index.fqn),
+                "written this save but absent from the prepared metadata "
+                "(checkpoint structure changed)",
+            )
+        # (relative_path, offset, length) is the byte locator the loader uses; a
+        # difference in any of them means the prepared metadata mis-locates data.
+        if (expected.relative_path, expected.offset, expected.length) != (
+            actual.relative_path,
+            actual.offset,
+            actual.length,
+        ):
+            return (
+                str(write_result.index.fqn),
+                f"prepared (path={expected.relative_path}, offset={expected.offset}, "
+                f"length={expected.length}) != written (path={actual.relative_path}, "
+                f"offset={actual.offset}, length={actual.length})",
+            )
+    return None
+
+
 def save_state_dict_async_finalize(
     storage_writer: 'FileSystemWriterAsync',
     global_metadata: Metadata,
@@ -525,15 +574,20 @@ def save_state_dict_async_finalize(
             When provided, the finalize SKIPS the ``gather_object(write_results)``
             collective (its only purpose is to rebuild storage_data on the
             coordinator, which this metadata already has) and writes this object
-            verbatim as the checkpoint's ``.metadata``. Write failures are still
-            surfaced, but via a single ``all_reduce`` of a success flag instead
-            of gathering the (large) per-rank write-result lists. Valid only when
+            verbatim as the checkpoint's ``.metadata``. Before publishing, each
+            rank cheaply validates that its freshly-written byte layout still
+            matches the prepared metadata (``_find_layout_mismatch``); this and
+            write-failure detection are folded into a single ``all_reduce`` of a
+            3-valued status flag (no per-rank write-result gather). Valid only when
             the structure / world size / dist-ckpt-workers match the run that
-            produced the prepared metadata (the caller owns this guarantee).
-            On a write failure the failing rank raises a ``CheckpointException``
-            carrying its own traceback; because the per-rank result gather is
-            skipped, peer ranks raise without that detail (consult the failing
-            rank's logs).
+            produced the prepared metadata (the caller owns this guarantee), but a
+            STALE prepared metadata (a non-tensor item whose serialized length
+            drifted, e.g. the optimizer ``step`` crossing a pickle size band) is
+            now caught and raises a ``CheckpointException("metadata_reuse", ...)``
+            instead of silently writing a mislocating ``.metadata``. On a write
+            failure the failing rank raises a ``CheckpointException`` carrying its
+            own traceback; because the per-rank result gather is skipped, peer
+            ranks raise without that detail (consult the failing rank's logs).
         create_metadata_path (str, optional): when set, persist the complete
             metadata produced by this (collective) save to this path so later
             jobs can reuse it via ``reuse_metadata_obj``.
@@ -556,18 +610,33 @@ def save_state_dict_async_finalize(
 
     if reuse_metadata_obj is not None:
         # `retrieve_write_results` returns a list[WriteResult] on success or a
-        # WRAPPED_EXCEPTION (a tuple) if this rank's write raised.
-        local_ok = 1 if isinstance(write_results, list) else 0
-        flag = torch.tensor([local_ok], dtype=torch.int, device=torch.cuda.current_device())
+        # WRAPPED_EXCEPTION (a tuple) if this rank's write raised. We fold TWO local
+        # checks into a single 3-valued status reduced with the (tiny) all_reduce
+        # this path already does, so the fast path stays collective-cheap:
+        #   2 = wrote OK *and* the local on-disk layout matches the prepared metadata
+        #   1 = wrote OK *but* the layout drifted from the prepared metadata (stale)
+        #   0 = local write failed
+        # MIN gives the right precedence across ranks: write failure (0) beats a
+        # stale metadata (1) beats all-good (2).
+        layout_mismatch: Optional[Tuple[str, str]] = None
+        if not isinstance(write_results, list):
+            local_status = 0
+        else:
+            layout_mismatch = _find_layout_mismatch(write_results, reuse_metadata_obj)
+            local_status = 2 if layout_mismatch is None else 1
+        flag = torch.tensor(
+            [local_status], dtype=torch.int, device=torch.cuda.current_device()
+        )
         torch.distributed.all_reduce(
             flag, op=torch.distributed.ReduceOp.MIN, group=dist_wrapper.group
         )
-        if flag.item() != 1:
-            if local_ok:
-                # This rank wrote successfully but a peer reported a failure. We
-                # intentionally skip the gather that would collect the peer's
-                # traceback, so log a pointer before raising a detail-less
-                # exception here (the failing rank raises with its own detail).
+        global_status = int(flag.item())
+
+        if global_status == 0:
+            # A rank's write failed (pre-existing behavior). The failing rank raises
+            # with its own detail; peers raise detail-less (the write-result gather
+            # that would carry the traceback is intentionally skipped here).
+            if local_status != 0:
                 logger.warning(
                     "Prepared-metadata save: a peer rank failed its checkpoint "
                     "write while this rank succeeded; see the failing rank's logs "
@@ -577,6 +646,33 @@ def save_state_dict_async_finalize(
             else:
                 node_failures = {dist_wrapper.get_rank(): write_results}
             raise CheckpointException("write", node_failures)
+
+        if global_status == 1:
+            # No write failures, but at least one rank's freshly-written byte layout
+            # no longer matches the prepared metadata. Publishing it verbatim would
+            # mis-address data and load corrupt, so fail fast and do NOT write a
+            # stale `.metadata`. The detecting rank reports which item drifted.
+            if layout_mismatch is not None:
+                fqn, detail = layout_mismatch
+                logger.error(
+                    f"Prepared metadata is STALE for this save: item '{fqn}' {detail}. "
+                    "The prepared `.metadata` no longer describes the on-disk byte "
+                    "layout (a non-tensor item's serialized length changed, e.g. the "
+                    "optimizer 'step' crossing a pickle size band). Regenerate it with "
+                    "--ckpt-metadata-create, or disable --ckpt-metadata."
+                )
+                node_failures = {dist_wrapper.get_rank(): RuntimeError(detail)}
+            else:
+                logger.error(
+                    "Prepared metadata is STALE: a peer rank detected a byte-layout "
+                    "mismatch against the prepared `.metadata`; see that rank's logs. "
+                    "Regenerate it with --ckpt-metadata-create, or disable "
+                    "--ckpt-metadata."
+                )
+                node_failures = {}
+            raise CheckpointException("metadata_reuse", node_failures)
+
+        # global_status == 2: every rank's layout matches -> safe to publish verbatim.
         if dist_wrapper.is_coordinator:
             write_start = time()
             _write_metadata_only(storage_writer, reuse_metadata_obj)
