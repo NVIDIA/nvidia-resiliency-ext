@@ -29,11 +29,13 @@ happens the item, and every item after it in the same file, shifts, and a reused
 
 These tests cover the guard added for exactly that failure:
 
-* ``_find_layout_mismatch`` (pure, no distributed): matches -> ``None``; a length
-  drift, a downstream offset shift, or an item missing from the prepared metadata
-  -> a ``(fqn, detail)`` report. The numbers mirror the real measurement (the
-  optimizer BYTE_IO item is 1645 B at a low step and grows to 1709 B once ``step``
-  crosses 65536).
+* ``_find_layout_mismatch`` (pure, no distributed), both directions: a length
+  drift, a downstream offset shift, an item missing from the prepared metadata, OR
+  an item the prepared metadata expects in this rank's file that was not written
+  this save (removed / resharded) -> a ``(fqn, detail)`` report; a matching layout
+  and another rank's entries -> ``None``. The numbers mirror the real measurement
+  (the optimizer BYTE_IO item is 1645 B at a low step and grows to 1709 B once
+  ``step`` crosses 65536).
 * End-to-end through ``save_state_dict_async_finalize``: a matching layout writes
   ``.metadata``; a stale one raises ``CheckpointException`` and writes NO
   ``.metadata`` (fail-fast, no silent corruption).
@@ -155,6 +157,40 @@ def test_item_absent_from_prepared_is_detected():
     )
     assert mismatch is not None
     assert mismatch[0] == new_fqn and "absent" in mismatch[1]
+
+
+def test_removed_last_item_is_detected():
+    """Reverse direction: an item the prepared metadata places at the END of this
+    rank's file but which this save did not write (a removal) shifts nothing and
+    would slip past a forward-only check -- the reverse check must catch it."""
+    prepared = _prepared_metadata(_SINGLE_FILE_LAYOUT)  # [_OPT_FQN@0, _WGT_FQN@_OPT_LEN]
+    write_results = [_write_result(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN)]  # _WGT_FQN removed
+    mismatch = _find_layout_mismatch(write_results, prepared)
+    assert mismatch is not None
+    assert mismatch[0] == _WGT_FQN and "not written" in mismatch[1].lower()
+
+
+def test_resharded_item_is_detected():
+    """Reverse direction: an item the prepared metadata keeps in a file this rank
+    still writes, but which moved to another rank this save (resharding), leaves a
+    dangling entry -- must be caught."""
+    moved = "moved.item/shard_0_1"
+    prepared = _prepared_metadata(
+        [(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN), (moved, "__0_0.distcp", _OPT_LEN, 256)]
+    )
+    write_results = [_write_result(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN)]  # `moved` elsewhere now
+    mismatch = _find_layout_mismatch(write_results, prepared)
+    assert mismatch is not None and mismatch[0] == moved
+
+
+def test_entry_in_another_ranks_file_is_not_a_false_positive():
+    """The reverse check is scoped to files THIS rank wrote: a prepared entry in a
+    file this rank did not write (owned by another rank) must NOT be flagged."""
+    prepared = _prepared_metadata(
+        [(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN), ("peer.item/shard_0_1", "__1_0.distcp", 0, 512)]
+    )
+    write_results = [_write_result(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN)]  # only wrote __0_0.distcp
+    assert _find_layout_mismatch(write_results, prepared) is None
 
 
 # --------------------------------------------------------------------------- #

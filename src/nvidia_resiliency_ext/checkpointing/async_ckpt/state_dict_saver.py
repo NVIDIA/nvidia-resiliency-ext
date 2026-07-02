@@ -362,6 +362,18 @@ def save_state_dict_async_plan(
         local_plan = storage_writer.prepare_decentralized_global_plan(local_plan)
         central_plan = local_plan
     else:
+        if reuse_metadata_obj is not None:
+            # reuse_metadata_obj is only honored in the decentralized-plan branch
+            # above. Here (no cache reuse, no decentralized planning) we cannot skip
+            # the planning collective. The prepared metadata is still written and
+            # validated at finalize, so this is a performance no-op rather than a
+            # correctness problem -- but warn so the degradation is not silent.
+            logger.warning(
+                "reuse_metadata_obj was provided but the planner/storage_writer do "
+                "not support decentralized global planning; the planning collective "
+                "cannot be skipped this save (the prepared metadata is still written "
+                "and validated at finalize)."
+            )
         central_plan = dist_wrapper.reduce_scatter("plan", local_step, global_step)
 
     central_plan = planner.finish_plan(central_plan)
@@ -507,27 +519,43 @@ def _read_written_metadata(storage_writer: 'FileSystemWriterAsync') -> Metadata:
 def _find_layout_mismatch(
     write_results: List[WriteResult], prepared_metadata: Metadata
 ) -> Optional[Tuple[str, str]]:
-    """Return ``(fqn, detail)`` for the first locally-written item whose on-disk
-    location disagrees with ``prepared_metadata``, or ``None`` if the whole local
-    layout matches (i.e. ``local_layout_matches_prepared``).
+    """Return ``(fqn, detail)`` for the first divergence between what this rank
+    actually wrote and ``prepared_metadata``, or ``None`` if this rank's slice of
+    the layout matches exactly (i.e. ``local_layout_matches_prepared``).
 
     Why this is needed. On the reuse path each rank rewrites its data with offsets
     recomputed from the bytes actually written (``stream.tell()`` in
     ``_write_item``), yet the *prepared* metadata is published verbatim as
-    ``.metadata``. That is only correct if every item still lands at the same
-    ``(relative_path, offset, length)`` the prepared metadata records. Tensors are
-    stored raw so their length is fixed by ``(shape, dtype)`` -- but non-tensor
-    (BYTE_IO) items are ``torch.save``-pickled, and a pickled length can drift
-    across a run: e.g. the distributed optimizer stores ``param_groups[*].step`` as
-    a Python int (``DistributedOptimizer.state_dict``), so when ``step`` crosses a
-    pickle size band (256 / 65536 / 2**31 ...) that item -- and every item written
-    after it in the same file -- shifts, which would make a reused ``.metadata``
-    address the wrong bytes and load corrupt. Comparing this rank's freshly
-    computed ``write_results`` against the prepared ``storage_data`` catches exactly
-    that, using only local data (no collective).
+    ``.metadata``. That is only correct if this rank's data files still match the
+    prepared metadata exactly, so we check BOTH directions:
+
+    * forward -- every item this rank wrote must exist in the prepared metadata at
+      the same ``(relative_path, offset, length)``. Tensors are raw-stored so their
+      length is fixed by ``(shape, dtype)``, but non-tensor (BYTE_IO) items are
+      ``torch.save``-pickled and can drift: e.g. the distributed optimizer stores
+      ``param_groups[*].step`` as a Python int (``DistributedOptimizer.state_dict``),
+      so when ``step`` crosses a pickle size band (256 / 65536 / 2**31 ...) that
+      item -- and everything after it in the file -- shifts.
+    * reverse -- every item the prepared metadata places in a file THIS rank wrote
+      must actually have been written this save. Otherwise a removed / resharded
+      item leaves a *dangling* entry in the published metadata pointing at bytes
+      this save never wrote. (A removal in the *middle* of a file is already caught
+      by the forward check via its shifted survivors; the reverse check adds the
+      cases that shift nothing this rank wrote -- a removal at the *end* of a file,
+      or an item resharded to another rank.)
+
+    Purely local (no collective). Its one blind spot -- a rank writing an entirely
+    different *set* of files than the prepared metadata expects of it -- would need
+    the global write-result gather this path deliberately skips; such gross
+    structural divergence is outside the documented reuse contract (same structure /
+    world size / dist-ckpt-workers).
     """
     prepared = prepared_metadata.storage_data
+    written_indices = set()
+    owned_paths = set()
     for write_result in write_results:
+        written_indices.add(write_result.index)
+        owned_paths.add(write_result.storage_data.relative_path)
         expected = prepared.get(write_result.index)
         actual = write_result.storage_data
         if expected is None:
@@ -548,6 +576,17 @@ def _find_layout_mismatch(
                 f"prepared (path={expected.relative_path}, offset={expected.offset}, "
                 f"length={expected.length}) != written (path={actual.relative_path}, "
                 f"offset={actual.offset}, length={actual.length})",
+            )
+    # Reverse direction: an item the prepared metadata locates in a file this rank
+    # just wrote, but which this save did NOT write, would remain a dangling entry
+    # in the published metadata and load from the wrong bytes.
+    for index, sinfo in prepared.items():
+        if sinfo.relative_path in owned_paths and index not in written_indices:
+            return (
+                str(index.fqn),
+                f"present in the prepared metadata for this rank's file "
+                f"{sinfo.relative_path} (offset={sinfo.offset}, length={sinfo.length}) "
+                f"but NOT written this save (item removed or resharded)",
             )
     return None
 
