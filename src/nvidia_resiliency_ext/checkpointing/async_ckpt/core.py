@@ -809,6 +809,22 @@ class PersistentAsyncCaller(AsyncCaller):
                 resource_attributes=otel_bootstrap.get('resource_attrs'),
                 span_exporter=_span_exporter,
             )
+            # Override the enabled span groups with the caller's fully-resolved
+            # set if provided. setup_telemetry() above resolved this process's
+            # span_groups with the BASE SpanGroup class, which can't resolve
+            # consumer-specific group names (e.g. Megatron's 'trace_region'), so
+            # the caller resolves them on its side and passes the resolved set
+            # here. This is what lets consumer-only groups (save-side
+            # trace_region detail) reach the worker. Absent (older caller) -> the
+            # base-safe groups setup_telemetry already set stand.
+            _resolved = otel_bootstrap.get('resolved_span_groups')
+            if _resolved:
+                try:
+                    from nemo.lens.state import set_enabled_span_groups
+
+                    set_enabled_span_groups(frozenset(_resolved))
+                except ImportError:
+                    pass
 
         # Start busy loop waiting for and executing checkpoint saves.
         try:
