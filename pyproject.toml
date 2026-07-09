@@ -60,6 +60,8 @@ pydantic-settings = ">=2.0.0"
 slowapi = ">=0.1.9"
 slack-bolt = ">=1.23.0"
 slack-sdk = ">=3.35.0"
+# Optional telemetry backend, pulled in by the `otel` extra.
+nemo-lens = { version = ">=0.2.0", extras = ["sdk"], optional = true }
 grpcio = "^1.76.0"
 grpcio-tools = "^1.76.0"
 protobuf = ">=4.22.0"
@@ -70,6 +72,11 @@ nvrx-control = "nvidia_resiliency_ext.fault_tolerance.control_plane:main"
 nvrx-mcp-analysis = "nvidia_resiliency_ext.attribution.mcp_integration.server_launcher:main"
 nvrx-attrsvc = "nvidia_resiliency_ext.services.attrsvc.__main__:main"
 nvrx-smonsvc = "nvidia_resiliency_ext.services.smonsvc.__main__:main"
+
+[tool.poetry.extras]
+otel = [
+    "nemo-lens",
+]
 
 [tool.poetry-dynamic-versioning]
 enable = true
