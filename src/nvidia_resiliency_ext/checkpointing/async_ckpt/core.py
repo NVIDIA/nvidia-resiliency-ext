@@ -34,6 +34,7 @@ import torch
 from torch import multiprocessing as mp
 
 from ..utils import _disable_gc, debug_time
+from . import _otel_fallbacks
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +455,7 @@ class PersistentAsyncCaller(AsyncCaller):
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
@@ -478,6 +480,11 @@ class PersistentAsyncCaller(AsyncCaller):
         self.cpu_priority = cpu_priority
         self.io_priority = io_priority
         self.cpu_shm_mode = cpu_shm_mode
+        # Plain dict of otel config + resource attributes (see _otel_fallbacks.py) --
+        # spawn gives this process nothing from the parent's memory, so telemetry has
+        # to be bootstrapped fresh here from data passed explicitly through the
+        # ctx.Process args, same channel as cpu_priority/io_priority above.
+        self.otel_bootstrap = otel_bootstrap
 
     def _start_worker(self, rank: int) -> None:
         """Start the background worker process.
@@ -506,6 +513,7 @@ class PersistentAsyncCaller(AsyncCaller):
                 self.cpu_priority,
                 self.io_priority,
                 self.cpu_shm_mode,
+                self.otel_bootstrap,
             ),
             daemon=self.background_worker_is_daemon,
         )
@@ -687,6 +695,7 @@ class PersistentAsyncCaller(AsyncCaller):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """Main function for the persistent checkpoint worker
 
@@ -714,6 +723,11 @@ class PersistentAsyncCaller(AsyncCaller):
                                         I/O priority unchanged. Use 3 (idle) to deprioritize
                                         checkpoint I/O. NOTE: class 1 = realtime (highest
                                         priority — NOT recommended for checkpoint workers).
+            otel_bootstrap (dict, Optional): otel config + resource attributes built by the
+                                             caller (e.g. Megatron's init_persistent_async_worker)
+                                             and threaded through via ctx.Process args, since this
+                                             process is spawned fresh and inherits nothing from
+                                             the parent. None/empty means telemetry stays disabled.
 
         """
         # Align library loggers in this process without mutating the root logger
@@ -750,6 +764,52 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
+        # Bootstrap telemetry fresh in this process. spawn gives us nothing from
+        # the parent (no inherited TracerProvider, no open file) -- this is a
+        # second, independent setup_telemetry() call using whatever the caller
+        # (e.g. Megatron's init_persistent_async_worker) put in otel_bootstrap,
+        # writing to its own file. No-ops cleanly if nemo-lens isn't installed --
+        # see _otel_fallbacks.py. Always attempt from_env() when a bootstrap dict
+        # was passed at all (not gated on otel_bootstrap['enabled']): that field is
+        # only the --otel-enabled CLI *override* signal, not the final resolved
+        # state -- a run configured purely via NEMO_LENS_ENABLED=1 (no CLI flag)
+        # must still reach here and let from_env() pick that up, same as the
+        # trainer does. setup_telemetry() itself is cheap and correct when
+        # ultimately disabled (no-op providers), so there's nothing to gain by
+        # skipping the call preemptively based on a partial view of the config.
+        _otel_handle = None
+        if otel_bootstrap is not None:
+            _otel_config = _otel_fallbacks.NemoLensConfig.from_env(
+                prefix='MEGATRON_OTEL', fallback_prefix='NEMO_LENS'
+            )
+            if otel_bootstrap.get('enabled'):
+                _otel_config.enabled = True
+            if otel_bootstrap.get('service_name'):
+                _otel_config.service_name = otel_bootstrap['service_name']
+            if otel_bootstrap.get('span_groups'):
+                _otel_config.span_groups = otel_bootstrap['span_groups']
+            _span_exporter = None
+            _otel_json_dir = otel_bootstrap.get('json_dir')
+            if _otel_config.exporter == 'console' and _otel_json_dir:
+                os.makedirs(_otel_json_dir, exist_ok=True)
+                _json_file = open(  # noqa: SIM115 -- kept open for process lifetime.
+                    os.path.join(
+                        _otel_json_dir, f"lens_rank{otel_bootstrap.get('rank', rank)}_ckptworker.jsonl"
+                    ),
+                    'a',
+                    buffering=1,
+                )
+                from opentelemetry.sdk.trace.export import ConsoleSpanExporter
+
+                _span_exporter = ConsoleSpanExporter(out=_json_file)
+            _otel_handle = _otel_fallbacks.setup_telemetry(
+                _otel_config,
+                rank=otel_bootstrap.get('rank', rank),
+                world_size=otel_bootstrap.get('world_size', 1),
+                resource_attributes=otel_bootstrap.get('resource_attrs'),
+                span_exporter=_span_exporter,
+            )
+
         # Start busy loop waiting for and executing checkpoint saves.
         try:
             while True:
@@ -758,20 +818,32 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    async_fn_args = list(item.async_fn_args)
-                    if item.preload_fn:
-                        call_idx = preload_q.get()
-                        # the 2nd arg is state dict
-                        async_fn_args[1] = item.preload_fn()
-                        logger.debug(f"{rank} has completed D2H of {call_idx}")
-                        preload_q.task_done()
-                    if item.async_fn is not None:
-                        async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                        item.async_fn(*async_fn_args, **async_fn_kwargs)
-                    logger.debug(f"{rank} has completed saving {item.call_idx}")
-                    comp_q.put(item.call_idx)
-                    queue.task_done()
-                    del async_fn_args
+                    # Coarse span: everything this worker does to handle one request,
+                    # including D2H preload staging and queue/GC overhead. Precise
+                    # span nested inside it: just the actual write call -- these are
+                    # deliberately two different spans (not one), since "time this
+                    # request occupied the worker" and "actual write duration" answer
+                    # different questions and shouldn't be conflated.
+                    with _otel_fallbacks.managed_span(
+                        'checkpoint', 'nvrx.checkpoint.worker_request', **{'nvrx.call_idx': item.call_idx}
+                    ):
+                        async_fn_args = list(item.async_fn_args)
+                        if item.preload_fn:
+                            call_idx = preload_q.get()
+                            # the 2nd arg is state dict
+                            async_fn_args[1] = item.preload_fn()
+                            logger.debug(f"{rank} has completed D2H of {call_idx}")
+                            preload_q.task_done()
+                        if item.async_fn is not None:
+                            async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                            with _otel_fallbacks.managed_span(
+                                'checkpoint', 'nvrx.checkpoint.background_write'
+                            ):
+                                item.async_fn(*async_fn_args, **async_fn_kwargs)
+                        logger.debug(f"{rank} has completed saving {item.call_idx}")
+                        comp_q.put(item.call_idx)
+                        queue.task_done()
+                        del async_fn_args
                 del item
                 gc.collect()
         except RuntimeError as e:
@@ -787,6 +859,13 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
+            # Flush telemetry before exiting for the same reason Megatron's own
+            # _graceful_shutdown() needs this: BatchSpanProcessor only flushes on a
+            # timer or on shutdown(), never automatically on process exit, so
+            # anything still queued (including spans from the very last request
+            # this worker handled) would otherwise be silently dropped.
+            if _otel_handle is not None:
+                _otel_handle.shutdown()
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
         else:
@@ -803,13 +882,22 @@ class PersistentAsyncCaller(AsyncCaller):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """
         Main function for the persistent checkpoint worker called by a non daemon async process.
         In this loop, child processes may be created (For example: to parallelize File IO)
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank,
+            queue,
+            preload_q,
+            comp_q,
+            log_level,
+            cpu_priority,
+            io_priority,
+            cpu_shm_mode,
+            otel_bootstrap,
         )
 
     @staticmethod
@@ -822,12 +910,21 @@ class PersistentAsyncCaller(AsyncCaller):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """
         Main function for the persistent checkpoint worker called by a daemon async process
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank,
+            queue,
+            preload_q,
+            comp_q,
+            log_level,
+            cpu_priority,
+            io_priority,
+            cpu_shm_mode,
+            otel_bootstrap,
         )
 
 
@@ -865,6 +962,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
@@ -874,6 +972,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         self.io_priority = io_priority
         self.sigterm_timeout = sigterm_timeout
         self.cpu_shm_mode = cpu_shm_mode
+        self.otel_bootstrap = otel_bootstrap
         self.persistent_caller: AsyncCaller = None
 
         if cpu_shm_mode:
@@ -915,6 +1014,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                     io_priority=self.io_priority,
                     sigterm_timeout=self.sigterm_timeout,
                     cpu_shm_mode=self.cpu_shm_mode,
+                    otel_bootstrap=self.otel_bootstrap,
                 )
         return self.persistent_caller
 
@@ -927,6 +1027,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """Pre-start the persistent async worker to avoid startup latency on the first checkpoint.
 
@@ -939,6 +1040,10 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 NOT recommended for checkpoint workers).
             sigterm_timeout (float): seconds to wait after SIGTERM before escalating to SIGKILL.
             cpu_shm_mode (bool): if True, skip CUDA device init in the worker (no CUDA IPC needed).
+            otel_bootstrap (dict, Optional): otel config + resource attributes for the worker to
+                bootstrap its own independent telemetry with (see async_process_target). Plain
+                dict only -- this crosses a spawn() boundary via pickling, so it must not hold a
+                class instance or anything else with an import-path dependency.
         """
         if cls._warmup_persistent_caller is None:
             caller = PersistentAsyncCaller(
@@ -947,6 +1052,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 io_priority=io_priority,
                 sigterm_timeout=sigterm_timeout,
                 cpu_shm_mode=cpu_shm_mode,
+                otel_bootstrap=otel_bootstrap,
             )
             caller._start_worker(rank)
             caller.rank = rank
