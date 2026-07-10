@@ -865,8 +865,14 @@ class PersistentAsyncCaller(AsyncCaller):
                             preload_q.task_done()
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                            # The background write is BOTH a goodput/resiliency
+                            # concern (total in-flight checkpoint work, overlap
+                            # efficiency) and profiling detail, so emit one span
+                            # per category -- see managed_span's category=[...].
                             with _otel_fallbacks.managed_span(
-                                'checkpoint', 'nvrx.checkpoint.save.write'
+                                'checkpoint',
+                                'nvrx.checkpoint.save.write',
+                                category=['goodput', 'profiling'],
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
