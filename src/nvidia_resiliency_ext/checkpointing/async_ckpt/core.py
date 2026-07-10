@@ -825,6 +825,19 @@ class PersistentAsyncCaller(AsyncCaller):
                     set_enabled_span_groups(frozenset(_resolved))
                 except ImportError:
                     pass
+            # Same story for group->category: setup_telemetry() registered the
+            # BASE category map (no Megatron-only groups), so override with the
+            # caller's full map. Without this, worker-side trace_region shadows
+            # get lens.group but no lens.span_category. Older caller -> absent,
+            # base map stands.
+            _categories = otel_bootstrap.get('span_categories')
+            if _categories:
+                try:
+                    from nemo.lens.state import set_group_categories
+
+                    set_group_categories(_categories)
+                except ImportError:
+                    pass
 
         # Start busy loop waiting for and executing checkpoint saves.
         try:
