@@ -801,7 +801,13 @@ class PersistentAsyncCaller(AsyncCaller):
                 )
                 from opentelemetry.sdk.trace.export import ConsoleSpanExporter
 
-                _span_exporter = ConsoleSpanExporter(out=_json_file)
+                # Compact single-line JSON per span (see the trainer-side note
+                # in global_vars.py): smaller output, crash-truncation only ever
+                # drops the final partial line. Takes effect on the next image
+                # rebuild that bakes this file.
+                _span_exporter = ConsoleSpanExporter(
+                    out=_json_file, formatter=lambda span: span.to_json(indent=None) + "\n"
+                )
             _otel_handle = _otel_fallbacks.setup_telemetry(
                 _otel_config,
                 rank=otel_bootstrap.get('rank', rank),
