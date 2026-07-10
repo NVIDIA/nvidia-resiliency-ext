@@ -854,7 +854,7 @@ class PersistentAsyncCaller(AsyncCaller):
                     # request occupied the worker" and "actual write duration" answer
                     # different questions and shouldn't be conflated.
                     with _otel_fallbacks.managed_span(
-                        'checkpoint', 'nvrx.checkpoint.worker_request', **{'nvrx.call_idx': item.call_idx}
+                        'checkpoint', 'nvrx.checkpoint.save.request', **{'nvrx.call_idx': item.call_idx}
                     ):
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
@@ -866,7 +866,7 @@ class PersistentAsyncCaller(AsyncCaller):
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
                             with _otel_fallbacks.managed_span(
-                                'checkpoint', 'nvrx.checkpoint.background_write'
+                                'checkpoint', 'nvrx.checkpoint.save.write'
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
