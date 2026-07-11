@@ -871,14 +871,16 @@ class PersistentAsyncCaller(AsyncCaller):
                             preload_q.task_done()
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                            # The background write is BOTH a goodput/resiliency
-                            # concern (total in-flight checkpoint work, overlap
-                            # efficiency) and profiling detail, so emit one span
-                            # per category -- see managed_span's category=[...].
+                            # The background write is hidden/overlapped -- training
+                            # runs straight through it -- so it costs zero goodput
+                            # and must NOT land in the goodput view (that would
+                            # double-count against the exposed save.finalize). Tag
+                            # it profiling only; it stays fully visible in the
+                            # depth view for resiliency analysis.
                             with _otel_fallbacks.managed_span(
                                 'checkpoint',
                                 'nvrx.checkpoint.save.write',
-                                category=['goodput', 'profiling'],
+                                category='profiling',
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
