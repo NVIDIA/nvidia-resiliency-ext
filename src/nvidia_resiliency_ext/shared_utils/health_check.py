@@ -1823,7 +1823,7 @@ class AttributionService:
         """
         Request terminal analysis for the previously submitted log.
 
-        Note: _submit_log() should be called first (from launcher) to set _last_submitted.
+        Note: _submit_log() should be called first (from the control host) to set _last_submitted.
         """
         self.request_terminal_analysis()
 

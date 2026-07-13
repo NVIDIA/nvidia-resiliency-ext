@@ -588,7 +588,7 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         mock_restart.assert_not_called()
         mock_open.assert_not_called()
 
@@ -612,17 +612,14 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
 
-    def test_handle_restart_decision_requests_terminal_attribution_before_restart(self):
-        """Starts terminal attribution before local restart decisions and keeps moving."""
+    def test_handle_restart_decision_leaves_terminal_attribution_to_rendezvous_close(self):
+        """Terminal attribution is owned by the rendezvous control-host close path."""
         agent = self._make_agent()
         agent._is_store_host = True
         agent._progress_tracker = MagicMock()
         agent._remaining_restarts = 2
         agent._rdzv_handler._attribution_service = MagicMock()
         calls = []
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.side_effect = (
-            lambda: calls.append("terminal")
-        )
         agent._progress_tracker.analyze_previous_cycle.side_effect = lambda: calls.append("analyze")
         agent._progress_tracker.should_terminate_early.side_effect = (
             lambda: calls.append("progress-check") or False
@@ -636,11 +633,12 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        self.assertEqual(calls, ["terminal", "analyze", "progress-check", "restart"])
+        self.assertEqual(calls, ["analyze", "progress-check", "restart"])
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         agent._rdzv_handler._attribution_service.get_last_result.assert_not_called()
 
     def test_handle_restart_decision_no_restarts_left(self):
-        """Returns False when _remaining_restarts is 0 after requesting terminal attribution."""
+        """Returns False when _remaining_restarts is 0."""
         agent = self._make_agent()
         agent._is_store_host = True
         agent._progress_tracker = MagicMock()
@@ -654,8 +652,21 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         mock_restart.assert_not_called()
+
+    def test_request_terminal_attribution_uses_barrier_state_helper(self):
+        """Final-cycle terminal requests share the barrier attribution helper."""
+        agent = self._make_agent()
+        agent._is_store_host = True
+        agent._rdzv_handler._barrier_state = MagicMock()
+
+        agent._request_terminal_attribution()
+
+        helper = (
+            agent._rdzv_handler._barrier_state._request_terminal_attribution_for_submitted_cycle
+        )
+        helper.assert_called_once_with()
 
     def test_handle_restart_decision_open_rendezvous_called_when_requested(self):
         """Calls _open_rendezvous_for_restart() when open_rendezvous=True."""
@@ -729,7 +740,8 @@ def test_rendezvous_host_sets_failure_shutdown_when_attribution_says_stop():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = True
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
     state.set_shutdown = MagicMock()
 
     with pytest.raises(RendezvousGracefulExitError):
@@ -746,13 +758,14 @@ def test_rendezvous_host_retries_close_round_when_attribution_pending():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = None
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
 
     should_close = state._attribution_gate("node-a")
 
     assert should_close is False
     state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
-    assert state._attribution_settled_for_round == -1
+    assert state._attribution_gate_settled_round == -1
 
 
 def test_rendezvous_host_skips_attribution_gate_for_initial_round():
@@ -761,7 +774,8 @@ def test_rendezvous_host_skips_attribution_gate_for_initial_round():
     state = object.__new__(_RendezvousBarrierState)
     state._round = 0
     state._attribution_service = MagicMock()
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = None
 
     assert state._attribution_gate("node-a") is True
     state._attribution_service.get_last_result.assert_not_called()
@@ -774,12 +788,13 @@ def test_rendezvous_host_closes_round_when_attribution_allows_restart():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = False
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
 
     should_close = state._attribution_gate("node-a")
 
     assert should_close is True
-    assert state._attribution_settled_for_round == 1
+    assert state._attribution_gate_settled_round == 1
     state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
 
 
