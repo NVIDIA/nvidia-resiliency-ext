@@ -792,13 +792,21 @@ class PersistentAsyncCaller(AsyncCaller):
             _otel_json_dir = otel_bootstrap.get('json_dir')
             if _otel_config.exporter == 'console' and _otel_json_dir:
                 os.makedirs(_otel_json_dir, exist_ok=True)
-                _json_file = open(  # noqa: SIM115 -- kept open for process lifetime.
+                import atexit
+                import gzip
+
+                # gzip-compressed to match the trainer's lens_rank*.jsonl.gz (the
+                # ~25-attr resource block repeats on every span and compresses to
+                # almost nothing). gzip needs an explicit close() to write its
+                # trailer (CRC + length) -- ConsoleSpanExporter.shutdown() only
+                # flushes out=, never closes it -- so register the close via atexit.
+                _json_file = gzip.open(  # noqa: SIM115 -- kept open for process lifetime.
                     os.path.join(
-                        _otel_json_dir, f"lens_rank{otel_bootstrap.get('rank', rank)}_ckptworker.jsonl"
+                        _otel_json_dir, f"lens_rank{otel_bootstrap.get('rank', rank)}_ckptworker.jsonl.gz"
                     ),
-                    'a',
-                    buffering=1,
+                    'at',
                 )
+                atexit.register(_json_file.close)
                 from opentelemetry.sdk.trace.export import ConsoleSpanExporter
 
                 # Compact single-line JSON per span (see the trainer-side note
