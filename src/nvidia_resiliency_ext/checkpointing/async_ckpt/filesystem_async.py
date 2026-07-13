@@ -66,6 +66,60 @@ WriteBucket = Tuple[str, str, Tuple[list, list]]  # represents writes to a singl
 
 _results_queue = None
 
+# Backings that defeat node-local checkpoint staging: tmpfs/ramfs re-hold the checkpoint in RAM;
+# networked filesystems put the "local" write back on the shared-FS critical path this feature moves
+# it off. Denylist, NOT allowlist -- node-local disk formats are open-ended (ext2/3/4, xfs, btrfs,
+# f2fs, zfs, bcachefs, ...), so reject only this small, stable bad set and allow the rest.
+_STAGING_BAD_FSTYPES = frozenset(
+    {
+        'tmpfs',
+        'ramfs',  # RAM
+        'lustre',
+        'nfs',
+        'nfs4',
+        'gpfs',
+        'mmfs',
+        'beegfs',  # networked
+        'ceph',
+        'cephfs',
+        '9p',
+        'smbfs',
+        'cifs',
+    }
+)
+_checked_staging_dirs = set()  # dedup: probe each staging root once (fstype is stable per mount)
+
+
+def _staging_fstype(path: str) -> str:
+    """Backing filesystem type of ``path`` via ``df``, or ``'?'`` if it can't be determined."""
+    import subprocess  # nosec B404
+
+    r = subprocess.run(  # nosec B603 B607
+        ['df', '--output=fstype', path], capture_output=True, text=True
+    )
+    return r.stdout.splitlines()[-1].strip() if (r.returncode == 0 and r.stdout) else '?'
+
+
+def check_local_staging_backing(staging_dir) -> None:
+    """Fail fast if ``staging_dir`` is not backed by node-local disk. tmpfs (RAM) would re-hold the
+    checkpoint in memory; a networked FS (lustre/nfs/...) would put staging back on the shared-FS
+    critical path -- both defeat node-local staging (see ``_STAGING_BAD_FSTYPES``). Fails OPEN: an
+    unknown/undetectable fstype falls through (reverts to baseline) rather than blocking a valid
+    disk. Probed once per staging root (result cached). Raises ``ValueError`` on a bad backing."""
+    if not staging_dir:
+        return
+    key = str(staging_dir)
+    if key in _checked_staging_dirs:
+        return
+    os.makedirs(key, exist_ok=True)
+    fstype = _staging_fstype(key)
+    if fstype in _STAGING_BAD_FSTYPES:
+        raise ValueError(
+            f"checkpoint staging dir {key!r} is backed by {fstype!r} (RAM or networked FS), which "
+            f"defeats node-local staging; point it at node-local disk (e.g. /workspace/ckpt-stage)."
+        )
+    _checked_staging_dirs.add(key)
+
 
 class ConsistentDataIdentifier:
     """Identifier for consistent data structure stored in worker cache.
@@ -180,10 +234,27 @@ class FileSystemWriterAsync(FileSystemWriter):
         is_multiproc_io: bool = False,
         use_cached_data_structure: bool = False,
         use_cpu_shm_for_gpu_tensors: bool = False,
+        staging_dir: Optional[Union[str, os.PathLike]] = None,
         **kwargs,
     ):
         self.checkpoint_dir = path
+        # Node-local checkpoint staging: shards are WRITTEN to `stage_dir` (fast local NVMe);
+        # `.metadata`, `checkpoint_id` and load stay on `path` (the durable Lustre dir). The
+        # background flush (copy stage_dir -> checkpoint_dir) then takes Lustre off the save
+        # critical path. When `staging_dir` is None, stage_dir == checkpoint_dir == today's
+        # direct-to-Lustre behavior (no-op).
+        if staging_dir is not None:
+            # Enforce node-local backing (cached, so this is a no-op after the first save / after a
+            # caller has already validated the same dir at startup).
+            check_local_staging_backing(staging_dir)
+            self.stage_dir = os.path.join(
+                str(staging_dir), os.path.basename(os.path.normpath(str(path)))
+            )
+            os.makedirs(self.stage_dir, exist_ok=True)
+        else:
+            self.stage_dir = path
         self.use_msc = use_msc
+        self.staging = staging_dir is not None
         self.open_file = kwargs.pop("open_file", open)  # for overriding in tests
 
         super().__init__(path, *args, **kwargs)
@@ -210,6 +281,16 @@ class FileSystemWriterAsync(FileSystemWriter):
         # Avoids cuMemImportFromShareableHandle on MNNVL systems where NVLink fabric
         # resources are exhausted by the training ranks.
         self.use_cpu_shm_for_gpu_tensors = use_cpu_shm_for_gpu_tensors
+
+    @property
+    def flush_dst(self) -> Optional[str]:
+        """The durable destination the background flusher must copy staged shards to, or ``None``
+        when staging is off. **Authoritative** source for ``AsyncRequest.flush_dst``: callers that
+        build the request MUST use this, so the request's flush target can never diverge from where
+        this writer actually staged. If they diverged (writer stages to local disk but the request
+        carries ``flush_dst=None``), the worker would finalize directly -- committing ``.metadata`` +
+        the tracker for a checkpoint whose shards only exist locally (torn on load)."""
+        return str(self.checkpoint_dir) if self.staging else None
 
     def prepare_write_data(self, plan: SavePlan, planner: SavePlanner) -> None:
         """
@@ -552,7 +633,9 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
             )
 
-        preload_fn = partial(self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True)
+        # Shards are written under stage_dir (node-local when staging is enabled; == checkpoint_dir
+        # otherwise). .metadata is still written to checkpoint_dir by finish() at finalize.
+        preload_fn = partial(self.preload_tensors, (str(self.stage_dir), data_to_pass), True)
 
         return (
             write_func,

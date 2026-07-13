@@ -22,11 +22,13 @@ import logging
 import os
 import shutil
 import signal
+import socket
 import subprocess  # nosec B404
+import threading
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
-from queue import Empty
+from queue import Empty, Queue
 from time import sleep, time
 from typing import Callable, ClassVar, Dict, List, NamedTuple, Optional, Tuple
 
@@ -34,8 +36,15 @@ import torch
 from torch import multiprocessing as mp
 
 from ..utils import _disable_gc, debug_time
+from . import flush as flush_module
 
 logger = logging.getLogger(__name__)
+
+# On graceful shutdown the worker gives its background flusher this long to drain queued
+# persist-remote copies before exiting. The parent's close() waits at least this long (plus a
+# SIGTERM grace) before escalating, so a healthy-but-slow final flush isn't killed, while a flusher
+# wedged in the isolated Lustre write() (uninterruptible D-state) can't hang shutdown forever.
+_FLUSHER_DRAIN_TIMEOUT_SECS = 120.0
 
 
 def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
@@ -142,6 +151,14 @@ class AsyncRequest(NamedTuple):
     preload_fn: Callable = None
     is_frozen: bool = False
     call_idx: int = 0
+    # Node-local checkpoint staging: when set, the durable (Lustre) directory to which the
+    # background flusher copies the shards after the fast local write. None = no staging (the
+    # shards were written directly to the durable dir; today's behavior, no flusher, no shm split).
+    # INVARIANT: this MUST be set whenever the writer staged shards to a local dir -- use
+    # ``FileSystemWriterAsync.flush_dst`` as the authoritative source. A staging write paired with
+    # ``flush_dst=None`` would finalize a local-only checkpoint (``.metadata``/tracker committed while
+    # shards exist only on local disk -> torn on load).
+    flush_dst: Optional[str] = None
 
     def add_finalize_fn(self, fn: Callable) -> None:
         """Adds a new finalize function to the request.
@@ -256,7 +273,9 @@ class AsyncCaller(ABC):
         raise NotImplementedError("This should be implemented")
 
     @abstractmethod
-    def is_current_async_call_done(self, blocking: bool, no_dist: bool) -> bool:
+    def is_current_async_call_done(
+        self, blocking: bool, no_dist: bool, finalize_timeout: Optional[float] = None
+    ) -> bool:
         """Check if async save is finished on all ranks.
 
         For semantic correctness, requires rank synchronization in each check.
@@ -268,6 +287,8 @@ class AsyncCaller(ABC):
                 is still active. Defaults to False.
             no_dist (bool, Optional): if True, training ranks simply check its
                 asynchronous checkpoint writer without synchronization.
+            finalize_timeout (float, optional): bound (seconds) on the blocking wait, so a wedged
+                node-local-staging flush can't hang finalize at shutdown. None = unbounded (default).
 
         Returns:
             bool: True if all ranks are done (immediately of after active wait
@@ -358,7 +379,12 @@ class TemporalAsyncCaller(AsyncCaller):
             f"rank: {self.rank}, takes {init_time - self.start_time} to schedule async ckpt "
         )
 
-    def is_current_async_call_done(self, blocking: bool = False, no_dist: bool = False) -> bool:
+    def is_current_async_call_done(
+        self,
+        blocking: bool = False,
+        no_dist: bool = False,
+        finalize_timeout: Optional[float] = None,
+    ) -> bool:
         """Check if async save is finished on all ranks.
 
         For semantic correctness, requires rank synchronization in each check.
@@ -370,6 +396,9 @@ class TemporalAsyncCaller(AsyncCaller):
                 is still active. Defaults to False.
             no_dist (bool, Optional): if True, training ranks simply check its
                 asynchronous checkpoint writer without synchronization.
+            finalize_timeout (float, optional): accepted for interface parity with
+                ``PersistentAsyncCaller``; unused here (the temporal caller does not do node-local
+                staging, so there is no wedged-flush wait to bound).
 
         Returns:
             bool: True if all ranks are done (immediately of after active wait
@@ -466,6 +495,12 @@ class PersistentAsyncCaller(AsyncCaller):
         self.preload_q: mp.JoinableQueue = ctx.JoinableQueue()
         # Queue used to inform trainer when the saving is completed
         self.comp_q: mp.Queue = ctx.Queue()
+        # Node-local staging: worker->host signal that persist-local (the local write; shm consumed)
+        # is done, so the shm buffer can be reused. Distinct from comp_q, which now fires after
+        # persist-remote (the background copy to the durable dir). Only used when staging is active; with
+        # staging off the worker signals comp_q directly after the write (today's path).
+        self.shm_rel_q: mp.Queue = ctx.Queue()
+        self.cur_shm_item: int = None
         self.cur_item: int = None
         self.cur_idx: int = -1
         self.rank: int = None
@@ -502,6 +537,7 @@ class PersistentAsyncCaller(AsyncCaller):
                 self.queue,
                 self.preload_q,
                 self.comp_q,
+                self.shm_rel_q,
                 logger.getEffectiveLevel(),
                 self.cpu_priority,
                 self.io_priority,
@@ -557,7 +593,12 @@ class PersistentAsyncCaller(AsyncCaller):
             f"rank: {self.rank}, takes {init_time - self.start_time} " "to schedule async ckpt "
         )
 
-    def is_current_async_call_done(self, blocking: bool = False, no_dist: bool = False) -> bool:
+    def is_current_async_call_done(
+        self,
+        blocking: bool = False,
+        no_dist: bool = False,
+        finalize_timeout: Optional[float] = None,
+    ) -> bool:
         """Check if async save is finished on all ranks.
 
         For semantic correctness, requires rank synchronization in each check.
@@ -569,6 +610,11 @@ class PersistentAsyncCaller(AsyncCaller):
                 is still active. Defaults to False.
             no_dist (bool, Optional): if True, training ranks simply check its
                 asynchronous checkpoint writer without synchronization.
+            finalize_timeout (float, optional): bound (seconds) on the blocking wait for this
+                call's completion. Used at graceful shutdown: a node-local-staging save whose
+                durable flush is wedged never posts ``comp_q``, so an unbounded blocking wait would
+                hang. On timeout the call is reported still-active so the caller can proceed to
+                terminate the worker. None (default) keeps the original unbounded blocking wait.
 
         Returns:
             bool: True if all ranks are done (immediately of after active wait
@@ -576,6 +622,7 @@ class PersistentAsyncCaller(AsyncCaller):
         """
 
         is_alive: bool = False
+        _wait_deadline: Optional[float] = None
 
         if self.process:
             while self.cur_item is None:
@@ -589,6 +636,16 @@ class PersistentAsyncCaller(AsyncCaller):
                     if not blocking:
                         is_alive = True
                         break
+                    # Bound the blocking wait when a deadline is given (graceful shutdown): a wedged
+                    # durable flush would otherwise hang here forever. Report still-active on timeout;
+                    # the following collective re-synchronizes ranks that time out at slightly
+                    # different wall-clock instants (all_reduce is a barrier).
+                    if finalize_timeout is not None:
+                        if _wait_deadline is None:
+                            _wait_deadline = time() + finalize_timeout
+                        elif time() >= _wait_deadline:
+                            is_alive = True
+                            break
                     sleep(0.1)
 
         if self.cur_item is not None:
@@ -606,6 +663,30 @@ class PersistentAsyncCaller(AsyncCaller):
 
         return is_done
 
+    def wait_shm_released(self, blocking: bool = True, no_dist: bool = False) -> bool:
+        """Node-local staging: wait until the worker signals persist-local (the local write, which
+        consumed the shm buffer) is done for the in-flight save, so the shm buffer can be reused.
+
+        This replaces the old shm drain (which waited on the FULL save via
+        `maybe_finalize_async_calls`, and therefore blocked on the Lustre write). It waits ONLY on
+        `shm_rel_q` and does NOT run finalize -- so the durable copy (persist-remote, on the flusher) never
+        blocks shm reuse / the next D2H. LOCAL per-rank (shm is per-rank); no collective. Only used
+        when staging is active (every staging save posts exactly one `shm_rel_q` item after
+        persist-local); with staging off the drain keeps the old `maybe_finalize` path.
+        """
+        if self.process is None:
+            return True
+        while self.cur_shm_item is None:
+            try:
+                self.cur_shm_item = self.shm_rel_q.get_nowait()
+            except Empty:
+                if not blocking:
+                    return False
+                sleep(0.05)
+        # consume the pending persist-local release for the current save
+        self.cur_shm_item = None
+        return True
+
     def close(self, abort=False):
         """Wait on the left async requests and terminate the PersistentAsyncCaller
 
@@ -622,35 +703,52 @@ class PersistentAsyncCaller(AsyncCaller):
         if self.process:
             if abort:
                 logger.error(f"Persistent worker aborted in rank {self.rank}")
-                # Use SIGTERM first so the worker's signal handler can run
-                # cleanup_worker_data_cache() via the try/finally block, releasing
-                # CUDA IPC handles before the process exits.
-                self.process.terminate()
-                self.process.join(timeout=self.sigterm_timeout)
+                self._force_terminate_worker()
+            else:
+                # Signal shutdown, then wait ONLY on a bounded process.join -- deliberately NOT on the
+                # unbounded self.queue.join(): a worker that hasn't dequeued 'DONE' (wedged on an
+                # earlier item) or a stuck durable flush would make that queue-wait hang forever,
+                # before we could ever reach the timeout/escalation below. The worker's finally gives
+                # its flusher up to _FLUSHER_DRAIN_TIMEOUT_SECS to drain, then it exits; if the flusher
+                # is wedged in the uninterruptible Lustre write() this feature isolates (D-state), that
+                # daemon thread keeps the process un-reapable. Wait drain + a SIGTERM grace (so a
+                # healthy-but-slow final flush still completes), then escalate SIGTERM/SIGKILL so the
+                # parent never blocks forever.
+                self.queue.put('DONE')
+                self.process.join(timeout=_FLUSHER_DRAIN_TIMEOUT_SECS + self.sigterm_timeout)
                 if self.process.is_alive():
                     logger.warning(
                         f"Persistent worker (rank {self.rank}) did not exit within "
-                        f"{self.sigterm_timeout}s after SIGTERM; sending SIGKILL"
+                        f"{_FLUSHER_DRAIN_TIMEOUT_SECS + self.sigterm_timeout:.0f}s of 'DONE' "
+                        f"(flusher likely stuck in a Lustre write); escalating to SIGTERM/SIGKILL"
                     )
-                    # Before SIGKILL, close the queues from the parent side to
-                    # release any buffered CUDA IPC handles. Without this, SIGKILL
-                    # leaves dangling IPC state that causes SIGSEGV in the parent
-                    # during CUDA cleanup at exit.
-                    for q in (self.queue, self.preload_q):
-                        try:
-                            q.cancel_join_thread()
-                            q.close()
-                        except Exception:
-                            pass
-                    gc.collect()
-                    self.process.kill()
-                    self.process.join()
-            else:
-                self.queue.put('DONE')
-                self.queue.join()
-                self.process.join()
+                    self._force_terminate_worker()
 
             self.process = None
+
+    def _force_terminate_worker(self):
+        """SIGTERM -> (bounded wait) -> SIGKILL the worker, bounding every join so a flusher wedged
+        in an uninterruptible Lustre write (D-state) can't hang shutdown. SIGTERM first so the
+        worker's finally can still run cleanup_worker_data_cache() and release CUDA IPC handles; the
+        queues are closed before SIGKILL to release buffered IPC (else dangling IPC -> SIGSEGV in the
+        parent during CUDA cleanup at exit). A D-state syscall may defer the actual reap until it
+        returns, but the parent stops waiting."""
+        self.process.terminate()
+        self.process.join(timeout=self.sigterm_timeout)
+        if self.process.is_alive():
+            logger.warning(
+                f"Persistent worker (rank {self.rank}) did not exit within "
+                f"{self.sigterm_timeout}s after SIGTERM; sending SIGKILL"
+            )
+            for q in (self.queue, self.preload_q):
+                try:
+                    q.cancel_join_thread()
+                    q.close()
+                except Exception:
+                    pass
+            gc.collect()
+            self.process.kill()
+            self.process.join(timeout=self.sigterm_timeout)
 
     def __del__(self):
         self.close()
@@ -683,6 +781,7 @@ class PersistentAsyncCaller(AsyncCaller):
         queue: mp.JoinableQueue,
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
+        shm_rel_q: mp.Queue = None,
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
@@ -750,6 +849,138 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
+        # die with the trainer. If the parent is HARD-killed (SIGKILL bypasses the SIGTERM path
+        # above), ask the kernel to SIGKILL this worker too, so a flush wedged in D-state cannot
+        # outlive the job as an orphan holding the stage dir / a Lustre fd. Best-effort (Linux only).
+        try:
+            import ctypes
+            import ctypes.util
+
+            _PR_SET_PDEATHSIG = 1
+            _libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+            _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+        except Exception:
+            # non-Linux / restricted env; the SIGTERM path still covers clean exit
+            pass
+
+        # Node-local staging: a single background flusher thread copies staged shards from the
+        # local stage dir to the durable dir (persist-remote), then signals comp_q. Used ONLY for staging
+        # saves (item.flush_dst set); non-staging saves signal comp_q directly (today's path), so the
+        # thread simply never receives work when the feature is off. Each copy runs through the
+        # straggler guard (flush.flush_call -- hedge on a blown deadline, atomic temp->rename commit,
+        # bounded retries). Flusher stays serial/oldest-first so comp_q remains FIFO for finalize.
+        flush_q: Queue = Queue()
+        flush_cfg = flush_module.FlushConfig.from_env()
+        # Set on worker teardown to break an in-progress retry backoff (interruptible sleep) so a
+        # fault/restart isn't delayed. A shard left un-flushed on shutdown stays in |U|; the InJob
+        # restart re-flushes it from the last durable checkpoint.
+        flusher_shutdown = threading.Event()
+
+        def _flusher_loop():
+            # Per-process alert state (persists across jobs). _alerted arms one ALERT line per rank
+            # per stuck-episode (reset on the next commit), so a persistent remote fault surfaces the
+            # culprit once instead of one line per rank per backoff. _host names this rank's node so an
+            # admin can map it to an OST.
+            _alerted = False
+            _host = socket.gethostname()
+            while True:
+                job = flush_q.get()
+                if job is None:  # shutdown sentinel
+                    flush_q.task_done()
+                    break
+                call_idx, file_map, flush_dst, persist_local_s = job
+                # key by the iter dir (e.g. "iter_0000100") so the parser joins to the save by iter.
+                _iter = os.path.basename(os.path.normpath(str(flush_dst)))
+                # Retry the persist-remote in place with exponential backoff (base 10s, capped at
+                # retry_backoff_cap_secs) UNBOUNDED and oldest-first, so a transient failure (fabric blip,
+                # OST recovery, freed quota) self-heals: the retry eventually commits -> comp_q fires ->
+                # finalize advances -> |U| drains -> skip-a-save resumes, all without a restart. We never
+                # drop the call (no silent checkpoint loss); a truly-dead FS just stays in the graceful
+                # halt (durable marker frozen, training continues) until it heals or the job restarts.
+                committed = False
+                persist_remote_s = 0.0
+                attempt = 0
+                backoff = 10.0
+                stuck_since = None
+                reason = None
+                while not flusher_shutdown.is_set():
+                    _c0 = time()
+                    try:
+                        committed, reason = flush_module.flush_call(
+                            file_map, flush_dst, rank, flush_cfg
+                        )
+                    except Exception as e:  # never let the flusher die silently
+                        committed, reason = False, f"exception: {e}"
+                    persist_remote_s = time() - _c0  # duration of THIS attempt (the successful one)
+                    if committed:
+                        _alerted = False  # recovered -> re-arm the alert for a future stuck-episode
+                        break
+                    # failed attempt -> alert + interruptible backoff, then retry
+                    if stuck_since is None:
+                        stuck_since = time()
+                    attempt += 1
+                    stuck_for = time() - stuck_since
+                    _sf = f"{int(stuck_for // 60)}m{int(stuck_for % 60):02d}s"
+                    # Surface the failure so an operator can route it -- give the storage admin a
+                    # concrete node+path -- WITHOUT per-rank spam. Classify by cause (flush.py reason):
+                    #  * quota/space/permission ("destination errno ..."): a GLOBAL condition (same on
+                    #    every rank) -> rank 0 alerts ONCE; it's the user's account/dir, not an OST.
+                    #  * slow/stuck OST (blown deadline / exception): rank-LOCAL -> the FIRST-affected
+                    #    rank names its node + failing path ONCE (so the culprit surfaces even when it
+                    #    isn't rank 0), then goes quiet; rank 0 heartbeats the ongoing stall. One line
+                    #    per rank per stuck-episode (_alerted, reset on recovery); no new collective.
+                    _is_quota = bool(reason) and "destination errno" in reason
+                    if _is_quota:
+                        if rank == 0 and not _alerted:
+                            _alerted = True
+                            logger.error(
+                                f"{rank} on {_host}: ALERT persist-remote of {_iter} failing -- {reason}. "
+                                f"Quota/space/permission on your account or dir (NOT a storage-OST fault); "
+                                f"free space/quota. Retrying (backoff up to "
+                                f"{flush_cfg.retry_backoff_cap_secs:.0f}s). Training NOT blocked; durable "
+                                f"marker holds."
+                            )
+                    elif not _alerted:
+                        _alerted = True
+                        logger.error(
+                            f"{rank} on {_host}: ALERT persist-remote of {_iter} failing -- {reason}. "
+                            f"Likely a slow/stuck Lustre OST (not quota); run "
+                            f"`lfs getstripe -r {flush_dst}` on {_host} to map the OST(s) and report them "
+                            f"to your storage admin. Retrying (backoff up to "
+                            f"{flush_cfg.retry_backoff_cap_secs:.0f}s). Training NOT blocked; durable "
+                            f"marker holds."
+                        )
+                    elif rank == 0:
+                        # heartbeat: this rank already alerted -> just track how long the stall persists
+                        logger.error(
+                            f"{rank}: persist-remote of {_iter} still stuck for {_sf} "
+                            f"(attempt {attempt}; {reason}) -- retrying. Training NOT blocked."
+                        )
+                    if flusher_shutdown.wait(backoff):
+                        break  # teardown -> leave un-flushed (stays in |U|; restart re-flushes)
+                    backoff = min(backoff * 2, flush_cfg.retry_backoff_cap_secs)
+
+                # Measurement (rank-0 only -> O(1) with scale). persist-local timed in the main loop;
+                # persist-remote is the successful attempt's duration.
+                if rank == 0:
+                    logger.info(
+                        f"[ckpt-timing] {_iter}: persist-local {persist_local_s:.2f}s "
+                        f"persist-remote {persist_remote_s:.2f}s "
+                        f"({'durable' if committed else 'NOT durable'})"
+                    )
+                # persist-remote durable -> host finalize (comp_q) writes .metadata + advances the tracker.
+                # comp_q is put ONLY on a durable commit; we only exit the loop un-committed on shutdown,
+                # in which case we withhold comp_q so the iter stays in |U| for the restart to re-flush.
+                if committed:
+                    flush_module.gc_local_stage(file_map)  # drop the now-durable local copy
+                    comp_q.put(call_idx)
+                flush_q.task_done()
+
+        flusher_thread = threading.Thread(
+            target=_flusher_loop, name=f"ckpt-flusher-{rank}", daemon=True
+        )
+        flusher_thread.start()
+
         # Start busy loop waiting for and executing checkpoint saves.
         try:
             while True:
@@ -765,11 +996,62 @@ class PersistentAsyncCaller(AsyncCaller):
                         async_fn_args[1] = item.preload_fn()
                         logger.debug(f"{rank} has completed D2H of {call_idx}")
                         preload_q.task_done()
+                    staged = False
+                    # A node-local-staging save writes shards to the LOCAL stage dir (not the durable
+                    # dir), so it must be finalized by the flusher AFTER the durable copy -- never
+                    # directly here. staging_req gates the direct comp_q.put below off for these saves.
+                    staging_req = item.flush_dst is not None and shm_rel_q is not None
                     if item.async_fn is not None:
                         async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                        item.async_fn(*async_fn_args, **async_fn_kwargs)
+                        _pl_t0 = time()
+                        item.async_fn(
+                            *async_fn_args, **async_fn_kwargs
+                        )  # persist-local: write shards local
+                        persist_local_s = time() - _pl_t0  # persist-local duration (measurement)
+                        # with staging active, release the shm buffer NOW (persist-local done: the
+                        # write consumed the shm) via shm_rel_q, and hand the durable copy to the
+                        # flusher (persist-remote), which fires comp_q when done. LOAD-BEARING: comp_q must
+                        # fire from the flusher (post-copy), never here -- else .metadata could be
+                        # written before the shards reach the durable dir. With staging off we fall
+                        # through to the direct comp_q.put below (today's path, unchanged).
+                        if staging_req:
+                            try:
+                                file_map = [(b[0], b[1]) for b in async_fn_args[1]]
+                            except Exception:  # unexpected bucket shape
+                                file_map = None
+                            if file_map is not None:
+                                # shm_rel_q only signals the cpu_shm reuse drain; in non-cpu_shm mode
+                                # there is no reused buffer (fresh per-save host alloc) and no drain
+                                # consumer, so gate the put to avoid an unbounded queue. flush_q (the
+                                # persist-remote offload) is needed either way.
+                                if cpu_shm_mode:
+                                    shm_rel_q.put(item.call_idx)
+                                flush_q.put(
+                                    (item.call_idx, file_map, item.flush_dst, persist_local_s)
+                                )
+                                staged = True
+                            else:
+                                # Fail SAFE: the shards are already on the LOCAL stage dir but we can't
+                                # build the flusher file_map, so they can never reach the durable dir.
+                                # Do NOT finalize (the `not staging_req` gate below withholds comp_q) --
+                                # finalizing here would commit .metadata + advance the tracker for a
+                                # checkpoint whose shards are local-only (torn on load). Release the shm
+                                # (cpu_shm) so the next drain doesn't block; leave the call unfinalized
+                                # (stays in |U|) -> this iter is dropped and the last durable one stands.
+                                if cpu_shm_mode:
+                                    shm_rel_q.put(item.call_idx)
+                                logger.error(
+                                    f"{rank}: staged save {item.call_idx}: could not build the shard "
+                                    f"file_map (unexpected bucket shape); shards are local-only -- NOT "
+                                    f"finalizing (avoids a metadata-without-shards durable checkpoint). "
+                                    f"Dropping this iter; training continues, last durable stands."
+                                )
                     logger.debug(f"{rank} has completed saving {item.call_idx}")
-                    comp_q.put(item.call_idx)
+                    # Finalize directly only for a NON-staging save (write went to the durable dir).
+                    # Staging saves finalize via the flusher (post durable copy); a staging save that
+                    # failed to stage must NOT finalize here (see fail-safe above).
+                    if not staged and not staging_req:
+                        comp_q.put(item.call_idx)
                     queue.task_done()
                     del async_fn_args
                 del item
@@ -784,6 +1066,15 @@ class PersistentAsyncCaller(AsyncCaller):
                 ) from e
             raise
         finally:
+            # stop the flusher thread -- signal shutdown to break any in-progress retry backoff,
+            # drain queued copies (so in-flight staging saves finalize), then join with a bound so a
+            # wedged copy can't hang worker shutdown forever.
+            try:
+                flusher_shutdown.set()
+                flush_q.put(None)
+                flusher_thread.join(timeout=_FLUSHER_DRAIN_TIMEOUT_SECS)
+            except Exception:
+                pass
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
@@ -799,6 +1090,7 @@ class PersistentAsyncCaller(AsyncCaller):
         queue: mp.JoinableQueue,
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
+        shm_rel_q: mp.Queue = None,
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
@@ -809,7 +1101,15 @@ class PersistentAsyncCaller(AsyncCaller):
         In this loop, child processes may be created (For example: to parallelize File IO)
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank,
+            queue,
+            preload_q,
+            comp_q,
+            shm_rel_q,
+            log_level,
+            cpu_priority,
+            io_priority,
+            cpu_shm_mode,
         )
 
     @staticmethod
@@ -818,6 +1118,7 @@ class PersistentAsyncCaller(AsyncCaller):
         queue: mp.JoinableQueue,
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
+        shm_rel_q: mp.Queue = None,
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
@@ -827,7 +1128,15 @@ class PersistentAsyncCaller(AsyncCaller):
         Main function for the persistent checkpoint worker called by a daemon async process
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank,
+            queue,
+            preload_q,
+            comp_q,
+            shm_rel_q,
+            log_level,
+            cpu_priority,
+            io_priority,
+            cpu_shm_mode,
         )
 
 
@@ -875,6 +1184,9 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         self.sigterm_timeout = sigterm_timeout
         self.cpu_shm_mode = cpu_shm_mode
         self.persistent_caller: AsyncCaller = None
+        # True once a node-local-staging save (AsyncRequest.flush_dst set) has been scheduled.
+        # Gates the shm drain so a non-staging run keeps EXACTLY today's behavior (no shm_rel_q).
+        self.staging_active = False
 
         if cpu_shm_mode:
             # Deferred import avoids circular dependency (filesystem_async imports core).
@@ -883,9 +1195,19 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             # disk-read pass and the current checkpoint's D2H copy.
             from .filesystem_async import FileSystemWriterAsync
 
-            FileSystemWriterAsync.register_shm_drain_callback(
-                lambda: self.maybe_finalize_async_calls(blocking=True, no_dist=True)
-            )
+            def _shm_drain():
+                # with staging active, wait only on persist-local (local write done) via the caller's
+                # shm_rel_q -- the durable copy (persist-remote, flusher) no longer blocks shm reuse / the
+                # next D2H. With staging OFF, keep the original drain (waits the full save via
+                # maybe_finalize) so behavior is byte-identical to today.
+                if self.staging_active and isinstance(
+                    self.persistent_caller, PersistentAsyncCaller
+                ):
+                    self.persistent_caller.wait_shm_released(blocking=True)
+                else:
+                    self.maybe_finalize_async_calls(blocking=True, no_dist=True)
+
+            FileSystemWriterAsync.register_shm_drain_callback(_shm_drain)
 
     def _get_async_caller(self):
         if not self.persistent:
@@ -970,13 +1292,19 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
         async_request = async_request.freeze()
+        # latch staging on once a staging save is scheduled, so the shm drain routes to
+        # wait_shm_released (persist-local) instead of the full maybe_finalize. Off = today's path.
+        if getattr(async_request, 'flush_dst', None) is not None:
+            self.staging_active = True
         async_caller.schedule_async_call(
             async_request._replace(call_idx=self.call_idx, finalize_fns=[])
         )
         self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
         return self.call_idx
 
-    def maybe_finalize_async_calls(self, blocking=False, no_dist=False) -> List[int]:
+    def maybe_finalize_async_calls(
+        self, blocking=False, no_dist=False, finalize_timeout: Optional[float] = None
+    ) -> List[int]:
         """Finalizes all available calls.
 
         This method must be called on all ranks.
@@ -987,6 +1315,9 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 finished. Defaults to False.
             no_dist (bool, optional): if True, training ranks simply check its
                 asynchronous checkpoint writer without synchronization.
+            finalize_timeout (float, optional): bound (seconds) on each blocking wait, so a wedged
+                durable flush can't hang finalize at graceful shutdown (see
+                ``is_current_async_call_done``). None (default) keeps the unbounded blocking wait.
         Returns:
             List[int]: list of indices (as returned by `schedule_async_request`)
                 of async calls that have been successfully finalized.
@@ -997,7 +1328,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         call_idx_finalized = []
         while self.async_calls:
             next_async_done = self.async_calls[0].async_caller.is_current_async_call_done(
-                blocking, no_dist
+                blocking, no_dist, finalize_timeout
             )
             if not next_async_done:
                 break
@@ -1025,10 +1356,23 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
 
             FileSystemWriterAsync.register_shm_drain_callback(None)
 
-        # For a clean shut down scenario with valid async processes running,
-        # finalize all pending async calls
+        # For a clean shut down scenario with valid async processes running, finalize all pending
+        # async calls -- but BOUNDED: a node-local-staging save whose durable flush is wedged never
+        # posts comp_q, so an unbounded blocking finalize here would hang before persistent_caller.
+        # close() can bound + escalate. On timeout, un-finalized calls stay non-durable (they roll
+        # back to the last durable checkpoint -- correct, their shards never became durable) and we
+        # fall through to close(), which force-terminates a still-stuck worker.
         if not abort and (self.persistent is False or self.persistent_caller is not None):
-            self.maybe_finalize_async_calls(blocking=True)
+            self.maybe_finalize_async_calls(
+                blocking=True, finalize_timeout=_FLUSHER_DRAIN_TIMEOUT_SECS
+            )
+            pending = self.get_num_unfinalized_calls()
+            if pending:
+                logger.warning(
+                    f"AsyncCallsQueue.close: {pending} async checkpoint call(s) still pending after "
+                    f"{_FLUSHER_DRAIN_TIMEOUT_SECS:.0f}s (durable flush likely stuck); terminating "
+                    f"the worker. Those checkpoints stay non-durable; the last durable one stands."
+                )
         if self.persistent and self.persistent_caller:
             self.persistent_caller.close(abort=abort)
 
