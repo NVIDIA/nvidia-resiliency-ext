@@ -31,6 +31,7 @@ from torch.distributed.checkpoint import (
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
+from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
     AsyncRequest,
@@ -47,6 +48,11 @@ from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Model, Utils
 
 
+class _FrameWithCode:
+    def __init__(self):
+        self._code = (lambda: None).__code__
+
+
 def mock_open(
     self,
     path: str,
@@ -54,6 +60,18 @@ def mock_open(
 ) -> IO[Any]:
     """Function matching the system open() signature that always raises an error."""
     raise OSError('worker critical failure during open()')
+
+
+def test_wrap_exception_for_gather_sanitizes_code_objects(monkeypatch):
+    def fake_wrap_exception(exc):
+        return exc, [_FrameWithCode()]
+
+    monkeypatch.setattr(filesystem_async, "_wrap_exception", fake_wrap_exception)
+
+    wrapped_exception = filesystem_async._wrap_exception_for_gather(RuntimeError("test"))
+
+    assert wrapped_exception[1][0]._code is None
+    pickle.dumps(wrapped_exception)
 
 
 class TestAsyncSave:

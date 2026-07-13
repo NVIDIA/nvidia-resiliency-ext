@@ -67,7 +67,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
-from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot
+from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
@@ -582,6 +582,8 @@ class _RendezvousBarrierState:
         stale_check_interval: How often (in seconds) to check for stale rounds.
             Default is 10 seconds. Lower values increase store load but reduce
             detection latency. Higher values reduce store load but increase latency.
+        cycle_log_prefix: Base per-cycle application log path used by the
+            rendezvous host to submit cycle logs for attribution.
 
     This design trades some synchronization guarantees for better fault tolerance
     and operational flexibility in production environments.
@@ -597,6 +599,7 @@ class _RendezvousBarrierState:
         segment: Optional[int] = None,
         replacement_group_size: Optional[int] = None,
         stale_check_interval: float = 10.0,
+        cycle_log_prefix: Optional[str] = None,
     ):
         self.store = store
         self.run_id = run_id
@@ -620,6 +623,7 @@ class _RendezvousBarrierState:
         # Group ranks of active nodes, parallel to _active_node_addrs (same slot order)
         self._active_ranks: Optional[List[int]] = None
         self._cycle_info_reporter: Optional[CycleInfoReporter] = None
+        self._cycle_log_prefix = cycle_log_prefix
 
         # Reference to agent (set via set_agent() method in handler)
         # Will be set by handler via set_agent() method
@@ -634,7 +638,9 @@ class _RendezvousBarrierState:
         # Permanent shutdown reason: empty means open; non-empty means no further rounds.
         self.shutdown_key = f"{self.prefix}:shutdown"
         self._attribution_service: Optional[AttributionService] = None
-        self._attribution_settled_for_round: int = -1
+        self._attribution_gate_settled_round: int = -1
+        self._attribution_cycle_log_submitted: Optional[int] = None
+        self._attribution_terminal_requested_cycle: Optional[int] = None
         # Job-level unhealthy counter; persists across all rounds.
         self.unhealthy_count_key = f"{self.prefix}:unhealthy_count"
         # Latest closed round's active membership. This is host-local by design:
@@ -1377,7 +1383,19 @@ class _RendezvousBarrierState:
         if self._attribution_service is None or self._round == 0:
             return True
 
-        if self._attribution_settled_for_round == self._round:
+        if self._attribution_gate_settled_round == self._round:
+            return True
+
+        expected_submitted_round = self._round - 1
+        if self._attribution_cycle_log_submitted != expected_submitted_round:
+            log.warning(
+                "Attribution gate for round %s has no submitted log for cycle %s "
+                "(last submitted cycle: %s); failing open without polling a stale log",
+                self._round,
+                expected_submitted_round,
+                self._attribution_cycle_log_submitted,
+            )
+            self._attribution_gate_settled_round = self._round
             return True
 
         result = self._attribution_service.get_last_result(node_id=node_desc)
@@ -1394,7 +1412,7 @@ class _RendezvousBarrierState:
             self.set_shutdown(RDZV_SHUTDOWN_REASON_FAILURE)
             raise RendezvousGracefulExitError(msg)
 
-        self._attribution_settled_for_round = self._round
+        self._attribution_gate_settled_round = self._round
         return True
 
     def _host_close_round(
@@ -1425,6 +1443,8 @@ class _RendezvousBarrierState:
         mismatch_first_seen: Optional[float] = None
         close_gate = self._make_previous_active_last_call_gate(min_nodes, max_nodes)
         last_call_logged_deadline: Optional[float] = None
+        if self._round > 0:
+            self._request_terminal_attribution_for_round(self._round - 1)
 
         while True:
             if stop_event is not None and stop_event.is_set():
@@ -1628,9 +1648,53 @@ class _RendezvousBarrierState:
                 active_candidate_participants=complete_replacement_group_participants,
                 standby_only_participants=incomplete_replacement_group_participants,
             )
-            self._report_cycle_start_as_host(self._round)
+            closed_round = self._round
+            self._report_cycle_start_as_host(closed_round)
             self.store.set(self.round_done_key, "1".encode('utf-8'))
+            # Do not hold the rendezvous release on attribution I/O. The submit helper
+            # records the cycle before issuing the bounded attrsvc POST.
+            self._submit_attribution_log_for_round(closed_round)
             return
+
+    def _submit_attribution_log_for_round(self, round_id: int) -> None:
+        """Submit the just-started cycle log from the rendezvous control host."""
+        if self._attribution_service is None:
+            return
+        if not self._cycle_log_prefix:
+            log.warning(
+                "Attribution is enabled but no cycle log prefix is configured; "
+                "skipping attribution submit for cycle %s",
+                round_id,
+            )
+            return
+
+        log_path = cycle_log_file(self._cycle_log_prefix, round_id)
+        self._attribution_cycle_log_submitted = round_id
+        self._attribution_service._submit_log(log_path)
+
+    def _request_terminal_attribution_for_submitted_cycle(self) -> None:
+        """Request terminal analysis for the last cycle submitted by this control host."""
+        if self._attribution_cycle_log_submitted is None:
+            return
+        self._request_terminal_attribution_for_round(self._attribution_cycle_log_submitted)
+
+    def _request_terminal_attribution_for_round(self, round_id: int) -> None:
+        """Request terminal analysis for a previously submitted cycle log."""
+        if self._attribution_service is None:
+            return
+        if self._attribution_terminal_requested_cycle == round_id:
+            return
+        if self._attribution_cycle_log_submitted != round_id:
+            log.warning(
+                "Attribution terminal request for cycle %s skipped: no submitted log "
+                "(last submitted cycle: %s)",
+                round_id,
+                self._attribution_cycle_log_submitted,
+            )
+            return
+
+        self._attribution_service.request_terminal_analysis()
+        self._attribution_terminal_requested_cycle = round_id
 
     def _report_cycle_start_as_host(self, round_id: int) -> None:
         """Report cycle start from the rendezvous-host rank assignment snapshot."""
@@ -2388,6 +2452,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             settings.segment,
             settings.replacement_group_size,
             stale_check_interval=10.0,  # Check for stale rounds every 10 seconds
+            cycle_log_prefix=cycle_log_prefix,
         )
         self._cycle_info_reporter: Optional[CycleInfoReporter] = None
         if is_store_host and cycle_info_dir:
