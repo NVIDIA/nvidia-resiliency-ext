@@ -12,7 +12,7 @@ jobs:
   build_wheels:
     runs-on: ubuntu-24.04
     container:
-      image: 'ghcr.io/nvidia/nvidia-resiliency-ext/builder_amd64:cuda-12.4.1-cudnn-devel-ubuntu22.04'
+      image: 'ghcr.io/nvidia/nvidia-resiliency-ext/builder_amd64:cuda-13.0-devel-ubuntu24.04-py3.12-py3.14'
     steps:
       - name: Install git
         run: apt-get update && apt-get install -y git
@@ -22,14 +22,12 @@ jobs:
           fetch-depth: 0
       - name: Fix Git dubious ownership
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # Use builder image venvs (Dockerfile.builder: /opt/venv3.10, 3.11, 3.12 with poetry + dynamic-versioning)
       - name: Build wheels
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
-          /opt/venv3.10/bin/poetry env use /opt/venv3.10/bin/python && /opt/venv3.10/bin/poetry build -f wheel
-          /opt/venv3.11/bin/poetry env use /opt/venv3.11/bin/python && /opt/venv3.11/bin/poetry build -f wheel
           /opt/venv3.12/bin/poetry env use /opt/venv3.12/bin/python && /opt/venv3.12/bin/poetry build -f wheel
+          /opt/venv3.14/bin/poetry env use /opt/venv3.14/bin/python && /opt/venv3.14/bin/poetry build -f wheel
       - name: Upload the wheel artifact
         uses: actions/upload-artifact@v4
         with:
@@ -42,14 +40,13 @@ jobs:
     strategy:
       matrix:
         container:
-          - 'ghcr.io/nvidia/nvidia-resiliency-ext/pytorch:2.5.1-cuda12.4-cudnn9-runtime'
-          - 'ghcr.io/nvidia/nvidia-resiliency-ext/pytorch:2.4.1-cuda12.1-cudnn9-runtime'
-          - 'ghcr.io/nvidia/nvidia-resiliency-ext/pytorch:2.3.1-cuda12.1-cudnn8-runtime'
+          - 'ghcr.io/nvidia/nvidia-resiliency-ext/builder_amd64:cuda-13.0-devel-ubuntu24.04-py3.12-py3.14'
         test_type: ['fault_tolerance']
     container:
       image: ${{ matrix.container }}
     env:
         MKL_SERVICE_FORCE_INTEL: 1 # Fix for "MKL_THREADING_LAYER=INTEL is incompatible with libgomp.so.1 library."
+        PYTHON: /opt/venv3.12/bin/python
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -60,9 +57,10 @@ jobs:
           path: ./dist/
       - name: Set up environment
         run: |
-          pip install pytest
-          PY_VER_NODOT=$(python -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
-          pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
+          "$PYTHON" -m pip install pytest
+          "$PYTHON" -m pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==2.8.0+cpu"
+          PY_VER_NODOT=$("$PYTHON" -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
+          "$PYTHON" -m pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
       - name: Run unit tests
         shell: bash
         run: |
@@ -73,9 +71,9 @@ jobs:
               or test_relative_gpu_scores_ \
               or test_name_mapper_ \
               or test_relative_gpu_scores_"
-              pytest -s -vvv tests/straggler/unit/ -k "${STRAGGLER_DET_CPU_TESTS_PATTERN}"
+              "$PYTHON" -m pytest -s -vvv tests/straggler/unit/ -k "${STRAGGLER_DET_CPU_TESTS_PATTERN}"
           elif [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
-              pytest -s -vvv ./tests/fault_tolerance/unit/
+              "$PYTHON" -m pytest -s -vvv ./tests/fault_tolerance/unit/
           else
               echo "Unknown test type: ${{ matrix.test_type }}"
               exit 1
