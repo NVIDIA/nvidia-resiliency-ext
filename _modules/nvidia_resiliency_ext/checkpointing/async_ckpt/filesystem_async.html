@@ -147,6 +147,20 @@
 <span class="n">_results_queue</span> <span class="o">=</span> <span class="kc">None</span>
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">_wrap_exception_for_gather</span><span class="p">(</span><span class="n">exc</span><span class="p">:</span> <span class="ne">BaseException</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">WRAPPED_EXCEPTION</span><span class="p">:</span>
+    <span class="n">wrapped_exception</span> <span class="o">=</span> <span class="n">_wrap_exception</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span>
+    <span class="n">_</span><span class="p">,</span> <span class="n">stack_summary</span> <span class="o">=</span> <span class="n">wrapped_exception</span>
+
+    <span class="c1"># Python 3.13+ traceback FrameSummary may hold a code object in _code.</span>
+    <span class="c1"># Code objects are not pickleable, but dist.gather_object pickles the</span>
+    <span class="c1"># wrapped exception before sending it to the coordinator.</span>
+    <span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="n">stack_summary</span><span class="p">:</span>
+        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="s2">&quot;_code&quot;</span><span class="p">):</span>
+            <span class="nb">object</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="s2">&quot;_code&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">wrapped_exception</span>
+
+
 <div class="viewcode-block" id="ConsistentDataIdentifier">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.ConsistentDataIdentifier">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">ConsistentDataIdentifier</span><span class="p">:</span>
@@ -1306,7 +1320,7 @@
             <span class="k">try</span><span class="p">:</span>
                 <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">results_queue</span><span class="o">.</span><span class="n">get_nowait</span><span class="p">()</span>
             <span class="k">except</span> <span class="n">queue</span><span class="o">.</span><span class="n">Empty</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">_wrap_exception</span><span class="p">(</span><span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;results_queue should not be empty&#39;</span><span class="p">))</span>
+                <span class="k">return</span> <span class="n">_wrap_exception_for_gather</span><span class="p">(</span><span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;results_queue should not be empty&#39;</span><span class="p">))</span>
 
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">):</span>
             <span class="c1"># Worker failed — its data cache may have been lost (e.g. after a restart).</span>
@@ -1320,10 +1334,10 @@
                     <span class="sa">f</span><span class="s1">&#39;Worker failure: </span><span class="si">{</span><span class="n">write_results_or_exc</span><span class="si">}</span><span class="s1">&#39;</span>
                 <span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">write_results_or_exc</span>
             <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">_wrap_exception</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">_wrap_exception_for_gather</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
         <span class="n">write_results</span><span class="p">:</span> <span class="nb">dict</span> <span class="o">=</span> <span class="n">write_results_or_exc</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">has_data_to_write</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">_wrap_exception</span><span class="p">(</span>
+            <span class="k">return</span> <span class="n">_wrap_exception_for_gather</span><span class="p">(</span>
                 <span class="ne">RuntimeError</span><span class="p">(</span>
                     <span class="s1">&#39;Worker returned empty results despite having data to write.&#39;</span>
                     <span class="s1">&#39; This probably indicates a worker failure.&#39;</span>
