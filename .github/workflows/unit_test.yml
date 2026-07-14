@@ -9,6 +9,20 @@ on:
 
 jobs:
 
+  restart_agent_eval_harness:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install harness test dependencies
+        run: pip install pytest -r tools/restart_agent_eval/src/requirements.txt
+      - name: Run Restart Agent evaluation harness tests
+        run: pytest -q tools/restart_agent_eval/tests
+
   build_wheels:
     runs-on: ubuntu-24.04
     container:
@@ -30,6 +44,23 @@ jobs:
           /opt/venv3.10/bin/poetry env use /opt/venv3.10/bin/python && /opt/venv3.10/bin/poetry build -f wheel
           /opt/venv3.11/bin/poetry env use /opt/venv3.11/bin/python && /opt/venv3.11/bin/poetry build -f wheel
           /opt/venv3.12/bin/poetry env use /opt/venv3.12/bin/python && /opt/venv3.12/bin/poetry build -f wheel
+      - name: Verify evaluation harness is not packaged
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          assert wheels, "no wheels were built"
+          for wheel in wheels:
+              with zipfile.ZipFile(wheel) as archive:
+                  included = [
+                      name
+                      for name in archive.namelist()
+                      if "restart_agent_eval" in name or name.startswith("tools/")
+                  ]
+              assert not included, f"evaluation harness packaged in {wheel}: {included}"
+          PY
       - name: Upload the wheel artifact
         uses: actions/upload-artifact@v4
         with:

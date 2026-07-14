@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+logs=(
+  "bad_token_grad_inf_logs/55B_hybrid_moe_25T_phase2_1745223_date_26-02-20_time_03-29-36.log"
+  "checkpoint_logs/55B_hybrid_moe_25T_phase2_1745223_date_26-02-18_time_08-20-00.log"
+  "cuda_oom_logs/eval-55b_hybrid_moe_sanity_check-ckpt-560000-nm6-arc_challenge_1645207_date_26-02-01_time_14-35-19.log"
+  "dataloader_bus_error_logs/55B_hybrid_moe_25T_phase2_1745223_date_26-02-17_time_21-06-13.log"
+  "early_nccl_timeout_logs/55B_hybrid_moe_25T_phase1_1694647_date_26-02-07_time_16-41-57.log"
+  "linux_oom_logs/dump_55B_hybrid_moe_25T_phase1_1742530_date_26-02-16_time_11-19-35.log"
+  "nccl_timeout_logs/55B_hybrid_moe_25T_phase2_1776591_date_26-02-24_time_17-10-10.log"
+  "nvlink_error_logs/55B_hybrid_moe_25T_phase2_1745223_date_26-02-21_time_01-31-49.log"
+  "port_conflict_logs/eval-55b_hybrid_moe_sanity_check-ckpt-600000-nm6-math_500_1663236_date_26-02-03_time_11-40-15.log"
+  "nvrx_attribution_sanitized_logs_for_bug_2/consistent_no_useful_result/nemotron6/12b_hybrid_moe/logs/phase1_rerun/12B_hybrid_moe_25T_phase1_921371_date_25-11-16_time_03-45-46.log"
+)
+
+for log in "${logs[@]}"; do
+  log_path="$RESTART_AGENT_EVAL_LOG_ROOT/$log"
+  log_run_root="$RESTART_AGENT_EVAL_RUN_ROOT/$log"
+
+  l0_bundle="$(
+    find "$log_run_root" \
+      -mindepth 2 -maxdepth 2 \
+      -type f -name l0_bundle.json -print |
+      LC_ALL=C sort |
+      tail -n 1
+  )"
+
+  if [[ -z "$l0_bundle" ]]; then
+    echo "ERROR: no saved L0 bundle for $log" >&2
+    exit 1
+  fi
+
+  echo "Reviewing: $log_path"
+  echo "Replaying: $l0_bundle"
+
+  ./examples/review_one_log.sh \
+    "$log_path" \
+    --l0-bundle-json-in "$l0_bundle" \
+    all
+done

@@ -11,4 +11,8 @@ ft_state.json
 *_pb2.pyi
 *_pb2_grpc.py
 .idea/
+.DS_Store
+*.swp
+~$*.pptx
 src/nvidia_resiliency_ext/skills/nvrx-attr/scripts/user.env
+tools/restart_agent_eval/restart_agent.env
