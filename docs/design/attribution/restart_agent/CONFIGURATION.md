@@ -172,7 +172,7 @@ each model turn, including prior messages and tool results.
 | Field | Type | Default | Meaning and constraints |
 | --- | --- | --- | --- |
 | `tools.enabled` | boolean | `true` | Whether tool definitions are advertised and tool requests may execute. |
-| `tools.advertisement.overview` | boolean | `true` | Advertises compact source/evidence orientation. |
+| `tools.advertisement.overview` | boolean | `false` | Advertises source/evidence orientation for clients that do not already supply the normal L0B view. |
 | `tools.advertisement.grep_log` | boolean | `true` | Advertises source-log search. |
 | `tools.advertisement.read_window` | boolean | `true` | Advertises bounded raw source reading. |
 | `tools.advertisement.get_evidence_objects` | boolean | `false` | Advertises structured evidence-object retrieval. Implemented but opt-in. |
