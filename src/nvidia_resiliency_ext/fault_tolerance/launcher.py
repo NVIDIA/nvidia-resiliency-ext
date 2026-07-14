@@ -163,6 +163,16 @@ def _shutdown_cycle_info_reporter_safely(rdzv_handler: Any) -> None:
         logger.warning("Failed to shut down cycle info reporter", exc_info=True)
 
 
+def _recover_exited_managed_attribution_service() -> None:
+    manager = _ATTRIBUTION_MANAGER
+    if manager is None:
+        return
+    try:
+        manager.recover_exited_managed_process()
+    except Exception:
+        logger.warning("Failed to recover managed attribution service process", exc_info=True)
+
+
 def init_node_health_check(endpoint: Optional[str]) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
     if endpoint:
@@ -629,6 +639,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         while True:
             assert self._worker_group.state != WorkerState.INIT
             time.sleep(monitor_interval)
+            _recover_exited_managed_attribution_service()
             run_result = self._monitor_workers(self._worker_group)
             state = run_result.state
             self._worker_group.state = state

@@ -26,8 +26,10 @@ logger = logging.getLogger(LogConfig.name)
 
 DEFAULT_ATTRIBUTION_PORT = 50050
 DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT = 20.0
+DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS = 2
 _ATTRIBUTION_STOP_TIMEOUT = 5.0
 _ATTRIBUTION_READY_POLL_INTERVAL = 0.5
+_ATTRIBUTION_READY_HTTP_TIMEOUT = 1.0
 _MANAGED_ATTRIBUTION_ENDPOINT = "localhost"
 _EXTERNAL_ATTRIBUTION_SCHEMES = {"http", "grpc"}
 _ATTRSVC_EXPORT_URL_ENV = "NVRX_ATTRSVC_EXPORT_URL"
@@ -193,15 +195,25 @@ class AttributionManager:
         if not self.is_store_host:
             return None
 
+        return self._start_managed_process(restarting=False)
+
+    def _start_managed_process(
+        self,
+        *,
+        restarting: bool,
+        ready_deadline: Optional[float] = None,
+    ) -> AttributionEndpoint:
         assert self.cfg.applog_dir is not None
         assert self.cfg.log_file is not None
         api_key_file = self._resolve_api_key_file()
         env = self._child_env(api_key_file)
         cmd = _attribution_command()
+        action = "Restarting" if restarting else "Starting"
 
         logger.info(
-            "Starting managed attribution service on localhost:%s "
+            "%s managed attribution service on localhost:%s "
             "(applog_dir=%s, log_file=%s, startup_timeout=%.1fs, decision_timeout=%s)",
+            action,
             DEFAULT_ATTRIBUTION_PORT,
             self.cfg.applog_dir,
             self.cfg.log_file,
@@ -213,7 +225,7 @@ class AttributionManager:
             ),
         )
 
-        log_fd = open(self.cfg.log_file, "w")
+        log_fd = open(self.cfg.log_file, "a" if restarting else "w")
         try:
             self.process = subprocess.Popen(  # nosec B603
                 cmd,
@@ -226,13 +238,17 @@ class AttributionManager:
             log_fd.close()
 
         try:
-            self._wait_until_ready()
+            self._wait_until_ready(deadline=ready_deadline)
         except Exception:
             self.stop()
             raise
 
+        ready_subject = (
+            "Restarted managed attribution service" if restarting else "Managed attribution service"
+        )
         logger.info(
-            "Managed attribution service is ready: PID=%s endpoint=http://localhost:%s",
+            "%s is ready: PID=%s endpoint=http://localhost:%s",
+            ready_subject,
             self.process.pid if self.process else None,
             DEFAULT_ATTRIBUTION_PORT,
         )
@@ -273,6 +289,61 @@ class AttributionManager:
         )
         self.process = None
 
+    def recover_exited_managed_process(self) -> bool:
+        """Reap and restart an unexpectedly exited launcher-managed attrsvc process.
+
+        Returns:
+            True when a managed child had exited and was restarted; False when
+            no launcher-owned attrsvc process needed action.
+        """
+        if not self.cfg.is_enabled or not self.cfg.is_managed or not self.is_store_host:
+            return False
+
+        proc = self.process
+        if proc is None:
+            return False
+
+        returncode = proc.poll()
+        if returncode is None:
+            return False
+
+        logger.error(
+            "Managed attribution service PID=%s exited unexpectedly with returncode=%s; "
+            "attempting restart",
+            proc.pid,
+            returncode,
+        )
+        self.process = None
+        if DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS < 1:
+            raise RuntimeError("managed attribution service restart attempts must be at least 1")
+
+        ready_deadline = time.monotonic() + self.cfg.startup_timeout
+        for attempt in range(1, DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS + 1):
+            try:
+                self._start_managed_process(
+                    restarting=True,
+                    ready_deadline=ready_deadline,
+                )
+                return True
+            except Exception:
+                if attempt >= DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS:
+                    logger.warning(
+                        "Managed attribution service recovery exhausted after %d attempts "
+                        "for PID=%s; attribution service will remain unavailable",
+                        DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS,
+                        proc.pid,
+                        exc_info=True,
+                    )
+                    raise
+                logger.warning(
+                    "Failed to restart managed attribution service after PID=%s exited "
+                    "(attempt %d/%d); retrying",
+                    proc.pid,
+                    attempt,
+                    DEFAULT_ATTRIBUTION_RESTART_ATTEMPTS,
+                    exc_info=True,
+                )
+
     def _resolve_api_key_file(self) -> str:
         raw = self.cfg.llm_api_key_file or os.getenv("LLM_API_KEY_FILE")
         if not raw:
@@ -305,9 +376,10 @@ class AttributionManager:
         _set_if_not_none(env, _ATTRSVC_EXPORT_URL_ENV, self.cfg.export_url)
         return env
 
-    def _wait_until_ready(self) -> None:
+    def _wait_until_ready(self, *, deadline: Optional[float] = None) -> None:
         assert self.process is not None
-        deadline = time.monotonic() + self.cfg.startup_timeout
+        if deadline is None:
+            deadline = time.monotonic() + self.cfg.startup_timeout
         url = f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}/healthz"
         last_error = "not probed"
 
@@ -319,7 +391,10 @@ class AttributionManager:
                     f"(returncode={rc}, log_file={self.cfg.log_file})"
                 )
             try:
-                with urllib.request.urlopen(url, timeout=1.0) as resp:  # nosec B310
+                with urllib.request.urlopen(  # nosec B310
+                    url,
+                    timeout=_ATTRIBUTION_READY_HTTP_TIMEOUT,
+                ) as resp:
                     if 200 <= resp.status < 300:
                         return
                     last_error = f"HTTP status {resp.status}"
@@ -332,7 +407,8 @@ class AttributionManager:
         raise TimeoutError(
             f"managed attribution service did not become ready within "
             f"{self.cfg.startup_timeout:.1f}s "
-            f"at {url} (last_error={last_error}, log_file={self.cfg.log_file})"
+            f"at {url} "
+            f"(last_error={last_error}, log_file={self.cfg.log_file})"
         )
 
 

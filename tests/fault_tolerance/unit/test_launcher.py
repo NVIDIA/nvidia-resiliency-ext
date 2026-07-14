@@ -551,6 +551,59 @@ class TestLauncherRunBehavior(unittest.TestCase):
         self.assertEqual(result.state, WorkerState.FAILED)
         self.assertEqual(result.failures, failures)
 
+    def test_invoke_run_recovers_managed_attribution_on_monitor_tick(self):
+        """The worker monitor cadence also polls launcher-managed attrsvc lifecycle."""
+        from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
+
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+        spec = _make_agent_spec(rdzv_round=1)
+        spec.role = "trainer"
+        spec.monitor_interval = 0
+        agent = LocalElasticAgent(
+            spec=spec,
+            fault_tol_cfg=self.fault_tol_cfg,
+            logs_specs=self.logs_specs,
+        )
+        agent._worker_group.state = WorkerState.HEALTHY
+
+        with (
+            patch.object(agent, '_initialize_workers'),
+            patch.object(
+                agent,
+                '_monitor_workers',
+                return_value=RunResult(state=WorkerState.SUCCEEDED),
+            ),
+            patch.object(agent, '_exit_barrier'),
+            patch.object(launcher, '_recover_exited_managed_attribution_service') as mock_recover,
+            patch.object(launcher, 'put_metric'),
+            patch.object(launcher.time, 'sleep'),
+        ):
+            result = agent._invoke_run_with_any_failed_policy()
+
+        self.assertEqual(result.state, WorkerState.SUCCEEDED)
+        mock_recover.assert_called_once_with()
+
+    def test_recover_exited_managed_attribution_service_logs_failure(self):
+        """Attrsvc recovery failures are fail-open for the launcher monitor loop."""
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        manager = MagicMock()
+        manager.recover_exited_managed_process.side_effect = RuntimeError("restart failed")
+
+        with (
+            patch.object(launcher, '_ATTRIBUTION_MANAGER', manager),
+            self.assertLogs(launcher.logger, level='WARNING') as logs,
+        ):
+            launcher._recover_exited_managed_attribution_service()
+
+        manager.recover_exited_managed_process.assert_called_once_with()
+        self.assertIn(
+            "Failed to recover managed attribution service process",
+            "\n".join(logs.output),
+        )
+
 
 class TestHandleRestartDecision(unittest.TestCase):
     """Unit tests for _handle_restart_decision() and _open_rendezvous_for_restart()."""
