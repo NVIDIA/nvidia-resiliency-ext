@@ -1259,7 +1259,7 @@ def _make_launch_agent_config(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog):
+def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
     from types import SimpleNamespace
 
     from nvidia_resiliency_ext.fault_tolerance import launcher
