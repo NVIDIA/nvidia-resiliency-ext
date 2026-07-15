@@ -66,6 +66,14 @@ def test_from_args():
         "custom1:111.1,custom2:222.2",
         "--ft-attribution-export-url",
         "https://dataflow.example.test/dataflow2/example-index/posting",
+        "--ft-full-core-dump-on-sigterm",
+        "false",
+        "--ft-timeout-activity-check",
+        "true",
+        "--ft-diagnostic-dump-dir",
+        "/tmp/nvrx-test-dumps",
+        "--ft-diagnostic-dump-timeout",
+        "12.5",
     ]
 
     # Add a the dummy training script required by the torchrun argparser
@@ -82,6 +90,10 @@ def test_from_args():
     assert (
         ft.attribution_export_url == "https://dataflow.example.test/dataflow2/example-index/posting"
     )
+    assert ft.full_core_dump_on_sigterm is False
+    assert ft.timeout_activity_check is True
+    assert ft.diagnostic_dump_dir == "/tmp/nvrx-test-dumps"
+    assert ft.diagnostic_dump_timeout == 12.5
 
 
 def test_signal_field_with_valid_values():

@@ -25,8 +25,10 @@ import sys
 import tempfile
 import time
 import traceback
-from typing import Dict, Mapping, Optional
+from collections import deque
+from typing import Deque, Dict, Mapping, Optional, Tuple
 
+import psutil
 import torch
 import torch.multiprocessing as mp
 
@@ -43,6 +45,11 @@ from .data import (
     SectionAction,
     SectionMsg,
     UpdateConfigMsg,
+)
+from .diagnostics import (
+    CORE_DUMP_CLAIM_FILE_ENV_VAR,
+    capture_full_core_dump_once,
+    capture_stack_trace,
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
@@ -185,6 +192,9 @@ class RankMonitorServer:
         # workload step reporting does not include warmup iterations.
         self._step_section_seen_this_cycle = False
         self.current_cycle = 0  # Track current cycle number for logging
+        self._filesystem_io_history: Deque[Tuple[float, Dict[int, Tuple[int, int]]]] = deque()
+        self._last_hb_timeout_duration: Optional[float] = None
+        self._last_section_timeout_duration: Optional[float] = None
 
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
@@ -215,6 +225,16 @@ class RankMonitorServer:
             sig = self.cfg.rank_termination_signal
             rank_pid = self.rank_info.pid
             os.kill(rank_pid, signal.SIGCONT)
+            if sig is signal.SIGTERM and self.cfg.full_core_dump_on_sigterm:
+                capture_full_core_dump_once(
+                    pid=rank_pid,
+                    rank=self.rank_info.global_rank,
+                    cycle=self.current_cycle,
+                    dump_dir=self.cfg.diagnostic_dump_dir,
+                    timeout=self.cfg.diagnostic_dump_timeout,
+                    claim_file=os.getenv(CORE_DUMP_CLAIM_FILE_ENV_VAR),
+                    logger=self.logger,
+                )
             os.kill(rank_pid, sig)
             self.logger.debug(
                 f"Rank monitor sent SIGCONT then {sig.name} to the rank (PID={rank_pid})"
@@ -245,7 +265,123 @@ class RankMonitorServer:
     async def _handle_unhealthy_nic(self):
         self._shutdown_rank_if_alive()
 
-    async def _handle_timeout(self):
+    def _read_filesystem_io(self) -> Dict[int, Tuple[int, int]]:
+        """Read physical filesystem I/O counters for the rank and its live descendants."""
+        if self.rank_info is None:
+            return {}
+        try:
+            root = psutil.Process(self.rank_info.pid)
+            processes = [root, *root.children(recursive=True)]
+        except (psutil.Error, OSError):
+            return {}
+
+        snapshot: Dict[int, Tuple[int, int]] = {}
+        for process in processes:
+            try:
+                counters = process.io_counters()
+                snapshot[process.pid] = (counters.read_bytes, counters.write_bytes)
+            except (psutil.Error, OSError, AttributeError):
+                continue
+        return snapshot
+
+    def _max_configured_timeout(self) -> float:
+        values = [
+            self.cfg.initial_rank_heartbeat_timeout,
+            self.cfg.rank_heartbeat_timeout,
+            self.cfg.rank_out_of_section_timeout,
+            *self.cfg.rank_section_timeouts.values(),
+        ]
+        return max((value for value in values if value is not None and value > 0), default=0.0)
+
+    def _record_filesystem_io(self, now: float) -> None:
+        if not self.cfg.timeout_activity_check:
+            return
+        self._filesystem_io_history.append((now, self._read_filesystem_io()))
+
+        # Preserve one sample at or before the longest possible timeout cutoff.
+        cutoff = now - self._max_configured_timeout() - self.cfg.workload_check_interval
+        while len(self._filesystem_io_history) > 1 and self._filesystem_io_history[1][0] <= cutoff:
+            self._filesystem_io_history.popleft()
+
+    def _filesystem_activity_since(
+        self, now: float, timeout_duration: float
+    ) -> Tuple[bool, int, int]:
+        if len(self._filesystem_io_history) < 2:
+            return False, 0, 0
+
+        cutoff = now - timeout_duration
+        read_delta = 0
+        write_delta = 0
+        previous = self._filesystem_io_history[0][1]
+        for sample_time, current in list(self._filesystem_io_history)[1:]:
+            if sample_time > cutoff:
+                for pid, (current_read, current_write) in current.items():
+                    previous_read, previous_write = previous.get(pid, (0, 0))
+                    read_delta += max(0, current_read - previous_read)
+                    write_delta += max(0, current_write - previous_write)
+            previous = current
+        return read_delta > 0 or write_delta > 0, read_delta, write_delta
+
+    def _reset_elapsed_timeout_clocks(self, now: float, *, heartbeat: bool, section: bool) -> None:
+        if heartbeat:
+            if self.last_hb_time is None:
+                self.start_time = now
+            else:
+                self.last_hb_time = now
+        if section:
+            if self.open_sections:
+                self.open_sections = {name: now for name in self.open_sections}
+            else:
+                self.out_of_section_time = now
+        # The current counters become the baseline for the newly granted timeout window.
+        if self._filesystem_io_history:
+            self._filesystem_io_history = deque([self._filesystem_io_history[-1]])
+
+    async def _handle_timeout(
+        self,
+        timeout_duration: Optional[float] = None,
+        *,
+        heartbeat_timed_out: bool = True,
+        section_timed_out: bool = True,
+    ):
+        if (
+            self.cfg.timeout_activity_check
+            and timeout_duration is not None
+            and timeout_duration > 0
+            and self.rank_info is not None
+        ):
+            now = time.monotonic()
+            has_activity, read_bytes, write_bytes = self._filesystem_activity_since(
+                now, timeout_duration
+            )
+            if has_activity:
+                stack_path = await asyncio.to_thread(
+                    capture_stack_trace,
+                    pid=self.rank_info.pid,
+                    rank=self.rank_info.global_rank,
+                    cycle=self.current_cycle,
+                    dump_dir=self.cfg.diagnostic_dump_dir,
+                    timeout=self.cfg.diagnostic_dump_timeout,
+                    logger=self.logger,
+                )
+                self.logger.warning(
+                    "[Cycle %s] Rank %s (PID=%s) timed out but performed filesystem I/O "
+                    "during the last %.2f seconds (read=%d bytes, write=%d bytes). "
+                    "Stack trace: %s. The rank will continue and its timeout clocks were reset.",
+                    self.current_cycle,
+                    self.rank_info.global_rank,
+                    self.rank_info.pid,
+                    timeout_duration,
+                    read_bytes,
+                    write_bytes,
+                    stack_path or "capture failed",
+                )
+                self._reset_elapsed_timeout_clocks(
+                    now,
+                    heartbeat=heartbeat_timed_out,
+                    section=section_timed_out,
+                )
+                return
         self._shutdown_rank_if_alive()
 
     async def _handle_authkey_msg(self, msg, writer):
@@ -279,6 +415,7 @@ class RankMonitorServer:
         self.out_of_section_time = time.monotonic()
         self.open_sections.clear()
         self.last_hb_time = None
+        self._filesystem_io_history.clear()
         # Iteration baseline is set on first section message with iteration (see _handle_section_msg)
 
         # Update num_warmup_iterations if provided by the client
@@ -294,6 +431,7 @@ class RankMonitorServer:
         if self.nic_health_checker is not None:
             self.nic_health_checker.set_nic_device(local_rank=self.rank_info.local_rank)
         self.rmlogger.set_connected_rank(msg.rank_info.global_rank)
+        self._record_filesystem_io(self.start_time)
 
         await write_obj_to_ipc_stream(OkMsg(cfg=self.cfg), writer)
 
@@ -385,6 +523,7 @@ class RankMonitorServer:
         self.start_time = None
         self.last_hb_time = None
         self.out_of_section_time = None
+        self._filesystem_io_history.clear()
         self._initial_iteration = None
         self._current_iteration = None
         self._step_section_seen_this_cycle = False
@@ -478,12 +617,14 @@ class RankMonitorServer:
 
     def _is_hb_timeout_elapsed(self, curr_time) -> bool:
         is_elapsed = False
+        self._last_hb_timeout_duration = None
         if self.last_hb_time is None:
             # has not got any heartbeats yet
             time_since_start = curr_time - self.start_time
             timeout = self.cfg.initial_rank_heartbeat_timeout
             is_elapsed = timeout is not None and time_since_start > timeout
             if is_elapsed:
+                self._last_hb_timeout_duration = timeout
                 self.logger.warning(
                     f"[Cycle {self.current_cycle}] Did not get initial heartbeat. "
                     f"Waited {timeout:.2f} seconds."
@@ -494,6 +635,7 @@ class RankMonitorServer:
             timeout = self.cfg.rank_heartbeat_timeout
             is_elapsed = timeout is not None and time_since_last_hb > timeout
             if is_elapsed:
+                self._last_hb_timeout_duration = timeout
                 self.logger.warning(
                     f"[Cycle {self.current_cycle}] Did not get subsequent heartbeat. "
                     f"Waited {timeout:.2f} seconds."
@@ -502,6 +644,7 @@ class RankMonitorServer:
 
     def _is_section_timeout_elapsed(self, curr_time) -> bool:
         is_elapsed = False
+        self._last_section_timeout_duration = None
         # If any sections are open, check their timeouts,
         # otherwise check the timeout for "out of section"
         for section, section_start_time in self.open_sections.items():
@@ -517,13 +660,16 @@ class RankMonitorServer:
                 iterations_this_cycle = self._current_iteration - self._initial_iteration
                 if iterations_this_cycle < self.cfg.num_warmup_iterations:
                     timeout = self.cfg.rank_section_timeouts["warmup"]
-            is_elapsed = timeout is not None and elapsed > timeout
-            if is_elapsed:
+            section_is_elapsed = timeout is not None and elapsed > timeout
+            if section_is_elapsed:
                 self.logger.warning(
                     f"[Cycle {self.current_cycle}] Section '{section}' has been open for {elapsed:.2f} seconds. "
                     f"Timeout is {timeout:.2f} seconds."
                 )
                 is_elapsed = True
+                self._last_section_timeout_duration = max(
+                    self._last_section_timeout_duration or 0.0, timeout
+                )
         if not self.open_sections:
             if (
                 self.cfg.rank_section_timeouts
@@ -536,6 +682,7 @@ class RankMonitorServer:
             timeout = self.cfg.rank_out_of_section_timeout
             is_elapsed = timeout is not None and elapsed > timeout
             if is_elapsed:
+                self._last_section_timeout_duration = timeout
                 self.logger.warning(
                     f"[Cycle {self.current_cycle}] Was out of section for {elapsed:.2f} seconds. "
                     f"Timeout is {timeout:.2f} seconds."
@@ -546,10 +693,23 @@ class RankMonitorServer:
         while True:
             if self.rank_info is not None:
                 curr_time = time.monotonic()
+                self._record_filesystem_io(curr_time)
                 hb_timed_out = self._is_hb_timeout_elapsed(curr_time)
                 section_timed_out = self._is_section_timeout_elapsed(curr_time)
                 if hb_timed_out or section_timed_out:
-                    await self._handle_timeout()
+                    timeout_duration = max(
+                        duration
+                        for duration in (
+                            self._last_hb_timeout_duration,
+                            self._last_section_timeout_duration,
+                        )
+                        if duration is not None
+                    )
+                    await self._handle_timeout(
+                        timeout_duration,
+                        heartbeat_timed_out=hb_timed_out,
+                        section_timed_out=section_timed_out,
+                    )
             await asyncio.sleep(self.cfg.workload_check_interval)
 
     async def _periodic_restart_check(self):

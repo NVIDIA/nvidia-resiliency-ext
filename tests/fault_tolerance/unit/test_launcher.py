@@ -23,6 +23,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -87,6 +89,41 @@ def _config_from_launcher_cli(cli_args):
     ) as setup_rank_monitors_early:
         config, cmd, cmd_args = launcher.config_from_args(args)
     return config, cmd, cmd_args, setup_rank_monitors_early
+
+
+def test_shutdown_captures_only_first_live_worker_before_sigterm(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    spec = _make_agent_spec()
+    cfg = FaultToleranceConfig(diagnostic_dump_dir=str(tmp_path))
+    agent = launcher.LocalElasticAgent(spec=spec, fault_tol_cfg=cfg, logs_specs=MagicMock())
+    agent._pcontext = MagicMock()
+    agent._pcontext.pids.return_value = {0: 111, 1: 222}
+    agent._worker_group.workers = [
+        SimpleNamespace(local_rank=0, global_rank=8),
+        SimpleNamespace(local_rank=1, global_rank=9),
+    ]
+    agent._core_dump_claim_file = str(tmp_path / "core.claim")
+
+    def capture_and_claim(**kwargs):
+        Path(kwargs["claim_file"]).touch()
+        return str(tmp_path / "rank8.core")
+
+    with (
+        patch.object(launcher.os, "kill"),
+        patch.object(
+            launcher,
+            "capture_full_core_dump_once",
+            side_effect=capture_and_claim,
+        ) as capture,
+        patch.object(launcher, "terminate_mp_processes"),
+    ):
+        agent._shutdown(signal.SIGTERM, timeout=17)
+
+    capture.assert_called_once()
+    assert capture.call_args.kwargs["pid"] == 111
+    assert capture.call_args.kwargs["rank"] == 8
+    agent._pcontext.close.assert_called_once_with(signal.SIGTERM, timeout=17)
 
 
 def test_register_barrier_rdzv_handler_applies_c10d_patch():

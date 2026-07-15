@@ -62,6 +62,44 @@ If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The ``--ft-restart-policy`` parameter is deprecated; only ``any-failed`` is supported: all workers
 are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.
 
+Timeout and termination diagnostics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``ft_launcher`` enables two native diagnostic safeguards by default:
+
+* Before a launcher or rank monitor sends ``SIGTERM`` to a live training rank, it runs ``gcore``
+  (or ``gdb generate-core-file`` as a fallback). An atomic node-local claim shared by the launcher
+  and its rank monitors limits capture to the first rank in that worker termination wave. Ranks
+  subsequently stopped because another rank failed are therefore not all dumped. A new worker
+  generation resets the claim.
+* When a heartbeat or section timeout expires, the rank monitor compares Linux physical filesystem
+  I/O counters for the rank and its descendants with the counters from one timeout duration ago.
+  If reads or writes occurred (for example, while a checkpoint was being saved), it captures all
+  native thread stacks with ``gdb``, logs a warning, resets the elapsed heartbeat/section timeout
+  clocks, and lets the rank continue. If no filesystem I/O occurred, normal termination proceeds.
+
+Core and stack files are written to ``./nvrx_dumps`` by default. File names include hostname,
+cycle, global rank, PID, and a UTC timestamp. The commands are best-effort: ``gcore``/``gdb`` must
+be installed, and the deployment's ptrace policy must allow attachment. A failed diagnostic does
+not prevent the intended signal or timeout action.
+
+The related CLI options are:
+
+* ``--ft-full-core-dump-on-sigterm true|false``
+* ``--ft-timeout-activity-check true|false``
+* ``--ft-diagnostic-dump-dir <PATH>``
+* ``--ft-diagnostic-dump-timeout <SECONDS>``
+
+The same settings can be placed in the fault-tolerance YAML:
+
+.. code-block:: yaml
+
+   fault_tolerance:
+     full_core_dump_on_sigterm: true
+     timeout_activity_check: true
+     diagnostic_dump_dir: /shared/job-diagnostics
+     diagnostic_dump_timeout: 300
+
 Node health check service
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 

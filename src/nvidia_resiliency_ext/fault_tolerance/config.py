@@ -91,6 +91,17 @@ class FaultToleranceConfig:
     * `install_exception_hook` [bool] if True, installs sys.excepthook to capture uncaught exceptions
       in training worker processes, format and log the traceback, and use os._exit() to exit the
       process reliably. Default: False.
+    * `full_core_dump_on_sigterm` [bool] if True, captures a full core from the first live rank
+      before each launcher-owned SIGTERM termination wave. Rank monitors and the launcher share a
+      node-local claim so ranks stopped as fallout from the same failure are not all dumped.
+      Default: True.
+    * `timeout_activity_check` [bool] if True, a timed-out rank that performed filesystem I/O during
+      the timeout window is allowed to continue after a native all-thread stack trace is captured.
+      The timeout clocks are reset before monitoring resumes. Default: True.
+    * `diagnostic_dump_dir` [str|None] directory for full cores and stack traces. ``None`` writes to
+      ``./nvrx_dumps``. Default: None.
+    * `diagnostic_dump_timeout` [float] maximum time in seconds allowed for each gcore/gdb capture.
+      Default: 300.0.
     * `num_warmup_iterations` [int] number of warmup iterations before monitoring step section and
       out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
       timeout monitoring as they can be significantly slower than steady-state iterations.
@@ -145,6 +156,10 @@ class FaultToleranceConfig:
     )
     checkpoint_iteration_file: Optional[str] = None  # Path to file with latest checkpoint iteration
     install_exception_hook: bool = False
+    full_core_dump_on_sigterm: bool = True
+    timeout_activity_check: bool = True
+    diagnostic_dump_dir: Optional[str] = None
+    diagnostic_dump_timeout: float = 300.0
     num_warmup_iterations: int = (
         5  # Number of warmup iterations before monitoring step section and out-of-section timeouts
     )
@@ -292,6 +307,7 @@ class FaultToleranceConfig:
             'gpu_memory_reclaim_timeout',
             'gpu_memory_tolerance_mb',
             'gpu_memory_poll_interval',
+            'diagnostic_dump_timeout',
         ]
         for field in fields(FaultToleranceConfig):
             cli_field_name = f"ft_{field.name}"

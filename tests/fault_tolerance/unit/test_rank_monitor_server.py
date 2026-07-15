@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import socket
 import tempfile
 import time
@@ -452,6 +453,92 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         server._step_section_seen_this_cycle = False
         curr_time = time.monotonic()
         self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+
+    def test_filesystem_activity_uses_rank_and_descendant_io_deltas(self):
+        server = self._create_server(rank_section_timeouts={"step": 30.0})
+        server._filesystem_io_history.extend(
+            [
+                (0.0, {100: (1000, 2000), 101: (0, 0)}),
+                (20.0, {100: (1000, 2000), 101: (4096, 8192)}),
+            ]
+        )
+
+        active, read_bytes, write_bytes = server._filesystem_activity_since(
+            now=20.0, timeout_duration=10.0
+        )
+
+        self.assertTrue(active)
+        self.assertEqual(read_bytes, 4096)
+        self.assertEqual(write_bytes, 8192)
+
+    def test_timeout_with_filesystem_activity_captures_stack_and_continues(self):
+        server = self._create_server(rank_section_timeouts={"step": 30.0})
+        server.rank_info = RankInfo(global_rank=7, local_rank=0, host=socket.gethostname(), pid=123)
+        server.last_hb_time = 1.0
+        server._filesystem_io_history.extend([(0.0, {123: (0, 0)}), (20.0, {123: (0, 4096)})])
+
+        with (
+            patch(
+                "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.time.monotonic",
+                return_value=20.0,
+            ),
+            patch(
+                "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.capture_stack_trace",
+                return_value="/tmp/rank7.stack.txt",
+            ) as capture_stack,
+            patch.object(server, "_shutdown_rank_if_alive") as shutdown_rank,
+        ):
+            asyncio.run(
+                server._handle_timeout(
+                    10.0,
+                    heartbeat_timed_out=True,
+                    section_timed_out=False,
+                )
+            )
+
+        capture_stack.assert_called_once()
+        shutdown_rank.assert_not_called()
+        self.assertEqual(server.last_hb_time, 20.0)
+        self.assertEqual(len(server._filesystem_io_history), 1)
+        server.logger.warning.assert_called()
+
+    def test_timeout_without_filesystem_activity_terminates_rank(self):
+        server = self._create_server(rank_section_timeouts={"step": 30.0})
+        server.rank_info = RankInfo(global_rank=7, local_rank=0, host=socket.gethostname(), pid=123)
+        server._filesystem_io_history.extend([(0.0, {123: (0, 4096)}), (20.0, {123: (0, 4096)})])
+
+        with patch.object(server, "_shutdown_rank_if_alive") as shutdown_rank:
+            asyncio.run(server._handle_timeout(10.0))
+
+        shutdown_rank.assert_called_once_with()
+
+    def test_rank_monitor_captures_core_before_sigterm(self):
+        server = self._create_server(rank_section_timeouts={"step": 30.0})
+        server.cfg.rank_termination_signal = signal.SIGTERM
+        server.rank_info = RankInfo(global_rank=7, local_rank=0, host=socket.gethostname(), pid=123)
+        calls = []
+
+        with (
+            patch.object(
+                os,
+                "kill",
+                side_effect=lambda pid, sig: calls.append(("signal", pid, sig)),
+            ),
+            patch(
+                "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.capture_full_core_dump_once",
+                side_effect=lambda **kwargs: calls.append(("core", kwargs["pid"])),
+            ),
+        ):
+            server._shutdown_rank()
+
+        self.assertEqual(
+            calls,
+            [
+                ("signal", 123, signal.SIGCONT),
+                ("core", 123),
+                ("signal", 123, signal.SIGTERM),
+            ],
+        )
 
     def test_step_section_uses_warmup_timeout_when_iteration_in_warmup_range(self):
         """When step is open and iteration is in warmup range, warmup section timeout is used."""

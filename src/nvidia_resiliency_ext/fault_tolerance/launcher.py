@@ -80,6 +80,7 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_ft_config_file_args,
     add_log_funnel_args,
     add_rendezvous_args,
+    str_to_bool,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
@@ -87,6 +88,12 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
     UpdateConfigMsg,
+)
+from nvidia_resiliency_ext.fault_tolerance.diagnostics import (
+    CORE_DUMP_CLAIM_FILE_ENV_VAR,
+    capture_full_core_dump_once,
+    core_dump_claim_file,
+    reset_core_dump_claim,
 )
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
@@ -452,6 +459,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        self._core_dump_claim_file = core_dump_claim_file(os.getpid())
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -736,6 +744,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             minimal_env = {
                 'LOCAL_RANK': str(local_rank),
                 'FT_RANK_MONITOR_IPC_SOCKET': rmon_ipc_socket,
+                CORE_DUMP_CLAIM_FILE_ENV_VAR: core_dump_claim_file(launcher_pid),
             }
 
             # Always False to disable nested restarter (not needed anymore)
@@ -783,6 +792,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     def shutdown_rank_monitors(self):
         # Skip if rank monitors were disabled
         if os.getenv('NVRX_DISABLE_RANK_MONITORS'):
+            reset_core_dump_claim(self._core_dump_claim_file)
             return
 
         # Terminate rank monitor processes
@@ -800,6 +810,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     state.process.join()
             with contextlib.suppress(Exception):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
+        reset_core_dump_claim(self._core_dump_claim_file)
 
     async def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
         """Record rank monitor socket path for cycle updates.
@@ -1003,6 +1014,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         # At this point, rendezvous has completed and we're about to start workers.
         # The cycle number is used for profiling and environment variable setting.
         current_cycle = restart_count = self._get_global_cycle_number()
+
+        # Rank monitors and this launcher atomically claim this file before capturing a core.
+        # Reset it once per worker generation so cascading rank termination produces one core.
+        reset_core_dump_claim(self._core_dump_claim_file)
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1238,12 +1253,48 @@ class LocalElasticAgent(SimpleElasticAgent):
             "GPU %d memory usage history (%d samples): %s",
         )
 
+    def _capture_first_worker_core(self) -> None:
+        if not self._ft_cfg.full_core_dump_on_sigterm or self._pcontext is None:
+            return
+
+        try:
+            rank_by_local_rank = {
+                worker.local_rank: worker.global_rank for worker in self._worker_group.workers
+            }
+            worker_pids = sorted(self._pcontext.pids().items())
+        except Exception:
+            logger.warning("Could not enumerate workers for full core capture", exc_info=True)
+            return
+
+        for local_rank, pid in worker_pids:
+            try:
+                os.kill(pid, 0)
+            except (OSError, TypeError):
+                continue
+
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGCONT)
+            capture_full_core_dump_once(
+                pid=pid,
+                rank=rank_by_local_rank.get(local_rank),
+                cycle=self._get_global_cycle_number(),
+                dump_dir=self._ft_cfg.diagnostic_dump_dir,
+                timeout=self._ft_cfg.diagnostic_dump_timeout,
+                claim_file=self._core_dump_claim_file,
+                logger=logger,
+            )
+            # A successful capture, or a concurrent rank-monitor capture, leaves the claim in
+            # place. If capture failed and released it, try the next live rank as a fallback.
+            if os.path.exists(self._core_dump_claim_file):
+                break
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
         if self._worker_watchdog is not None:
             self._worker_watchdog.stop()
             self._worker_watchdog = None
         if self._pcontext:
+            if signal.Signals(death_sig) is signal.SIGTERM:
+                self._capture_first_worker_core()
             self._pcontext.close(death_sig, timeout=timeout)
             # Best-effort cleanup for orphan descendants in worker process groups.
             # PID=1 can become parent when original worker parent exits.
@@ -2587,6 +2638,44 @@ def get_args_parser() -> ArgumentParser:
         help="Part of Fault Tolerance pkg config (install_exception_hook). "
         "If enabled, installs sys.excepthook to capture uncaught exceptions in training worker processes, "
         "format and log the traceback, and use os._exit() to exit the process reliably. Default: False.",
+    )
+
+    parser.add_argument(
+        "--ft-full-core-dump-on-sigterm",
+        "--ft_full_core_dump_on_sigterm",
+        type=str_to_bool,
+        default=None,
+        dest="ft_full_core_dump_on_sigterm",
+        help="Capture a full core from only the first rank in each launcher-owned SIGTERM "
+        "termination wave. Requires gcore or gdb. Default: True.",
+    )
+
+    parser.add_argument(
+        "--ft-timeout-activity-check",
+        "--ft_timeout_activity_check",
+        type=str_to_bool,
+        default=None,
+        dest="ft_timeout_activity_check",
+        help="When a timeout follows rank filesystem I/O during the timeout window, capture an "
+        "all-thread stack trace, warn, reset the timeout clocks, and continue. Default: True.",
+    )
+
+    parser.add_argument(
+        "--ft-diagnostic-dump-dir",
+        "--ft_diagnostic_dump_dir",
+        type=str,
+        default=None,
+        dest="ft_diagnostic_dump_dir",
+        help="Directory for full core dumps and timeout stack traces. Default: ./nvrx_dumps.",
+    )
+
+    parser.add_argument(
+        "--ft-diagnostic-dump-timeout",
+        "--ft_diagnostic_dump_timeout",
+        type=str,
+        default=None,
+        dest="ft_diagnostic_dump_timeout",
+        help="Maximum seconds allowed for each gcore/gdb diagnostic capture. Default: 300.",
     )
 
     add_attribution_args(parser)
