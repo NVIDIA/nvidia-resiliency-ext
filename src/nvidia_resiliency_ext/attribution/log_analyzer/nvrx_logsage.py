@@ -18,7 +18,6 @@ from logsage.auto_resume_policy.attribution_classes import (
     Attribution,
     AutoResumeAction,
     ErrorAttribution,
-    FinishedStatus,
     LRUCache,
 )
 from logsage.auto_resume_policy.error_attribution import (
@@ -258,9 +257,9 @@ def attribution_from_finished_status(
     """Build ErrorAttribution when no application errors were found,
     based solely on app_data.finished status.
     """
-    finished = app_data.finished
+    finished = _finished_status_name(app_data.finished)
 
-    if finished == FinishedStatus.LLM_FAILURE:
+    if finished == FINISHED_STATUS_LLM_FAILURE:
         logger.info("LLM failure")
         return ErrorAttribution(
             application_errors_full=[],
@@ -274,7 +273,7 @@ def attribution_from_finished_status(
             cor_category="",
         )
 
-    if finished == FinishedStatus.SLURM_CANCELLED:
+    if finished == FINISHED_STATUS_SLURM_CANCELLED:
         logger.info("Slurm cancelled")
         return ErrorAttribution(
             application_errors_full=[],
@@ -288,7 +287,7 @@ def attribution_from_finished_status(
             cor_category="",
         )
 
-    if finished == FinishedStatus.SLURM_CANCELLED_JOB_REQUEUE:
+    if finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
         logger.info("Slurm cancelled due to job requeue")
         return ErrorAttribution(
             application_errors_full=[],
@@ -302,7 +301,7 @@ def attribution_from_finished_status(
             cor_category="",
         )
 
-    if FinishedStatus.SLURM_CANCELLED_TIME_LIMIT in finished:
+    if FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in finished:
         logger.info("Slurm cancelled due to time limit")
         return ErrorAttribution(
             application_errors_full=[],
@@ -316,7 +315,7 @@ def attribution_from_finished_status(
             cor_category="",
         )
 
-    if finished == FinishedStatus.APPLICATION_DONE:
+    if finished == FINISHED_STATUS_APPLICATION_DONE:
         logger.info(Attribution.APPLICATION_DONE)
         return ErrorAttribution(
             application_errors_full=[],
@@ -418,7 +417,14 @@ def _log_analysis_retry_config() -> tuple[int, float, float, float]:
 
 
 def _finished_status_name(status: Any) -> str:
-    return getattr(status, "name", status)
+    status_name = getattr(status, "name", None)
+    if status_name is None:
+        status_name = getattr(status, "value", status)
+    if not isinstance(status_name, str):
+        status_name = str(status_name)
+    if "." in status_name:
+        status_name = status_name.rsplit(".", 1)[-1]
+    return status_name.strip().upper().replace(" ", "_")
 
 
 def _sleep_with_backoff(
@@ -941,7 +947,8 @@ class NVRxLogAnalyzer(NVRxAttribution):
         result = []
         logger.info("output_list_size: %s", str(len(output_list)))
         for output in output_list:
-            if output.finished == FINISHED_STATUS_APPLICATION_DONE:
+            finished = _finished_status_name(output.finished)
+            if finished == FINISHED_STATUS_APPLICATION_DONE:
                 result.append(
                     (
                         STOP_NO_RESTART,
@@ -990,7 +997,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
                         )
                     result.append(fields)
                 else:
-                    if output.finished == FINISHED_STATUS_LLM_FAILURE:
+                    if finished == FINISHED_STATUS_LLM_FAILURE:
                         result.append(
                             (
                                 ATTR_LLM_FAILURE,
@@ -1000,7 +1007,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
                                 str(output.checkpoint_saved),
                             )
                         )
-                    elif output.finished == FINISHED_STATUS_SLURM_CANCELLED:
+                    elif finished == FINISHED_STATUS_SLURM_CANCELLED:
                         result.append(
                             (
                                 RESTART_IMMEDIATE,
@@ -1010,7 +1017,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
                                 str(output.checkpoint_saved),
                             )
                         )
-                    elif output.finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
+                    elif finished == FINISHED_STATUS_SLURM_CANCELLED_JOB_REQUEUE:
                         result.append(
                             (
                                 RESTART_IMMEDIATE,
@@ -1020,12 +1027,12 @@ class NVRxLogAnalyzer(NVRxAttribution):
                                 str(output.checkpoint_saved),
                             )
                         )
-                    elif FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in output.finished:
+                    elif FINISHED_STATUS_SLURM_CANCELLED_TIME_LIMIT in finished:
                         result.append(
                             (
                                 STOP_NO_RESTART,
                                 "",
-                                f"""Attribution: Primary issues: [{output.finished.replace("_", " ")}], Secondary issues: []""",
+                                f"""Attribution: Primary issues: [{finished.replace("_", " ")}], Secondary issues: []""",
                                 "",
                                 str(output.checkpoint_saved),
                             )
@@ -1209,7 +1216,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
 
         if (
             len(last_with_errors.application_errors_list_full) == 0
-            or last_with_errors.finished == FinishedStatus.APPLICATION_DONE
+            or _finished_status_name(last_with_errors.finished) == FINISHED_STATUS_APPLICATION_DONE
         ):
             return attribution_from_finished_status(
                 last_with_errors, last_with_errors.application_errors_list_unique

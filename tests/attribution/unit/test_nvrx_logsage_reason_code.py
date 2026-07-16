@@ -3,11 +3,23 @@ import importlib
 import sys
 import types
 
+import pytest
+
 
 def _stub_module(monkeypatch, name):
     module = types.ModuleType(name)
     monkeypatch.setitem(sys.modules, name, module)
     return module
+
+
+class _EnumStyleStatus:
+    def __init__(self, *, name=None, value=None, text=""):
+        self.name = name
+        self.value = value
+        self._text = text
+
+    def __str__(self):
+        return self._text
 
 
 def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
@@ -16,7 +28,6 @@ def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
 
     langchain_openai = _stub_module(monkeypatch, "langchain_openai")
     langchain_openai.ChatOpenAI = object
-
     output_parsers = _stub_module(monkeypatch, "langchain_core.output_parsers")
     output_parsers.StrOutputParser = object
     prompts = _stub_module(monkeypatch, "langchain_core.prompts")
@@ -31,6 +42,11 @@ def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
     attribution_classes = _stub_module(
         monkeypatch, "logsage.auto_resume_policy.attribution_classes"
     )
+
+    class StubErrorAttribution:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
     stub_attribution = types.SimpleNamespace(
         APPLICATION_DONE="APPLICATION_DONE",
         ERRORS_NOT_FOUND="ERRORS_NOT_FOUND",
@@ -39,8 +55,8 @@ def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
         SLURM_STEP_CANCELLED_JOB_REQUEUE="SLURM_STEP_CANCELLED_JOB_REQUEUE",
     )
     stub_auto_resume = types.SimpleNamespace(
-        ERRORS_NOT_FOUND="ERRORS_NOT_FOUND",
-        LLM_FAILURE="LLM_FAILURE",
+        ERRORS_NOT_FOUND="ERRORS NOT FOUND",
+        LLM_FAILURE="LLM FAILURE",
         RESTART_IMMEDIATE="RESTART IMMEDIATE",
         STOP_NO_RESTART="STOP - DONT RESTART IMMEDIATE",
     )
@@ -54,7 +70,7 @@ def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
     attribution_classes.ApplicationData = object
     attribution_classes.Attribution = stub_attribution
     attribution_classes.AutoResumeAction = stub_auto_resume
-    attribution_classes.ErrorAttribution = object
+    attribution_classes.ErrorAttribution = StubErrorAttribution
     attribution_classes.FinishedStatus = stub_finished
     attribution_classes.LRUCache = object
 
@@ -70,7 +86,6 @@ def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
     error_extraction.return_application_errors_rt = lambda *args, **kwargs: types.SimpleNamespace(
         checkpoint_saved=False
     )
-
     prompts_mod = _stub_module(monkeypatch, "logsage.auto_resume_policy.prompts")
     prompts_mod.template_post_error_check = ""
     util_postprocessing = _stub_module(
@@ -81,6 +96,31 @@ def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
     utils.chunk_indices = lambda *args, **kwargs: []
 
     return importlib.import_module(module_name)
+
+
+def _fake_log_analyzer():
+    return types.SimpleNamespace(
+        _init_config={},
+        is_per_cycle=False,
+        job_inline_data_dict={},
+    )
+
+
+def _application_data(*, finished, original_text=None):
+    return types.SimpleNamespace(
+        finished=finished,
+        application_errors_list_full=[],
+        original_text=original_text if original_text is not None else ["training failed"],
+        checkpoint_saved=False,
+    )
+
+
+def _run_single_output(nvrx_logsage, output):
+    result = asyncio.run(nvrx_logsage.NVRxLogAnalyzer.llm_analyze(_fake_log_analyzer(), [output]))
+    analysis_result, state = asyncio.run(
+        nvrx_logsage.NVRxLogAnalyzer.print_output(object(), result)
+    )
+    return result, analysis_result, state
 
 
 def test_stop_no_restart_action_wins_over_restart_substring(monkeypatch):
@@ -227,3 +267,63 @@ def test_logsage_tuple_parser_falls_back_when_issue_literal_recurses(monkeypatch
 
     assert item.primary_issues == ["NCCL TIMEOUT"]
     assert item.secondary_issues == []
+
+
+@pytest.mark.parametrize(
+    "finished",
+    [
+        "LLM_FAILURE",
+        "LLM FAILURE",
+        "FinishedStatus.LLM_FAILURE",
+        _EnumStyleStatus(name="LLM_FAILURE", text="FinishedStatus.LLM_FAILURE"),
+        _EnumStyleStatus(value="LLM_FAILURE", text="FinishedStatus.LLM_FAILURE"),
+    ],
+)
+def test_llm_analyze_maps_llm_failure_status_representations_to_unknown(monkeypatch, finished):
+    nvrx_logsage = _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch)
+
+    output = _application_data(
+        finished=finished,
+        original_text=["logsage.auto_resume_policy.utils ERROR - LLM ENDPOINT FAILED"],
+    )
+
+    result, analysis_result, state = _run_single_output(nvrx_logsage, output)
+
+    assert result == [
+        (
+            nvrx_logsage.ATTR_LLM_FAILURE,
+            nvrx_logsage.ATTR_LLM_FAILURE,
+            nvrx_logsage.ATTR_LLM_FAILURE,
+            nvrx_logsage.ATTR_LLM_FAILURE,
+            "False",
+        )
+    ]
+    assert state.name == "CONTINUE"
+    assert analysis_result.recommendation.action == "UNKNOWN"
+    assert analysis_result.items[0].auto_resume == nvrx_logsage.ATTR_LLM_FAILURE
+
+
+def test_llm_analyze_preserves_errors_not_found_fallback_for_unknown_status(monkeypatch):
+    nvrx_logsage = _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch)
+
+    result, analysis_result, _state = _run_single_output(
+        nvrx_logsage,
+        _application_data(finished="RUNNING", original_text=["training finished cleanly"]),
+    )
+
+    assert result[0][0] == nvrx_logsage.ATTR_ERRORS_NOT_FOUND
+    assert analysis_result.recommendation.action == "CONTINUE"
+
+
+def test_llm_analyze_maps_stringified_slurm_time_limit_status(monkeypatch):
+    nvrx_logsage = _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch)
+
+    result, analysis_result, state = _run_single_output(
+        nvrx_logsage,
+        _application_data(finished="FinishedStatus.SLURM_CANCELLED_TIME_LIMIT"),
+    )
+
+    assert result[0][0] == nvrx_logsage.STOP_NO_RESTART
+    assert "SLURM CANCELLED TIME LIMIT" in result[0][2]
+    assert state.name == "STOP"
+    assert analysis_result.recommendation.action == "STOP"
