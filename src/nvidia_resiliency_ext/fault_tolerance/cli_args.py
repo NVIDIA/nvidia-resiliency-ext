@@ -398,6 +398,28 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--ft-attribution-log-analysis-endpoint-outer-retries",
+        "--ft_attribution_log_analysis_endpoint_outer_retries",
+        type=int,
+        default=None,
+        dest="ft_attribution_log_analysis_endpoint_outer_retries",
+        help=(
+            "Additional NVRx retries when LogSage reports LLM ENDPOINT FAILED after "
+            "its internal endpoint retries. Default: attrsvc default (0)."
+        ),
+    )
+    parser.add_argument(
+        "--ft-attribution-log-analysis-endpoint-outer-backoff-sec",
+        "--ft_attribution_log_analysis_endpoint_outer_backoff_sec",
+        type=float,
+        default=None,
+        dest="ft_attribution_log_analysis_endpoint_outer_backoff_sec",
+        help=(
+            "Seconds between NVRx log-analysis endpoint outer retries. "
+            "Default: attrsvc default (60)."
+        ),
+    )
+    parser.add_argument(
         "--ft-attribution-decision-timeout",
         "--ft_attribution_decision_timeout",
         type=float,

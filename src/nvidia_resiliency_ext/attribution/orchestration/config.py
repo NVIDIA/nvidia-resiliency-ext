@@ -65,6 +65,8 @@ class LogSageExecutionConfig:
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_tokens: int | None = None
+    endpoint_outer_retries: int | None = None
+    endpoint_outer_backoff_sec: float | None = None
 
     def llm_runtime_overrides(self) -> dict[str, Any]:
         """LLM kwargs for LogSage/MCP/runtime calls, omitting unset overrides."""
@@ -74,6 +76,13 @@ class LogSageExecutionConfig:
             temperature=self.llm_temperature,
             top_p=self.llm_top_p,
             max_tokens=self.llm_max_tokens,
+        )
+
+    def endpoint_retry_overrides(self) -> dict[str, Any]:
+        """LogSage endpoint retry policy for final attribution calls."""
+        return endpoint_retry_overrides(
+            retries=self.endpoint_outer_retries,
+            backoff_sec=self.endpoint_outer_backoff_sec,
         )
 
     def llm_endpoint_overrides(self) -> dict[str, Any]:
@@ -121,6 +130,20 @@ def llm_runtime_overrides(
             "max_tokens": max_tokens,
         }
     )
+
+
+def endpoint_retry_overrides(
+    *,
+    retries: int | None = None,
+    backoff_sec: float | None = None,
+) -> dict[str, Any]:
+    """Final-attribution endpoint retry kwargs, omitting unset overrides."""
+    values: dict[str, Any] = {}
+    if retries is not None:
+        values["endpoint_outer_retries"] = max(int(retries), 0)
+    if backoff_sec is not None:
+        values["endpoint_outer_backoff_sec"] = max(float(backoff_sec), 0.0)
+    return values
 
 
 def _value_or_default(values: Mapping[str, Any], key: str, default: Any) -> Any:

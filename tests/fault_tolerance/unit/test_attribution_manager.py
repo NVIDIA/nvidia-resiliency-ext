@@ -27,6 +27,8 @@ def _args(**overrides):
         "ft_attribution_decision_timeout": None,
         "ft_attribution_log_level": None,
         "ft_attribution_export_url": None,
+        "ft_attribution_log_analysis_endpoint_outer_retries": None,
+        "ft_attribution_log_analysis_endpoint_outer_backoff_sec": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -184,6 +186,8 @@ def test_attribution_config_maps_launcher_args(tmp_path):
             ft_attribution_analysis_backend="mcp",
             ft_attribution_decision_timeout=12.5,
             ft_attribution_log_level="DEBUG",
+            ft_attribution_log_analysis_endpoint_outer_retries=2,
+            ft_attribution_log_analysis_endpoint_outer_backoff_sec=3.5,
             ft_attribution_export_url=(
                 "https://dataflow.example.test/dataflow2/example-index/posting"
             ),
@@ -201,6 +205,8 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "mcp"
     assert cfg.client_endpoint.decision_timeout == 12.5
     assert env["NVRX_ATTRSVC_LOG_LEVEL"] == "DEBUG"
+    assert env["NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES"] == "2"
+    assert env["NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC"] == "3.5"
     assert (
         env["NVRX_ATTRSVC_EXPORT_URL"]
         == "https://dataflow.example.test/dataflow2/example-index/posting"
@@ -235,6 +241,28 @@ def test_attribution_decision_timeout_must_be_positive(tmp_path, value):
     with pytest.raises(ValueError, match="--ft-attribution-decision-timeout"):
         AttributionConfig.from_args(
             _args(ft_attribution_endpoint="localhost", ft_attribution_decision_timeout=value),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        (
+            "ft_attribution_log_analysis_endpoint_outer_retries",
+            "--ft-attribution-log-analysis-endpoint-outer-retries",
+        ),
+        (
+            "ft_attribution_log_analysis_endpoint_outer_backoff_sec",
+            "--ft-attribution-log-analysis-endpoint-outer-backoff-sec",
+        ),
+    ],
+)
+def test_attribution_endpoint_outer_retry_knobs_must_be_non_negative(tmp_path, field, message):
+    with pytest.raises(ValueError, match=message):
+        AttributionConfig.from_args(
+            _args(ft_attribution_endpoint="localhost", **{field: -1}),
             str(tmp_path / "train.log"),
             FaultToleranceConfig(),
         )
