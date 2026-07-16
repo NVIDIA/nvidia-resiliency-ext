@@ -63,6 +63,7 @@ def _controller_config_from_settings(cfg: Settings) -> AttributionControllerConf
             llm_temperature=cfg.LLM_TEMPERATURE,
             llm_top_p=cfg.LLM_TOP_P,
             llm_max_tokens=cfg.LLM_MAX_TOKENS,
+            progressive_chunks_per_time=cfg.PROGRESSIVE_CHUNKS_PER_TIME,
         ),
         cache=AttributionCacheConfig(
             compute_timeout=cfg.COMPUTE_TIMEOUT,

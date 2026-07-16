@@ -681,7 +681,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         self.logs_minutes_before_job_end = int(
             self._init_config.get("logs_minutes_before_job_end", 20)
         )
-        self.chunks_per_time = int(self._init_config.get("chunks_per_time", 5))
+        self.chunks_per_time = float(self._init_config.get("chunks_per_time", 5))
         super().__init__(
             preprocess_input=self.analyze_logs,
             attribution=self.llm_analyze,
@@ -703,7 +703,10 @@ class NVRxLogAnalyzer(NVRxAttribution):
             return max(int(self.logs_minutes_before_job_end / self.chunks_per_time), 1)
         return 1
 
-    async def analyze_logs_rt_start(self) -> dict[str, str | None]:
+    async def analyze_logs_rt_start(
+        self,
+        args: Mapping[str, Any] | None = None,
+    ) -> dict[str, str | None]:
         """Run the progressive-analysis start phase for the configured log path.
 
         This is a non-result-producing phase: it polls the log file, reconciling
@@ -718,7 +721,11 @@ class NVRxLogAnalyzer(NVRxAttribution):
             payload (``status`` / ``message`` / ``handle``) describing the start outcome.
             The ``module`` key is added by the calling MCP tool.
         """
-        cfg = effective_run_or_init_config(self._init_config)
+        cfg = (
+            normalize_attribution_args(args)
+            if args is not None
+            else effective_run_or_init_config(self._init_config)
+        )
         path = cfg["log_path"]
 
         llm = self.llm
@@ -732,9 +739,10 @@ class NVRxLogAnalyzer(NVRxAttribution):
         if path not in self.temporal_cache_dict:
             self.temporal_cache_dict[path] = {}
         state = self.job_inline_data_dict.get(path)
-        if not isinstance(state, _ProgressiveLogState):
+        if not isinstance(state, _ProgressiveLogState) or state.closed:
             state = _ProgressiveLogState(self._history_window())
             self.job_inline_data_dict[path] = state
+        state.poller_task = asyncio.current_task()
         file_offset = 0
         empty_logs_stop = self.stop_accumulating_count
 

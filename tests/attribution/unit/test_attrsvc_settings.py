@@ -10,11 +10,13 @@ Settings = attrsvc_config.Settings
 def test_attrsvc_llm_settings_are_override_only(tmp_path, monkeypatch):
     monkeypatch.delenv("NVRX_ATTRSVC_LLM_MODEL", raising=False)
     monkeypatch.delenv("NVRX_ATTRSVC_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("NVRX_ATTRSVC_PROGRESSIVE_CHUNKS_PER_TIME", raising=False)
 
     cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
 
     assert cfg.LLM_MODEL is None
     assert cfg.LLM_BASE_URL is None
+    assert cfg.PROGRESSIVE_CHUNKS_PER_TIME is None
 
 
 def test_attrsvc_llm_settings_accept_env_overrides(tmp_path, monkeypatch):
@@ -33,6 +35,7 @@ def test_attrsvc_llm_empty_env_values_are_unset(tmp_path, monkeypatch):
     monkeypatch.setenv("NVRX_ATTRSVC_LLM_TEMPERATURE", "")
     monkeypatch.setenv("NVRX_ATTRSVC_LLM_TOP_P", "")
     monkeypatch.setenv("NVRX_ATTRSVC_LLM_MAX_TOKENS", "")
+    monkeypatch.setenv("NVRX_ATTRSVC_PROGRESSIVE_CHUNKS_PER_TIME", "")
 
     cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
 
@@ -41,6 +44,22 @@ def test_attrsvc_llm_empty_env_values_are_unset(tmp_path, monkeypatch):
     assert cfg.LLM_TEMPERATURE is None
     assert cfg.LLM_TOP_P is None
     assert cfg.LLM_MAX_TOKENS is None
+    assert cfg.PROGRESSIVE_CHUNKS_PER_TIME is None
+
+
+def test_attrsvc_progressive_chunks_per_time_accepts_float_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_PROGRESSIVE_CHUNKS_PER_TIME", "0.01")
+
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.PROGRESSIVE_CHUNKS_PER_TIME == 0.01
+
+
+def test_attrsvc_progressive_chunks_per_time_must_be_positive(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_PROGRESSIVE_CHUNKS_PER_TIME", "0")
+
+    with pytest.raises(ValueError, match="PROGRESSIVE_CHUNKS_PER_TIME must be positive"):
+        Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
 
 
 def test_attrsvc_analysis_backend_uses_current_env_name_only(tmp_path, monkeypatch):

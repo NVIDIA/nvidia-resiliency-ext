@@ -65,6 +65,7 @@ class LogSageExecutionConfig:
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_tokens: int | None = None
+    progressive_chunks_per_time: float | None = None
 
     def llm_runtime_overrides(self) -> dict[str, Any]:
         """LLM kwargs for LogSage/MCP/runtime calls, omitting unset overrides."""
@@ -96,6 +97,10 @@ class LogSageExecutionConfig:
                 "llm_max_tokens": self.llm_max_tokens,
             }
         )
+
+    def logsage_constructor_overrides(self) -> dict[str, Any]:
+        """LogSage construction kwargs, omitting unset overrides."""
+        return drop_none_values({"chunks_per_time": self.progressive_chunks_per_time})
 
 
 def drop_none_values(values: dict[str, Any]) -> dict[str, Any]:
