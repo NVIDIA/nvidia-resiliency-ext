@@ -624,9 +624,8 @@ class FileSystemWriterAsync(FileSystemWriter):
             storage_plan,
         ) = data_structure
 
-
         if uncached_tensor_data is not None:
-            # Clone the cpu tensors so they are snaphotted properly
+            # Clone the cpu tensors so they are snapshotted properly
             uncached_items, uncached_data = uncached_tensor_data
             uncached_data = [
                 (
