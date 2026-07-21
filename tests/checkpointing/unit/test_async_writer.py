@@ -414,12 +414,8 @@ class TestAsyncSave:
     def test_no_torn_checkpoint_when_state_mutated_after_schedule(
         self, tmp_path_dist_ckpt, use_cached_data_structure, use_cpu_shm_for_gpu_tensors
     ):
-        """Checkpoint must hold schedule-time values despite in-place mutation (nvbug 6439229).
-
-        CPU tensors reach the persistent worker aliasing the trainer's live tensors
-        (shm transfer), so a post-schedule optimizer.step() could tear the checkpoint.
-        slow_open makes the race deterministic.
-        """
+        """Tensors mutated in place after scheduling an async save must not leak into the
+        checkpoint (nvbug 6439229); slow_open keeps the write pending during the mutation."""
         Utils.initialize_distributed()
 
         # Clear class-level caches to avoid cross-test contamination

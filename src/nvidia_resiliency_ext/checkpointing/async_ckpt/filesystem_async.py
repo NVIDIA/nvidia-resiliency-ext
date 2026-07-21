@@ -624,10 +624,9 @@ class FileSystemWriterAsync(FileSystemWriter):
             storage_plan,
         ) = data_structure
 
-        # CPU tensors arrive from the worker queue aliasing the trainer's live tensors
-        # (storage moved to shm); snapshot before the trainer resumes, else its
-        # in-place updates tear the checkpoint. Cached shm tensors are private copies.
+
         if uncached_tensor_data is not None:
+            # Clone the cpu tensors so they are snaphotted properly
             uncached_items, uncached_data = uncached_tensor_data
             uncached_data = [
                 (

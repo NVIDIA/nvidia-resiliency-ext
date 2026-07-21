@@ -13,11 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Torn-checkpoint regression tests (nvbug 6439229): CPU tensors sent to the
-persistent async worker alias the trainer's live tensors via shared memory and
-must be snapshotted before the trainer resumes. CPU-only and deterministic —
-``share_memory_()`` simulates the post-queue state.
-"""
+"""nvbug 6439229 regression tests: CPU tensors received by the async worker share
+memory with the trainer's, so they must be copied before training resumes."""
 
 import torch
 from torch.distributed.checkpoint.filesystem import _StoragePrefix
