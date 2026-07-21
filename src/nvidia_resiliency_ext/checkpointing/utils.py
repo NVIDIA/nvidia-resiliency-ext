@@ -91,7 +91,12 @@ def preload_tensors(state_dict: Dict, non_blocking=True):
 
     def preload_tensor(in_var):
         if isinstance(in_var, torch.Tensor):
-            return in_var.detach().to("cpu", non_blocking=non_blocking)
+            in_var = in_var.detach()
+            if in_var.device.type == "cpu":
+                # Copy: a reference would alias the live tensor after the shm
+                # transfer to the persistent worker (torn checkpoint on mutation)
+                return in_var.clone()
+            return in_var.to("cpu", non_blocking=non_blocking)
         else:
             return in_var
 

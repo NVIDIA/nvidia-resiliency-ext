@@ -583,6 +583,9 @@ class FileSystemWriterAsync(FileSystemWriter):
         (not in prepare_write_data) so that cached GPU tensor data stored in the
         worker process can be retrieved and reused without re-pickling.
 
+        The training process stays blocked on ``preload_q.join()`` until this
+        function returns, so this is the last point to snapshot shared tensors.
+
         Args:
             resolved_plan_data (Tuple): Tuple containing
                 (checkpoint_dir, (identifier, data_structure)) where:
@@ -620,6 +623,23 @@ class FileSystemWriterAsync(FileSystemWriter):
             thread_count,
             storage_plan,
         ) = data_structure
+
+        # CPU tensors arrive from the worker queue aliasing the trainer's live tensors
+        # (storage moved to shm); snapshot before the trainer resumes, else its
+        # in-place updates tear the checkpoint. Cached shm tensors are private copies.
+        if uncached_tensor_data is not None:
+            uncached_items, uncached_data = uncached_tensor_data
+            uncached_data = [
+                (
+                    data.clone()
+                    if isinstance(data, torch.Tensor)
+                    and data.device.type == 'cpu'
+                    and data.untyped_storage().is_shared()
+                    else data
+                )
+                for data in uncached_data
+            ]
+            uncached_tensor_data = (uncached_items, uncached_data)
 
         if isinstance(identifier, ConsistentDataIdentifier):
             # Caching enabled: get or cache GPU tensor data in the worker process
