@@ -16,6 +16,7 @@ import filecmp
 import pickle
 from copy import deepcopy
 from dataclasses import fields
+from time import sleep
 from typing import IO, Any
 
 import pytest
@@ -54,6 +55,25 @@ def mock_open(
 ) -> IO[Any]:
     """Function matching the system open() signature that always raises an error."""
     raise OSError('worker critical failure during open()')
+
+
+def slow_open(path: str, mode: str = "rb", **kwargs) -> IO[Any]:
+    """open() that delays the worker's write so a post-schedule in-place mutation
+    deterministically lands first."""
+    sleep(0.5)
+    return open(path, mode, **kwargs)
+
+
+def test_wrap_exception_for_gather_sanitizes_code_objects(monkeypatch):
+    def fake_wrap_exception(exc):
+        return exc, [_FrameWithCode()]
+
+    monkeypatch.setattr(filesystem_async, "_wrap_exception", fake_wrap_exception)
+
+    wrapped_exception = filesystem_async._wrap_exception_for_gather(RuntimeError("test"))
+
+    assert wrapped_exception[1][0]._code is None
+    pickle.dumps(wrapped_exception)
 
 
 class TestAsyncSave:
@@ -522,6 +542,64 @@ class TestAsyncSave:
 
         last_ckpt_dir.cleanup()
         async_queue.close()
+
+    @pytest.mark.parametrize(
+        ('use_cached_data_structure', 'use_cpu_shm_for_gpu_tensors'),
+        [(False, False), (True, True)],
+    )
+    def test_no_torn_checkpoint_when_state_mutated_after_schedule(
+        self, tmp_path_dist_ckpt, use_cached_data_structure, use_cpu_shm_for_gpu_tensors
+    ):
+        """Tensors mutated in place after scheduling an async save must not leak into the
+        checkpoint (nvbug 6439229); slow_open keeps the write pending during the mutation."""
+        Utils.initialize_distributed()
+
+        # Clear class-level caches to avoid cross-test contamination
+        FileSystemWriterAsync._cached_identifiers.clear()
+        FileSystemWriterAsync._shm_tensor_cache.clear()
+        async_queue = AsyncCallsQueue(persistent=True)
+
+        model = FSDP(Model((64, 64), 2))
+        state_dict = model.state_dict()
+        # 0-dim CPU scalars, like the "step" counter stock torch optimizers keep
+        state_dict['step'] = torch.tensor(10.0)
+        state_dict['grad_scale'] = torch.tensor(65536.0)
+        expected = {
+            key: value.detach().clone() if isinstance(value, torch.Tensor) else value
+            for key, value in state_dict.items()
+        }
+
+        try:
+            with TempNamedDir(
+                tmp_path_dist_ckpt / 'no_torn_checkpoint', sync=True
+            ) as async_ckpt_dir:
+                self.async_save_checkpoint(
+                    async_ckpt_dir,
+                    state_dict,
+                    DefaultSavePlanner(),
+                    async_queue,
+                    thread_count=2,
+                    open_file=slow_open,
+                    use_cached_data_structure=use_cached_data_structure,
+                    use_cpu_shm_for_gpu_tensors=use_cpu_shm_for_gpu_tensors,
+                )
+
+                # Mutate in place right after scheduling, while the worker is still writing
+                for value in state_dict.values():
+                    if isinstance(value, torch.Tensor):
+                        value.add_(1.0)
+
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+
+                loaded = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
+                for key, expected_tensor in expected.items():
+                    assert torch.equal(loaded[key].cpu(), expected_tensor.cpu()), (
+                        f"Torn checkpoint: '{key}' contains post-schedule values"
+                        f" (expected {expected_tensor}, got {loaded[key]})"
+                    )
+        finally:
+            # Close in finally so failing ranks stay aligned for shutdown
+            async_queue.close()
 
     @pytest.mark.parametrize(
         ('persistent_is_daemon', 'is_multiproc_io'), [(True, False), (False, True), (False, False)]
