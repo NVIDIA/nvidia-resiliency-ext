@@ -52,9 +52,7 @@ from torch.distributed.checkpoint.metadata import Metadata, MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 from torch.distributed.checkpoint.utils import _DistWrapper
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
-    FileSystemWriterAsync,
-)
+from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     _find_layout_mismatch,
     save_state_dict_async_finalize,
@@ -152,9 +150,7 @@ def test_item_absent_from_prepared_is_detected():
     structure change) is reported as a mismatch."""
     prepared = _prepared_metadata(_SINGLE_FILE_LAYOUT)
     new_fqn = "module.new_layer.weight/shard_0_1"
-    mismatch = _find_layout_mismatch(
-        [_write_result(new_fqn, "__0_0.distcp", 0, 128)], prepared
-    )
+    mismatch = _find_layout_mismatch([_write_result(new_fqn, "__0_0.distcp", 0, 128)], prepared)
     assert mismatch is not None
     assert mismatch[0] == new_fqn and "absent" in mismatch[1]
 
@@ -189,7 +185,9 @@ def test_entry_in_another_ranks_file_is_not_a_false_positive():
     prepared = _prepared_metadata(
         [(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN), ("peer.item/shard_0_1", "__1_0.distcp", 0, 512)]
     )
-    write_results = [_write_result(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN)]  # only wrote __0_0.distcp
+    write_results = [
+        _write_result(_OPT_FQN, "__0_0.distcp", 0, _OPT_LEN)
+    ]  # only wrote __0_0.distcp
     assert _find_layout_mismatch(write_results, prepared) is None
 
 
