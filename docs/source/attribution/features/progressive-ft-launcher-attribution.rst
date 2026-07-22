@@ -4,6 +4,14 @@ Progressive FT Launcher Attribution
 Summary
 -------
 
+.. note::
+
+   This document describes the earlier attrsvc/LogSage progressive-integration
+   proposal. It is not the canonical Restart Agent progressive contract. The
+   Restart Agent target lifecycle is specified in
+   ``docs/design/attribution/restart_agent/PROGRESSIVE.md`` and remains a
+   separate, unimplemented change chain.
+
 Progressive FT launcher attribution reduces restart-decision latency by starting
 log analysis when a fault-tolerance cycle starts, while the workload is still
 running. When the cycle ends and ``ft_launcher`` asks attrsvc for a stop/restart
