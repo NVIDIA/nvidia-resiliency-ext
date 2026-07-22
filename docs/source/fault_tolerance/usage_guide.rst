@@ -225,7 +225,7 @@ a launcher-managed attribution service:
   - ``--ft-attribution-llm-api-key-file <PATH>`` (alias: ``--ft_attribution_llm_api_key_file``)
   - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
   - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
-  - ``--ft-attribution-analysis-backend mcp`` (alias: ``--ft_attribution_analysis_backend``)
+  - ``--ft-attribution-analysis-backend {lib,mcp}`` (alias: ``--ft_attribution_analysis_backend``)
   - ``--ft-attribution-stop-action {log,no-restart}`` (alias: ``--ft_attribution_stop_action``), default ``log``
   - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
   - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
@@ -242,9 +242,9 @@ a launcher-managed attribution service:
   To export managed attribution results, pass ``--ft-attribution-export-url`` or
   set ``attribution_export_url`` in the fault tolerance YAML config.
 
-  Launcher-managed attribution supports only the ``mcp`` analysis backend. The backend flag may be
-  left unset, which uses the service default, or set explicitly to ``mcp``. The in-process ``lib``
-  backend is available only when running ``nvrx-attrsvc`` as a standalone service.
+  Launcher-managed attribution defaults to the ``lib`` backend, which runs the Restart Agent
+  directly in the attrsvc process. The backend flag may be left unset to use that default or set
+  explicitly to ``lib``. Set it to ``mcp`` only for the legacy LogSage/Flight Recorder path.
 
   Attribution never delays a restart. When a cycle ends, the rendezvous host requests
   terminal analysis and immediately closes the next round, so the workload restarts while
@@ -266,13 +266,13 @@ a launcher-managed attribution service:
   polled, logged and recorded, but a STOP never terminates anything. Set
   ``--ft-attribution-stop-action no-restart`` to make a STOP end the job.
 
-  The default is deliberate. Attribution verdicts come from an LLM, and the two kinds of
-  mistake are not equally expensive. A missed STOP is bounded: the job crash-loops until
-  ``--max-restarts`` runs out, and the progress tracker independently catches the stuck
-  case. An enforced false STOP is not bounded: the job ends with the no-restart exit code
-  and stays down until a human resubmits it. Run in ``log`` mode first, review the recorded
-  verdicts against what actually happened on your workloads, and enable ``no-restart``
-  once you trust the precision.
+  The default is deliberate because the two kinds of attribution mistake are not equally
+  expensive. A missed STOP is bounded: the job crash-loops until ``--max-restarts`` runs
+  out, and the progress tracker independently catches the stuck case. An enforced false
+  STOP is not bounded: the job ends with the no-restart exit code and stays down until a
+  human resubmits it. Run in ``log`` mode first, review the recorded verdicts against what
+  actually happened on your workloads, and enable ``no-restart`` once you trust the
+  precision.
 
   In ``log`` mode every failed cycle is analyzed, not just the first one that produces a
   STOP, so the verdicts accumulate over the life of the job. Each unenforced STOP is logged

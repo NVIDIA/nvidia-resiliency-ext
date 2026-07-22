@@ -1137,9 +1137,14 @@ class TestAttributionService(unittest.TestCase):
         response.json.return_value = {
             "status": "in_flight",
             "recommendation": {
-                "action": "UNKNOWN",
-                "reason": "analysis still running",
-                "source": "log_analyzer",
+                "action": "STOP",
+                "reason": "provisional deterministic result",
+                "source": "deterministic",
+            },
+            "candidate_recommendation": {
+                "action": "STOP",
+                "reason": "provisional deterministic result",
+                "source": "deterministic",
             },
         }
         client.get.return_value = response

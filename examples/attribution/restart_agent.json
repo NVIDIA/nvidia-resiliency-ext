@@ -1,0 +1,61 @@
+{
+  "schema_version": "restart_agent_config.v1",
+  "config_id": "single-nemotron-example",
+  "config_version": 1,
+  "enrichment": {
+    "enabled": true
+  },
+  "routing": {
+    "mode": "collect_all",
+    "max_parallel_models": 1,
+    "timeout_seconds": 240
+  },
+  "runtime": {
+    "history": {
+      "enabled": true,
+      "max_attempts_per_job": 10,
+      "max_total_records": 3000
+    },
+    "l0_source": {
+      "read_mode": "chunked",
+      "chunk_size_bytes": 1048576
+    }
+  },
+  "retry_policy": {
+    "confirmation_retry_allowed_retries": 1,
+    "bounded_retry_allowed_retries": 1,
+    "general_retry_allowed_retries": 3
+  },
+  "model_defaults": {
+    "request": {
+      "timeout_seconds": 120,
+      "max_output_tokens": 64000,
+      "temperature": 0,
+      "top_p": 1
+    },
+    "reliability": {
+      "max_retries": 1,
+      "retry_backoff_seconds": 0.5
+    },
+    "tools": {
+      "enabled": true,
+      "advertisement": {
+        "overview": true,
+        "grep_log": true,
+        "read_window": true,
+        "get_evidence_objects": false
+      },
+      "max_rounds": 8
+    },
+    "reasoning": {
+      "thinking_mode": "auto"
+    }
+  },
+  "model_routes": [
+    {
+      "route_id": "nemotron",
+      "model": "nvidia/nemotron-3-super-120b-a12b",
+      "credential_ref": "LLM_API_KEY_FILE"
+    }
+  ]
+}

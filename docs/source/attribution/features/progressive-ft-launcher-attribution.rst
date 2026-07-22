@@ -4,6 +4,13 @@ Progressive FT Launcher Attribution
 Summary
 -------
 
+.. note::
+
+   This page describes the ``ft_launcher`` and attrsvc integration behavior.
+   The Restart Agent's internal progressive lifecycle and terminal-equivalence
+   contract are specified in
+   ``docs/design/attribution/restart_agent/PROGRESSIVE.md``.
+
 Progressive FT launcher attribution reduces the time to an authoritative
 stop/restart verdict by starting log analysis when a fault-tolerance cycle
 starts, while the workload is still running. When the cycle ends and

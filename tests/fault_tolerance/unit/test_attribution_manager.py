@@ -202,6 +202,19 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     )
 
 
+def test_attribution_config_accepts_lib_analysis_backend(tmp_path):
+    cfg = AttributionConfig.from_args(
+        _args(
+            ft_attribution_endpoint="localhost",
+            ft_attribution_analysis_backend="lib",
+        ),
+        str(tmp_path / "train.log"),
+        FaultToleranceConfig(),
+    )
+
+    assert cfg.analysis_backend == "lib"
+
+
 def test_attribution_stop_action_defaults_to_log_only(tmp_path):
     """Enabling attribution must not implicitly enable acting on its verdicts."""
     cfg = AttributionConfig.from_args(
@@ -241,18 +254,6 @@ def test_attribution_stop_action_rejects_unknown_values(tmp_path, value):
     with pytest.raises(ValueError, match="--ft-attribution-stop-action"):
         AttributionConfig.from_args(
             _args(ft_attribution_endpoint="localhost", ft_attribution_stop_action=value),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
-        )
-
-
-def test_attribution_config_rejects_lib_analysis_backend(tmp_path):
-    with pytest.raises(ValueError, match="only 'mcp'"):
-        AttributionConfig.from_args(
-            _args(
-                ft_attribution_endpoint="localhost",
-                ft_attribution_analysis_backend="lib",
-            ),
             str(tmp_path / "train.log"),
             FaultToleranceConfig(),
         )
