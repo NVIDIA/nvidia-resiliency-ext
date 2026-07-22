@@ -139,6 +139,14 @@ def _llm_runtime_properties(*, model_description: str) -> dict[str, dict[str, An
     }
 
 
+def _cycle_counter_property() -> dict[str, Any]:
+    return {
+        "type": "integer",
+        "description": "FT per-cycle log index, parsed from *_cycle<N>.log by launcher clients",
+        "default": 0,
+    }
+
+
 def _log_analyzer_input_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -155,6 +163,7 @@ def _log_analyzer_input_schema() -> dict[str, Any]:
                 "description": "Input is already per-cycle data (skip filtering and chunking)",
                 "default": False,
             },
+            "cycle_counter": _cycle_counter_property(),
         },
         "required": ["log_path"],
     }
@@ -170,6 +179,7 @@ def _progressive_start_input_schema() -> dict[str, Any]:
                 "description": "Input is already a single ft_launcher cycle log",
                 "default": False,
             },
+            "cycle_counter": _cycle_counter_property(),
             "user": {
                 "type": "string",
                 "description": "Optional submitting user for observability",
@@ -372,6 +382,7 @@ def register_all_modules():
                 },
                 "exclude_nvrx_logs": {"type": "boolean", "default": False},
                 "is_per_cycle": {"type": "boolean", "default": False},
+                "cycle_counter": _cycle_counter_property(),
                 "pattern": {"type": "string", "default": "_dump_*"},
                 "verbose": {"type": "boolean", "default": False},
                 "health_check": {"type": "boolean", "default": False},

@@ -135,6 +135,24 @@ _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 _ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
 
 
+def _append_attribution_startup_failure(log_file: Optional[str], error: Exception) -> None:
+    """Best-effort direct append before the normal launcher log path is available."""
+    if not log_file:
+        return
+    record = (
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} [ERROR] [{socket.gethostname()}] "
+        f"Agent run ended with exception, e={error!r}. Agent's exit code = 1\n"
+    )
+    try:
+        with open(log_file, "a", encoding="utf-8") as stream:
+            stream.write(record)
+            stream.flush()
+    except Exception:
+        # The caller owns availability and integrity of --ft-nvrx-logfile. Never
+        # replace the original launcher failure with an emergency logging error.
+        pass
+
+
 def _shutdown_cycle_info_reporter_safely(rdzv_handler: Any) -> None:
     shutdown_cycle_info_reporter = getattr(rdzv_handler, "shutdown_cycle_info_reporter", None)
     if not callable(shutdown_cycle_info_reporter):
@@ -572,7 +590,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             True if restart was initiated (caller should continue monitoring loop)
             False if no restart (caller should stop workers and return failure)
         """
-        self._request_terminal_attribution()
         self._progress_tracker.analyze_previous_cycle()
         should_terminate_early = self._progress_tracker.should_terminate_early()
 
@@ -897,10 +914,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         """Ask attrsvc to start final analysis for the last submitted cycle log."""
         if not self._is_store_host:
             return
-        attribution_service = getattr(self._rdzv_handler, "_attribution_service", None)
-        if attribution_service is None:
-            return
-        attribution_service.request_terminal_analysis()
+        self._rdzv_handler._barrier_state._request_terminal_attribution_for_submitted_cycle()
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -984,7 +998,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Get the current cycle number from the rendezvous handler
         # At this point, rendezvous has completed and we're about to start workers.
         # The cycle number is used for profiling and environment variable setting.
-        current_cycle = restart_count = self._get_global_cycle_number()
+        restart_count = self._get_global_cycle_number()
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
@@ -1016,15 +1030,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             f"[group_rank={worker_group.group_rank}] with "
             f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
         )
-
-        # Submit current cycle's log to attribution service (master node only, before workers start)
-        if (
-            self._is_store_host
-            and self._rdzv_handler._attribution_service is not None
-            and hasattr(self._logs_specs, 'get_cycle_log_file')
-        ):
-            cycle_log_file = self._logs_specs.get_cycle_log_file(current_cycle)
-            self._rdzv_handler._attribution_service._submit_log(cycle_log_file)
 
         current_cycle_info_path = self._current_cycle_info_path()
 
@@ -1679,8 +1684,7 @@ def launch_agent(
         # permanent-close signaling; it cannot keep the store alive after process exit.
         if is_store_host:
             # Trigger attribution service analysis for final cycle
-            if agent._rdzv_handler._attribution_service is not None:
-                agent._rdzv_handler._attribution_service()
+            agent._request_terminal_attribution()
 
             _shutdown_cycle_info_reporter_safely(agent._rdzv_handler)
 
@@ -2983,19 +2987,25 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         if getattr(args, 'ft_enable_log_server', False):
             log_funnel_ports = LogFunnelPorts.from_launcher_args(args)
 
-        attribution_cfg = AttributionConfig.from_args(args, base_log_file, fault_tol_cfg)
-        if log_funnel_ports is not None and attribution_cfg.is_managed:
-            _validate_managed_attribution_listen_port_not_in_log_funnel(
-                DEFAULT_ATTRIBUTION_PORT, log_funnel_ports
-            )
+        try:
+            attribution_cfg = AttributionConfig.from_args(args, base_log_file, fault_tol_cfg)
+            if log_funnel_ports is not None and attribution_cfg.is_managed:
+                _validate_managed_attribution_listen_port_not_in_log_funnel(
+                    DEFAULT_ATTRIBUTION_PORT, log_funnel_ports
+                )
 
-        attribution_manager = AttributionManager(
-            attribution_cfg,
-            is_store_host=is_tcp_store_host,
-        )
-        global _ATTRIBUTION_MANAGER
-        _ATTRIBUTION_MANAGER = attribution_manager
-        attribution_endpoint = attribution_manager.start_if_needed()
+            attribution_manager = AttributionManager(
+                attribution_cfg,
+                is_store_host=is_tcp_store_host,
+            )
+            global _ATTRIBUTION_MANAGER
+            _ATTRIBUTION_MANAGER = attribution_manager
+            attribution_endpoint = attribution_manager.start_if_needed()
+        except Exception as e:
+            if is_tcp_store_host:
+                _append_attribution_startup_failure(launcher_log_file, e)
+            raise
+
         if attribution_endpoint is not None:
             rdzv_configs['attribution_endpoint'] = attribution_endpoint.endpoint
             decision_timeout = getattr(attribution_endpoint, "decision_timeout", None)

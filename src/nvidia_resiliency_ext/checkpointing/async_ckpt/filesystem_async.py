@@ -67,6 +67,20 @@ WriteBucket = Tuple[str, str, Tuple[list, list]]  # represents writes to a singl
 _results_queue = None
 
 
+def _wrap_exception_for_gather(exc: BaseException) -> WRAPPED_EXCEPTION:
+    wrapped_exception = _wrap_exception(exc)
+    _, stack_summary = wrapped_exception
+
+    # Python 3.13+ traceback FrameSummary may hold a code object in _code.
+    # Code objects are not pickleable, but dist.gather_object pickles the
+    # wrapped exception before sending it to the coordinator.
+    for frame in stack_summary:
+        if hasattr(frame, "_code"):
+            object.__setattr__(frame, "_code", None)
+
+    return wrapped_exception
+
+
 class ConsistentDataIdentifier:
     """Identifier for consistent data structure stored in worker cache.
 
@@ -1186,7 +1200,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             try:
                 write_results_or_exc = self.results_queue.get_nowait()
             except queue.Empty:
-                return _wrap_exception(RuntimeError('results_queue should not be empty'))
+                return _wrap_exception_for_gather(RuntimeError('results_queue should not be empty'))
 
         if isinstance(write_results_or_exc, Exception):
             # Worker failed — its data cache may have been lost (e.g. after a restart).
@@ -1200,10 +1214,10 @@ class FileSystemWriterAsync(FileSystemWriter):
                     f'Worker failure: {write_results_or_exc}'
                 ) from write_results_or_exc
             except Exception as e:
-                return _wrap_exception(e)
+                return _wrap_exception_for_gather(e)
         write_results: dict = write_results_or_exc
         if self.has_data_to_write and len(write_results) == 0:
-            return _wrap_exception(
+            return _wrap_exception_for_gather(
                 RuntimeError(
                     'Worker returned empty results despite having data to write.'
                     ' This probably indicates a worker failure.'

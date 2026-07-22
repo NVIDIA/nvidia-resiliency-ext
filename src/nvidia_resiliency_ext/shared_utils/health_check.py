@@ -1799,6 +1799,7 @@ class AttributionService:
     """
 
     DEFAULT_DECISION_TIMEOUT_SECONDS = 60.0
+    _RESULT_POLL_INTERVAL_SECONDS = 2.0
 
     def __init__(
         self,
@@ -1816,12 +1817,13 @@ class AttributionService:
         self._last_submitted: Optional[str] = None
         self._terminal_deadline: Optional[float] = None
         self._get_started_recorded = False
+        self._next_result_poll_time = 0.0
 
     def __call__(self) -> None:
         """
         Request terminal analysis for the previously submitted log.
 
-        Note: _submit_log() should be called first (from launcher) to set _last_submitted.
+        Note: _submit_log() should be called first (from the control host) to set _last_submitted.
         """
         self.request_terminal_analysis()
 
@@ -1859,6 +1861,11 @@ class AttributionService:
                 return False
             return result
 
+        now = time.monotonic()
+        if now < self._next_result_poll_time:
+            return None
+
+        self._next_result_poll_time = now + self._RESULT_POLL_INTERVAL_SECONDS
         result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
 
         if result is None:
@@ -1896,6 +1903,7 @@ class AttributionService:
         self._last_submitted = log_path
         self._terminal_deadline = None
         self._get_started_recorded = False
+        self._next_result_poll_time = 0.0
         self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_PROGRESSIVE)
 
     def request_terminal_analysis(self) -> None:
@@ -1910,6 +1918,7 @@ class AttributionService:
             logger.debug("AttributionService terminal POST skipped: no submitted log path")
             return
         self._ensure_decision_deadline()
+        self._next_result_poll_time = 0.0
         self._do_submit_log(
             log_path,
             analysis_intent=ANALYSIS_INTENT_TERMINAL,
@@ -1968,14 +1977,10 @@ class AttributionService:
                 if resp.status_code == 200:
                     payload = resp.json() if resp.text else {}
                     attrsvc_result = parse_attrsvc_response(payload, log_path=log_path)
-                    logger.info(attrsvc_result.format_log_message())
                     if attrsvc_result.status.lower() != "completed":
-                        logger.debug(
-                            "AttributionService GET for %s returned status=%s; polling again",
-                            log_path,
-                            attrsvc_result.status,
-                        )
+                        logger.debug(attrsvc_result.format_log_message())
                         return None
+                    logger.info(attrsvc_result.format_log_message())
                     return attrsvc_result.should_stop
                 else:
                     logger.warning(

@@ -177,6 +177,8 @@ class CombinedLogFRMCPOrchestrator:
 
     def __init__(self, _args: Any = None) -> None:
         """Registry constructs one instance per process; per-call params come via ``run``."""
+        self._log_analyzer: NVRxLogAnalyzer | None = None
+        self._log_analyzer_lock = asyncio.Lock()
 
     async def run(self, arguments: dict[str, Any]) -> tuple[dict[str, Any], AttributionState]:
         if arguments.get("log_path") and arguments.get("fr_path"):
@@ -208,6 +210,8 @@ class CombinedLogFRMCPOrchestrator:
             "is_per_cycle": is_per_cycle,
             **llm_kwargs,
         }
+        if is_per_cycle:
+            log_kw["cycle_counter"] = int(arguments.get("cycle_counter", 0))
         fr_kw: dict[str, Any] = {
             "fr_path": fr_path,
             "pattern": str(arguments.get("pattern", "_dump_*")),
@@ -218,10 +222,15 @@ class CombinedLogFRMCPOrchestrator:
             "threshold": arguments.get("threshold"),
         }
 
-        log_analyzer = NVRxLogAnalyzer(log_kw)
+        async def _run_log_analyzer() -> Any:
+            async with self._log_analyzer_lock:
+                if self._log_analyzer is None:
+                    self._log_analyzer = NVRxLogAnalyzer(log_kw)
+                return await self._log_analyzer.run(log_kw)
+
         fr_analyzer = CollectiveAnalyzer(fr_kw)
         log_raw, fr_raw = await asyncio.gather(
-            log_analyzer.run(log_kw),
+            _run_log_analyzer(),
             _run_fr_or_skip_missing_dumps(fr_analyzer, fr_kw, fr_path),
         )
         log_payload_section, log_actual, log_st = _log_section_from_run_result(log_raw)

@@ -18,8 +18,8 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Per-cycle log files (e.g., foo_cycle3.log); raw string for re.search(), compiled for .search()
-CYCLE_LOG_PATTERN = r"_cycle(\d+)\.log$"
+# Per-cycle log files (e.g., foo_cycle3.log). Keep matching case-insensitive so all
+# path consumers agree with the launcher-side detector.
 CYCLE_NUM_PATTERN = re.compile(r"_cycle(\d+)\.log$", re.IGNORECASE)
 
 # Date/time in filename: *_date_YY-MM-DD_time_HH-MM-SS.log (for splitlog file sorting)
@@ -50,7 +50,7 @@ def extract_job_metadata(log_path: str, warn_on_missing_job_id: bool = True) -> 
     Extract job ID and cycle ID from log file path.
 
     Job ID: tried in order of specificity; see JOB_ID_PATTERNS (inline comments).
-    Cycle ID: from ..._cycle<N>.log (see CYCLE_LOG_PATTERN).
+    Cycle ID: from ..._cycle<N>.log (see CYCLE_NUM_PATTERN).
 
     Args:
         log_path: Path to the log file
@@ -70,7 +70,7 @@ def extract_job_metadata(log_path: str, warn_on_missing_job_id: bool = True) -> 
     if not job_id and warn_on_missing_job_id:
         logger.warning(f"Failed to extract job ID from path: {log_path}")
 
-    match = re.search(CYCLE_LOG_PATTERN, log_path)
+    match = CYCLE_NUM_PATTERN.search(log_path)
     if match:
         cycle_id = int(match.group(1))
     else:

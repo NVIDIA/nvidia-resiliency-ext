@@ -588,7 +588,7 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         mock_restart.assert_not_called()
         mock_open.assert_not_called()
 
@@ -612,17 +612,14 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
 
-    def test_handle_restart_decision_requests_terminal_attribution_before_restart(self):
-        """Starts terminal attribution before local restart decisions and keeps moving."""
+    def test_handle_restart_decision_leaves_terminal_attribution_to_rendezvous_close(self):
+        """Terminal attribution is owned by the rendezvous control-host close path."""
         agent = self._make_agent()
         agent._is_store_host = True
         agent._progress_tracker = MagicMock()
         agent._remaining_restarts = 2
         agent._rdzv_handler._attribution_service = MagicMock()
         calls = []
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.side_effect = (
-            lambda: calls.append("terminal")
-        )
         agent._progress_tracker.analyze_previous_cycle.side_effect = lambda: calls.append("analyze")
         agent._progress_tracker.should_terminate_early.side_effect = (
             lambda: calls.append("progress-check") or False
@@ -636,11 +633,12 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        self.assertEqual(calls, ["terminal", "analyze", "progress-check", "restart"])
+        self.assertEqual(calls, ["analyze", "progress-check", "restart"])
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         agent._rdzv_handler._attribution_service.get_last_result.assert_not_called()
 
     def test_handle_restart_decision_no_restarts_left(self):
-        """Returns False when _remaining_restarts is 0 after requesting terminal attribution."""
+        """Returns False when _remaining_restarts is 0."""
         agent = self._make_agent()
         agent._is_store_host = True
         agent._progress_tracker = MagicMock()
@@ -654,8 +652,21 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         mock_restart.assert_not_called()
+
+    def test_request_terminal_attribution_uses_barrier_state_helper(self):
+        """Final-cycle terminal requests share the barrier attribution helper."""
+        agent = self._make_agent()
+        agent._is_store_host = True
+        agent._rdzv_handler._barrier_state = MagicMock()
+
+        agent._request_terminal_attribution()
+
+        helper = (
+            agent._rdzv_handler._barrier_state._request_terminal_attribution_for_submitted_cycle
+        )
+        helper.assert_called_once_with()
 
     def test_handle_restart_decision_open_rendezvous_called_when_requested(self):
         """Calls _open_rendezvous_for_restart() when open_rendezvous=True."""
@@ -729,7 +740,8 @@ def test_rendezvous_host_sets_failure_shutdown_when_attribution_says_stop():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = True
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
     state.set_shutdown = MagicMock()
 
     with pytest.raises(RendezvousGracefulExitError):
@@ -746,13 +758,14 @@ def test_rendezvous_host_retries_close_round_when_attribution_pending():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = None
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
 
     should_close = state._attribution_gate("node-a")
 
     assert should_close is False
     state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
-    assert state._attribution_settled_for_round == -1
+    assert state._attribution_gate_settled_round == -1
 
 
 def test_rendezvous_host_skips_attribution_gate_for_initial_round():
@@ -761,7 +774,8 @@ def test_rendezvous_host_skips_attribution_gate_for_initial_round():
     state = object.__new__(_RendezvousBarrierState)
     state._round = 0
     state._attribution_service = MagicMock()
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = None
 
     assert state._attribution_gate("node-a") is True
     state._attribution_service.get_last_result.assert_not_called()
@@ -774,12 +788,13 @@ def test_rendezvous_host_closes_round_when_attribution_allows_restart():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = False
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
 
     should_close = state._attribution_gate("node-a")
 
     assert should_close is True
-    assert state._attribution_settled_for_round == 1
+    assert state._attribution_gate_settled_round == 1
     state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
 
 
@@ -1138,6 +1153,83 @@ def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
     assert config.logs_specs.grpc_server_address == "control.host:50051"
 
 
+def _managed_attribution_args(launcher, tmp_path):
+    return launcher.get_args_parser().parse_args(
+        [
+            "--nnodes",
+            "1",
+            "--nproc-per-node",
+            "1",
+            "--rdzv-endpoint",
+            "localhost:29500",
+            "--ft-per-cycle-applog-prefix",
+            str(tmp_path / "train.log"),
+            "--ft-nvrx-logfile",
+            str(tmp_path / "nvrx.log"),
+            "--ft-attribution-endpoint",
+            "localhost",
+            "--ft-attribution-llm-api-key-file",
+            "/no/such/missing_key",
+            "train.py",
+        ]
+    )
+
+
+def test_store_host_writes_attribution_startup_failure_to_nvrx_log(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = _managed_attribution_args(launcher, tmp_path)
+    with (
+        patch.object(launcher, "_ATTRIBUTION_MANAGER", None),
+        patch.object(launcher, "_matches_machine_hostname", return_value=True),
+        pytest.raises(ValueError, match="is not a file"),
+    ):
+        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+
+    record = (tmp_path / "nvrx.log").read_text(encoding="utf-8")
+    assert "managed attribution service LLM API key file is not a file" in record
+    assert "Agent's exit code = 1" in record
+
+
+def test_non_store_host_does_not_write_attribution_startup_failure(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = _managed_attribution_args(launcher, tmp_path)
+    with (
+        patch.object(launcher, "_matches_machine_hostname", return_value=False),
+        patch.object(
+            launcher.AttributionConfig,
+            "from_args",
+            side_effect=ValueError("bad attribution config"),
+        ),
+        pytest.raises(ValueError, match="bad attribution config"),
+    ):
+        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+
+    assert not (tmp_path / "nvrx.log").exists()
+
+
+def test_attribution_startup_log_failure_does_not_mask_original_error(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = _managed_attribution_args(launcher, tmp_path)
+    original_error = ValueError("bad attribution config")
+    with (
+        patch.object(launcher, "_ATTRIBUTION_MANAGER", None),
+        patch.object(launcher, "_matches_machine_hostname", return_value=True),
+        patch.object(
+            launcher.AttributionManager,
+            "start_if_needed",
+            side_effect=original_error,
+        ),
+        patch("builtins.open", side_effect=OSError("network filesystem unavailable")),
+        pytest.raises(ValueError) as exc_info,
+    ):
+        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+
+    assert exc_info.value is original_error
+
+
 def _make_launch_agent_config(**overrides):
     from types import SimpleNamespace
 
@@ -1167,7 +1259,7 @@ def _make_launch_agent_config(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog):
+def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
     from types import SimpleNamespace
 
     from nvidia_resiliency_ext.fault_tolerance import launcher

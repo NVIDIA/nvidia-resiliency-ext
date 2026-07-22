@@ -198,7 +198,7 @@ def test_control_parser_uses_launcher_config_file_alias(tmp_path):
     assert args.ft_cfg_path == str(cfg_path)
 
 
-def test_control_rendezvous_loop_submits_attribution_and_reports_cycle_info(tmp_path):
+def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
     args = SimpleNamespace(
         nnodes="2",
         rdzv_conf="",
@@ -221,9 +221,12 @@ def test_control_rendezvous_loop_submits_attribution_and_reports_cycle_info(tmp_
             states.append(self)
             self._rounds = iter([0, 1])
             self._cycle_info_reporter = None
+            self._attribution_service = None
+            self._cycle_log_prefix = kwargs.get("cycle_log_prefix")
             self._active_node_addrs = ["node-a", "node-b"]
             self._standby_node_addrs = ["node-c"]
             self._active_ranks = [0, 1]
+            self.final_terminal_requested = False
 
         def close_current_round_as_host(self, *args, **kwargs):
             try:
@@ -240,6 +243,9 @@ def test_control_rendezvous_loop_submits_attribution_and_reports_cycle_info(tmp_
                 )
             )
             return round_id
+
+        def _request_terminal_attribution_for_submitted_cycle(self):
+            self.final_terminal_requested = True
 
     node_generator = MagicMock()
     node_generator.generate.return_value = object()
@@ -262,5 +268,7 @@ def test_control_rendezvous_loop_submits_attribution_and_reports_cycle_info(tmp_
     ]
     assert reported_rounds == [0, 1]
     assert states[0]._cycle_info_reporter is services.cycle_info_reporter
-    attribution_service._submit_log.assert_any_call(str(tmp_path / "train_cycle0.log"))
-    attribution_service._submit_log.assert_any_call(str(tmp_path / "train_cycle1.log"))
+    assert states[0]._attribution_service is attribution_service
+    assert states[0]._cycle_log_prefix == str(tmp_path / "train.log")
+    assert states[0].final_terminal_requested
+    attribution_service._submit_log.assert_not_called()

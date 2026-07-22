@@ -109,12 +109,17 @@ class AttrSvcResult:
     def format_log_message(self, *, preview_chars: int = 200) -> str:
         """Return a compact one-line summary suitable for launcher logs."""
         path = f" for {self.log_path}" if self.log_path else ""
+        preview = " | ".join(
+            line.strip()
+            for line in self.attribution_preview(preview_chars).splitlines()
+            if line.strip()
+        )
         return (
             f"AttrSvcResult{path}: status={self.status} "
             f"recommendation={self.recommendation.action} "
             f"reason={self.recommendation_reason} "
             f"should_stop={self.should_stop} "
-            f"result preview: {self.attribution_preview(preview_chars)}"
+            f"result preview: {preview}"
         )
 
 
