@@ -663,9 +663,7 @@ def save_state_dict_async_finalize(
         else:
             layout_mismatch = _find_layout_mismatch(write_results, reuse_metadata_obj)
             local_status = 2 if layout_mismatch is None else 1
-        flag = torch.tensor(
-            [local_status], dtype=torch.int, device=torch.cuda.current_device()
-        )
+        flag = torch.tensor([local_status], dtype=torch.int, device=torch.cuda.current_device())
         torch.distributed.all_reduce(
             flag, op=torch.distributed.ReduceOp.MIN, group=dist_wrapper.group
         )
