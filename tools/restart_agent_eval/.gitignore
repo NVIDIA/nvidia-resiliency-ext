@@ -1,0 +1,14 @@
+# Materialized or loose logs are external eval inputs.
+*.log
+**/input.log
+
+# Generated review and scored-run artifacts.
+run/
+restart_agent_review_*/
+restart_agent_reviews_*/
+
+# Local environment and credential files must never be committed.
+.env
+.env.*
+llm_api_key*
+*.secret
