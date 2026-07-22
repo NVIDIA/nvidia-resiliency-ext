@@ -13,3 +13,15 @@ pip install 'nvidia-resiliency-ext[attribution]'
 **[ARCHITECTURE.md](./ARCHITECTURE.md)**
 
 The public API is re-exported from `nvidia_resiliency_ext.attribution` (see package `__init__.py`).
+
+## Restart agent
+
+The experimental restart agent lives in
+`restart_agent/`. It builds deterministic log evidence, optionally asks
+an LLM for structured current-log interpretation, and applies deterministic
+policy to emit `STOP` or `RESTART` guidance. Its canonical engineering specs
+start at:
+
+```text
+docs/design/attribution/restart_agent/DESIGN.md
+```

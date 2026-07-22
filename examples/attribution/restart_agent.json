@@ -1,0 +1,133 @@
+{
+  "schema_version": "restart_agent_config.v1",
+  "config_id": "panel-with-qwen-route-variants",
+  "config_version": 1,
+  "routing": {
+    "mode": "collect_all",
+    "max_parallel_models": 8,
+    "timeout_seconds": 600
+  },
+  "runtime": {
+    "history": {
+      "enabled": true,
+      "max_attempts_per_job": 10,
+      "max_total_records": 3000
+    }
+  },
+  "restart_environment_context": {},
+  "retry_policy": {
+    "bounded_retry_allowed_retries": 1,
+    "general_retry_allowed_retries": 3
+  },
+  "model_defaults": {
+    "request": {
+      "timeout_seconds": 120,
+      "max_output_tokens": 64000,
+      "temperature": 0,
+      "top_p": 1
+    },
+    "reliability": {
+      "max_retries": 1,
+      "retry_backoff_seconds": 0.5
+    },
+    "tools": {
+      "enabled": true,
+      "advertisement": {
+        "overview": true,
+        "grep_log": true,
+        "read_window": true,
+        "get_evidence_objects": false
+      },
+      "max_rounds": 8
+    },
+    "reasoning": {
+      "thinking_mode": "auto"
+    }
+  },
+  "model_routes": [
+    {
+      "route_id": "qwen235b-no-tools",
+      "model": "nvidia/qwen/eccn-qwen-235b",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_OLD_FILE",
+      "request": {
+        "context_window_tokens": 200000
+      },
+      "tools": {
+        "enabled": false,
+        "max_rounds": 0
+      },
+      "reasoning": {
+        "thinking_mode": "disable"
+      }
+    },
+    {
+      "route_id": "qwen235b-tools",
+      "model": "nvidia/qwen/eccn-qwen-235b",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_OLD_FILE",
+      "request": {
+        "context_window_tokens": 200000
+      },
+      "tools": {
+        "enabled": true,
+        "max_rounds": 2
+      },
+      "reasoning": {
+        "thinking_mode": "disable"
+      }
+    },
+    {
+      "route_id": "qwen397b-tools",
+      "model": "nvidia/qwen/eccn-qwen3-5-397b-a17b",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_OLD_FILE",
+      "request": {
+        "context_window_tokens": 262144
+      },
+      "tools": {
+        "enabled": true
+      },
+      "reasoning": {
+        "thinking_mode": "disable"
+      }
+    },
+    {
+      "route_id": "qwen35-no-tools",
+      "model": "nvidia/qwen/qwen3.5-35b-a3b",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_FILE",
+      "tools": {
+        "enabled": false,
+        "max_rounds": 0
+      },
+      "reasoning": {
+        "thinking_mode": "disable"
+      }
+    },
+    {
+      "route_id": "nemotron",
+      "model": "nvidia/nvidia/eccn-nemotron-3-ultra",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_OLD_FILE"
+    },
+    {
+      "route_id": "gpt",
+      "model": "us/azure/openai/eccn-gpt-5.5",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_OLD_FILE"
+    },
+    {
+      "route_id": "claude",
+      "model": "us/azure/anthropic/eccn-claude-sonnet-5",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_OLD_FILE"
+    },
+    {
+      "route_id": "gemini",
+      "model": "us/gcp/google/eccn-gemini-3.5-flash",
+      "base_url": "https://inference-api.nvidia.com/v1",
+      "credential_ref": "LLM_API_KEY_OLD_FILE"
+    }
+  ]
+}
