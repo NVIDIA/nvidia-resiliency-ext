@@ -99,14 +99,21 @@ def test_register_barrier_rdzv_handler_applies_c10d_patch():
         patch.object(rendezvous_handler_registry, "_registry", {"c10d": object()}),
         patch.object(rendezvous_handler_registry, "register") as register,
     ):
-        launcher._register_ft_rdzv_handler("barrier")
+        launcher._register_ft_rdzv_handler()
 
     apply_c10d_patch.assert_called_once()
     register.assert_called_once()
     assert register.call_args.args[0] == "c10d"
 
 
-def test_legacy_rdzv_impl_injects_use_libuv_false():
+@pytest.mark.parametrize(
+    ("extra_args", "expected"),
+    [
+        ([], "barrier"),
+        (["--ft-rdzv-impl", "barrier"], "barrier"),
+    ],
+)
+def test_ft_rdzv_impl_accepts_barrier(extra_args, expected):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     parser = launcher.get_args_parser()
@@ -118,16 +125,20 @@ def test_legacy_rdzv_impl_injects_use_libuv_false():
             "1",
             "--rdzv-endpoint",
             "127.0.0.1:29500",
-            "--ft-rdzv-impl",
-            "legacy",
+            *extra_args,
             "train.py",
         ]
     )
 
-    with patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}):
-        config, _, _ = launcher.config_from_args(args)
+    assert args.ft_rdzv_impl == expected
 
-    assert config.rdzv_configs["use_libuv"] is False
+
+def test_ft_rdzv_impl_rejects_legacy():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--ft-rdzv-impl", "legacy", "train.py"])
 
 
 def test_rank_not_send_initial_hb(tmp_dir):
@@ -699,33 +710,6 @@ class TestHandleRestartDecision(unittest.TestCase):
         agent._open_rendezvous_for_restart()
 
         barrier_state.open_rendezvous.assert_called_once()
-
-    def test_open_rendezvous_for_restart_legacy_handler(self):
-        """Does nothing (no error) when handler lacks _barrier_state (legacy rdzv)."""
-        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
-
-        # Use a spec-constrained mock so _barrier_state doesn't auto-exist
-        legacy_rdzv = MagicMock(
-            spec=[
-                'round',
-                'get_active_node_addrs',
-                'get_standby_node_addrs',
-            ]
-        )
-        legacy_rdzv.round.return_value = 1
-        legacy_rdzv.get_active_node_addrs.return_value = []
-        legacy_rdzv.get_standby_node_addrs.return_value = []
-        self.spec.rdzv_handler = legacy_rdzv
-
-        agent = LocalElasticAgent(
-            spec=self.spec,
-            fault_tol_cfg=self.fault_tol_cfg,
-            logs_specs=self.logs_specs,
-        )
-        # Should not raise
-        agent._open_rendezvous_for_restart()
-        # No open_rendezvous() on the legacy handler
-        self.assertFalse(hasattr(legacy_rdzv, '_barrier_state'))
 
 
 def test_rendezvous_host_sets_failure_shutdown_when_attribution_says_stop():

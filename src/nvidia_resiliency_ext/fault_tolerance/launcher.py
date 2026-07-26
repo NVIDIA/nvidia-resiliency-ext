@@ -122,8 +122,6 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
 
-_legacy_ft_rdzv_deprecation_warned: bool = False
-
 # Logger instance (configured later in run() via setup_logger())
 # Note: Must call run() before using logger to ensure proper configuration
 logger = logging.getLogger(LogConfig.name)
@@ -173,52 +171,21 @@ def init_node_health_check(endpoint: Optional[str]) -> None:
 def get_node_health_check() -> Optional[NodeHealthCheck]:
     return _NODE_HEALTH_CHECK_INSTANCE
 
-def _register_ft_rdzv_handler(impl_type: str = "barrier"):
-    """Register the fault-tolerant rendezvous handler.
-
-    Args:
-        impl_type: FT rendezvous implementation to use.
-            ``"barrier"`` — atomic barrier-based algorithm (recommended default).
-            ``"legacy"`` — original compare-and-set implementation in ``_ft_rendezvous``;
-            deprecated and scheduled for removal; use ``"barrier"``.
-    """
-    global _legacy_ft_rdzv_deprecation_warned
+def _register_ft_rdzv_handler():
+    """Register the barrier-based fault-tolerant rendezvous handler."""
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
     from .c10d_monkey_patch import apply_c10d_patch
+    from .ft_rendezvous_barrier import create_handler as create_barrier_handler
 
-    # Apply NVRx TCPStore creation behavior for all c10d-based FT rendezvous
-    # implementations. The patch consumes generic rdzv config such as
-    # store_connect_wait_seconds and use_libuv before either rendezvous protocol
-    # sees the store.
+    # Apply NVRx TCPStore creation behavior before the barrier rendezvous
+    # protocol sees the store.
     apply_c10d_patch()
 
-    if impl_type == "barrier":
-        from .ft_rendezvous_barrier import create_handler as create_barrier_handler
-
-        def _create_ft_rdzv_handler(params: RendezvousParameters):
-            backend, store = create_backend(params)
-            return create_barrier_handler(store, backend, params)
-
-    elif impl_type == "legacy":
-        if not _legacy_ft_rdzv_deprecation_warned:
-            warnings.warn(
-                "FT rendezvous implementation 'legacy' (_ft_rendezvous compare-and-set) is "
-                "deprecated and will be removed in a future release. Use the default "
-                "'barrier' implementation (--ft-rdzv-impl barrier / ft_rendezvous_barrier).",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            _legacy_ft_rdzv_deprecation_warned = True
-        from ._ft_rendezvous import create_handler as create_legacy_handler
-
-        def _create_ft_rdzv_handler(params: RendezvousParameters):
-            backend, store = create_backend(params)
-            return create_legacy_handler(store, backend, params)
-
-    else:
-        raise ValueError(f"Unknown FT rendezvous implementation: {impl_type}. Must be 'barrier' or 'legacy'.")
+    def _create_ft_rdzv_handler(params: RendezvousParameters):
+        backend, store = create_backend(params)
+        return create_barrier_handler(store, backend, params)
 
     del rendezvous_handler_registry._registry['c10d']  # FIXME: ugly hack to swap the c10d handler
     rendezvous_handler_registry.register("c10d", _create_ft_rdzv_handler)
@@ -563,13 +530,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         that a new rendezvous round can begin, allowing hot spares and restarting nodes
         to join.
         """
-        # Only applies to barrier-based rendezvous implementation
-        if hasattr(self._rdzv_handler, '_barrier_state'):
-            try:
-                self._rdzv_handler._barrier_state.open_rendezvous()
-            except Exception as e:
-                logger.error(f"Failed to open rendezvous: {e}")
-        # For legacy rendezvous, no action needed - it uses different mechanism
+        try:
+            self._rdzv_handler._barrier_state.open_rendezvous()
+        except Exception as e:
+            logger.error(f"Failed to open rendezvous: {e}")
 
     def _handle_restart_decision(
         self,
@@ -1312,7 +1276,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Set worker group reference in the rendezvous handler
         # Since we only support c10d backend and replace it with our custom handler,
-        # this will always be FtRendezvousBarrierHandler or FtRendezvousHandler (legacy)
+        # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
         # Call the parent class _rendezvous method
@@ -2497,13 +2461,11 @@ def get_args_parser() -> ArgumentParser:
         "--ft-rdzv-impl",
         "--ft-rdzv_impl",
         type=str,
-        choices=["barrier", "legacy"],
+        choices=["barrier"],
         default="barrier",
         dest="ft_rdzv_impl",
-        help="FT rendezvous implementation to use. "
-        "'barrier' uses the atomic barrier-based algorithm (ft_rendezvous_barrier.py; default, recommended). "
-        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py); deprecated and "
-        "will be removed in a future release—migrate to 'barrier'. "
+        help="FT rendezvous implementation to use. The only supported value is "
+        "'barrier', which uses the atomic barrier-based algorithm (ft_rendezvous_barrier.py). "
         "Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
     )
@@ -2869,10 +2831,6 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     log_line_prefix_template = os.getenv("TORCHELASTIC_LOG_LINE_PREFIX_TEMPLATE")
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
-
-    # Add use_libuv=False for c10d backend with legacy rendezvous only
-    if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
-        rdzv_configs['use_libuv'] = False
 
     # Node health check endpoint is consumed by launcher to init singleton; not passed via rdzv configs
 
@@ -3555,9 +3513,8 @@ def run(args):
             args.rdzv_id,
         )
 
-    # Register the selected FT rendezvous implementation
-    impl_type = getattr(args, 'ft_rdzv_impl', 'barrier')
-    _register_ft_rdzv_handler(impl_type)
+    # Register the barrier-based FT rendezvous implementation.
+    _register_ft_rdzv_handler()
     ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
     # Initialize NodeHealthCheck singleton at launcher start
     init_node_health_check(ft_hc_endpoint)
