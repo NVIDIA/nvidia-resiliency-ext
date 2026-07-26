@@ -230,8 +230,8 @@ service dependencies.
   - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
   - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
   - ``--ft-attribution-analysis-backend mcp`` (alias: ``--ft_attribution_analysis_backend``)
+  - ``--ft-attribution-stop-action {log,no-restart}`` (alias: ``--ft_attribution_stop_action``), default ``log``
   - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
-  - ``--ft-attribution-decision-timeout <SECONDS>`` (alias: ``--ft_attribution_decision_timeout``), default ``60``
   - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
 
   The managed attribution app-log directory is derived from
@@ -250,9 +250,42 @@ service dependencies.
   left unset, which uses the service default, or set explicitly to ``mcp``. The in-process ``lib``
   backend is available only when running ``nvrx-attrsvc`` as a standalone service.
 
-  ``--ft-attribution-decision-timeout`` is the total launcher-side budget for one
-  attribution decision, measured from the terminal analysis request until the rendezvous
-  host fetches the STOP/RESTART recommendation.
+  Attribution never delays a restart. When a cycle ends, the rendezvous host requests
+  terminal analysis and immediately closes the next round, so the workload restarts while
+  analysis is still running. A background poller on the rendezvous host fetches the verdict
+  and, if attribution recommends stopping, terminates the job at that point -- even if the
+  workload has already advanced one or more cycles past the analyzed one. A verdict that
+  never arrives leaves the job running.
+
+  The stop decision is global, not per-cycle: the first STOP verdict observed ends the job
+  regardless of which cycle produced it.
+
+  Only one terminal analysis is in flight at a time. If further cycles fail while a verdict
+  is still outstanding, their terminal analysis is skipped rather than replacing the one
+  already running. This keeps a fast crash loop from repeatedly discarding an analysis
+  before it can finish, which would otherwise leave the job with no verdict at all.
+
+  **Acting on a STOP verdict is opt-in.** With the default
+  ``--ft-attribution-stop-action log``, attribution runs in full and every verdict is
+  polled, logged and recorded, but a STOP never terminates anything. Set
+  ``--ft-attribution-stop-action no-restart`` to make a STOP end the job.
+
+  The default is deliberate. Attribution verdicts come from an LLM, and the two kinds of
+  mistake are not equally expensive. A missed STOP is bounded: the job crash-loops until
+  ``--max-restarts`` runs out, and the progress tracker independently catches the stuck
+  case. An enforced false STOP is not bounded: the job ends with the no-restart exit code
+  and stays down until a human resubmits it. Run in ``log`` mode first, review the recorded
+  verdicts against what actually happened on your workloads, and enable ``no-restart``
+  once you trust the precision.
+
+  In ``log`` mode every failed cycle is analyzed, not just the first one that produces a
+  STOP, so the verdicts accumulate over the life of the job. Each unenforced STOP is logged
+  at ``ERROR``, says explicitly that it is not being enforced, and carries a running count
+  of how many STOP verdicts have been seen so far. Comparing that count against the number
+  of failed cycles is the measurement that tells you whether to enable ``no-restart``.
+
+  When enforcement is on, every launcher in the job exits with the no-restart exit code
+  rather than the generic failure code ``1``. See :ref:`ft-no-restart` below.
 
   ``ft_launcher`` sends job metadata with each attribution submission: ``user`` is read from
   ``SLURM_JOB_USER`` or ``USER``, and ``job_id`` is read from ``SLURM_ARRAY_JOB_ID`` or
@@ -280,6 +313,54 @@ service dependencies.
        --ft-per-cycle-applog-prefix /lustre/job123/train.log \
        --ft-attribution-endpoint http://attribution.service.internal:8000 \
        train.py
+
+.. _ft-no-restart:
+
+No restart: telling "do not requeue" apart from a failure
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Two mechanisms let NVRx conclude that a job must not be restarted at all:
+
+* an attribution ``STOP`` verdict, when ``--ft-attribution-stop-action no-restart`` is
+  set (see the attribution section above; the default ``log`` never terminates), and
+* the progress tracker finding no progress across restarts
+  (``--ft-max-no-progress-cycles`` / ``max_no_progress_cycles``, default ``3``).
+
+The progress tracker reads the iteration from ``--ft-checkpoint-iteration-file``; without
+that file it stays inactive and logs a one-time warning. Raise the cycle threshold, or set
+it to ``0`` to disable tracking, for workloads that deliberately replay an iteration
+without advancing the checkpoint -- for example Megatron-LM's rerun state machine
+re-running a suspect result on different hardware to tell silent data corruption apart from
+a genuine data issue. Those replays look identical to a stuck job from the outside.
+
+Both answer the same scheduler-facing question, so both report the same result: every
+launcher in the job exits with ``--ft-no-restart-exit-code`` (default ``93``) instead of
+the generic failure code ``1``. Downstream tooling therefore needs a single rule -- exit
+code ``93`` means NVRx decided, do not requeue -- rather than one rule per cause.
+
+The specific cause is recorded in the rendezvous store shutdown key as ``attribution_stop``
+or ``no_progress``, and is named in the launcher logs, so the two remain distinguishable
+for diagnosis without complicating the scheduler contract.
+
+Running out of restarts is deliberately *not* one of these cases. Exhausting
+``--max-restarts`` means this launcher used up its retry budget, not that the job is
+unrecoverable, so it still exits ``1`` and leaves requeueing to your scheduler policy.
+The distinction is scope: a no-restart decision is a verdict about the job, while the
+restart budget is a limit on a single allocation.
+
+* CLI:
+
+  - ``--ft-no-restart-exit-code <CODE>`` (alias: ``--ft_no_restart_exit_code``),
+    default ``93``
+
+Note that SLURM reports the maximum exit code across tasks and that ``sacct`` derived exit
+codes are lossy, so treat this as a best-effort signal.
+
+Nodes other than the one that made the decision read the reason from the rendezvous store,
+so the store must outlive them. Both the store-host launcher and ``nvrx-control`` hold it
+open for a few seconds after shutting down, but a node that has not read the key by then
+exits ``1`` rather than the no-restart code. The job still stops either way.
+
 
 GPU Memory Reclaim
 ^^^^^^^^^^^^^^^^^^

@@ -18,7 +18,7 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 from nvidia_resiliency_ext.shared_utils.health_check import (
     AttributionService,
@@ -617,21 +617,6 @@ class TestNodeHealthCheck(unittest.TestCase):
 
 class TestAttributionService(unittest.TestCase):
 
-    def test_default_decision_timeout_is_owned_by_service(self):
-        service = AttributionService(endpoint="http://attr.example:8000/")
-        none_service = AttributionService(
-            endpoint="http://attr.example:8000/",
-            decision_timeout=None,
-        )
-
-        self.assertEqual(
-            service.decision_timeout, AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS
-        )
-        self.assertEqual(
-            none_service.decision_timeout, AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS
-        )
-        self.assertEqual(AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS, 60.0)
-
     @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
     def test_http_endpoint_posts_progressive_intent_to_logs_route(self, mock_client):
         client = mock_client.return_value.__enter__.return_value
@@ -688,38 +673,102 @@ class TestAttributionService(unittest.TestCase):
 
     def test_submit_log_posts_progressive_work_synchronously(self):
         service = AttributionService(endpoint="http://attr.example:8000/")
-        service._next_result_poll_time = 42.0
 
         with patch.object(service, "_do_submit_log") as mock_submit:
             service._submit_log("/tmp/train.log")
 
         self.assertEqual(service._last_submitted, "/tmp/train.log")
-        self.assertEqual(service._next_result_poll_time, 0.0)
         mock_submit.assert_called_once_with(
             "/tmp/train.log",
             analysis_intent="progressive",
         )
 
-    def test_request_terminal_analysis_posts_terminal_work_synchronously(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
-        service._last_submitted = "/tmp/train.log"
-        service._next_result_poll_time = 42.0
+    def test_submit_log_does_not_clobber_pending_terminal_analysis(self):
+        """Cycle N+1 starting must not abandon cycle N's in-flight verdict."""
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train_cycle0.log"
 
-        with (
-            patch.object(service, "_do_submit_log") as mock_submit,
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                return_value=10.0,
-            ),
-        ):
+        with patch.object(service, "_do_submit_log"):
+            service._submit_log("/tmp/train_cycle1.log")
+
+        self.assertEqual(service._last_submitted, "/tmp/train_cycle1.log")
+        self.assertEqual(service._terminal_pending, "/tmp/train_cycle0.log")
+
+    def test_request_terminal_analysis_posts_terminal_work_synchronously(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._last_submitted = "/tmp/train.log"
+
+        with patch.object(service, "_do_submit_log") as mock_submit:
             service.request_terminal_analysis()
 
         mock_submit.assert_called_once_with(
             "/tmp/train.log",
             analysis_intent="terminal",
         )
-        self.assertEqual(service._terminal_deadline, 17.0)
-        self.assertEqual(service._next_result_poll_time, 0.0)
+        self.assertEqual(service._terminal_pending, "/tmp/train.log")
+
+    def test_terminal_post_precedes_publishing_the_pollable_slot(self):
+        """The poller must never see a path attrsvc has not been asked to analyze.
+
+        Otherwise whatever a GET returns for that path becomes the terminal verdict.
+        """
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._last_submitted = "/tmp/train.log"
+        observed = []
+
+        def record_slot_at_post(*args, **kwargs):
+            observed.append(service._terminal_pending)
+            return True
+
+        with patch.object(service, "_do_submit_log", side_effect=record_slot_at_post):
+            service.request_terminal_analysis()
+
+        self.assertEqual(observed, [None])  # slot still unpublished during the POST
+        self.assertEqual(service._terminal_pending, "/tmp/train.log")  # published after
+
+    def test_failed_terminal_post_leaves_the_slot_free(self):
+        """Regression: a rejected submission must not pin the FCFS slot.
+
+        attrsvc never received the request, so the GET for that path can never complete.
+        Installing it would defer every later failed cycle behind it and disable
+        attribution for the rest of the job.
+        """
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._last_submitted = "/tmp/train_cycle0.log"
+
+        with patch.object(service, "_do_submit_log", return_value=False):
+            service.request_terminal_analysis()
+        self.assertIsNone(service._terminal_pending)
+
+        # A later failed cycle still installs normally.
+        service._last_submitted = "/tmp/train_cycle1.log"
+        with patch.object(service, "_do_submit_log", return_value=True):
+            service.request_terminal_analysis()
+        self.assertEqual(service._terminal_pending, "/tmp/train_cycle1.log")
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_submit_reports_failure_on_transport_error(self, mock_client):
+        mock_client.return_value.__enter__.return_value.post.side_effect = OSError("refused")
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        self.assertFalse(service._do_submit_log("/tmp/train.log"))
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_submit_reports_failure_on_error_status(self, mock_client):
+        """httpx does not raise for error statuses, so a rejection must be checked."""
+        client = mock_client.return_value.__enter__.return_value
+        client.post.return_value = SimpleNamespace(status_code=500)
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        self.assertFalse(service._do_submit_log("/tmp/train.log"))
+
+        client.post.return_value = SimpleNamespace(status_code=202)
+        self.assertTrue(service._do_submit_log("/tmp/train.log"))
+
+    def test_submit_reports_failure_for_unsupported_transport(self):
+        service = AttributionService(endpoint="unix:///tmp/attr.sock")
+
+        self.assertFalse(service._do_submit_log("/tmp/train.log"))
 
     def test_request_terminal_analysis_skips_without_submitted_log(self):
         service = AttributionService(endpoint="http://attr.example:8000/")
@@ -729,162 +778,270 @@ class TestAttributionService(unittest.TestCase):
 
         mock_submit.assert_not_called()
 
-    def test_get_last_result_allows_close_without_submitted_log(self):
+    def test_poll_once_is_noop_without_pending_terminal_analysis(self):
         service = AttributionService(endpoint="http://attr.example:8000/")
 
-        should_stop = service.get_last_result()
+        with patch.object(service, "_get_results") as mock_get:
+            service._poll_once()
 
-        self.assertFalse(should_stop)
+        mock_get.assert_not_called()
+        self.assertFalse(service.stop_requested())
 
-    def test_get_last_result_uses_remaining_decision_budget(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
-        service._last_submitted = "/tmp/train.log"
-        service._terminal_deadline = 20.0
+    def test_poll_once_latches_stop_verdict(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", enforce_stop=True)
+        service._terminal_pending = "/tmp/train.log"
 
-        with (
-            patch.object(service, "_get_results", return_value=False) as mock_get,
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                return_value=16.5,
-            ),
-        ):
-            should_stop = service.get_last_result()
+        with patch.object(service, "_get_results", return_value=True) as mock_get:
+            service._poll_once()
 
-        self.assertFalse(should_stop)
         mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
+        self.assertTrue(service.stop_requested())
+        # The latch is global: the pending path is kept for diagnostics, and the loop exits.
+        self.assertEqual(service._terminal_pending, "/tmp/train.log")
 
-    def test_get_last_result_throttles_http_polling(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=20.0)
-        service._last_submitted = "/tmp/train.log"
-        service._terminal_deadline = 30.0
+    def test_log_only_mode_observes_a_stop_without_acting_on_it(self):
+        """Enforcement is opt-in: acting on a false-positive STOP is the expensive error."""
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train.log"
 
-        with (
-            patch.object(service, "_get_results", side_effect=[None, False]) as mock_get,
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                side_effect=[10.0, 10.0, 11.9, 11.9, 12.0, 12.0],
-            ),
-        ):
-            self.assertIsNone(service.get_last_result())
-            self.assertIsNone(service.get_last_result())
-            self.assertFalse(service.get_last_result())
+        with patch.object(service, "_get_results", return_value=True):
+            service._poll_once()
 
-        self.assertEqual(mock_get.call_count, 2)
+        self.assertTrue(service.stop_verdict_observed())  # recorded for diagnosis
+        self.assertFalse(service.stop_requested())  # but never acted on
+
+    def test_log_only_mode_keeps_analyzing_later_cycles_after_a_stop(self):
+        """Regression: the first STOP must not silently end attribution for the job.
+
+        Log-only mode exists to accumulate a verdict per failed cycle so a deployment can
+        measure precision before enforcing. Latching on the first STOP left the pending
+        slot pinned and killed the poller, so every later cycle went unanalyzed.
+        """
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.object(service, "_do_submit_log") as mock_submit:
+            service._submit_log("/tmp/train_cycle0.log")
+            service.request_terminal_analysis()
+
+            with patch.object(service, "_get_results", return_value=True):
+                service._poll_once()
+            # Slot freed, so the next failed cycle can install its own analysis.
+            self.assertIsNone(service._terminal_pending)
+
+            service._submit_log("/tmp/train_cycle1.log")
+            service.request_terminal_analysis()
+            self.assertEqual(service._terminal_pending, "/tmp/train_cycle1.log")
+
+            with patch.object(service, "_get_results", return_value=True):
+                service._poll_once()
+
+        self.assertEqual(service.stop_verdict_count(), 2)
+        self.assertFalse(service.stop_requested())
+        terminal_posts = [
+            c for c in mock_submit.call_args_list if c.kwargs.get("analysis_intent") == "terminal"
+        ]
         self.assertEqual(
-            mock_get.call_args_list,
-            [
-                call("/tmp/train.log", timeout=2.0),
-                call("/tmp/train.log", timeout=2.0),
-            ],
+            [c.args[0] for c in terminal_posts],
+            ["/tmp/train_cycle0.log", "/tmp/train_cycle1.log"],
         )
 
-    def test_terminal_analysis_does_not_extend_existing_decision_budget(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
-        service._last_submitted = "/tmp/train.log"
-        service._terminal_deadline = 20.0
+    def test_log_only_poller_survives_a_stop_verdict(self):
+        """The poller thread must keep running so later cycles still get polled."""
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train.log"
+
+        with patch.object(service, "_get_results", return_value=True):
+            service.start_poller()
+            # A latched verdict must not terminate the loop in log-only mode.
+            service._poll_stop_event.wait(0.05)
+            still_running = service._poll_thread is not None and service._poll_thread.is_alive()
+            service.stop_poller(timeout=5.0)
+
+        self.assertTrue(still_running)
+        self.assertTrue(service.stop_verdict_observed())
+
+    def test_enforcing_mode_keeps_the_pending_path_for_the_record(self):
+        """The job is ending, so the log that produced the verdict stays recorded."""
+        service = AttributionService(endpoint="http://attr.example:8000/", enforce_stop=True)
+        service._terminal_pending = "/tmp/train.log"
+
+        with patch.object(service, "_get_results", return_value=True):
+            service._poll_once()
+
+        self.assertEqual(service._terminal_pending, "/tmp/train.log")
+        self.assertEqual(service.stop_verdict_count(), 1)
+
+    def test_log_only_is_the_default(self):
+        self.assertFalse(AttributionService(endpoint="http://attr.example:8000/")._enforce_stop)
+
+    def test_enforcing_mode_acts_on_a_stop(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", enforce_stop=True)
+        service._terminal_pending = "/tmp/train.log"
+
+        with patch.object(service, "_get_results", return_value=True):
+            service._poll_once()
+
+        self.assertTrue(service.stop_verdict_observed())
+        self.assertTrue(service.stop_requested())
+
+    def test_poller_exits_after_a_verdict_even_when_not_enforcing(self):
+        """The analysis is finished; there is nothing further to learn by polling on."""
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train.log"
+
+        with patch.object(service, "_get_results", return_value=True) as mock_get:
+            service.start_poller()
+            service.stop_poller(timeout=5.0)
+
+        self.assertFalse(service.stop_requested())
+        self.assertEqual(mock_get.call_count, 1)
+
+    def test_poll_once_clears_pending_on_continue_verdict(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train.log"
+
+        with patch.object(service, "_get_results", return_value=False):
+            service._poll_once()
+
+        self.assertFalse(service.stop_requested())
+        self.assertIsNone(service._terminal_pending)
+
+    def test_poll_once_keeps_polling_while_undecided(self):
+        """None means analysis is still running or attrsvc is unreachable: keep polling."""
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train.log"
+
+        with patch.object(service, "_get_results", return_value=None):
+            service._poll_once()
+            service._poll_once()
+
+        self.assertFalse(service.stop_requested())
+        self.assertEqual(service._terminal_pending, "/tmp/train.log")
+
+    def test_late_verdict_for_older_cycle_still_stops_the_job(self):
+        """A cycle-0 STOP arriving while cycle 2 runs is honored: the verdict is global."""
+        service = AttributionService(endpoint="http://attr.example:8000/", enforce_stop=True)
+
+        with patch.object(service, "_do_submit_log"):
+            service._submit_log("/tmp/train_cycle0.log")
+            service.request_terminal_analysis()
+            service._submit_log("/tmp/train_cycle1.log")
+            service._submit_log("/tmp/train_cycle2.log")
+
+        with patch.object(service, "_get_results", return_value=True) as mock_get:
+            service._poll_once()
+
+        mock_get.assert_called_once_with("/tmp/train_cycle0.log", timeout=2.0)
+        self.assertTrue(service.stop_requested())
+
+    def test_crash_loop_does_not_starve_the_verdict(self):
+        """Regression: cycles failing faster than analysis completes must still yield a STOP.
+
+        Replacing the pending path on every terminal request discarded each in-flight
+        analysis before it finished, so no verdict ever arrived -- in exactly the scenario
+        attribution exists to catch. The pending slot is first-come-first-served, so the
+        first analysis always runs to completion.
+        """
+        service = AttributionService(endpoint="http://attr.example:8000/", enforce_stop=True)
+        analysis_pending = True
+
+        def fake_get(log_path, timeout=None):
+            # attrsvc is still working on whatever it was first asked about.
+            return None if analysis_pending else True
 
         with (
             patch.object(service, "_do_submit_log") as mock_submit,
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                return_value=19.0,
-            ),
+            patch.object(service, "_get_results", side_effect=fake_get) as mock_get,
         ):
+            service._submit_log("/tmp/train_cycle0.log")
             service.request_terminal_analysis()
 
-        self.assertEqual(service._terminal_deadline, 20.0)
-        mock_submit.assert_called_once_with(
-            "/tmp/train.log",
-            analysis_intent="terminal",
+            # 20 rapid crash-loop cycles, each failing before analysis can finish.
+            for cycle in range(1, 21):
+                service._poll_once()
+                service._submit_log(f"/tmp/train_cycle{cycle}.log")
+                service.request_terminal_analysis()
+
+            # Every GET stayed on the first log rather than chasing each new cycle.
+            self.assertEqual(
+                {c.args[0] for c in mock_get.call_args_list}, {"/tmp/train_cycle0.log"}
+            )
+            # Later terminal requests are skipped entirely, so no analysis budget is spent
+            # on results that would never be polled.
+            terminal_posts = [
+                c
+                for c in mock_submit.call_args_list
+                if c.kwargs.get("analysis_intent") == "terminal"
+            ]
+            self.assertEqual(len(terminal_posts), 1)
+            self.assertEqual(terminal_posts[0].args[0], "/tmp/train_cycle0.log")
+            self.assertFalse(service.stop_requested())
+
+            # The first analysis finally completes and the job stops.
+            analysis_pending = False
+            service._poll_once()
+
+        self.assertTrue(service.stop_requested())
+
+    def test_terminal_request_installs_again_once_the_slot_is_free(self):
+        """After a CONTINUE verdict the next failing cycle gets its own analysis."""
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        with patch.object(service, "_do_submit_log") as mock_submit:
+            service._submit_log("/tmp/train_cycle0.log")
+            service.request_terminal_analysis()
+
+            with patch.object(service, "_get_results", return_value=False):
+                service._poll_once()
+            self.assertIsNone(service._terminal_pending)
+
+            service._submit_log("/tmp/train_cycle1.log")
+            service.request_terminal_analysis()
+
+        self.assertEqual(service._terminal_pending, "/tmp/train_cycle1.log")
+        terminal_posts = [
+            c for c in mock_submit.call_args_list if c.kwargs.get("analysis_intent") == "terminal"
+        ]
+        self.assertEqual(
+            [c.args[0] for c in terminal_posts], ["/tmp/train_cycle0.log", "/tmp/train_cycle1.log"]
         )
 
-    def test_get_last_result_uses_final_get_after_decision_budget_expires(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
-        service._last_submitted = "/tmp/train.log"
-        service._terminal_deadline = 20.0
-        service._next_result_poll_time = 30.0
-
-        with (
-            patch.object(service, "_get_results", return_value=True) as mock_get,
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                return_value=21.0,
-            ),
-        ):
-            should_stop = service.get_last_result()
-
-        self.assertTrue(should_stop)
-        mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
-
-    def test_get_last_result_uses_default_get_timeout_with_remaining_budget(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
-        service._last_submitted = "/tmp/train.log"
-        service._terminal_deadline = 20.0
-
-        with (
-            patch.object(service, "_get_results", return_value=None) as mock_get,
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                return_value=19.8,
-            ),
-        ):
-            should_stop = service.get_last_result()
-
-        self.assertIsNone(should_stop)
-        mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
-
-    def test_get_last_result_profiles_wait_until_decision(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
-        service._last_submitted = "/tmp/train.log"
-        service._terminal_deadline = 20.0
+    def test_poll_once_profiles_get_started_once_per_terminal_request(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train.log"
+        service._poll_node_id = "node-a"
 
         with (
             patch.object(service, "_get_results", side_effect=[None, True]),
             patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                side_effect=[10.0, 10.0, 12.0, 12.0],
-            ),
-            patch(
                 "nvidia_resiliency_ext.shared_utils.health_check.record_profiling_event"
             ) as record_event,
         ):
-            self.assertIsNone(service.get_last_result(node_id="node-a"))
-            self.assertTrue(service.get_last_result(node_id="node-a"))
+            service._poll_once()
+            service._poll_once()
 
         self.assertEqual(record_event.call_args_list[0].args[0].value, "attribution_get_started")
         self.assertEqual(record_event.call_args_list[0].kwargs, {"node_id": "node-a"})
         self.assertEqual(record_event.call_args_list[1].args[0].value, "attribution_get_completed")
-        self.assertEqual(
-            record_event.call_args_list[1].kwargs,
-            {"node_id": "node-a"},
-        )
+        self.assertEqual(record_event.call_args_list[1].kwargs, {"node_id": "node-a"})
 
-    def test_get_last_result_profiles_budget_expiry_as_fail_open(self):
-        service = AttributionService(endpoint="http://attr.example:8000/", decision_timeout=7.0)
-        service._last_submitted = "/tmp/train.log"
-        service._terminal_deadline = 20.0
-        service._get_started_recorded = True
+    def test_poller_not_started_for_non_http_transport(self):
+        """Every GET would fail, so the poller would spin without ever reaching a verdict."""
+        service = AttributionService(endpoint="unix:///tmp/attr.sock")
 
-        with (
-            patch.object(service, "_get_results", return_value=None) as mock_get,
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.time.monotonic",
-                return_value=21.25,
-            ),
-            patch(
-                "nvidia_resiliency_ext.shared_utils.health_check.record_profiling_event"
-            ) as record_event,
-        ):
-            should_stop = service.get_last_result(node_id="node-a")
+        service.start_poller()
 
-        self.assertFalse(should_stop)
-        mock_get.assert_called_once_with("/tmp/train.log", timeout=2.0)
-        record_event.assert_called_once()
-        self.assertEqual(record_event.call_args.args[0].value, "attribution_get_completed")
-        self.assertEqual(
-            record_event.call_args.kwargs,
-            {"node_id": "node-a"},
-        )
+        self.assertIsNone(service._poll_thread)
+
+    def test_poller_thread_latches_stop_and_exits(self):
+        service = AttributionService(endpoint="http://attr.example:8000/", enforce_stop=True)
+        service._terminal_pending = "/tmp/train.log"
+
+        with patch.object(service, "_get_results", return_value=True):
+            service.start_poller(node_id="node-a")
+            service.stop_poller(timeout=5.0)
+
+        self.assertTrue(service.stop_requested())
 
     @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
     def test_http_endpoint_omits_job_metadata_when_env_unset(self, mock_client):
