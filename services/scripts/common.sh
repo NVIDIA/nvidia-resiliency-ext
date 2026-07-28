@@ -45,14 +45,12 @@ setup_llm_api_key() {
 
 # Install NVRX packages from local repo (editable mode)
 # Args:
-#   $1 - "attrsvc" or "smonsvc" or "both" (default: both)
+#   $1 - service mode retained for caller compatibility; all modes install the same root package
 #   $2 - repo root directory (default: NVRX_REPO_DIR or ~/nvidia-resiliency-ext)
 # Environment:
 #   PIP_EXTRA_INDEX_URL - optional extra index for package resolution
 install_nvrx_packages() {
-    local mode="${1:-both}"
     local repo_dir="${2:-${NVRX_REPO_DIR:-${HOME}/nvidia-resiliency-ext}}"
-    local extras=""
     local -a pip_extra_args=()
     
     echo "Installing NVRX packages from ${repo_dir}..."
@@ -63,18 +61,15 @@ install_nvrx_packages() {
         pip uninstall nvidia-resiliency-ext nvrx-attrsvc -y --quiet 2>/dev/null || true
     fi
 
-    if [[ "$mode" == "attrsvc" || "$mode" == "both" ]]; then
-        extras="[attribution]"
-        if [[ -n "${PIP_EXTRA_INDEX_URL}" ]]; then
-            pip_extra_args=(--extra-index-url "${PIP_EXTRA_INDEX_URL}")
-        fi
+    if [[ -n "${PIP_EXTRA_INDEX_URL}" ]]; then
+        pip_extra_args=(--extra-index-url "${PIP_EXTRA_INDEX_URL}")
     fi
 
-    echo "  Installing nvidia-resiliency-ext${extras} (editable from repo)..."
+    echo "  Installing nvidia-resiliency-ext (editable from repo)..."
     STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install \
         --no-cache-dir \
         "${pip_extra_args[@]}" \
-        -e "${repo_dir}${extras}" \
+        -e "${repo_dir}" \
         --quiet
 
     echo "  Done."

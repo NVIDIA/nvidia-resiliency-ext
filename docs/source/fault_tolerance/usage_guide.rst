@@ -212,16 +212,12 @@ not add a new transport implementation.
 If ``--ft-attribution-endpoint`` is set, ``--ft-per-cycle-applog-prefix`` is required because the
 attribution service analyzes the per-cycle application logs.
 
-The service code is included in the NVRx wheel, but the service dependencies are optional.
-Install the wheel with the ``attribution`` extra before running a launcher-managed attribution
-service:
+The service code and dependencies are included in the NVRx wheel. Install the wheel before running
+a launcher-managed attribution service:
 
 .. code-block:: bash
 
-   python -m pip install 'nvidia_resiliency_ext-<version>-<tags>.whl[attribution]'
-
-Plain ``python -m pip install nvidia_resiliency_ext-*.whl`` does not install the attribution
-service dependencies.
+   python -m pip install nvidia_resiliency_ext-<version>-<tags>.whl
 
 * CLI:
 

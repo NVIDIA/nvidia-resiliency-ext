@@ -2,10 +2,10 @@
 
 Minimal examples using the attribution library and MCP integration.
 
-Install the optional attribution dependencies first:
+Install NVIDIA Resiliency Extension first:
 
 ```bash
-pip install 'nvidia-resiliency-ext[attribution]'
+pip install nvidia-resiliency-ext
 ```
 
 | File | Description |

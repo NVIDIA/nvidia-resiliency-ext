@@ -38,12 +38,10 @@ For detailed documentation and usage information about each component, please re
 - `git clone https://github.com/NVIDIA/nvidia-resiliency-ext`
 - `cd nvidia-resiliency-ext`
 - `pip install .`
-- `pip install .[attribution]` if you also need log-analysis / attribution extras
 
 
 ### From PyPI wheel
 - `pip install nvidia-resiliency-ext`
-- `pip install 'nvidia-resiliency-ext[attribution]'` for attribution extras
 
 ### Platform Support
 
