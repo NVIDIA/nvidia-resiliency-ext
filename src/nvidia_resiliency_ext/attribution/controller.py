@@ -58,6 +58,8 @@ class AttributionAnalysisConfig:
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_tokens: int | None = None
+    endpoint_outer_retries: int | None = None
+    endpoint_outer_backoff_sec: float | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,8 @@ class AttributionController:
             llm_temperature=config.analysis.llm_temperature,
             llm_top_p=config.analysis.llm_top_p,
             llm_max_tokens=config.analysis.llm_max_tokens,
+            endpoint_outer_retries=config.analysis.endpoint_outer_retries,
+            endpoint_outer_backoff_sec=config.analysis.endpoint_outer_backoff_sec,
         )
 
         self._analyzer = Analyzer(
@@ -178,7 +182,7 @@ class AttributionController:
         timeout_str = (
             f"{config.cache.compute_timeout}s" if config.cache.compute_timeout else "default"
         )
-        llm_overrides = [
+        analysis_overrides = [
             k
             for k, v in (
                 ("llm_model", config.analysis.llm_model),
@@ -186,26 +190,30 @@ class AttributionController:
                 ("llm_temperature", config.analysis.llm_temperature),
                 ("llm_top_p", config.analysis.llm_top_p),
                 ("llm_max_tokens", config.analysis.llm_max_tokens),
+                ("endpoint_outer_retries", config.analysis.endpoint_outer_retries),
+                ("endpoint_outer_backoff_sec", config.analysis.endpoint_outer_backoff_sec),
             )
             if v is not None
         ]
-        llm_str = f", llm_overrides={llm_overrides}" if llm_overrides else ""
+        analysis_str = f", analysis_overrides={analysis_overrides}" if analysis_overrides else ""
         logger.info(
             "Initialized AttributionController with allowed_root=%s, compute_timeout=%s, "
             "analysis_engine_backend=%s%s",
             config.allowed_root,
             timeout_str,
             self._engine_backend,
-            llm_str,
+            analysis_str,
         )
         logger.info(
             "Analyzer engine LLM wiring: model=%r base_url=%s temperature=%s top_p=%s "
-            "max_tokens=%s",
+            "max_tokens=%s endpoint_outer_retries=%s endpoint_outer_backoff_sec=%s",
             analyzer_engine.llm_model,
             analyzer_engine.llm_base_url,
             analyzer_engine.llm_temperature,
             analyzer_engine.llm_top_p,
             analyzer_engine.llm_max_tokens,
+            analyzer_engine.endpoint_outer_retries,
+            analyzer_engine.endpoint_outer_backoff_sec,
         )
 
     def shutdown(self) -> None:

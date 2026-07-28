@@ -43,6 +43,62 @@ def test_attrsvc_llm_empty_env_values_are_unset(tmp_path, monkeypatch):
     assert cfg.LLM_MAX_TOKENS is None
 
 
+def test_attrsvc_log_analysis_endpoint_outer_retry_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES", raising=False)
+    monkeypatch.delenv("NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC", raising=False)
+    monkeypatch.delenv("NVRX_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES", raising=False)
+    monkeypatch.delenv("NVRX_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC", raising=False)
+
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES is None
+    assert cfg.LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC is None
+
+
+def test_attrsvc_log_analysis_endpoint_outer_retry_accepts_attrsvc_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES", "2")
+    monkeypatch.setenv("NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC", "3.5")
+
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES == 2
+    assert cfg.LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC == 3.5
+
+
+def test_attrsvc_log_analysis_endpoint_outer_retry_accepts_nvrx_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES", raising=False)
+    monkeypatch.delenv("NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC", raising=False)
+    monkeypatch.setenv("NVRX_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES", "1")
+    monkeypatch.setenv("NVRX_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC", "0")
+
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES == 1
+    assert cfg.LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC == 0.0
+
+
+def test_attrsvc_log_analysis_endpoint_outer_retry_rejects_negative(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES", "-1")
+
+    with pytest.raises(Exception):
+        Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+
+def test_attrsvc_settings_pass_endpoint_outer_retry_to_controller_config(tmp_path):
+    attrsvc_service = pytest.importorskip("nvidia_resiliency_ext.services.attrsvc.service")
+    cfg = Settings(
+        ALLOWED_ROOT=str(tmp_path),
+        LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES=4,
+        LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC=2.5,
+        _env_file=None,
+    )
+
+    controller_cfg = attrsvc_service._controller_config_from_settings(cfg)
+
+    assert controller_cfg.analysis.endpoint_outer_retries == 4
+    assert controller_cfg.analysis.endpoint_outer_backoff_sec == 2.5
+
+
 def test_attrsvc_analysis_backend_uses_current_env_name_only(tmp_path, monkeypatch):
     monkeypatch.setenv("NVRX_ATTRSVC_ANALYSIS_BACKEND", "lib")
     monkeypatch.setenv("NVRX_ATTRSVC_LOG_ANALYSIS_BACKEND", "mcp")

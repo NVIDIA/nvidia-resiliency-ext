@@ -67,6 +67,9 @@ from nvidia_resiliency_ext.attribution.orchestration.types import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES = 0
+DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC = 60.0
+
 LogSageCycleFields = tuple[str, str, str, str, str]
 
 FINISHED_STATUS_LLM_FAILURE = "LLM_FAILURE"
@@ -417,6 +420,67 @@ def _log_analysis_retry_config() -> tuple[int, float, float, float]:
     return retries, initial_backoff, max_backoff, jitter
 
 
+def _int_config(values: Mapping[str, Any], key: str, default: int) -> int:
+    raw = values.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %d", key, raw, default)
+        return default
+
+
+def _float_config(values: Mapping[str, Any], key: str, default: float) -> float:
+    raw = values.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return max(float(raw), 0.0)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %.2f", key, raw, default)
+        return default
+
+
+def _endpoint_outer_retry_config(values: Mapping[str, Any]) -> tuple[int, float]:
+    retries = _int_config(
+        values,
+        "endpoint_outer_retries",
+        DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES,
+    )
+    backoff = _float_config(
+        values,
+        "endpoint_outer_backoff_sec",
+        DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC,
+    )
+    return retries, backoff
+
+
+def _is_endpoint_failed_result(result: Any) -> bool:
+    try:
+        fields = result[:4]
+    except (TypeError, IndexError):
+        return False
+    return any(field == LOGSAGE_LLM_ENDPOINT_FAILED for field in fields)
+
+
+def _endpoint_failed_tuple(
+    checkpoint_saved: bool, endpoint_outer_retries: int
+) -> LogSageCycleFields:
+    reason = (
+        "LogSage returned LLM ENDPOINT FAILED after its internal retries; "
+        "NVRx endpoint outer retries exhausted "
+        f"(configured additional retries: {endpoint_outer_retries})."
+    )
+    return (
+        ATTR_LLM_FAILURE,
+        reason,
+        f"Attribution: Primary issues: [{LOGSAGE_LLM_ENDPOINT_FAILED}], Secondary issues: []",
+        "",
+        str(checkpoint_saved),
+    )
+
+
 def _finished_status_name(status: Any) -> str:
     return getattr(status, "name", status)
 
@@ -489,8 +553,16 @@ def _retry_return_application_errors_rt(
     return app_data
 
 
-def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, str, str, str, str]:
+def _with_exponential_backoff(
+    llm_call,
+    checkpoint_saved: bool,
+    *,
+    endpoint_outer_retries: int = DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES,
+    endpoint_outer_backoff_sec: float = DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC,
+) -> tuple[str, str, str, str, str]:
     retries, initial_backoff, max_backoff, jitter = _log_analysis_retry_config()
+    endpoint_outer_retries = max(endpoint_outer_retries, 0)
+    endpoint_outer_backoff = max(endpoint_outer_backoff_sec, 0.0)
     backoff = initial_backoff
     last_error = "no attempts made (retries=0)"
     fallback = (
@@ -501,12 +573,45 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
         str(checkpoint_saved),
     )
 
-    for attempt in range(1, retries + 1):
+    if retries <= 0:
+        logger.error(
+            "Log-analysis LLM failed after %d attempts; last error: %s",
+            retries,
+            last_error,
+        )
+        return fallback
+
+    attempt = 1
+    endpoint_failures = 0
+    while attempt <= retries:
         try:
             result = llm_call()
-            if result and not any(field == LOGSAGE_LLM_ENDPOINT_FAILED for field in result[:4]):
+            if _is_endpoint_failed_result(result):
+                endpoint_failures += 1
+                last_error = LOGSAGE_LLM_ENDPOINT_FAILED
+                if endpoint_failures > endpoint_outer_retries:
+                    logger.error(
+                        "LogSage endpoint failure exhausted NVRx outer retry budget "
+                        "(configured additional retries: %d)",
+                        endpoint_outer_retries,
+                    )
+                    return _endpoint_failed_tuple(checkpoint_saved, endpoint_outer_retries)
+
+                logger.warning(
+                    "LogSage returned %s; retrying NVRx outer attribution attempt "
+                    "%d/%d in %.2fs",
+                    LOGSAGE_LLM_ENDPOINT_FAILED,
+                    endpoint_failures,
+                    endpoint_outer_retries,
+                    endpoint_outer_backoff,
+                )
+                time.sleep(endpoint_outer_backoff)
+                continue
+
+            if result:
                 return result
-            last_error = LOGSAGE_LLM_ENDPOINT_FAILED
+
+            last_error = "empty LLM result"
         except Exception as exc:
             last_error = str(exc)
             logger.warning("Log-analysis LLM attempt %d/%d failed: %s", attempt, retries, exc)
@@ -520,13 +625,7 @@ def _with_exponential_backoff(llm_call, checkpoint_saved: bool) -> tuple[str, st
             return fallback
 
         backoff = _sleep_with_backoff(attempt, retries, backoff, max_backoff, jitter)
-
-    logger.error(
-        "Log-analysis LLM failed after %d attempts; last error: %s",
-        retries,
-        last_error,
-    )
-    return fallback
+        attempt += 1
 
 
 class _ProgressiveLogState:
@@ -909,6 +1008,7 @@ class NVRxLogAnalyzer(NVRxAttribution):
         cfg = effective_run_or_init_config(self._init_config)
         path = cfg.get("log_path")
         is_per_cycle = bool(cfg.get("is_per_cycle", self.is_per_cycle))
+        endpoint_outer_retries, endpoint_outer_backoff_sec = _endpoint_outer_retry_config(cfg)
         if path and self.job_inline_data_dict.get(path) and len(output_list) == 1:
             rt_result = self._streaming_attribution(output_list[0], cfg, path)
             # Final attribution has consumed the progressive state (and already
@@ -969,6 +1069,8 @@ class NVRxLogAnalyzer(NVRxAttribution):
                     fields = _with_exponential_backoff(
                         lambda: get_proposed_solution_cat(self.llm, output),
                         checkpoint_saved=output.checkpoint_saved,
+                        endpoint_outer_retries=endpoint_outer_retries,
+                        endpoint_outer_backoff_sec=endpoint_outer_backoff_sec,
                     )
                     if path and is_per_cycle and len(output_list) == 1:
                         auto_resume_output, auto_resume_verbose = (
@@ -1306,6 +1408,18 @@ def main():
         type=int,
         default=DEFAULT_LLM_MAX_TOKENS,
         help='Max tokens for LLM',
+    )
+    parser.add_argument(
+        '--endpoint_outer_retries',
+        type=int,
+        default=DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES,
+        help='Additional NVRx retries when LogSage reports LLM ENDPOINT FAILED',
+    )
+    parser.add_argument(
+        '--endpoint_outer_backoff_sec',
+        type=float,
+        default=DEFAULT_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC,
+        help='Seconds between NVRx endpoint outer retries',
     )
     parser.add_argument(
         '--exclude_nvrx_logs', action='store_true', help='Exclude nvrx logs from the input data'

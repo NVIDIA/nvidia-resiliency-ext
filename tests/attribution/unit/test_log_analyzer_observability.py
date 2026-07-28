@@ -12,7 +12,10 @@ from typing import Any, Dict
 
 from nvidia_resiliency_ext.attribution.coalescing.coalescer import RequestCoalescer
 from nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline import AnalysisPipelineMode
-from nvidia_resiliency_ext.attribution.orchestration.config import LogSageExecutionConfig
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    LogSageExecutionConfig,
+    endpoint_retry_overrides,
+)
 
 
 def _stub_module(monkeypatch, name):
@@ -108,6 +111,16 @@ def _import_log_analyzer_with_optional_dependency_stubs(monkeypatch):
 
     module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
     return module.LogAnalyzer
+
+
+def test_endpoint_retry_overrides_omits_unset_values():
+    assert endpoint_retry_overrides() == {}
+    assert endpoint_retry_overrides(retries=2) == {"endpoint_outer_retries": 2}
+    assert endpoint_retry_overrides(backoff_sec=3.5) == {"endpoint_outer_backoff_sec": 3.5}
+    assert endpoint_retry_overrides(retries=-1, backoff_sec=-1.0) == {
+        "endpoint_outer_retries": 0,
+        "endpoint_outer_backoff_sec": 0.0,
+    }
 
 
 class _FakeRunner:
@@ -225,6 +238,8 @@ def test_log_sage_runner_omits_unset_llm_overrides(monkeypatch):
         assert "temperature" not in kwargs
         assert "top_p" not in kwargs
         assert "max_tokens" not in kwargs
+        assert "endpoint_outer_retries" not in kwargs
+        assert "endpoint_outer_backoff_sec" not in kwargs
         assert kwargs["log_path"] == "/tmp/job.log"
         assert kwargs["exclude_nvrx_logs"] is False
 
@@ -266,6 +281,39 @@ def test_log_sage_runner_preserves_explicit_llm_overrides(monkeypatch):
         assert kwargs["temperature"] == 0.0
         assert kwargs["top_p"] == 0.0
         assert kwargs["max_tokens"] == 0
+
+
+def test_log_sage_runner_preserves_endpoint_retry_overrides(monkeypatch):
+    _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
+    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    runner = module.LogSageRunner(
+        LogSageExecutionConfig(
+            use_lib_log_analysis=True,
+            endpoint_outer_retries=2,
+            endpoint_outer_backoff_sec=3.5,
+        )
+    )
+    captured: dict[str, dict[str, Any]] = {}
+
+    class FakeLogAnalyzer:
+        async def run(self, kwargs: dict[str, Any]) -> list[Any]:
+            captured["run"] = dict(kwargs)
+            return []
+
+    async def fake_get_lib_log_analyzer(kwargs: dict[str, Any]) -> FakeLogAnalyzer:
+        captured["init"] = dict(kwargs)
+        return FakeLogAnalyzer()
+
+    runner._get_lib_log_analyzer = fake_get_lib_log_analyzer
+
+    async def run() -> None:
+        await runner._fetch_log_result_lib("/tmp/job.log")
+
+    asyncio.run(run())
+
+    for kwargs in captured.values():
+        assert kwargs["endpoint_outer_retries"] == 2
+        assert kwargs["endpoint_outer_backoff_sec"] == 3.5
 
 
 def test_log_sage_runner_lib_run_allows_coalescer_timeout(monkeypatch):

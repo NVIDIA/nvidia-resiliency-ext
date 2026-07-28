@@ -58,6 +58,8 @@ class AttributionConfig:
     decision_timeout: Optional[float] = None
     log_level: Optional[str] = None
     export_url: Optional[str] = None
+    log_analysis_endpoint_outer_retries: Optional[int] = None
+    log_analysis_endpoint_outer_backoff_sec: Optional[float] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -65,6 +67,18 @@ class AttributionConfig:
             "analysis_backend",
             _normalize_analysis_backend(self.analysis_backend),
         )
+        if (
+            self.log_analysis_endpoint_outer_retries is not None
+            and self.log_analysis_endpoint_outer_retries < 0
+        ):
+            raise ValueError("--ft-attribution-log-analysis-endpoint-outer-retries must be >= 0")
+        if (
+            self.log_analysis_endpoint_outer_backoff_sec is not None
+            and self.log_analysis_endpoint_outer_backoff_sec < 0
+        ):
+            raise ValueError(
+                "--ft-attribution-log-analysis-endpoint-outer-backoff-sec must be >= 0"
+            )
 
     @property
     def is_enabled(self) -> bool:
@@ -139,6 +153,16 @@ class AttributionConfig:
                 decision_timeout=decision_timeout,
                 log_level=getattr(args, "ft_attribution_log_level", None),
                 export_url=None,
+                log_analysis_endpoint_outer_retries=getattr(
+                    args,
+                    "ft_attribution_log_analysis_endpoint_outer_retries",
+                    None,
+                ),
+                log_analysis_endpoint_outer_backoff_sec=getattr(
+                    args,
+                    "ft_attribution_log_analysis_endpoint_outer_backoff_sec",
+                    None,
+                ),
             )
 
         applog_dir = os.path.dirname(os.path.realpath(os.path.abspath(base_log_file)))
@@ -168,6 +192,16 @@ class AttributionConfig:
             decision_timeout=decision_timeout,
             log_level=getattr(args, "ft_attribution_log_level", None),
             export_url=export_url,
+            log_analysis_endpoint_outer_retries=getattr(
+                args,
+                "ft_attribution_log_analysis_endpoint_outer_retries",
+                None,
+            ),
+            log_analysis_endpoint_outer_backoff_sec=getattr(
+                args,
+                "ft_attribution_log_analysis_endpoint_outer_backoff_sec",
+                None,
+            ),
         )
 
 
@@ -302,6 +336,16 @@ class AttributionManager:
         _set_if_not_none(env, "NVRX_ATTRSVC_LLM_MODEL", self.cfg.llm_model)
         _set_if_not_none(env, "NVRX_ATTRSVC_ANALYSIS_BACKEND", self.cfg.analysis_backend)
         _set_if_not_none(env, "NVRX_ATTRSVC_LOG_LEVEL", self.cfg.log_level)
+        _set_if_not_none(
+            env,
+            "NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_RETRIES",
+            self.cfg.log_analysis_endpoint_outer_retries,
+        )
+        _set_if_not_none(
+            env,
+            "NVRX_ATTRSVC_LOG_ANALYSIS_ENDPOINT_OUTER_BACKOFF_SEC",
+            self.cfg.log_analysis_endpoint_outer_backoff_sec,
+        )
         _set_if_not_none(env, _ATTRSVC_EXPORT_URL_ENV, self.cfg.export_url)
         return env
 

@@ -495,3 +495,44 @@ def test_terminal_log_analyzer_mcp_uses_cycle_counter(monkeypatch, tmp_path):
             },
         )
     ]
+
+
+def test_terminal_log_analyzer_mcp_passes_endpoint_retry_overrides(monkeypatch, tmp_path):
+    _import_analyzer_with_optional_dependency_stubs(monkeypatch)
+    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    fake_client = FakeMcpClient(
+        {
+            "module": "log_analyzer",
+            "result": [],
+            "recommendation": {"action": "RESTART", "source": "test"},
+        }
+    )
+    monkeypatch.setattr(module, "create_mcp_client", lambda **_kwargs: fake_client)
+    runner = module.LogSageRunner(
+        LogSageExecutionConfig(
+            use_lib_log_analysis=False,
+            endpoint_outer_retries=2,
+            endpoint_outer_backoff_sec=3.5,
+        )
+    )
+
+    async def run() -> dict[str, Any]:
+        return await runner.fetch_log_result(str(tmp_path / "train_CYCLE4.log"))
+
+    result = asyncio.run(run())
+
+    assert result["recommendation"]["action"] == "RESTART"
+    assert fake_client.calls == [
+        (
+            "log_analyzer",
+            {
+                "max_attempts": 3,
+                "log_path": str(tmp_path / "train_CYCLE4.log"),
+                "exclude_nvrx_logs": False,
+                "is_per_cycle": True,
+                "cycle_counter": 4,
+                "endpoint_outer_retries": 2,
+                "endpoint_outer_backoff_sec": 3.5,
+            },
+        )
+    ]
