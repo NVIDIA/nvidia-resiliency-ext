@@ -286,7 +286,8 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         state._round = 1
         state._attribution_service = MagicMock()
         state._attribution_service.get_last_result.return_value = True
-        state._attribution_settled_for_round = -1
+        state._attribution_gate_settled_round = -1
+        state._attribution_cycle_log_submitted = 0
         state.set_shutdown = MagicMock()
 
         with self.assertRaises(RendezvousGracefulExitError):
@@ -296,6 +297,19 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         state.set_shutdown.assert_called_once_with(
             ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE
         )
+
+    def test_attribution_gate_does_not_poll_stale_submitted_log(self):
+        """A missing previous-cycle submit fails open without polling an older log."""
+        state = object.__new__(_RendezvousBarrierState)
+        state._round = 2
+        state._attribution_service = MagicMock()
+        state._attribution_gate_settled_round = -1
+        state._attribution_cycle_log_submitted = 0
+
+        self.assertTrue(state._attribution_gate("node-a"))
+
+        state._attribution_service.get_last_result.assert_not_called()
+        self.assertEqual(state._attribution_gate_settled_round, 2)
 
     def test_join_increments_join_count(self):
         """Test that joining increments join_count atomically."""
@@ -909,6 +923,7 @@ class Step2CompletionTest(BaseRendezvousTest):
         state._get_unhealthy_count = MagicMock(return_value=0)
         state._attribution_service = MagicMock()
         state._attribution_service.get_last_result.side_effect = [None, False]
+        state._attribution_cycle_log_submitted = 0
         state.get_all_participants = MagicMock(wraps=state.get_all_participants)
 
         participants = [
@@ -926,6 +941,7 @@ class Step2CompletionTest(BaseRendezvousTest):
         )
 
         self.assertEqual(state._attribution_service.get_last_result.call_count, 2)
+        state._attribution_service.request_terminal_analysis.assert_called_once_with()
         self.assertEqual(state._get_unhealthy_count.call_count, 2)
         state.get_all_participants.assert_called_once()
         self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
@@ -1470,6 +1486,61 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual(snapshot.active_node_addrs, ["node_a", "node_b"])
         self.assertEqual(snapshot.standby_node_addrs, [])
         self.assertEqual(snapshot.active_ranks, [0, 1])
+
+    def test_control_host_submits_attribution_log_when_round_closes(self):
+        """The control host submits the just-started cycle log at round close."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            cycle_log_prefix="/tmp/train.log",
+        )
+        state._attribution_service = MagicMock()
+
+        def assert_submitted_cycle_recorded(_log_path):
+            self.assertEqual(state._attribution_cycle_log_submitted, 0)
+
+        state._attribution_service._submit_log.side_effect = assert_submitted_cycle_recorded
+
+        join_count_key = state.join_count_key
+        prefix = state.prefix
+        train_0 = _NodeDesc("node_a", 100, 0)
+        train_1 = _NodeDesc("node_b", 101, 0)
+
+        self.store.add(join_count_key, 1)
+        self.store.add(join_count_key, 1)
+        self.store.set(
+            f"{prefix}:slot_1",
+            state._pack_participant_value(train_0, 0, "none", 0),
+        )
+        self.store.set(
+            f"{prefix}:slot_2",
+            state._pack_participant_value(train_1, 1, "none", 0),
+        )
+
+        closed_round = state.close_current_round_as_host(
+            _NodeDesc("control", 10, 0),
+            min_nodes=2,
+            max_nodes=2,
+            segment_check_interval=_test_segment_check_interval(),
+        )
+
+        self.assertEqual(closed_round, 0)
+        state._attribution_service._submit_log.assert_called_once_with("/tmp/train_cycle0.log")
+        self.assertEqual(state._attribution_cycle_log_submitted, 0)
+
+    def test_terminal_attribution_requests_last_submitted_cycle(self):
+        """Final-cycle terminal analysis targets the last cycle this control host submitted."""
+        state = object.__new__(_RendezvousBarrierState)
+        state._attribution_service = MagicMock()
+        state._attribution_cycle_log_submitted = 2
+        state._attribution_terminal_requested_cycle = None
+
+        state._request_terminal_attribution_for_submitted_cycle()
+
+        state._attribution_service.request_terminal_analysis.assert_called_once_with()
+        self.assertEqual(state._attribution_terminal_requested_cycle, 2)
 
     def test_open_rendezvous_reports_cycle_end_when_round_created(self):
         """Opening the next round closes the store-host's current cycle."""

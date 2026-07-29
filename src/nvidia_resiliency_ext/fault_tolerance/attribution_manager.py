@@ -232,7 +232,7 @@ class AttributionManager:
             raise
 
         logger.info(
-            "Managed attribution service is ready: PID=%s endpoint=http://localhost:%s",
+            "Managed attribution service is ready: PID=%s endpoint=http://127.0.0.1:%s",
             self.process.pid if self.process else None,
             DEFAULT_ATTRIBUTION_PORT,
         )
@@ -341,7 +341,7 @@ def is_managed_attribution_endpoint(endpoint: str) -> bool:
 
 
 def _managed_attribution_client_endpoint() -> str:
-    return f"http://localhost:{DEFAULT_ATTRIBUTION_PORT}"
+    return f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}"
 
 
 def _attribution_command() -> list[str]:

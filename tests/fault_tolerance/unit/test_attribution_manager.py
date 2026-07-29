@@ -93,7 +93,7 @@ def test_managed_attribution_config_derives_applog_dir_and_log_file(tmp_path):
     )
 
     assert cfg.endpoint == "localhost"
-    assert cfg.client_endpoint.endpoint == f"http://localhost:{DEFAULT_ATTRIBUTION_PORT}"
+    assert cfg.client_endpoint.endpoint == f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}"
     assert cfg.applog_dir == str(tmp_path / "logs")
     assert cfg.log_file == str(tmp_path / "logs" / "train_attribution.log")
     assert cfg.client_endpoint.decision_timeout is None
@@ -194,7 +194,7 @@ def test_attribution_config_maps_launcher_args(tmp_path):
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
     assert env["LLM_API_KEY_FILE"] == str(api_key_file)
-    assert env["NVRX_ATTRSVC_ENDPOINT"] == f"http://localhost:{DEFAULT_ATTRIBUTION_PORT}"
+    assert env["NVRX_ATTRSVC_ENDPOINT"] == f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}"
     assert env["NVRX_ATTRSVC_ALLOWED_ROOT"] == str(applog_dir)
     assert env["NVRX_ATTRSVC_LLM_BASE_URL"] == "https://llm.example/v1"
     assert env["NVRX_ATTRSVC_LLM_MODEL"] == "model-a"
@@ -366,7 +366,7 @@ def test_child_env_overrides_inherited_attrsvc_endpoint(tmp_path, monkeypatch):
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
 
-    assert env["NVRX_ATTRSVC_ENDPOINT"] == f"http://localhost:{DEFAULT_ATTRIBUTION_PORT}"
+    assert env["NVRX_ATTRSVC_ENDPOINT"] == f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}"
 
 
 def test_child_env_preserves_existing_pythonpath(tmp_path, monkeypatch):
