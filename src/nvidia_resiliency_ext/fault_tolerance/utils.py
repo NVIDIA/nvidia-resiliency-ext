@@ -36,6 +36,26 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 logger = logging.getLogger(LogConfig.name)
 
+# Rendezvous shutdown reasons. "graceful" and "failure" describe how the job ended;
+# RDZV_NO_RESTART_REASONS are the cases where NVRx itself concluded the job must not be
+# restarted, as opposed to "failure", which only says something broke and leaves the retry
+# policy to the scheduler. Every launcher reports DEFAULT_NO_RESTART_EXIT_CODE for those
+# so downstream tooling gets a binary "do not requeue" signal; the specific reason stays in
+# the rendezvous store for diagnosis.
+#
+# Defined here rather than in ft_rendezvous_barrier because that module imports launcher,
+# so launcher cannot import back from it.
+RDZV_SHUTDOWN_REASON_GRACEFUL = "graceful"
+RDZV_SHUTDOWN_REASON_FAILURE = "failure"
+RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP = "attribution_stop"
+RDZV_SHUTDOWN_REASON_NO_PROGRESS = "no_progress"
+RDZV_NO_RESTART_REASONS = frozenset(
+    {RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP, RDZV_SHUTDOWN_REASON_NO_PROGRESS}
+)
+# Chosen outside the ranges that already carry meaning: 0-2 (success / generic failure /
+# argparse), 64-78 (BSD sysexits.h), 126-165 (shell errors and 128+signal), and 255.
+DEFAULT_NO_RESTART_EXIT_CODE = 93
+
 _IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='wb'))
 
 
