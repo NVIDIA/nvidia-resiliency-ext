@@ -14,6 +14,34 @@ shutdown, so pytest can hang after the session. On successful sessions we call
 import logging
 import os
 
+import pytest
+
+
+@pytest.fixture
+def capture_nvrx_logs(caplog):
+    """Capture 'nvrx' logger records via caplog, independent of log propagation.
+
+    The shared LogConfig handler sets the 'nvrx' logger ``propagate = False``
+    (log_manager.py) once NVRx logging is initialized (by any earlier test), so its
+    records otherwise never reach caplog's root handler — making log-content
+    assertions order-dependent (pass in isolation, fail in the full/sharded suite).
+
+    Attach caplog's handler directly to the 'nvrx' logger so capture works no matter
+    what ``propagate`` is, and pin ``propagate = False`` for the duration so the
+    record is captured exactly once (never also via the root handler).
+    """
+    from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
+
+    nvrx_logger = logging.getLogger(LogConfig.name)
+    prev_propagate = nvrx_logger.propagate
+    nvrx_logger.addHandler(caplog.handler)
+    nvrx_logger.propagate = False
+    try:
+        yield
+    finally:
+        nvrx_logger.removeHandler(caplog.handler)
+        nvrx_logger.propagate = prev_propagate
+
 
 def pytest_configure():
     logging.basicConfig(

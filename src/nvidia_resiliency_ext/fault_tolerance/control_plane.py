@@ -43,10 +43,7 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     str_to_bool,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
-    CycleInfoReporter,
-    cycle_log_file,
-)
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _NodeDescGenerator,
     _RendezvousBarrierState,
@@ -234,6 +231,7 @@ def _run_control_rendezvous_loop(
         join_timeout_seconds=join_timeout,
         last_call_timeout_seconds=last_call_timeout,
         segment=segment,
+        cycle_log_prefix=args.ft_per_cycle_applog_prefix,
     )
     node = _NodeDescGenerator().generate(args.local_addr)
 
@@ -248,8 +246,6 @@ def _run_control_rendezvous_loop(
     state._attribution_service = services.attribution_service
 
     while not stop_event.is_set():
-        if services.attribution_service is not None:
-            services.attribution_service.request_terminal_analysis()
         try:
             closed_round = state.close_current_round_as_host(
                 node,
@@ -260,13 +256,11 @@ def _run_control_rendezvous_loop(
             )
         except (RendezvousGracefulExitError, RendezvousClosedError) as exc:
             logger.info("nvrx-control rendezvous loop exiting: %s", exc)
-            return
+            break
 
         logger.info("nvrx-control closed rendezvous round %s", closed_round)
-        if services.attribution_service is not None and args.ft_per_cycle_applog_prefix:
-            services.attribution_service._submit_log(
-                cycle_log_file(args.ft_per_cycle_applog_prefix, closed_round)
-            )
+
+    state._request_terminal_attribution_for_submitted_cycle()
 
 
 def run(args: argparse.Namespace) -> None:

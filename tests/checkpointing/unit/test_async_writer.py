@@ -32,6 +32,7 @@ from torch.distributed.checkpoint import (
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
+from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
     AsyncRequest,
@@ -46,6 +47,11 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsync
 from nvidia_resiliency_ext.checkpointing.utils import diff
 from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Model, Utils
+
+
+class _FrameWithCode:
+    def __init__(self):
+        self._code = (lambda: None).__code__
 
 
 def mock_open(

@@ -239,7 +239,9 @@ def test_cycle_info_reporter_defaults_missing_restart_count_to_zero(tmp_dir):
     assert call_kw["attempt_index"] == 0
 
 
-def test_cycle_info_reporter_invalid_restart_count_falls_back_to_zero(tmp_dir, caplog):
+def test_cycle_info_reporter_invalid_restart_count_falls_back_to_zero(
+    tmp_dir, caplog, capture_nvrx_logs
+):
     writer = MagicMock()
     reporter = CycleInfoReporter(tmp_dir, writer=writer)
 

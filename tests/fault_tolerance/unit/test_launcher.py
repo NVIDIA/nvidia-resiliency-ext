@@ -99,14 +99,21 @@ def test_register_barrier_rdzv_handler_applies_c10d_patch():
         patch.object(rendezvous_handler_registry, "_registry", {"c10d": object()}),
         patch.object(rendezvous_handler_registry, "register") as register,
     ):
-        launcher._register_ft_rdzv_handler("barrier")
+        launcher._register_ft_rdzv_handler()
 
     apply_c10d_patch.assert_called_once()
     register.assert_called_once()
     assert register.call_args.args[0] == "c10d"
 
 
-def test_legacy_rdzv_impl_injects_use_libuv_false():
+@pytest.mark.parametrize(
+    ("extra_args", "expected"),
+    [
+        ([], "barrier"),
+        (["--ft-rdzv-impl", "barrier"], "barrier"),
+    ],
+)
+def test_ft_rdzv_impl_accepts_barrier(extra_args, expected):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     parser = launcher.get_args_parser()
@@ -118,16 +125,20 @@ def test_legacy_rdzv_impl_injects_use_libuv_false():
             "1",
             "--rdzv-endpoint",
             "127.0.0.1:29500",
-            "--ft-rdzv-impl",
-            "legacy",
+            *extra_args,
             "train.py",
         ]
     )
 
-    with patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}):
-        config, _, _ = launcher.config_from_args(args)
+    assert args.ft_rdzv_impl == expected
 
-    assert config.rdzv_configs["use_libuv"] is False
+
+def test_ft_rdzv_impl_rejects_legacy():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--ft-rdzv-impl", "legacy", "train.py"])
 
 
 def test_rank_not_send_initial_hb(tmp_dir):
@@ -588,7 +599,7 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         mock_restart.assert_not_called()
         mock_open.assert_not_called()
 
@@ -612,17 +623,14 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_restart.assert_called_once()
         mock_open.assert_not_called()
 
-    def test_handle_restart_decision_requests_terminal_attribution_before_restart(self):
-        """Starts terminal attribution before local restart decisions and keeps moving."""
+    def test_handle_restart_decision_leaves_terminal_attribution_to_rendezvous_close(self):
+        """Terminal attribution is owned by the rendezvous control-host close path."""
         agent = self._make_agent()
         agent._is_store_host = True
         agent._progress_tracker = MagicMock()
         agent._remaining_restarts = 2
         agent._rdzv_handler._attribution_service = MagicMock()
         calls = []
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.side_effect = (
-            lambda: calls.append("terminal")
-        )
         agent._progress_tracker.analyze_previous_cycle.side_effect = lambda: calls.append("analyze")
         agent._progress_tracker.should_terminate_early.side_effect = (
             lambda: calls.append("progress-check") or False
@@ -636,11 +644,12 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        self.assertEqual(calls, ["terminal", "analyze", "progress-check", "restart"])
+        self.assertEqual(calls, ["analyze", "progress-check", "restart"])
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         agent._rdzv_handler._attribution_service.get_last_result.assert_not_called()
 
     def test_handle_restart_decision_no_restarts_left(self):
-        """Returns False when _remaining_restarts is 0 after requesting terminal attribution."""
+        """Returns False when _remaining_restarts is 0."""
         agent = self._make_agent()
         agent._is_store_host = True
         agent._progress_tracker = MagicMock()
@@ -654,8 +663,21 @@ class TestHandleRestartDecision(unittest.TestCase):
             )
 
         self.assertFalse(result)
-        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_called_once_with()
+        agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         mock_restart.assert_not_called()
+
+    def test_request_terminal_attribution_uses_barrier_state_helper(self):
+        """Final-cycle terminal requests share the barrier attribution helper."""
+        agent = self._make_agent()
+        agent._is_store_host = True
+        agent._rdzv_handler._barrier_state = MagicMock()
+
+        agent._request_terminal_attribution()
+
+        helper = (
+            agent._rdzv_handler._barrier_state._request_terminal_attribution_for_submitted_cycle
+        )
+        helper.assert_called_once_with()
 
     def test_handle_restart_decision_open_rendezvous_called_when_requested(self):
         """Calls _open_rendezvous_for_restart() when open_rendezvous=True."""
@@ -689,33 +711,6 @@ class TestHandleRestartDecision(unittest.TestCase):
 
         barrier_state.open_rendezvous.assert_called_once()
 
-    def test_open_rendezvous_for_restart_legacy_handler(self):
-        """Does nothing (no error) when handler lacks _barrier_state (legacy rdzv)."""
-        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
-
-        # Use a spec-constrained mock so _barrier_state doesn't auto-exist
-        legacy_rdzv = MagicMock(
-            spec=[
-                'round',
-                'get_active_node_addrs',
-                'get_standby_node_addrs',
-            ]
-        )
-        legacy_rdzv.round.return_value = 1
-        legacy_rdzv.get_active_node_addrs.return_value = []
-        legacy_rdzv.get_standby_node_addrs.return_value = []
-        self.spec.rdzv_handler = legacy_rdzv
-
-        agent = LocalElasticAgent(
-            spec=self.spec,
-            fault_tol_cfg=self.fault_tol_cfg,
-            logs_specs=self.logs_specs,
-        )
-        # Should not raise
-        agent._open_rendezvous_for_restart()
-        # No open_rendezvous() on the legacy handler
-        self.assertFalse(hasattr(legacy_rdzv, '_barrier_state'))
-
 
 def test_rendezvous_host_sets_failure_shutdown_when_attribution_says_stop():
     from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
@@ -729,7 +724,8 @@ def test_rendezvous_host_sets_failure_shutdown_when_attribution_says_stop():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = True
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
     state.set_shutdown = MagicMock()
 
     with pytest.raises(RendezvousGracefulExitError):
@@ -746,13 +742,14 @@ def test_rendezvous_host_retries_close_round_when_attribution_pending():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = None
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
 
     should_close = state._attribution_gate("node-a")
 
     assert should_close is False
     state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
-    assert state._attribution_settled_for_round == -1
+    assert state._attribution_gate_settled_round == -1
 
 
 def test_rendezvous_host_skips_attribution_gate_for_initial_round():
@@ -761,7 +758,8 @@ def test_rendezvous_host_skips_attribution_gate_for_initial_round():
     state = object.__new__(_RendezvousBarrierState)
     state._round = 0
     state._attribution_service = MagicMock()
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = None
 
     assert state._attribution_gate("node-a") is True
     state._attribution_service.get_last_result.assert_not_called()
@@ -774,12 +772,13 @@ def test_rendezvous_host_closes_round_when_attribution_allows_restart():
     state._round = 1
     state._attribution_service = MagicMock()
     state._attribution_service.get_last_result.return_value = False
-    state._attribution_settled_for_round = -1
+    state._attribution_gate_settled_round = -1
+    state._attribution_cycle_log_submitted = 0
 
     should_close = state._attribution_gate("node-a")
 
     assert should_close is True
-    assert state._attribution_settled_for_round == 1
+    assert state._attribution_gate_settled_round == 1
     state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
 
 
@@ -1244,7 +1243,7 @@ def _make_launch_agent_config(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog):
+def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
     from types import SimpleNamespace
 
     from nvidia_resiliency_ext.fault_tolerance import launcher
