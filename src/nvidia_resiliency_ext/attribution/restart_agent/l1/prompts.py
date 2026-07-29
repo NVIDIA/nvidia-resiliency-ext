@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+from .categories import CATEGORIES
 from .response_contract import L1_RESPONSE_CONTRACT
 
 _SUPPORT_TAGS = ", ".join(sorted(L1_RESPONSE_CONTRACT.evidence_support_tags))
+_CATEGORY_LIST = "\n".join(f"  {entry.id}. {entry.name}" for entry in CATEGORIES)
 
 SYSTEM_PROMPT = f"""\
 Analyze one distributed-training log and return the structured current-log evidence
@@ -101,6 +103,18 @@ analysis_status=insufficient_evidence, root-cause summary to
 "{L1_RESPONSE_CONTRACT.insufficient_rationale}", the same canonical unknown recovery
 claims, and list at least one missing-evidence item. Related failure lines are grounded
 diagnostic references, not additional policy-claim citations.
+
+Category classification:
+- After the primary_failure and typed recovery claims, include one additional top-level
+  JSON field named category_selection with three keys: category_id (integer 0-38),
+  category_confidence (integer 0-100), and category_rationale (string, at most 400
+  characters).
+- Choose the single best-fitting id from the curated list below. Use category_id=0 and
+  category_confidence=0 when no listed category matches or when you are uncertain.
+- Ground category_rationale in current-log evidence. The rationale is advisory; it does
+  not replace the typed recovery claims above.
+- The curated categories are:
+{_CATEGORY_LIST}
 
 Return one compact JSON object matching the supplied schema. Include only the strongest
 evidence and at most three related failures. Emit no fingerprint, data-position identity,

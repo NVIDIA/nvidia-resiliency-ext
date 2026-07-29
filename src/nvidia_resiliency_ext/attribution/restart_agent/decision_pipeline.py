@@ -122,6 +122,7 @@ def build_decision_outcome(
             assessment_grounded=l2_result.recovery_assessment_policy_grounded,
             retry_policy=RetryPolicyConfig.from_mapping(execution_context.retry_policy),
             declared_recovery_capabilities=(execution_context.declared_recovery_capabilities),
+            l1_category_selection=l1_result.category_selection(),
         )
     )
     primary = l4_outcome.primary

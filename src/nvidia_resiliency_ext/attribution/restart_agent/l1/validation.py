@@ -14,7 +14,13 @@ from .response_contract import L1_RESPONSE_CONTRACT
 def model_evidence_contract_errors(payload: Mapping[str, Any]) -> list[str]:
     """Return structural errors without applying semantic policy judgment."""
 
-    errors = _object_shape_errors(payload, L1_RESPONSE_CONTRACT.top_level_fields, "top-level")
+    errors = _object_shape_errors(
+        payload,
+        L1_RESPONSE_CONTRACT.top_level_fields,
+        "top-level",
+        optional=L1_RESPONSE_CONTRACT.optional_top_level_fields,
+    )
+    errors.extend(_category_selection_errors(payload.get("category_selection")))
     if payload.get("schema_version") != L1_EVIDENCE_SCHEMA_VERSION:
         errors.append(f"schema_version must be {L1_EVIDENCE_SCHEMA_VERSION}")
 
@@ -66,14 +72,61 @@ def _object_shape_errors(
     value: Mapping[str, Any],
     expected: frozenset[str],
     field: str,
+    *,
+    optional: frozenset[str] = frozenset(),
 ) -> list[str]:
     errors: list[str] = []
     missing = sorted(expected.difference(value))
-    extra = sorted(set(value).difference(expected))
+    extra = sorted(set(value).difference(expected).difference(optional))
     if missing:
         errors.append(f"{field} missing fields: " + ", ".join(missing))
     if extra:
         errors.append(f"{field} has unsupported fields: " + ", ".join(extra))
+    return errors
+
+
+def _category_selection_errors(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, Mapping):
+        return ["category_selection must be an object or null"]
+    errors = _object_shape_errors(
+        value,
+        L1_RESPONSE_CONTRACT.category_selection_fields,
+        "category_selection",
+    )
+    cid = value.get("category_id")
+    if (
+        isinstance(cid, bool)
+        or not isinstance(cid, int)
+        or cid < L1_RESPONSE_CONTRACT.min_category_id
+        or cid > L1_RESPONSE_CONTRACT.max_category_id
+    ):
+        errors.append(
+            "category_selection.category_id must be an integer from "
+            f"{L1_RESPONSE_CONTRACT.min_category_id} to "
+            f"{L1_RESPONSE_CONTRACT.max_category_id}"
+        )
+    confidence = value.get("category_confidence")
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, int)
+        or confidence < L1_RESPONSE_CONTRACT.min_category_confidence
+        or confidence > L1_RESPONSE_CONTRACT.max_category_confidence
+    ):
+        errors.append(
+            "category_selection.category_confidence must be an integer from "
+            f"{L1_RESPONSE_CONTRACT.min_category_confidence} to "
+            f"{L1_RESPONSE_CONTRACT.max_category_confidence}"
+        )
+    rationale = value.get("category_rationale")
+    if not isinstance(rationale, str):
+        errors.append("category_selection.category_rationale must be a string")
+    elif len(rationale) > L1_RESPONSE_CONTRACT.max_category_rationale_chars:
+        errors.append(
+            "category_selection.category_rationale must be at most "
+            f"{L1_RESPONSE_CONTRACT.max_category_rationale_chars} characters"
+        )
     return errors
 
 

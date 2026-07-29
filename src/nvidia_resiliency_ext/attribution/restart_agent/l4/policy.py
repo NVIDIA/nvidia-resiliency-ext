@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
+from ..l1.categories import CategoryDef, category_by_id
 from ..models import (
     AffectedEntity,
     AssessmentStatus,
@@ -26,6 +27,7 @@ from ..models import (
 
 GENERAL_ROOT_CEILING_ID = "general_root_ceiling"
 SELECTED_RULE_BUDGET_ID = "selected_rule_budget"
+CATEGORY_CONFIDENCE_THRESHOLD = 80
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class L4PolicyInput:
     assessment_grounded: bool = False
     retry_policy: RetryPolicyConfig = RetryPolicyConfig()
     declared_recovery_capabilities: tuple[DeclaredRecoveryCapability, ...] = ()
+    l1_category_selection: Optional[dict] = None
 
     def __post_init__(self) -> None:
         if self.model_recovery_assessment is not None and not isinstance(
@@ -191,6 +194,10 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
         )
         else None
     )
+    category_action = _category_selection_qualifies_action(
+        policy_input,
+        min_confidence=CATEGORY_CONFIDENCE_THRESHOLD,
+    )
     rule = _select_rule(
         primary=policy_input.primary,
         current_affected_entity=policy_input.current_affected_entity,
@@ -200,6 +207,13 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
         outlook=outlook,
         outlook_status=outlook_status,
         current_evidence_qualified=current_evidence_qualified,
+        category_action=category_action,
+    )
+    category_confirmed_stop = bool(
+        category_action is not None
+        and category_action.decision == "STOP"
+        and rule == RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value
+        and policy_input.primary is not None
     )
 
     general_root_ceiling = _general_root_ceiling(
@@ -231,6 +245,7 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
         rule=rule,
         retry_budget_exhausted=retry_budget_exhausted,
         observed_advance=observed_advance,
+        category_confirmed_stop=category_confirmed_stop,
     )
     selected_scope = (
         selected_rule_budget.history_match_scope
@@ -311,9 +326,18 @@ def _select_rule(
     outlook: str | None,
     outlook_status: str | None,
     current_evidence_qualified: bool,
+    category_action: CategoryDef | None = None,
 ) -> str | None:
     if primary is None:
         return None
+    # High-confidence curated-category gate takes precedence over the typed cannot_recover
+    # check when the category has a definite STOP/RESTART recommendation. EXCLUDED and
+    # unknown categories fall through to the existing logic.
+    if category_action is not None and applied_capability is None:
+        if category_action.decision == "STOP":
+            return RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value
+        if category_action.decision == "RESTART":
+            return RetryPolicyRule.GENERAL_RETRY.value
     if applied_capability is not None:
         return RetryPolicyRule.WORKLOAD_MANAGED_RECOVERY.value
     if matching_capability is not None:
@@ -333,6 +357,41 @@ def _select_rule(
     ):
         return RetryPolicyRule.BOUNDED_RETRY.value
     return RetryPolicyRule.GENERAL_RETRY.value
+
+
+def _category_selection_qualifies_action(
+    l1_result: "L4PolicyInput",
+    min_confidence: int = CATEGORY_CONFIDENCE_THRESHOLD,
+) -> CategoryDef | None:
+    """Return the curated category if selection meets the confidence gate.
+
+    Skips EXCLUDED categories and low-confidence or missing selections so the
+    caller falls through to the existing L4 logic.
+    """
+
+    selection = l1_result.l1_category_selection
+    if not isinstance(selection, Mapping):
+        return None
+    cid = selection.get("category_id")
+    confidence = selection.get("category_confidence")
+    if (
+        isinstance(cid, bool)
+        or not isinstance(cid, int)
+        or cid <= 0
+    ):
+        return None
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, int)
+        or confidence < min_confidence
+    ):
+        return None
+    category = category_by_id(cid)
+    if category is None:
+        return None
+    if category.decision == "EXCLUDED":
+        return None
+    return category
 
 
 def _general_root_ceiling(
@@ -491,10 +550,13 @@ def _decision(
     rule: str | None,
     retry_budget_exhausted: bool,
     observed_advance: bool,
+    category_confirmed_stop: bool = False,
 ) -> tuple[str, str]:
     if primary is None:
         return Decision.RESTART.value, DecisionBasis.NO_PRIMARY_FAILURE.value
     if rule == RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value:
+        if category_confirmed_stop:
+            return Decision.STOP.value, DecisionBasis.CATEGORY_CONFIRMED_STOP.value
         return Decision.STOP.value, DecisionBasis.WORKLOAD_UNRECOVERABLE.value
     if retry_budget_exhausted:
         return Decision.STOP.value, DecisionBasis.RETRY_BUDGET_EXHAUSTED.value
