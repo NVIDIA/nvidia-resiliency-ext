@@ -179,8 +179,8 @@
 <span class="sd">      Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).</span>
 <span class="sd">    * Attribution service (optional, disabled unless `attribution_endpoint` is set):</span>
 <span class="sd">      - `attribution_endpoint` [str] endpoint of the attribution service</span>
-<span class="sd">      - `attribution_decision_timeout` [float] launcher-side attribution decision</span>
-<span class="sd">        budget in seconds, measured from terminal analysis request to result fetch.</span>
+<span class="sd">      - `attribution_stop_action` [str] what to do with a STOP verdict: `log` (default,</span>
+<span class="sd">        record it without terminating) or `no-restart` (end the job, no requeue).</span>
 <span class="sd">      - `attribution_export_url` [str] complete export posting URL for</span>
 <span class="sd">        launcher-managed attribution service postprocessing.</span>
 
@@ -220,7 +220,7 @@
     <span class="n">check_remaining_processes</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="c1"># Progress tracking configuration (controlled by max_no_progress_cycles)</span>
     <span class="n">max_no_progress_cycles</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="p">(</span>
-        <span class="mi">2</span>  <span class="c1"># Max consecutive cycles (incl. cycle 0) without progress before early terminate</span>
+        <span class="mi">3</span>  <span class="c1"># Max consecutive cycles (incl. cycle 0) without progress before early terminate</span>
     <span class="p">)</span>
     <span class="n">min_progress_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="p">(</span>
         <span class="mi">1</span>  <span class="c1"># Min iteration increase to count as progress (default: any increase)</span>
@@ -232,7 +232,7 @@
     <span class="p">)</span>
     <span class="c1"># Attribution service configuration (optional)</span>
     <span class="n">attribution_endpoint</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-    <span class="n">attribution_decision_timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">attribution_stop_action</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">attribution_export_url</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="c1"># NVRx cycle info: base directory for cycle_info JSON files</span>
