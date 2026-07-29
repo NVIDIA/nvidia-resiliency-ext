@@ -23,7 +23,6 @@ import os
 import subprocess  # nosec B404
 import sys
 import threading
-import time
 import traceback
 from collections import defaultdict, deque
 from functools import wraps
@@ -1795,29 +1794,40 @@ class AttributionService:
     Client that queries an external attribution service to analyze artifacts (e.g., logs).
     Behavior:
       - POSTs to submit for log analysis
-      - GETs results by the last submitted log_path
+      - a background poller GETs the verdict for the log with a pending terminal analysis
+
+    Nothing in the launcher waits on a verdict. The poller latches the first STOP
+    recommendation it observes; the rendezvous-owning thread reads that latch (a plain
+    attribute read, no I/O) and terminates the job. A verdict for cycle N is therefore
+    honored even when it arrives while cycle N+1 or N+2 is already running.
     """
 
-    DEFAULT_DECISION_TIMEOUT_SECONDS = 60.0
     _RESULT_POLL_INTERVAL_SECONDS = 2.0
 
-    def __init__(
-        self,
-        endpoint: str,
-        decision_timeout: Optional[float] = None,
-    ):
+    def __init__(self, endpoint: str, *, enforce_stop: bool = False):
         self.endpoint = endpoint.rstrip("/")
-        if decision_timeout is None:
-            decision_timeout = self.DEFAULT_DECISION_TIMEOUT_SECONDS
-        self.decision_timeout = float(decision_timeout)
-        if self.decision_timeout <= 0:
-            raise ValueError("attribution decision timeout must be positive")
+        # When False, a STOP verdict is still polled, logged and recorded, but never acted
+        # on. Attribution verdicts come from an LLM, and acting on a false positive costs
+        # far more than missing a true one -- a missed STOP is bounded by the restart
+        # budget, while an enforced false STOP needs a human to resubmit. So enforcement
+        # is opt-in and sites can measure their own precision first.
+        self._enforce_stop = enforce_stop
         self._unsupported_transport_warned = False
         # Track the most recent log_path we submitted
         self._last_submitted: Optional[str] = None
-        self._terminal_deadline: Optional[float] = None
+        # Log path with an outstanding terminal analysis. Distinct from _last_submitted:
+        # the latter advances every cycle, while a terminal verdict is only requested for
+        # cycles that actually failed and may still be pending when the next cycle starts.
+        self._terminal_pending: Optional[str] = None
+        self._stop_latched = False
+        # How many STOP verdicts have been observed. In log-only mode this is the
+        # number that decides whether the precision is good enough to enforce.
+        self._stop_verdict_count = 0
         self._get_started_recorded = False
-        self._next_result_poll_time = 0.0
+        self._lock = threading.Lock()
+        self._poll_stop_event = threading.Event()
+        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_node_id: Optional[Any] = None
 
     def __call__(self) -> None:
         """
@@ -1827,83 +1837,150 @@ class AttributionService:
         """
         self.request_terminal_analysis()
 
-    def get_last_result(
-        self,
-        node_id: Optional[Any] = None,
-    ) -> Optional[bool]:
-        """Briefly join terminal analysis and fetch whether attribution recommends stopping.
+    def stop_requested(self) -> bool:
+        """Return whether the job should be stopped on attribution's recommendation.
 
-        Returns:
-          - True when attribution recommends stopping the job.
-          - False when attribution recommends continuing, or when the launcher-side
-            decision budget expires and restart should fail open.
-          - None when attribution is still pending within the decision budget.
+        Always False in log-only mode, even after a STOP verdict is observed. Use
+        ``stop_verdict_observed()`` for the raw verdict.
+
+        Local attribute read. Safe to call from a hot polling loop: it performs no
+        network, TCPStore, or filesystem I/O.
         """
-        log_path = self._last_submitted
+        with self._lock:
+            return self._stop_latched and self._enforce_stop
+
+    def stop_verdict_observed(self) -> bool:
+        """Return whether a STOP verdict was observed, regardless of enforcement mode."""
+        with self._lock:
+            return self._stop_latched
+
+    def stop_verdict_count(self) -> int:
+        """Return how many STOP verdicts have been observed across the job's cycles."""
+        with self._lock:
+            return self._stop_verdict_count
+
+    def start_poller(self, node_id: Optional[Any] = None) -> None:
+        """Start the background verdict poller on the rendezvous store host.
+
+        No-op for transports the in-job client cannot speak, where every GET would
+        fail and the poller would spin forever without ever reaching a verdict.
+        """
+        if self._poll_thread is not None:
+            return
+        if self._http_base_url() is None:
+            logger.info(
+                "AttributionService verdict poller not started: endpoint %s is not "
+                "reachable by the in-job HTTP client",
+                self.endpoint,
+            )
+            return
+        self._poll_node_id = node_id
+        self._poll_thread = threading.Thread(
+            target=self._poll_loop,
+            name="nvrx-attribution-poller",
+            daemon=True,
+        )
+        self._poll_thread.start()
+        logger.debug("AttributionService verdict poller started")
+
+    def stop_poller(self, timeout: float = 5.0) -> None:
+        """Signal the poller to exit and join it."""
+        self._poll_stop_event.set()
+        thread = self._poll_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+            self._poll_thread = None
+
+    def _poll_loop(self) -> None:
+        while not self._poll_stop_event.is_set():
+            try:
+                self._poll_once()
+            except Exception as e:
+                logger.warning(
+                    "AttributionService poller iteration failed: %s: %s", type(e).__name__, e
+                )
+            # When enforcing, a verdict ends the job, so there is nothing further to
+            # learn. In log-only mode the job keeps running and keeps failing, and the
+            # point of the mode is to accumulate a verdict per failed cycle, so the poller
+            # must survive a STOP.
+            if self._enforce_stop and self.stop_verdict_observed():
+                return
+            self._poll_stop_event.wait(self._RESULT_POLL_INTERVAL_SECONDS)
+
+    def _poll_once(self) -> None:
+        with self._lock:
+            log_path = self._terminal_pending
         if not log_path:
-            logger.debug("AttributionService GET skipped: no submitted log path")
-            return False
+            return
 
-        self._start_get_profiling(node_id)
-        decision_remaining = self._remaining_decision_timeout()
-        if decision_remaining <= 0:
-            logger.warning(
-                "AttributionService decision budget exhausted for %s; attempting final "
-                "bounded GET",
-                log_path,
-            )
-            result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
-            record_profiling_event(
-                ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
-                node_id=node_id,
-            )
-            if result is None:
-                return False
-            return result
-
-        now = time.monotonic()
-        if now < self._next_result_poll_time:
-            return None
-
-        self._next_result_poll_time = now + self._RESULT_POLL_INTERVAL_SECONDS
+        self._start_get_profiling(self._poll_node_id)
         result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
-
         if result is None:
-            return None
+            # Analysis still running, or attrsvc is unreachable. Keep polling; the job
+            # keeps running in the meantime.
+            return
 
         record_profiling_event(
             ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
-            node_id=node_id,
+            node_id=self._poll_node_id,
         )
-        return result
+
+        with self._lock:
+            if result:
+                self._stop_latched = True
+                self._stop_verdict_count += 1
+                if self._enforce_stop:
+                    logger.error(
+                        "Attribution recommends stopping the job (analyzed log: %s); "
+                        "the job will be terminated",
+                        log_path,
+                    )
+                    # Leave the pending path in place: the job is ending, and keeping it
+                    # records which log produced the verdict.
+                    return
+                logger.error(
+                    "Attribution recommends stopping the job (analyzed log: %s), but the "
+                    "recommendation is NOT being enforced "
+                    "(--ft-attribution-stop-action=log). The job continues. This is STOP "
+                    "verdict %s so far. Set --ft-attribution-stop-action=no-restart to "
+                    "act on verdicts like this one.",
+                    log_path,
+                    self._stop_verdict_count,
+                )
+                # Log-only mode treats a STOP like any other completed verdict: free the
+                # slot so later failed cycles are analyzed too. Without this the first
+                # STOP would silently end all attribution for the rest of the job, which
+                # is the opposite of what this mode is for.
+                if self._terminal_pending == log_path:
+                    self._terminal_pending = None
+                    self._get_started_recorded = False
+                return
+            # Authoritative "keep going" for this log; stop polling it. A later failing
+            # cycle installs a new pending path.
+            if self._terminal_pending == log_path:
+                self._terminal_pending = None
+                self._get_started_recorded = False
+        logger.info("Attribution recommends continuing (analyzed log: %s)", log_path)
 
     def _start_get_profiling(self, node_id: Optional[Any]) -> None:
-        if self._get_started_recorded:
-            return
-        self._get_started_recorded = True
+        with self._lock:
+            if self._get_started_recorded:
+                return
+            self._get_started_recorded = True
         record_profiling_event(
             ProfilingEvent.ATTRIBUTION_GET_STARTED,
             node_id=node_id,
         )
 
-    def _ensure_decision_deadline(self) -> float:
-        if self._terminal_deadline is None:
-            self._terminal_deadline = time.monotonic() + self.decision_timeout
-        return self._terminal_deadline
-
-    def _remaining_decision_timeout(self) -> float:
-        """Return the remaining launcher-side budget for the current attribution decision."""
-        return self._ensure_decision_deadline() - time.monotonic()
-
     def _submit_log(self, log_path: str) -> None:
         """
         Submit a log file for progressive analysis via POST.
         The POST is synchronous but bounded to avoid delaying launcher progress.
+
+        Deliberately does not touch _terminal_pending: a terminal analysis requested for
+        an earlier cycle must keep being polled across cycle boundaries.
         """
         self._last_submitted = log_path
-        self._terminal_deadline = None
-        self._get_started_recorded = False
-        self._next_result_poll_time = 0.0
         self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_PROGRESSIVE)
 
     def request_terminal_analysis(self) -> None:
@@ -1911,29 +1988,94 @@ class AttributionService:
         Request terminal analysis for the last submitted workload log.
 
         The POST returns after attrsvc accepts the request and schedules final analysis.
-        Later GETs use non-blocking probes until a verdict is cached.
+        The background poller then probes for the verdict without blocking the launcher.
+
+        The pending slot is first-come-first-served. Replacing an unresolved analysis
+        would starve the verdict in a crash loop: if every cycle fails faster than attrsvc
+        can analyze the previous one, each in-flight analysis is discarded before it
+        completes and no verdict ever arrives -- in exactly the scenario attribution is
+        meant to catch. Keeping the oldest instead guarantees one analysis runs to
+        completion, and the stop decision is global, so whichever cycle produces it is
+        enough. When analysis finishes within a cycle, which is the normal case, the slot
+        is already free and this is indistinguishable from replacing.
         """
         log_path = self._last_submitted
         if not log_path:
             logger.debug("AttributionService terminal POST skipped: no submitted log path")
             return
-        self._ensure_decision_deadline()
-        self._next_result_poll_time = 0.0
-        self._do_submit_log(
-            log_path,
-            analysis_intent=ANALYSIS_INTENT_TERMINAL,
-        )
+        with self._lock:
+            in_flight = self._terminal_pending
+        if in_flight is not None:
+            # Skip the POST too: this result would never be polled, so requesting it only
+            # spends analysis budget and competes with the analysis already in flight.
+            #
+            # Dropping this cycle's analysis is the intended FCFS behavior, not a gap. The
+            # check is a snapshot, so it can also lose a benign race: _poll_once runs its
+            # GET outside the lock and only then clears the slot, so a cycle can be
+            # deferred microseconds before the slot frees. The outcome is the same either
+            # way -- this cycle is not analyzed, and the next failed cycle installs
+            # normally -- and the stop decision is global, so any cycle's verdict is
+            # enough.
+            #
+            # Promoting a deferred path when the poller clears the slot looks like the fix
+            # but is not: with several cycles deferred it needs a keep-newest/keep-oldest
+            # policy and still drops the rest, or it becomes a real queue that grows one
+            # entry per failed cycle in a crash loop -- the unbounded retention that
+            # choosing a single slot removed. It would also move POST submission and its
+            # failure handling into the poller thread and reopen a race against a
+            # concurrent terminal request.
+            logger.info(
+                "AttributionService terminal analysis for %s deferred: still awaiting a "
+                "verdict for %s",
+                log_path,
+                in_flight,
+            )
+            return
+
+        # Tell attrsvc before making the path pollable. Publishing the slot first would
+        # let the poller GET a path attrsvc has not yet been asked to analyze terminally,
+        # so whatever it returns for that path would be treated as the terminal verdict.
+        # attrsvc does not currently cache a result for a progressive-only submission, so
+        # such a GET just reports "not completed" -- but that is an attrsvc-side invariant
+        # this client cannot enforce, and the progressive design explicitly leaves room for
+        # terminal analysis to reuse progressive state later. Ordering the two removes the
+        # dependency entirely.
+        #
+        # Only the rendezvous-owning thread calls this, so reading the slot above and
+        # writing it below cannot interleave with another submitter. The poller only ever
+        # clears the slot, never fills it, so reaching here means the slot was free and is
+        # still free. (It can go the other way -- free just after we read it occupied --
+        # which is the benign deferral race described above.)
+        if not self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_TERMINAL):
+            # Leave the slot free. Installing a path attrsvc never accepted would pin the
+            # FCFS slot forever: its GET can never complete, so every later failed cycle
+            # would defer behind it and attribution would be dead for the rest of the job.
+            # Losing this one cycle's analysis is recoverable; losing all of them is not.
+            logger.warning(
+                "AttributionService terminal analysis for %s was not accepted; skipping "
+                "this cycle so a later failed cycle can still be analyzed",
+                log_path,
+            )
+            return
+        with self._lock:
+            self._terminal_pending = log_path
+            self._get_started_recorded = False
 
     def _do_submit_log(
         self,
         log_path: str,
         analysis_intent: str = ANALYSIS_INTENT_PROGRESSIVE,
         timeout: float = _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS,
-    ) -> None:
-        """Perform the actual POST request."""
+    ) -> bool:
+        """Perform the actual POST request. Returns whether attrsvc accepted it.
+
+        Callers that reserve state on the strength of the submission must check this:
+        installing a pending terminal analysis that attrsvc never received would pin the
+        FCFS slot on a path whose GET can never complete.
+        """
         base_url = self._http_base_url()
         if base_url is None:
-            return
+            return False
         try:
             with httpx.Client(base_url=base_url, timeout=timeout) as client:
                 url = f"{base_url}{ROUTE_LOGS}"
@@ -1943,7 +2085,7 @@ class AttributionService:
                     log_path,
                     analysis_intent,
                 )
-                post_log(
+                resp = post_log(
                     client,
                     log_path,
                     user=job_user_from_env(),
@@ -1954,6 +2096,22 @@ class AttributionService:
             logger.warning(
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e
             )
+            return False
+
+        # httpx does not raise for error statuses, so a rejected submission would
+        # otherwise look identical to an accepted one.
+        status = getattr(resp, "status_code", None)
+        if not isinstance(status, int):
+            return True
+        if not 200 <= status < 300:
+            logger.warning(
+                "AttributionService POST %s (analysis_intent=%s) rejected: HTTP %s",
+                log_path,
+                analysis_intent,
+                status,
+            )
+            return False
+        return True
 
     def _get_results(
         self,
@@ -1963,8 +2121,12 @@ class AttributionService:
         """
         Get the stop decision for a previously submitted log file via GET.
 
-        Terminal analysis is triggered earlier via POST, so launcher uses a
-        non-blocking probe before rendezvous closes the next round.
+        Terminal analysis is triggered earlier via POST, so this is a non-blocking probe.
+
+        Returns:
+          - True/False when attrsvc has completed analysis: the normalized stop decision.
+          - None when there is no decision yet, either because analysis is still running
+            or because attrsvc could not be reached.
         """
         base_url = self._http_base_url()
         if base_url is None:

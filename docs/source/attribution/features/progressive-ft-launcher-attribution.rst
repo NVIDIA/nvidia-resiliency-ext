@@ -4,12 +4,18 @@ Progressive FT Launcher Attribution
 Summary
 -------
 
-Progressive FT launcher attribution reduces restart-decision latency by starting
-log analysis when a fault-tolerance cycle starts, while the workload is still
-running. When the cycle ends and ``ft_launcher`` asks attrsvc for a stop/restart
-decision, attrsvc should reuse the analysis work already completed for the same
-per-cycle application log and only perform the final missing work needed to
-return an authoritative decision.
+Progressive FT launcher attribution reduces the time to an authoritative
+stop/restart verdict by starting log analysis when a fault-tolerance cycle
+starts, while the workload is still running. When the cycle ends and
+``ft_launcher`` asks attrsvc for a stop/restart decision, attrsvc should reuse
+the analysis work already completed for the same per-cycle application log and
+only perform the final missing work needed to return an authoritative decision.
+
+Note that ``ft_launcher`` no longer blocks on that verdict. The rendezvous host
+requests terminal analysis and restarts the workload immediately; a background
+poller consumes the verdict and terminates the job if it is STOP, possibly
+several cycles later. Progressive analysis therefore shortens the window in which
+a doomed job keeps burning nodes, rather than shortening a restart stall.
 
 The feature is aimed at the ``ft_launcher`` integration path. The cluster-wide
 service path may expose progressive behavior for validation, but it is not a
@@ -26,13 +32,13 @@ LogSage calls over the file flow. Until the LogSage contract is available,
 Problem
 -------
 
-Today, ``ft_launcher`` submits a per-cycle log path near cycle start with
-``POST /logs`` and later requests attribution with ``GET /logs`` after the
-workload has stopped. The ``POST`` path records/tracks the log, but the
-``GET`` path triggers the full LogSage attribution pipeline. For large
-application logs this makes ``ft_launcher`` wait for parsing and LLM analysis
-after the workload has already died, increasing the time before the launcher can
-act on a stop/restart decision.
+``ft_launcher`` submits a per-cycle log path near cycle start with
+``POST /logs`` and later requests attribution with ``GET /logs`` once the cycle
+has ended. The ``POST`` path records/tracks the log, but the ``GET`` path
+triggers the full LogSage attribution pipeline. For large application logs, all
+of that parsing and LLM analysis begins only after the workload has already died,
+so a job that attribution would have stopped keeps restarting and consuming nodes
+until the verdict lands.
 
 The per-cycle log path is already a stable correlation key. Both calls refer to
 the same path produced by the cycle log naming convention, for example
@@ -72,11 +78,16 @@ User Flows
 2. Attrsvc recognizes the submission as an ``ft_launcher`` progressive-analysis
    request and starts non-blocking pre-analysis for the growing file.
 3. The workload runs and continues writing to the same log file.
-4. At cycle end, ``ft_launcher`` sends ``GET /logs`` for the same path.
-5. Attrsvc uses the progressive state to complete the normal stop/end analysis
+4. At cycle end, ``ft_launcher`` sends ``POST /logs`` with terminal intent and
+   restarts the workload without waiting.
+5. A background poller in the launcher sends ``GET /logs`` for the same path
+   until attrsvc returns a completed result.
+6. Attrsvc uses the progressive state to complete the normal stop/end analysis
    and returns the normal attribution payload with a normalized recommendation.
-6. If progressive state is missing or unusable, attrsvc computes the result with
+   If progressive state is missing or unusable, attrsvc computes the result with
    the existing terminal pipeline.
+7. A STOP recommendation terminates the job at that point, whichever cycle is
+   running by then. Anything else lets the job continue.
 
 Service mode
 ~~~~~~~~~~~~
