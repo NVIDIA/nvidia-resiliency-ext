@@ -126,9 +126,14 @@ class TrackedJobs:
         )
 
     async def create_new_job(
-        self, validated: str, user: str, job_id: Optional[str]
+        self,
+        validated: str,
+        user: str,
+        job_id: Optional[str],
+        *,
+        detect_splitlog: bool = True,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
-        if job_id:
+        if job_id and detect_splitlog:
             logger.debug("create_new_job: job_id=%s, checking for splitlog mode", job_id)
             info = read_and_parse_slurm_output(validated)
             logger.debug(
@@ -192,10 +197,20 @@ class TrackedJobs:
             )
 
         self._total_single += 1
-        job = Job(path=validated, user=user, mode=JobMode.SINGLE)
+        job = Job(
+            path=validated,
+            user=user,
+            mode=JobMode.SINGLE,
+            job_id=job_id,
+        )
         with self._jobs_lock:
             self._jobs[validated] = job
-        logger.debug("Created SINGLE job (no job_id): path=%s", validated)
+        logger.debug(
+            "Created SINGLE job: path=%s, job_id=%s, splitlog_detection=%s",
+            validated,
+            job_id,
+            detect_splitlog,
+        )
         await self._track_submission(validated)
         return LogAnalyzerSubmitResult(
             submitted=True,

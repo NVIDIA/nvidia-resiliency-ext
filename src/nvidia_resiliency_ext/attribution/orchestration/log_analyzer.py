@@ -718,6 +718,8 @@ class LogAnalyzer:
         log_path: str,
         user: str = "unknown",
         job_id: Optional[str] = None,
+        *,
+        detect_splitlog: bool = True,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """Submit a log path for tracking (splitlog / pending / single)."""
         if not log_path:
@@ -739,4 +741,9 @@ class LogAnalyzer:
         if existing_job:
             return self._tracked.handle_existing_job(existing_job, validated)
 
-        return await self._tracked.create_new_job(validated, user, job_id)
+        return await self._tracked.create_new_job(
+            validated,
+            user,
+            job_id,
+            detect_splitlog=detect_splitlog,
+        )
