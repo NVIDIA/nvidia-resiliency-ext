@@ -216,6 +216,7 @@ implemented using MCP transport, it should expose service-grade methods such as
 | **`combined_log_fr/`** | MCP tool **`log_fr_analyzer`** for one-call LogSage + FR collection; optional **log + FR LLM fusion** (`CombinedLogFR`, `merge_log_fr_llm()`) for `LOG_AND_TRACE_WITH_LLM` |
 | **`postprocessing/`** | Build records, optional direct dataflow HTTP post, Slack; `post_analysis_items` / `post_results` run as best-effort observability after analysis |
 | **`mcp_integration/`** | Subprocess MCP client/server so LogSage can run isolated from the caller (see `mcp_integration/README.md`) |
+| **`restart_agent/`** | Experimental evidence-first restart agent: deterministic L0 bundle, optional structured L1 interpretation, history-aware policy, and `STOP`/`RESTART` output. Canonical specs live under `docs/design/attribution/restart_agent/`. |
 
 ---
 

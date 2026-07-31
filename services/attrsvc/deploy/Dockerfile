@@ -7,8 +7,9 @@
 #   docker run -d \
 #       -p 8000:8000 \
 #       -e NVRX_ATTRSVC_ALLOWED_ROOT=/data/logs \
-#       -e LLM_API_KEY=your-llm-api-key-here \
+#       -e LLM_API_KEY_FILE=/run/secrets/llm_api_key \
 #       -v /path/to/logs:/data/logs:ro \
+#       -v /secure/llm_api_key:/run/secrets/llm_api_key:ro \
 #       nvrx-attrsvc
 #
 # Build from repo root to include nvidia_resiliency_ext library

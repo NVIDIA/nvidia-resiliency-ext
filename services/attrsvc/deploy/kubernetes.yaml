@@ -4,7 +4,7 @@
 #   kubectl apply -f services/attrsvc/deploy/kubernetes.yaml
 #
 # Prerequisites:
-#   - Create secret: kubectl create secret generic llm-api-key --from-literal=api-key=your-llm-api-key-here
+#   - Create secret: kubectl create secret generic llm-api-key --from-file=llm_api_key=/secure/llm_api_key
 #   - Ensure log volume is accessible (update hostPath as needed)
 #
 # Deployment considerations:
@@ -54,14 +54,14 @@ spec:
             - configMapRef:
                 name: nvrx-attrsvc-config
           env:
-            - name: LLM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: llm-api-key
-                  key: api-key
+            - name: LLM_API_KEY_FILE
+              value: /run/secrets/llm_api_key
           volumeMounts:
             - name: logs
               mountPath: /data/logs
+              readOnly: true
+            - name: llm-api-key
+              mountPath: /run/secrets
               readOnly: true
           resources:
             requests:
@@ -90,6 +90,9 @@ spec:
           hostPath:
             path: /path/to/logs
             type: Directory
+        - name: llm-api-key
+          secret:
+            secretName: llm-api-key
 
 ---
 apiVersion: v1

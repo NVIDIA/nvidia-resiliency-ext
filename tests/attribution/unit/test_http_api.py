@@ -17,10 +17,16 @@ def test_log_submit_payload_omits_empty_optional_fields():
 
 
 def test_log_submit_payload_includes_smon_fields():
-    assert log_submit_payload("/tmp/train.log", user="alice", job_id="123") == {
+    assert log_submit_payload(
+        "/tmp/train.log",
+        user="alice",
+        job_id="123",
+        cycle_id=4,
+    ) == {
         "log_path": "/tmp/train.log",
         "user": "alice",
         "job_id": "123",
+        "cycle_id": 4,
     }
 
 
@@ -52,11 +58,16 @@ def test_log_result_params_includes_wait_when_requested():
 def test_post_log_uses_shared_logs_route():
     client = MagicMock()
 
-    post_log(client, "/tmp/train.log", user="alice", job_id="123")
+    post_log(client, "/tmp/train.log", user="alice", job_id="123", cycle_id=4)
 
     client.post.assert_called_once_with(
         "/logs",
-        json={"log_path": "/tmp/train.log", "user": "alice", "job_id": "123"},
+        json={
+            "log_path": "/tmp/train.log",
+            "user": "alice",
+            "job_id": "123",
+            "cycle_id": 4,
+        },
         headers={"accept": "application/json"},
     )
 
