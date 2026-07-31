@@ -76,6 +76,14 @@ def test_attrsvc_progressive_analysis_defaults_to_all_explicit(tmp_path, monkeyp
     assert cfg.RESTART_AGENT_MAX_COMPLETED_RESULTS == 3000
 
 
+def test_attrsvc_live_terminal_drain_uses_conservative_defaults(tmp_path):
+    cfg = Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+    assert cfg.RESTART_AGENT_LOG_QUIET_SECONDS == 5.0
+    assert cfg.RESTART_AGENT_LOG_MAX_WAIT_SECONDS == 40.0
+    assert cfg.RESTART_AGENT_LOG_POLL_SECONDS == 0.25
+
+
 def test_attrsvc_progressive_analysis_accepts_off(tmp_path, monkeypatch):
     monkeypatch.setenv("NVRX_ATTRSVC_PROGRESSIVE_ANALYSIS", "OFF")
 

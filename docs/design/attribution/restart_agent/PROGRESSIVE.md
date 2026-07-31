@@ -123,8 +123,11 @@ initial unread-source ingestion. Each observed growth event resets the quiet
 interval and wakes a separate reader that ingests the newly available byte
 range without blocking metadata observation. When the source first becomes
 quiet, L0A may speculatively reduce the current captured boundary while the
-drain observer continues. Later growth makes that checkpoint stale and the next
-quiet interval may replace it. Once convergence is established, the observer
+drain observer continues. Live NVRx/attrsvc finalization cannot establish
+convergence before the internal minimum observation period has elapsed; its
+quiet interval begins no earlier than that boundary. Later growth makes a
+checkpoint stale, resets quiet observation, and the next quiet interval may
+replace it. Once convergence is established, the observer
 sends an explicit completion notification; finalization does not wait for
 another polling interval. It performs one exact catch-up read and reuses the
 checkpoint only when its source boundary is the final boundary, otherwise it
@@ -254,6 +257,10 @@ response.
   trace records the bound and discarded-tail byte count.
 - Shutdown cancels poll work without inventing a decision. A later terminal
   request may run a complete terminal analysis.
+
+The conservative drain belongs only to live sources ended through attrsvc.
+Direct CLI/library and evaluation calls over already-created files capture EOF
+as a known-complete boundary and finalize immediately.
 
 ## Latency And Candidate Publication
 

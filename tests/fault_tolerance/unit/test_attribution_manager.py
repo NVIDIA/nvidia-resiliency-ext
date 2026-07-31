@@ -215,6 +215,17 @@ def test_attribution_config_accepts_lib_analysis_backend(tmp_path):
     assert cfg.analysis_backend == "lib"
 
 
+def test_managed_attrsvc_inherits_log_convergence_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS", "15")
+    monkeypatch.setenv("NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS", "60")
+    cfg = _managed_cfg(tmp_path)
+
+    env = AttributionManager(cfg, is_store_host=True)._child_env(str(tmp_path / "key"))
+
+    assert env["NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS"] == "15"
+    assert env["NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS"] == "60"
+
+
 def test_attribution_stop_action_defaults_to_log_only(tmp_path):
     """Enabling attribution must not implicitly enable acting on its verdicts."""
     cfg = AttributionConfig.from_args(
