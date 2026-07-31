@@ -10,4 +10,5 @@ or alongside implementation. Keep implementation details in
    :maxdepth: 1
 
    progressive-ft-launcher-attribution
+   restart-agent
    requirements-template

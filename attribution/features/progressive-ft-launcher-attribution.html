@@ -22,7 +22,7 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Attribution Feature Requirements Template" href="requirements-template.html" />
+    <link rel="next" title="Restart Agent" href="restart-agent.html" />
     <link rel="prev" title="Attribution Feature Requirements" href="index.html" /> 
 </head>
 
@@ -72,6 +72,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#open-questions">Open Questions</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="restart-agent.html">Restart Agent</a></li>
 <li class="toctree-l3"><a class="reference internal" href="requirements-template.html">Attribution Feature Requirements Template</a></li>
 </ul>
 </li>
@@ -110,6 +111,13 @@
 <h1>Progressive FT Launcher Attribution<a class="headerlink" href="#progressive-ft-launcher-attribution" title="Link to this heading"></a></h1>
 <section id="summary">
 <h2>Summary<a class="headerlink" href="#summary" title="Link to this heading"></a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This page describes the <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> and attrsvc integration behavior.
+The Restart Agent’s internal progressive lifecycle and terminal-equivalence
+contract are specified in
+<code class="docutils literal notranslate"><span class="pre">docs/design/attribution/restart_agent/PROGRESSIVE.md</span></code>.</p>
+</div>
 <p>Progressive FT launcher attribution reduces the time to an authoritative
 stop/restart verdict by starting log analysis when a fault-tolerance cycle
 starts, while the workload is still running. When the cycle ends and
@@ -492,7 +500,7 @@ policy should it use?</p></li>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="index.html" class="btn btn-neutral float-left" title="Attribution Feature Requirements" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="requirements-template.html" class="btn btn-neutral float-right" title="Attribution Feature Requirements Template" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="restart-agent.html" class="btn btn-neutral float-right" title="Restart Agent" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

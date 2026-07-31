@@ -1,0 +1,259 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Restart Agent &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Attribution Feature Requirements Template" href="requirements-template.html" />
+    <link rel="prev" title="Progressive FT Launcher Attribution" href="progressive-ft-launcher-attribution.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Failure Attribution</a><ul class="current">
+<li class="toctree-l2 current"><a class="reference internal" href="index.html">Attribution Feature Requirements</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="progressive-ft-launcher-attribution.html">Progressive FT Launcher Attribution</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Restart Agent</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#quick-start">Quick Start</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#stateful-runtime">Stateful Runtime</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#model-routes">Model Routes</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="requirements-template.html">Attribution Feature Requirements Template</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Failure Attribution</a></li>
+          <li class="breadcrumb-item"><a href="index.html">Attribution Feature Requirements</a></li>
+      <li class="breadcrumb-item active">Restart Agent</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/attribution/features/restart-agent.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="restart-agent">
+<h1>Restart Agent<a class="headerlink" href="#restart-agent" title="Link to this heading"></a></h1>
+<p>The restart agent is an experimental NVRx attribution analyzer that
+turns one interleaved distributed-training log and optional compact restart
+history into <code class="docutils literal notranslate"><span class="pre">STOP</span></code> or <code class="docutils literal notranslate"><span class="pre">RESTART</span></code> guidance.</p>
+<p>The implementation lives in:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>src/nvidia_resiliency_ext/attribution/restart_agent/
+</pre></div>
+</div>
+<section id="quick-start">
+<h2>Quick Start<a class="headerlink" href="#quick-start" title="Link to this heading"></a></h2>
+<p>Run deterministic L0/history/L4 analysis without an LLM:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>-m<span class="w"> </span>nvidia_resiliency_ext.attribution.restart_agent.cli<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>/absolute/path/to/cycle.log<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--job-id<span class="w"> </span>job-123<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cycle-id<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--disable-l1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--result-json<span class="w"> </span>/absolute/path/to/result.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--trace-json<span class="w"> </span>/absolute/path/to/trace.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--summary
+</pre></div>
+</div>
+<p>The command prints the versioned result JSON to stdout. <code class="docutils literal notranslate"><span class="pre">--result-json</span></code>
+stores the public result and <code class="docutils literal notranslate"><span class="pre">--trace-json</span></code> stores stage evidence, timing,
+provider events when applicable, and policy provenance. <code class="docutils literal notranslate"><span class="pre">--disable-l1</span></code> makes
+this invocation deterministic-only. A missing or empty log produces a degraded
+restart-biased result rather than invoking a model.</p>
+<p>The Python facade returns the result and invocation-owned artifacts together:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.attribution.restart_agent</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">RestartAgent</span><span class="p">,</span>
+    <span class="n">RestartAgentRequest</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">run</span> <span class="o">=</span> <span class="n">RestartAgent</span><span class="p">()</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+    <span class="n">RestartAgentRequest</span><span class="p">(</span>
+        <span class="n">log_path</span><span class="o">=</span><span class="s2">&quot;/absolute/path/to/cycle.log&quot;</span><span class="p">,</span>
+        <span class="n">job_id</span><span class="o">=</span><span class="s2">&quot;job-123&quot;</span><span class="p">,</span>
+        <span class="n">cycle_id</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">run</span><span class="o">.</span><span class="n">result</span><span class="o">.</span><span class="n">decision</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="stateful-runtime">
+<h2>Stateful Runtime<a class="headerlink" href="#stateful-runtime" title="Link to this heading"></a></h2>
+<p>The implemented transport-independent <code class="docutils literal notranslate"><span class="pre">RestartAgentRuntime</span></code> wraps the
+stateless analysis pipeline. It owns
+an <code class="docutils literal notranslate"><span class="pre">AttemptRecordStore</span></code> containing bounded in-memory history for the current
+process, enabled by default with 10
+attempts per exact job and 3,000 records total. Product configuration may
+disable history or override either bound. The same neutral <code class="docutils literal notranslate"><span class="pre">AttemptRecord</span></code>
+type represents an attempt while current and when later selected in a
+<code class="docutils literal notranslate"><span class="pre">PriorAttemptView</span></code>. Each record retains explicit progress facts, including first/last
+iteration and checkpoint-save markers, so later policy can distinguish early
+failure from an attempt that completed observable work. It also contains one
+required deterministic failure block and a route-keyed list of completed L2
+enriched blocks. MVP prior-attempt comparison uses deterministic blocks only.</p>
+<p>The initial record is assembled from L0 and, when its deterministic identity is
+eligible, committed before deterministic publication. L2 may add or replace a
+route-keyed enriched block while the record is open. Model output unfinished at the analysis deadline is abandoned and
+cannot mutate the closed record. Reanalysis of the same job and cycle replaces
+its record; an actual workload restart uses the next cycle id and appends a
+record.</p>
+<p>Library/unit tests use <code class="docutils literal notranslate"><span class="pre">AttemptRecordControl</span></code> to seed, inspect, and clear
+the same in-memory store used by runtime analysis. For manual testing, the CLI
+may read a JSON-array fixture through <code class="docutils literal notranslate"><span class="pre">--attempt-records-json-in</span></code> and
+explicitly export the resulting records through
+<code class="docutils literal notranslate"><span class="pre">--attempt-records-json-out</span></code>. These are editable test fixtures, not automatic
+persistence. MCP is a later thin adapter over this runtime and need not expose
+history operations in its product API. These interfaces are specified in
+<code class="docutils literal notranslate"><span class="pre">docs/design/attribution/restart_agent/RUNTIME.md</span></code>.</p>
+</section>
+<section id="model-routes">
+<h2>Model Routes<a class="headerlink" href="#model-routes" title="Link to this heading"></a></h2>
+<p>Use <code class="docutils literal notranslate"><span class="pre">--config</span></code> with <code class="docutils literal notranslate"><span class="pre">restart_agent_config.v1</span></code> for model routes. The minimal
+<code class="docutils literal notranslate"><span class="pre">examples/attribution/restart_agent.json</span></code> contains one Nemotron route and
+uses <code class="docutils literal notranslate"><span class="pre">LLM_API_KEY_FILE</span></code> for its credential file. Deployment configurations
+may additionally define route endpoints, request limits, tool advertisement,
+reasoning controls, retries, declared recovery capabilities, and the
+whole-analysis deadline:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">LLM_API_KEY_FILE</span><span class="o">=</span>/secure/path/to/key
+python3<span class="w"> </span>-m<span class="w"> </span>nvidia_resiliency_ext.attribution.restart_agent.cli<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>/absolute/path/to/cycle.log<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>examples/attribution/restart_agent.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--result-json<span class="w"> </span>/absolute/path/to/restart_agent.result.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--trace-json<span class="w"> </span>/absolute/path/to/restart_agent.trace.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--deterministic-json-out<span class="w"> </span>/absolute/path/to/deterministic_recommendation.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--summary
+</pre></div>
+</div>
+<p>Export-controlled workloads must use an authorized ECCN-compliant route on
+the Regulated Inference Hub. Keys and resolved secret values are not emitted
+in results or traces.</p>
+<p>The canonical engineering specifications start at:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>docs/design/attribution/restart_agent/README.md
+</pre></div>
+</div>
+<p>The complete configuration field reference is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>docs/design/attribution/restart_agent/CONFIGURATION.md
+</pre></div>
+</div>
+<p>Every run builds deterministic evidence, compares same-job history, applies
+retry policy, and publishes a deterministic recommendation before L1 begins.
+Model enrichment is enabled by default in <code class="docutils literal notranslate"><span class="pre">restart_agent_config.v1</span></code> and may
+be explicitly disabled. When enabled, an LLM/tool stage returns structured
+current-log evidence, while deterministic client policy owns history
+comparison, retry-rule and retry-budget evaluation, and the final action. A
+configurable whole-analysis deadline bounds enrichment; a service can use the
+already-published deterministic recommendation at the NVRx-owned deadline.</p>
+<p>Attrsvc implements progressive registration, terminal scheduling, log-drain
+convergence, and nonblocking result probes. Terminal analysis is the default
+Restart Agent schedule. Progressive pre-end L0 polling is an explicit opt-in
+for deployments where target-scale measurements justify shifting evidence work
+into the running cycle.</p>
+<p>For local multi-model runs, callers can declare canonical output paths for the
+deterministic recommendation and each route result/trace. Each completed artifact is
+published directly at its final path. A separate incremental directory contains
+only an atomic lifecycle status snapshot and append-only event stream; the
+canonical batch result remains the final artifact.
+The complete L0 bundle and Decision Evidence can be written to canonical JSON
+files as soon as L0 finishes. Model-backed execution can additionally publish
+the L0B model view before model routes complete.</p>
+<p>The separate eval corpus and N-model comparison harness live under
+<code class="docutils literal notranslate"><span class="pre">tools/restart_agent_eval/</span></code> when the harness development change is checked
+out. They qualify product configurations and model routes but do not ship in
+the NVRx package or provide a second runtime implementation.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="progressive-ft-launcher-attribution.html" class="btn btn-neutral float-left" title="Progressive FT Launcher Attribution" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="requirements-template.html" class="btn btn-neutral float-right" title="Attribution Feature Requirements Template" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

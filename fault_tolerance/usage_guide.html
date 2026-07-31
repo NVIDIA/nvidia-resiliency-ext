@@ -307,7 +307,7 @@ a launcher-managed attribution service:</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span> <span class="pre">&lt;PATH&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_api_key_file</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-base-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_base_url</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-model</span> <span class="pre">&lt;MODEL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_model</span></code>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-analysis-backend</span> <span class="pre">mcp</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_analysis_backend</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-analysis-backend</span> <span class="pre">{lib,mcp}</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_analysis_backend</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">{log,no-restart}</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_stop_action</span></code>), default <code class="docutils literal notranslate"><span class="pre">log</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-startup-timeout</span> <span class="pre">&lt;SECONDS&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_startup_timeout</span></code>), default <code class="docutils literal notranslate"><span class="pre">20</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_export_url</span></code>)</p></li>
@@ -321,9 +321,9 @@ from <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle
 before starting the attribution service.</p>
 <p>To export managed attribution results, pass <code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span></code> or
 set <code class="docutils literal notranslate"><span class="pre">attribution_export_url</span></code> in the fault tolerance YAML config.</p>
-<p>Launcher-managed attribution supports only the <code class="docutils literal notranslate"><span class="pre">mcp</span></code> analysis backend. The backend flag may be
-left unset, which uses the service default, or set explicitly to <code class="docutils literal notranslate"><span class="pre">mcp</span></code>. The in-process <code class="docutils literal notranslate"><span class="pre">lib</span></code>
-backend is available only when running <code class="docutils literal notranslate"><span class="pre">nvrx-attrsvc</span></code> as a standalone service.</p>
+<p>Launcher-managed attribution defaults to the <code class="docutils literal notranslate"><span class="pre">lib</span></code> backend, which runs the Restart Agent
+directly in the attrsvc process. The backend flag may be left unset to use that default or set
+explicitly to <code class="docutils literal notranslate"><span class="pre">lib</span></code>. Set it to <code class="docutils literal notranslate"><span class="pre">mcp</span></code> only for the legacy LogSage/Flight Recorder path.</p>
 <p>Attribution never delays a restart. When a cycle ends, the rendezvous host requests
 terminal analysis and immediately closes the next round, so the workload restarts while
 analysis is still running. A background poller on the rendezvous host fetches the verdict
@@ -340,13 +340,13 @@ before it can finish, which would otherwise leave the job with no verdict at all
 <code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">log</span></code>, attribution runs in full and every verdict is
 polled, logged and recorded, but a STOP never terminates anything. Set
 <code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">no-restart</span></code> to make a STOP end the job.</p>
-<p>The default is deliberate. Attribution verdicts come from an LLM, and the two kinds of
-mistake are not equally expensive. A missed STOP is bounded: the job crash-loops until
-<code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> runs out, and the progress tracker independently catches the stuck
-case. An enforced false STOP is not bounded: the job ends with the no-restart exit code
-and stays down until a human resubmits it. Run in <code class="docutils literal notranslate"><span class="pre">log</span></code> mode first, review the recorded
-verdicts against what actually happened on your workloads, and enable <code class="docutils literal notranslate"><span class="pre">no-restart</span></code>
-once you trust the precision.</p>
+<p>The default is deliberate because the two kinds of attribution mistake are not equally
+expensive. A missed STOP is bounded: the job crash-loops until <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> runs
+out, and the progress tracker independently catches the stuck case. An enforced false
+STOP is not bounded: the job ends with the no-restart exit code and stays down until a
+human resubmits it. Run in <code class="docutils literal notranslate"><span class="pre">log</span></code> mode first, review the recorded verdicts against what
+actually happened on your workloads, and enable <code class="docutils literal notranslate"><span class="pre">no-restart</span></code> once you trust the
+precision.</p>
 <p>In <code class="docutils literal notranslate"><span class="pre">log</span></code> mode every failed cycle is analyzed, not just the first one that produces a
 STOP, so the verdicts accumulate over the life of the job. Each unenforced STOP is logged
 at <code class="docutils literal notranslate"><span class="pre">ERROR</span></code>, says explicitly that it is not being enforced, and carries a running count
