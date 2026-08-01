@@ -5,19 +5,25 @@
 # Get the directory where this script lives
 COMMON_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Setup LLM API key for processes that read nvidia_resiliency_ext.attribution.api_keys.load_llm_api_key
-# Checks in order:
-#   1. LLM_API_KEY environment variable
-#   2. LLM_API_KEY_FILE (path to file; must exist)
-#   3. ~/.llm_api_key — sets export LLM_API_KEY_FILE to that path
-#   4. ~/.config/nvrx/llm_api_key
+# Setup the key contract for the selected attrsvc backend.
 setup_llm_api_key() {
-    if [[ -n "${LLM_API_KEY}" ]]; then
+    local backend="${NVRX_ATTRSVC_ANALYSIS_BACKEND:-lib}"
+
+    if [[ "${backend}" == "lib" && -n "${NVRX_ATTRSVC_RESTART_AGENT_CONFIG:-}" ]]; then
+        if [[ ! -f "${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}" ]]; then
+            echo "ERROR: Restart Agent config not found: ${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}"
+            return 1
+        fi
+        echo "Using Restart Agent config credentials: ${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}"
+        return 0
+    fi
+
+    if [[ "${backend}" == "mcp" && -n "${LLM_API_KEY:-}" ]]; then
         echo "Using LLM_API_KEY from environment"
         return 0
     fi
 
-    if [[ -n "${LLM_API_KEY_FILE}" ]]; then
+    if [[ -n "${LLM_API_KEY_FILE:-}" ]]; then
         if [[ ! -f "${LLM_API_KEY_FILE}" ]]; then
             echo "ERROR: LLM_API_KEY_FILE specified but not found: ${LLM_API_KEY_FILE}"
             return 1
@@ -39,7 +45,11 @@ setup_llm_api_key() {
     done
 
     echo "WARNING: LLM API key not found - LLM analysis may fail"
-    echo "  Set LLM_API_KEY, LLM_API_KEY_FILE, or create ~/.llm_api_key"
+    if [[ "${backend}" == "lib" ]]; then
+        echo "  Set LLM_API_KEY_FILE, provide NVRX_ATTRSVC_RESTART_AGENT_CONFIG, or create ~/.llm_api_key"
+    else
+        echo "  Set LLM_API_KEY, LLM_API_KEY_FILE, or create ~/.llm_api_key"
+    fi
     return 1
 }
 

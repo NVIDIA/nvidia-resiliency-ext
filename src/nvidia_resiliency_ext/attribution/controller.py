@@ -316,6 +316,7 @@ class AttributionController:
         log_path: str,
         user: str = "unknown",
         job_id: str | None = None,
+        cycle_id: int | None = None,
         analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """Submit a log file for attribution tracking."""
@@ -323,6 +324,7 @@ class AttributionController:
             log_path,
             user=user,
             job_id=job_id,
+            cycle_id=cycle_id,
             analysis_intent=analysis_intent,
         )
 

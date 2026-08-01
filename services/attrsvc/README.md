@@ -1,6 +1,9 @@
 # NVRX Attribution Service (nvrx-attrsvc)
 
-FastAPI server that exposes log analysis over HTTP. It wraps the **`nvidia_resiliency_ext.attribution`** library (**`AttributionController`**, **`Analyzer`**, coalescing, postprocessing) with pydantic `Settings`, routes, and rate limits.
+FastAPI server that exposes log analysis over HTTP. The default `lib` backend
+runs `RestartAgentRuntime` directly. The legacy `mcp` backend retains
+`AttributionController`, `Analyzer`, LogSage, Flight Recorder, coalescing, and
+postprocessing. Both use the same HTTP routes and pydantic `Settings` boundary.
 
 ---
 
@@ -8,10 +11,12 @@ FastAPI server that exposes log analysis over HTTP. It wraps the **`nvidia_resil
 
 | | **Library** (`nvidia_resiliency_ext.attribution`) | **This package** (`nvidia_resiliency_ext.services.attrsvc`) |
 |---|--------------------------------------------------|-----------------------------------|
-| **Role** | **`AttributionController`** (config, cache persistence, health/status, dataflow/Slack stats) over **`Analyzer`** (→ `LogAnalyzer`, pipelines, MCP/lib LogSage, FR analysis, jobs/splitlog) | HTTP API, env-based `Settings`, rate limits, ledger file |
-| **Docs** | [`src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md`](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md), [`README.md`](../../src/nvidia_resiliency_ext/attribution/README.md) | This file, [`ATTRSVC_SPEC.md`](ATTRSVC_SPEC.md) |
+| **Role** | **`RestartAgentRuntime`** for direct analysis; **`AttributionController`** for the legacy MCP path | HTTP API, backend selection, env-based `Settings`, and rate limits |
+| **Docs** | [`restart_agent/README.md`](../../docs/design/attribution/restart_agent/README.md), [`ARCHITECTURE.md`](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md) for legacy analysis | This file, [`ATTRSVC_SPEC.md`](ATTRSVC_SPEC.md) |
 
-Do not duplicate library internals here—**ARCHITECTURE.md** is the source of truth for package layout, `LogAnalyzerConfig` / `AnalysisPipelineMode` (default `LOG_AND_TRACE` for this service), MCP vs in-process backends, and analysis flow.
+The Restart Agent design directory is the source of truth for the direct
+backend. **ARCHITECTURE.md** remains the source of truth for the legacy
+controller/LogSage/Flight Recorder path.
 
 ---
 
@@ -25,7 +30,7 @@ pip install -e .
 # Run
 export NVRX_ATTRSVC_ALLOWED_ROOT=/path/to/logs
 # API key: set env var OR create ~/.llm_api_key file
-export LLM_API_KEY=your-llm-api-key-here
+export LLM_API_KEY_FILE=/secure/llm_api_key
 nvrx-attrsvc
 ```
 
@@ -49,7 +54,9 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | `RATE_LIMIT_ANALYZE` | `60/minute` | Rate limit for GET /logs |
 | `RATE_LIMIT_PREVIEW` | `120/minute` | Rate limit for GET /print |
 
-**LLM / analysis** (optional — unset vars keep library defaults). Use the prefixed names below in the environment or ``.env``; ``AttributionHttpAdapter`` passes them into ``AttributionControllerConfig``, which wires ``LogSageExecutionConfig`` and the library ``Analyzer`` (LogSage / MCP / merge paths). See **ARCHITECTURE.md §7**.
+**LLM / analysis** (optional — unset vars keep library defaults).
+`AttributionHttpAdapter` resolves these into `RestartAgentConfig` for `lib`, or
+the legacy `AttributionControllerConfig` for `mcp`.
 
 | Variable (with prefix)          | Description                                                                                                                                                                                                   |
 |---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -59,9 +66,15 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | `NVRX_ATTRSVC_LLM_TOP_P`        | Top-p for nucleus sampling                                                                                                                                                                                    |
 | `NVRX_ATTRSVC_LLM_MAX_TOKENS`   | Max tokens for response                                                                                                                                                                                       |
 | `NVRX_ATTRSVC_COMPUTE_TIMEOUT`  | Timeout for analysis in seconds                                                                                                                                                                               |
-| `NVRX_ATTRSVC_ANALYSIS_BACKEND` | `mcp` (subprocess MCP, default) or `lib` (in-process LogSage and flight-recorder analysis). Same setting for both; library behavior: **ARCHITECTURE.md §7**. |
+| `NVRX_ATTRSVC_ANALYSIS_BACKEND` | `lib` (direct Restart Agent, default) or `mcp` (legacy LogSage/Flight Recorder path). |
+| `NVRX_ATTRSVC_RESTART_AGENT_CONFIG` | Optional authoritative `restart_agent_config.v1` JSON file for `lib`; the first attrsvc integration requires exactly one route. |
+| `NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS` | Unchanged-log interval before terminal analysis; default `2`. |
+| `NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS` | Maximum terminal log-drain wait; default `20`. |
+| `NVRX_ATTRSVC_RESTART_AGENT_LOG_POLL_SECONDS` | Log-drain polling interval; default `0.25`. |
 
-**LLM API Key** (required, checked in order — see `api_keys.load_llm_api_key`):
+**LLM API Key**: the default `lib` route requires `LLM_API_KEY_FILE`. A supplied
+Restart Agent config may name another key-file environment variable through its
+`credential_ref`. The legacy `mcp` path retains the older lookup order:
 1. `LLM_API_KEY` environment variable
 2. `LLM_API_KEY_FILE` environment variable (path to file)
 3. `~/.llm_api_key` file
@@ -125,9 +138,11 @@ Example: `NVRX_ATTRSVC_CACHE_FILE=/var/lib/nvrx/attrsvc_cache.json`
 **POST /logs** body:
 ```json
 {
-  "log_path": "/path/to/slurm-12345.out",
+  "log_path": "/path/to/train_cycle2.log",
   "user": "alice",
-  "job_id": "12345"
+  "job_id": "12345",
+  "cycle_id": 2,
+  "analysis_intent": "progressive"
 }
 ```
 
@@ -150,6 +165,8 @@ All success responses use HTTP 200. Interpret outcome from the response body onl
 | `log_path` | string | Yes | Absolute path to job output file under allowed root |
 | `user` | string | Yes | Job owner |
 | `job_id` | string | No | Job ID (used for splitlog detection) |
+| `cycle_id` | integer | No | Explicit restart-attempt order. The direct Restart Agent backend infers `_cycle<N>.log` only when absent. |
+| `analysis_intent` | string | No | `track_only` (default), `progressive`, or `terminal`. |
 
 | Response (200) | Type | Description |
 |----------------|------|-------------|
@@ -262,7 +279,11 @@ For combined deployment with monitor, see `../scripts/nvrx_services.sbatch`
 
 ## Python API
 
-**Embedding the library** (no HTTP): use **`AttributionController`** for the service-grade boundary, or **`Analyzer`** / `LogAnalyzer` / `LogAnalyzerConfig` for lower-level control, from `nvidia_resiliency_ext.attribution`. Overview and examples: **[attribution README](../../src/nvidia_resiliency_ext/attribution/README.md)** · **[ARCHITECTURE.md](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md)**.
+**Embedding the direct analyzer** (no HTTP): use `build_restart_agent_runtime()`
+and `RestartAgentRuntime.analyze()`, or the `restart-agent` CLI. See the
+**[Restart Agent design](../../docs/design/attribution/restart_agent/README.md)**.
+For the legacy analysis stack, use `AttributionController`, `Analyzer`, or
+`LogAnalyzer`; see the **[attribution README](../../src/nvidia_resiliency_ext/attribution/README.md)**.
 
 **In-process HTTP adapter** (same repo, after `pip install`):
 
@@ -285,8 +306,10 @@ asyncio.run(main())
 | File | Description |
 |------|-------------|
 | `app.py` | FastAPI routes and middleware |
-| `service.py` | `AttributionHttpAdapter` — wraps **`AttributionController`** |
+| `service.py` | `AttributionHttpAdapter` and the common backend protocol |
 | `config.py` | `Settings` (pydantic), `setup()` loads settings and configures logging |
+| `restart_agent_config.py` | Resolves attrsvc settings into `RestartAgentConfig` |
+| `restart_agent_backend.py` | Direct progressive/terminal HTTP lifecycle over `RestartAgentRuntime` |
 | `deploy/run_attrsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |
@@ -298,11 +321,14 @@ asyncio.run(main())
 | Document | Audience |
 |----------|----------|
 | [ATTRSVC_SPEC.md](ATTRSVC_SPEC.md) | HTTP contract, service-level behavior; library internals in **ARCHITECTURE.md** |
+| [../../docs/design/attribution/restart_agent/ATTRSVC_INTEGRATION.md](../../docs/design/attribution/restart_agent/ATTRSVC_INTEGRATION.md) | Direct NVRx/attrsvc/Restart Agent composition |
 | [../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md](../../src/nvidia_resiliency_ext/attribution/ARCHITECTURE.md) | Library architecture, pipelines, MCP, coalescing |
 
 ## Configuration and postprocessing (summary)
 
 - **Service config** is in `config.py` (`Settings` from env with prefix `NVRX_ATTRSVC_`).
 - **`setup()`** in `config.py` loads settings and configures logging only.
-- **`AttributionHttpAdapter`** translates `Settings` into `AttributionControllerConfig`; **`AttributionController`** validates the LLM API key and wires postprocessing (`cluster_name`, Slack, and the default poster).
-- The analyzer schedules library postprocessing after analysis; dataflow and Slack use the values owned by the controller and do not gate the response returned to clients.
+- **`AttributionHttpAdapter`** translates `Settings` into `RestartAgentConfig`
+  for `lib`, or `AttributionControllerConfig` for `mcp`.
+- Dataflow and Slack postprocessing remain on the legacy controller path in the
+  first direct integration and do not gate responses there.

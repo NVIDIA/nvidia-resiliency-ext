@@ -15,11 +15,11 @@
 #
 # Required environment variables:
 #   NVRX_ATTRSVC_ALLOWED_ROOT - Root path for log files to analyze
-#   LLM_API_KEY               - API key for LLM (or LLM_API_KEY_FILE)
+#   LLM_API_KEY_FILE          - LLM key file for the default Restart Agent backend
 #
 # Optional environment variables:
 #   NVRX_LOGS_DIR             - Output directory for logs (default: ~/nvrx_logs)
-#   NVRX_ATTRSVC_ANALYSIS_BACKEND - Log + FR: mcp (default) or lib
+#   NVRX_ATTRSVC_ANALYSIS_BACKEND - lib Restart Agent (default) or legacy mcp
 #   NVRX_SMONSVC_PARTITIONS   - SLURM partitions to monitor (default: "batch batch_long")
 #   NVRX_ATTRSVC_ENDPOINT     - Unified attrsvc endpoint: http://host:port or unix:///path.sock
 #   NVRX_ATTRSVC_PORT         - TCP port fallback when endpoint is unset (default: 8000)
@@ -29,7 +29,7 @@
 #
 # Example:
 #   export NVRX_ATTRSVC_ALLOWED_ROOT=/lustre/logs
-#   export LLM_API_KEY=your-llm-api-key-here
+#   export LLM_API_KEY_FILE=/secure/llm_api_key
 #   ./run_services.sh install
 #   ./run_services.sh start
 #   ./run_services.sh status

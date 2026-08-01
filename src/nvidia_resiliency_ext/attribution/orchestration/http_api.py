@@ -17,6 +17,7 @@ ROUTE_HEALTHZ = "/healthz"
 PARAM_LOG_PATH = "log_path"
 PARAM_USER = "user"
 PARAM_JOB_ID = "job_id"
+PARAM_CYCLE_ID = "cycle_id"
 PARAM_ANALYSIS_INTENT = "analysis_intent"
 
 # GET /logs optional query parameters (splitlog mode)
@@ -32,14 +33,17 @@ def log_submit_payload(
     *,
     user: str | None = None,
     job_id: str | None = None,
+    cycle_id: int | None = None,
     analysis_intent: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Build the JSON body for ``POST /logs``."""
     payload = {PARAM_LOG_PATH: log_path}
     if user is not None:
         payload[PARAM_USER] = user
     if job_id is not None:
         payload[PARAM_JOB_ID] = job_id
+    if cycle_id is not None:
+        payload[PARAM_CYCLE_ID] = cycle_id
     if analysis_intent is not None:
         payload[PARAM_ANALYSIS_INTENT] = normalize_analysis_intent(analysis_intent)
     return payload
@@ -69,6 +73,7 @@ def post_log(
     *,
     user: str | None = None,
     job_id: str | None = None,
+    cycle_id: int | None = None,
     analysis_intent: str | None = None,
 ) -> Any:
     """Submit a log to attrsvc with an existing HTTP client."""
@@ -78,6 +83,7 @@ def post_log(
             log_path,
             user=user,
             job_id=job_id,
+            cycle_id=cycle_id,
             analysis_intent=analysis_intent,
         ),
         headers=ACCEPT_JSON_HEADERS,
