@@ -29,17 +29,21 @@
 # Env:
 #   ARRAY_JOB_ID   (req) SLURM_ARRAY_JOB_ID of the array to watch
 #   STATE_DIR      (req) shared Lustre dir for the output files (created if missing)
-#   POLL_INTERVAL  (opt, default 120) seconds between polls; drains aren't latency-critical
+#   POLL_INTERVAL  (opt, default 300) seconds between polls; drains aren't latency-critical, and
+#                  sinfo is the controller's heaviest RPC class, so keep this coarse (2-5 min)
 #   DRAIN_STATES   (opt, default "drain") sinfo -t filter; the DRAIN flag catches drng + drained
 #   ONESHOT        (opt) run exactly one poll pass and exit (testing)
+#   SLURM_CMD_TIMEOUT (opt, default 30) seconds; caps each sinfo/squeue. On error/timeout the pass is
+#                  SKIPPED (last-published files kept) -> never a false-clean; retried next interval.
 #   SIMULATE_DRAINED_FILE (opt, TEST ONLY) nodenames unioned into the drained set, to exercise a hit
 #                  without draining a real node
 set -u
 
 : "${ARRAY_JOB_ID:?drain_poller: set ARRAY_JOB_ID (SLURM_ARRAY_JOB_ID)}"
 : "${STATE_DIR:?drain_poller: set STATE_DIR (shared Lustre control dir)}"
-POLL_INTERVAL="${POLL_INTERVAL:-120}"
+POLL_INTERVAL="${POLL_INTERVAL:-300}"
 DRAIN_STATES="${DRAIN_STATES:-drain}"
+SLURM_CMD_TIMEOUT="${SLURM_CMD_TIMEOUT:-30}"   # cap each sinfo/squeue; on failure/timeout skip the pass
 
 mkdir -p "${STATE_DIR}"
 WORK="${STATE_DIR}/.work"          # scratch on the SAME fs as STATE_DIR so mv is an atomic rename
@@ -57,36 +61,55 @@ publish_if_changed() {
 }
 
 poll_once() {
-    # 1) Cluster-wide DRAIN-flagged nodes, one per line (small: only matching nodes are returned).
-    #    -N one-line-per-node; %N nodename; sort -u collapses the per-partition duplicate rows.
+    # 1) Cluster-wide DRAIN-flagged nodes. FAIL-SAFE: sinfo can error or HANG if slurmctld is
+    #    unresponsive, and a failure must NOT be read as "no drained nodes" -- that would publish
+    #    false-clean markers and let the rendezvous health check rejoin a node we last knew to be
+    #    drained. So run it under a timeout, CHECK the exit status (a plain `sinfo | sort` masks it
+    #    behind sort's success), and on ANY error skip the whole pass -> the last-published files stay,
+    #    and the next poll retries. Only a SUCCESSFUL sinfo (even if empty = genuinely no drains) publishes.
     local drained="${WORK}/drained.all"
-    sinfo -t "${DRAIN_STATES}" -N -h -o '%N' 2>/dev/null | sort -u > "${drained}"
+    if ! timeout "${SLURM_CMD_TIMEOUT}" sinfo -t "${DRAIN_STATES}" -N -h -o '%N' > "${drained}.raw" 2>/dev/null; then
+        log "sinfo failed/timed out; skipping pass (keep last-known drain state)"
+        return
+    fi
+    sort -u "${drained}.raw" > "${drained}"
     # TEST hook: union in simulated drained nodes so intersection can be exercised without a real drain.
     if [[ -n "${SIMULATE_DRAINED_FILE:-}" && -f "${SIMULATE_DRAINED_FILE}" ]]; then
         sort -u "${SIMULATE_DRAINED_FILE}" "${drained}" -o "${drained}"
     fi
     local ndrained; ndrained=$(wc -l < "${drained}")
 
-    # 2) node->task map for THIS array: one row per RUNNING task element (%K index, %N its nodelist).
-    #    For each task, expand its compact nodelist (slurm parses the ranges) and keep only the nodes
-    #    that are in the drained set -- `grep -Fxf` hashes the tiny drained pattern file and matches
-    #    exact whole lines (-Fx), so the intersect is in-memory: no per-task scratch, no comm/sort of
-    #    the task side. The result is written straight to the publish tmp.
-    #    Loop is null-safe: if no task is running yet, the while body simply never executes.
-    local ntasks=0 k nl tmp dst had
+    # 2) node->task map for THIS array (one row per RUNNING task: %K index, %N nodelist). squeue under
+    #    a timeout too; capture it so a failure is explicit -> skip the pass (keep last-known) rather
+    #    than run the loop against a truncated/empty map.
+    local taskmap
+    if ! taskmap=$(timeout "${SLURM_CMD_TIMEOUT}" squeue -j "${ARRAY_JOB_ID}" -r -h -t R -o '%K|%N' 2>/dev/null); then
+        log "squeue failed/timed out; skipping pass (keep last-known drain state)"
+        return
+    fi
+
+    # For each task, expand its compact nodelist and keep only nodes in the drained set (`grep -Fxf`,
+    # exact whole-line, in-memory). scontrol show hostnames is LOCAL (no RPC) but guard it too: on
+    # failure/empty, SKIP that task (keep its last-known file) rather than intersect against nothing
+    # and publish a false-clean. Loop is null-safe: an empty map just never enters the body.
+    local ntasks=0 k nl tmp dst had nodes
     while IFS='|' read -r k nl; do
         [[ -z "${k}" || "${k}" == "N/A" ]] && continue
         ntasks=$((ntasks+1))
         dst="${STATE_DIR}/task_${k}.drained"; tmp="${WORK}/task_${k}.drained.tmp"
+        if ! nodes=$(scontrol show hostnames "${nl}" 2>/dev/null) || [[ -z "${nodes}" ]]; then
+            log "scontrol show hostnames failed for task ${k} (nodelist '${nl}'); skip (keep last-known)"
+            continue
+        fi
         had=0; [[ -s "${dst}" ]] && had=1
-        scontrol show hostnames "${nl}" 2>/dev/null | grep -Fxf "${drained}" > "${tmp}" || true
+        printf '%s\n' "${nodes}" | grep -Fxf "${drained}" > "${tmp}" || true
         # Log only real transitions (drain appears / clears); steady state is silent. The initial
         # missing->empty creation is not a "clear" (had=0), so startup stays quiet too.
         if publish_if_changed "${dst}" "${tmp}"; then
             if [[ -s "${dst}" ]]; then log "task ${k} DRAINED: $(tr '\n' ' ' < "${dst}")"
             elif (( had )); then log "task ${k} cleared"; fi
         fi
-    done < <(squeue -j "${ARRAY_JOB_ID}" -r -h -t R -o '%K|%N' 2>/dev/null)
+    done <<< "${taskmap}"
 
     # One-time liveness line after the first successful poll; silent thereafter.
     if [[ -n "${FIRST:-}" ]]; then log "watching tasks=${ntasks} drained_cluster=${ndrained}"; FIRST=; fi
