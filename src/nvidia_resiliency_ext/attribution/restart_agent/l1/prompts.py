@@ -9,7 +9,9 @@ from .categories import CATEGORIES
 from .response_contract import L1_RESPONSE_CONTRACT
 
 _SUPPORT_TAGS = ", ".join(sorted(L1_RESPONSE_CONTRACT.evidence_support_tags))
-_CATEGORY_LIST = "\n".join(f"  {entry.id}. {entry.name}" for entry in CATEGORIES)
+_CATEGORY_LIST = "\n".join(
+    f"  {entry.id}. {entry.name}\n     {entry.description}" for entry in CATEGORIES
+)
 
 SYSTEM_PROMPT = f"""\
 Analyze one distributed-training log and return the structured current-log evidence

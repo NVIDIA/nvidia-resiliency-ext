@@ -77,10 +77,12 @@ CATEGORIES: tuple[CategoryDef, ...] = (
     ),
     CategoryDef(
         id=6,
-        name="DataLoader Bus error / Lustre or NIC",
+        name="DataLoader worker I/O failure (Bus error, BrokenPipe, Lustre or NIC)",
         description=(
-            "Transient data-path I/O failure (DataLoader worker Bus error, /dev/shm, "
-            "fatal Lustre read)."
+            "Transient data-path I/O failure inside a DataLoader worker: Bus error, "
+            "BrokenPipeError (Errno 108 transport endpoint shutdown) on Lustre-backed "
+            ".bin readinto, /dev/shm exhaustion, or fatal Lustre read. Distinguishes "
+            "from cat 13 by occurring in the DataLoader worker path."
         ),
         decision="RESTART",
         failure_domain="infrastructure",
@@ -112,8 +114,10 @@ CATEGORIES: tuple[CategoryDef, ...] = (
         id=9,
         name="Checkpoint failure / transient checkpoint I/O (load or async-write)",
         description=(
-            "Transient checkpoint load/async-write I/O failure (Errno 5/108, "
-            "filesystem_async); restart from last committed checkpoint."
+            "Transient checkpoint load/async-write I/O failure on a checkpoint path: "
+            "OSError Errno 5 (Input/output error), BrokenPipeError Errno 108, "
+            "filesystem_async. Prefer this over cat 13 whenever the failing path is "
+            "a checkpoint directory, even if the mechanism is generic filesystem I/O."
         ),
         decision="RESTART",
         failure_domain="infrastructure",
@@ -132,14 +136,13 @@ CATEGORIES: tuple[CategoryDef, ...] = (
     ),
     CategoryDef(
         id=11,
-        name="NCCL remote process exited / network error",
+        name="NCCL remote process exited / network error / bootstrap Message-truncated",
         description=(
-            "NCCL Error 6 - remote peer exited; infrastructure/peer failure with no "
-            "upstream cause in this log. Also covers a NCCL bootstrap/transport "
-            "corruption ('Message truncated : received N bytes instead of M') during the "
-            "async-checkpoint-finalize gather_object communicator setup, where a "
-            "downstream rank0 Segmentation fault in the same finalize stack is NOT the "
-            "root (idx 640)."
+            "NCCL Error 6 (remote peer exited); infrastructure/peer failure. Also covers "
+            "NCCL bootstrap/transport corruption ('Message truncated : received N bytes "
+            "instead of M') during any distributed-checkpoint gather_object communicator "
+            "setup - both LOAD-side startup and async-finalize save-side - where a "
+            "downstream rank0 Segmentation fault in the same stack is NOT the root."
         ),
         decision="RESTART",
         failure_domain="infrastructure",
@@ -192,11 +195,12 @@ CATEGORIES: tuple[CategoryDef, ...] = (
     ),
     CategoryDef(
         id=16,
-        name="Launch script or argument configuration error",
+        name="Launch config or workload code deterministic error (TypeError/AttributeError)",
         description=(
-            "Deterministic startup config/script error (AttributeError/TypeError on None "
-            "config value, missing MASTER_ADDR, argparse error, world-size mismatch - "
-            "includes archived idx 1401)."
+            "Deterministic workload/launch error that will recur on unchanged retry: "
+            "TypeError/AttributeError on None value threaded through model code (e.g. "
+            "float(None) in moe_layer postprocess), missing MASTER_ADDR, argparse error, "
+            "world-size mismatch, or other startup config/script fault."
         ),
         decision="STOP",
         failure_domain="workload",

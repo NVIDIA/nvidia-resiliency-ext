@@ -5,8 +5,28 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+
+def _category_threshold_override() -> int | None:
+    """Read per-model confidence threshold override from env var.
+
+    NVRX_CATEGORY_CONFIDENCE_THRESHOLD is set by the eval harness / caller
+    based on the model target (e.g. 70 for GPT, 80 default). Returns None
+    when unset to keep the module-level default (80).
+    """
+    raw = os.environ.get("NVRX_CATEGORY_CONFIDENCE_THRESHOLD")
+    if not raw:
+        return None
+    try:
+        val = int(raw.strip())
+    except ValueError:
+        return None
+    if 0 <= val <= 100:
+        return val
+    return None
 
 from .attempt_records import AttemptRecordAssembler
 from .causality import build_result_cascades
@@ -123,6 +143,7 @@ def build_decision_outcome(
             retry_policy=RetryPolicyConfig.from_mapping(execution_context.retry_policy),
             declared_recovery_capabilities=(execution_context.declared_recovery_capabilities),
             l1_category_selection=l1_result.category_selection(),
+            category_confidence_threshold=_category_threshold_override(),
         )
     )
     primary = l4_outcome.primary

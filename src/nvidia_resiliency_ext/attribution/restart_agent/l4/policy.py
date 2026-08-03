@@ -30,6 +30,14 @@ SELECTED_RULE_BUDGET_ID = "selected_rule_budget"
 CATEGORY_CONFIDENCE_THRESHOLD = 80
 
 
+def _resolve_category_threshold(policy_input: "L4PolicyInput") -> int:
+    """Per-model confidence threshold; default 80. GPT is better-calibrated (drop to 70)."""
+    override = getattr(policy_input, "category_confidence_threshold", None)
+    if isinstance(override, int) and 0 <= override <= 100:
+        return override
+    return CATEGORY_CONFIDENCE_THRESHOLD
+
+
 @dataclass(frozen=True)
 class L4PolicyInput:
     primary: FailureEvidence | None
@@ -40,6 +48,7 @@ class L4PolicyInput:
     retry_policy: RetryPolicyConfig = RetryPolicyConfig()
     declared_recovery_capabilities: tuple[DeclaredRecoveryCapability, ...] = ()
     l1_category_selection: Optional[dict] = None
+    category_confidence_threshold: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.model_recovery_assessment is not None and not isinstance(
@@ -196,7 +205,7 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
     )
     category_action = _category_selection_qualifies_action(
         policy_input,
-        min_confidence=CATEGORY_CONFIDENCE_THRESHOLD,
+        min_confidence=_resolve_category_threshold(policy_input),
     )
     rule = _select_rule(
         primary=policy_input.primary,
