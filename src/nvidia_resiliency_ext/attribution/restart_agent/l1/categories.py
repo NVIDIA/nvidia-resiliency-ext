@@ -162,10 +162,14 @@ CATEGORIES: tuple[CategoryDef, ...] = (
     ),
     CategoryDef(
         id=13,
-        name="Filesystem I/O error / Lustre or node-local FS",
+        name="Filesystem I/O error / Lustre or node-local FS / import visibility",
         description=(
             "Non-checkpoint storage error (Lustre stall, missing generated dataset "
-            "cache); transient storage / node-local FS issue."
+            "cache); transient storage / node-local FS issue. Also covers "
+            "ModuleNotFoundError or ImportError at startup where the failing import "
+            "path resolves under Lustre or a mounted network filesystem "
+            "(e.g. /lustre/.../code_ultra/...): the underlying cause is filesystem "
+            "visibility on a served code tree, not a workload code fault."
         ),
         decision="RESTART",
         failure_domain="infrastructure",
@@ -197,10 +201,14 @@ CATEGORIES: tuple[CategoryDef, ...] = (
         id=16,
         name="Launch config or workload code deterministic error (TypeError/AttributeError)",
         description=(
-            "Deterministic workload/launch error that will recur on unchanged retry: "
-            "TypeError/AttributeError on None value threaded through model code (e.g. "
-            "float(None) in moe_layer postprocess), missing MASTER_ADDR, argparse error, "
-            "world-size mismatch, or other startup config/script fault."
+            "Deterministic runtime error inside already-loaded workload code that will "
+            "recur on unchanged retry: TypeError/AttributeError on None value threaded "
+            "through model code (e.g. float(None) in moe_layer postprocess), missing "
+            "MASTER_ADDR, argparse error, or world-size mismatch. Excludes "
+            "ModuleNotFoundError / ImportError where the failing import path resolves "
+            "under Lustre or a mounted network filesystem - those are cat 13 "
+            "(filesystem visibility), not a workload code fault, even if no adjacent "
+            "FileNotFoundError is present on the same line."
         ),
         decision="STOP",
         failure_domain="workload",
