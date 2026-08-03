@@ -383,11 +383,7 @@ def _category_selection_qualifies_action(
         return None
     cid = selection.get("category_id")
     confidence = selection.get("category_confidence")
-    if (
-        isinstance(cid, bool)
-        or not isinstance(cid, int)
-        or cid <= 0
-    ):
+    if isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0:
         return None
     if (
         isinstance(confidence, bool)
