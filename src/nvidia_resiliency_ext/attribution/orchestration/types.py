@@ -253,6 +253,9 @@ class LogAnalysisCycleResult:
     recommendation: Dict[str, str] = field(
         default_factory=lambda: {"action": RECOMMENDATION_UNKNOWN, "source": ""}
     )
+    candidate_recommendation: Dict[str, str] = field(
+        default_factory=lambda: {"action": RECOMMENDATION_UNKNOWN, "source": ""}
+    )
 
 
 @dataclass

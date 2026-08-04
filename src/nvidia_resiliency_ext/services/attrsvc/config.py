@@ -119,9 +119,10 @@ def _normalize_optional_override(value: object) -> object:
 class Settings(BaseSettings):
     """Typed configuration loaded from environment/.env (pydantic-settings v2).
 
-    Attribution fields are translated into
-    :class:`~nvidia_resiliency_ext.attribution.controller.AttributionControllerConfig` by
-    :class:`~nvidia_resiliency_ext.services.attrsvc.service.AttributionHttpAdapter`; unset fields keep library defaults.
+    Attribution fields are translated into either a direct Restart Agent config
+    or the legacy controller config by
+    :class:`~nvidia_resiliency_ext.services.attrsvc.service.AttributionHttpAdapter`;
+    unset fields keep the selected implementation's defaults.
 
     ``LOG_LEVEL`` sets the root log level, FastAPI ``debug`` (when ``LOG_LEVEL`` is ``DEBUG``), MCP
     subprocess ``--log-level``, and verbosity for in-process MCP client loggers. Allowed values:
@@ -152,7 +153,7 @@ class Settings(BaseSettings):
         default=None, description="Timeout for compute_fn in seconds (None = library default)"
     )
 
-    # LLM settings -> AttributionControllerConfig when set (see AttributionHttpAdapter)
+    # LLM overrides resolved by the selected backend (see AttributionHttpAdapter).
     LLM_MODEL: str | None = Field(default=None, description="LLM model override")
     LLM_BASE_URL: str | None = Field(default=None, description="LLM base url override")
     LLM_TEMPERATURE: float | None = Field(
@@ -161,13 +162,62 @@ class Settings(BaseSettings):
     LLM_TOP_P: float | None = Field(default=None, description="LLM top-p for nucleus sampling")
     LLM_MAX_TOKENS: int | None = Field(default=None, description="Max tokens for LLM response")
 
-    # Log + FR analysis backend: "lib" = in-process, "mcp" = subprocess MCP (same stdio client)
+    # Analysis product selector retained under the existing backend setting for the first cut.
     ANALYSIS_BACKEND: str = Field(
-        default="mcp",
+        default="lib",
         description=(
-            "How to run LogSage and flight-recorder analysis: "
-            "'mcp' (subprocess MCP, default) or 'lib' (in-process)."
+            "Analysis implementation: 'lib' runs the Restart Agent directly in attrsvc "
+            "(default); 'mcp' preserves the legacy LogSage/flight-recorder MCP path."
         ),
+    )
+    RESTART_AGENT_CONFIG: str | None = Field(
+        default=None,
+        description=(
+            "Optional restart_agent_config.v1 JSON file for the lib backend. When unset, "
+            "attrsvc runs model-enriched analysis unless enrichment is explicitly disabled."
+        ),
+    )
+    RESTART_AGENT_ENRICHMENT_ENABLED: bool = Field(
+        default=True,
+        description=(
+            "Enable the model-enriched Restart Agent path when no explicit "
+            "RESTART_AGENT_CONFIG file is supplied; set false for deterministic-only analysis."
+        ),
+    )
+    RESTART_AGENT_LOG_QUIET_SECONDS: float = Field(
+        default=2.0,
+        description="Required unchanged-log interval before terminal Restart Agent analysis.",
+    )
+    RESTART_AGENT_LOG_MAX_WAIT_SECONDS: float = Field(
+        default=20.0,
+        description="Maximum terminal log-drain wait before Restart Agent analysis starts.",
+    )
+    RESTART_AGENT_LOG_POLL_SECONDS: float = Field(
+        default=0.25,
+        description="Log size/mtime polling interval during the bounded terminal drain wait.",
+    )
+    RESTART_AGENT_PROGRESSIVE_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "Enable opt-in Restart Agent L0A polling before terminal submission. "
+            "Terminal-first analysis remains the default."
+        ),
+    )
+    RESTART_AGENT_PRE_END_POLL_SECONDS: float = Field(
+        default=180.0,
+        description="Metadata polling interval for progressive L0A precomputation.",
+    )
+    RESTART_AGENT_ACTIVE_IDLE_SECONDS: float = Field(
+        default=900.0,
+        description="No-growth interval after which progressive state becomes idle.",
+    )
+    RESTART_AGENT_MAX_ACTIVE_STATES: int = Field(
+        default=64,
+        description="Maximum retained non-finalized progressive L0A states.",
+    )
+    RESTART_AGENT_MAX_COMPLETED_RESULTS: int = Field(
+        default=3000,
+        description="Maximum retained completed Restart Agent service results.",
     )
     PROGRESSIVE_ANALYSIS: str = Field(
         default="all_explicit",
@@ -231,6 +281,54 @@ class Settings(BaseSettings):
         if v_lower not in allowed:
             raise ValueError(f"ANALYSIS_BACKEND must be one of {allowed}, got '{v}'")
         return v_lower
+
+    @field_validator("RESTART_AGENT_CONFIG", mode="before")
+    @classmethod
+    def normalize_restart_agent_config(cls, v: object) -> object:
+        return _normalize_optional_override(v)
+
+    @field_validator("RESTART_AGENT_CONFIG")
+    @classmethod
+    def validate_restart_agent_config(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        path = os.path.abspath(os.path.expanduser(v))
+        if not os.path.isfile(path):
+            raise ValueError(f"RESTART_AGENT_CONFIG is not a file: {path}")
+        if not os.access(path, os.R_OK):
+            raise ValueError(f"RESTART_AGENT_CONFIG is not readable: {path}")
+        return path
+
+    @field_validator(
+        "RESTART_AGENT_LOG_QUIET_SECONDS",
+        "RESTART_AGENT_LOG_MAX_WAIT_SECONDS",
+        "RESTART_AGENT_LOG_POLL_SECONDS",
+    )
+    @classmethod
+    def validate_restart_agent_timing(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("Restart Agent log-drain timing values must not be negative")
+        return v
+
+    @field_validator(
+        "RESTART_AGENT_PRE_END_POLL_SECONDS",
+        "RESTART_AGENT_ACTIVE_IDLE_SECONDS",
+    )
+    @classmethod
+    def validate_restart_agent_progressive_timing(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Restart Agent progressive timing values must be positive")
+        return v
+
+    @field_validator(
+        "RESTART_AGENT_MAX_ACTIVE_STATES",
+        "RESTART_AGENT_MAX_COMPLETED_RESULTS",
+    )
+    @classmethod
+    def validate_restart_agent_bounds(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Restart Agent state bounds must be greater than zero")
+        return v
 
     @field_validator("PROGRESSIVE_ANALYSIS")
     @classmethod

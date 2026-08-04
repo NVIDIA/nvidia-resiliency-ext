@@ -434,11 +434,8 @@ def _normalize_analysis_backend(value: Optional[str]) -> Optional[str]:
     normalized = str(value).strip().lower()
     if not normalized:
         return None
-    if normalized != "mcp":
-        raise ValueError(
-            "--ft-attribution-analysis-backend supports only 'mcp'; "
-            f"'lib' is no longer supported by launcher-managed attrsvc, got {value!r}"
-        )
+    if normalized not in {"lib", "mcp"}:
+        raise ValueError(f"--ft-attribution-analysis-backend must be 'lib' or 'mcp', got {value!r}")
     return normalized
 
 

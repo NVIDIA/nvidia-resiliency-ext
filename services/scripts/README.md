@@ -20,8 +20,7 @@ Shared shell scripts for deployment and monitoring.
 ```bash
 # Set required environment
 export NVRX_ATTRSVC_ALLOWED_ROOT=/lustre/logs
-# API key: set env var OR create ~/.llm_api_key file
-export LLM_API_KEY=your-llm-api-key-here
+export LLM_API_KEY_FILE=/secure/llm_api_key
 
 # Install, start, and manage
 ./scripts/run_services.sh install   # Install packages
@@ -49,11 +48,10 @@ sudo ./scripts/setup_systemd.sh start
 
 ### API Key
 
-The API key can be provided in multiple ways (checked in order):
-1. `LLM_API_KEY` environment variable
-2. `LLM_API_KEY_FILE` environment variable (path to key file)
-3. `~/.llm_api_key` file
-4. `~/.config/nvrx/llm_api_key` file
+The default direct backend accepts `LLM_API_KEY_FILE`, an explicit Restart
+Agent config with its own credential reference, or the default key-file paths
+`~/.llm_api_key` and `~/.config/nvrx/llm_api_key`. A raw `LLM_API_KEY` is
+accepted only by the legacy `mcp` backend.
 
 **Output files** (in `~/nvrx_logs/` by default):
 - `<timestamp>_attrsvc.log` - Attribution service stdout/stderr

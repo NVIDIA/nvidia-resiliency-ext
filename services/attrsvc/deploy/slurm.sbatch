@@ -17,9 +17,9 @@
 # Required environment variables:
 #   NVRX_ATTRSVC_ALLOWED_ROOT - Root path for log files to analyze
 #
-# API Key Options (in priority order):
-#   1. LLM_API_KEY env var (direct key)
-#   2. LLM_API_KEY_FILE env var (path to file containing key)
+# API Key Options for the default Restart Agent backend:
+#   1. LLM_API_KEY_FILE env var (path to file containing key)
+#   2. NVRX_ATTRSVC_RESTART_AGENT_CONFIG with its declared credential reference
 #   3. Default: ~/.llm_api_key or ~/.config/nvrx/llm_api_key
 #
 # Example:

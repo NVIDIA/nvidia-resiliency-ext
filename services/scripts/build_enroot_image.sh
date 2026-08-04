@@ -14,8 +14,8 @@
 #   # Run attribution service
 #   srun --container-image=/path/to/nvrx-services.sqsh \
 #        --container-env=NVRX_ATTRSVC_ALLOWED_ROOT=/data \
-#        --container-env=LLM_API_KEY=${LLM_API_KEY} \
-#        --container-mounts=/path/to/logs:/data:ro \
+#        --container-env=LLM_API_KEY_FILE=/run/secrets/llm_api_key \
+#        --container-mounts=/path/to/logs:/data:ro,/secure/llm_api_key:/run/secrets/llm_api_key:ro \
 #        nvrx-attrsvc
 #
 #   # Run SLURM monitor (requires attrsvc running elsewhere)
@@ -146,8 +146,8 @@ echo ""
 echo "  # Attribution service"
 echo "  srun --container-image=${OUTPUT_PATH} \\"
 echo "       --container-env=NVRX_ATTRSVC_ALLOWED_ROOT=/data \\"
-echo "       --container-env=LLM_API_KEY=\${LLM_API_KEY} \\"
-echo "       --container-mounts=/path/to/logs:/data:ro \\"
+echo "       --container-env=LLM_API_KEY_FILE=/run/secrets/llm_api_key \\"
+echo "       --container-mounts=/path/to/logs:/data:ro,/secure/llm_api_key:/run/secrets/llm_api_key:ro \\"
 echo "       nvrx-attrsvc"
 echo ""
 echo "  # SLURM monitor"

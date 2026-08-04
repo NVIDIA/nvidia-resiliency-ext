@@ -1543,12 +1543,26 @@ class _RendezvousBarrierState:
                 )
                 continue
 
+            # Exclude participants that belong to a replacement group already marked
+            # unhealthy this round. This covers the SLURM job-array rack-refill race:
+            # when a task is terminated mid-round and its physical nodes are refilled
+            # into a new array task, the dead task's slots linger in the store with the
+            # current round id (round-fenced, not lifetime-fenced) and are otherwise
+            # indistinguishable from live participants. Their replacement_group_id
+            # (SLURM_ARRAY_TASK_ID) still identifies the dead cohort, so dropping them
+            # here keeps ghost nodes out of segment/replacement-group selection, the
+            # duplicate-addr scan, and the previous-active last-call gate. Filtering by
+            # replacement_group_id never touches co-located launchers from healthy
+            # groups (multi-launcher simulation), and is a no-op when no group is marked.
+            unhealthy_replacement_groups = self._get_unhealthy_replacement_groups()
             current_round_participants = [
-                participant for participant in slot_participants if participant is not None
+                participant
+                for participant in slot_participants
+                if participant is not None
+                and (participant[3] is None or participant[3] not in unhealthy_replacement_groups)
             ]
 
             # Check if the segment/replacement-group constraint is satisfied.
-            unhealthy_replacement_groups = self._get_unhealthy_replacement_groups()
             complete_replacement_group_participants, incomplete_replacement_group_participants = (
                 self._split_by_complete_replacement_groups(current_round_participants)
             )

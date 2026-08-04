@@ -17,7 +17,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, StrictInt, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -105,6 +105,7 @@ class SubmitRequest(BaseModel):
     log_path: str
     user: str = "unknown"  # Optional: SLURM job user, for dataflow records
     job_id: str | None = None  # Optional: SLURM job ID, required for split logging mode
+    cycle_id: StrictInt | None = None
     analysis_intent: str = ANALYSIS_INTENT_TRACK_ONLY  # track_only, progressive, or terminal
 
     @field_validator("analysis_intent")
@@ -275,6 +276,7 @@ def create_app(cfg: Settings) -> FastAPI:
             req.log_path,
             req.user,
             req.job_id,
+            cycle_id=req.cycle_id,
             analysis_intent=req.analysis_intent,
         )
         if isinstance(result, LogAnalyzerError):
