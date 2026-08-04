@@ -18,7 +18,13 @@ import os
 import unittest
 from unittest.mock import patch
 
-from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env, job_user_from_env
+from nvidia_resiliency_ext.shared_utils.job_metadata import (
+    job_id_from_env,
+    job_user_from_env,
+    slurm_array_job_id_from_env,
+    slurm_array_task_id_from_env,
+    slurm_restart_count_from_env,
+)
 
 
 class TestJobMetadata(unittest.TestCase):
@@ -52,3 +58,22 @@ class TestJobMetadata(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(job_user_from_env())
             self.assertIsNone(job_id_from_env())
+
+    def test_slurm_array_metadata_accepts_an_explicit_environment(self):
+        env = {
+            "SLURM_ARRAY_JOB_ID": " 123 ",
+            "SLURM_ARRAY_TASK_ID": " 7 ",
+            "SLURM_RESTART_COUNT": "2",
+        }
+
+        self.assertEqual(slurm_array_job_id_from_env(env), "123")
+        self.assertEqual(slurm_array_task_id_from_env(env), "7")
+        self.assertEqual(slurm_restart_count_from_env(env), 2)
+
+    def test_slurm_restart_count_is_strict(self):
+        for value in ("invalid", "-1"):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(ValueError, "SLURM_RESTART_COUNT"),
+            ):
+                slurm_restart_count_from_env({"SLURM_RESTART_COUNT": value})

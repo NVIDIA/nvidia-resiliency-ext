@@ -17,6 +17,16 @@
 """Helpers for job metadata derived from launcher environment variables."""
 
 import os
+from typing import Mapping
+
+
+def _nonempty_env_value(name: str, env: Mapping[str, str] | None = None) -> str | None:
+    values = os.environ if env is None else env
+    value = values.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
 
 
 def job_user_from_env() -> str | None:
@@ -27,3 +37,26 @@ def job_user_from_env() -> str | None:
 def job_id_from_env() -> str | None:
     """Read job id from SLURM_ARRAY_JOB_ID or SLURM_JOB_ID env."""
     return os.environ.get("SLURM_ARRAY_JOB_ID") or os.environ.get("SLURM_JOB_ID") or None
+
+
+def slurm_array_job_id_from_env(env: Mapping[str, str] | None = None) -> str | None:
+    """Read the Slurm array parent job ID, if present."""
+    return _nonempty_env_value("SLURM_ARRAY_JOB_ID", env)
+
+
+def slurm_array_task_id_from_env(env: Mapping[str, str] | None = None) -> str | None:
+    """Read the current Slurm array task ID, if present."""
+    return _nonempty_env_value("SLURM_ARRAY_TASK_ID", env)
+
+
+def slurm_restart_count_from_env(env: Mapping[str, str] | None = None) -> int:
+    """Read and strictly validate the current Slurm allocation generation."""
+    values = os.environ if env is None else env
+    value = values.get("SLURM_RESTART_COUNT", "0").strip()
+    try:
+        restart_count = int(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid SLURM_RESTART_COUNT value: {value!r}") from exc
+    if restart_count < 0:
+        raise ValueError(f"SLURM_RESTART_COUNT must be non-negative: {restart_count}")
+    return restart_count

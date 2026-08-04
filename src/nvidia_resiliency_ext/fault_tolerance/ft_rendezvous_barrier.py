@@ -59,6 +59,7 @@ from ..shared_utils.health_check import (
     DistributedStorageHealthCheck,
     GPUHealthCheck,
     NicLinkStateHealthCheck,
+    SegmentHealthCheck,
     StoragePathHealthCheck,
 )
 from ..shared_utils.profiling import (
@@ -71,6 +72,10 @@ from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
+from .scheduler_exclusion import (
+    current_slurm_array_replacement_group_id,
+    scheduler_exclusion_segment_is_healthy,
+)
 
 # Conditionally import failure injector (only active when NVRX_INJECT_GPU_FAILURE is set)
 if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
@@ -220,6 +225,8 @@ class RendezvousSettings:
         nproc_per_node:
             Number of processes per node (local_world_size). Used to restore local_world_size
             when a standby node becomes active.
+        scheduler_exclusion_dir:
+            Shared directory containing Scheduler Exclusion decision artifacts.
     """
 
     run_id: str
@@ -231,6 +238,7 @@ class RendezvousSettings:
     segment: Optional[int] = None
     replacement_group_size: Optional[int] = None
     nproc_per_node: int = 1  # Default to 1 if not specified
+    scheduler_exclusion_dir: Optional[str] = None
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -692,7 +700,11 @@ class _RendezvousBarrierState:
         replacement_group_id = os.getenv("NVRX_REPLACEMENT_GROUP_ID")
         if replacement_group_id is not None:
             return replacement_group_id
-        return os.getenv("SLURM_ARRAY_TASK_ID")
+        try:
+            return current_slurm_array_replacement_group_id()
+        except ValueError as e:
+            log.warning("Ignoring invalid Slurm replacement-group metadata: %s", e)
+            return None
 
     @staticmethod
     def _pack_unhealthy_replacement_groups(group_ids: Set[str]) -> bytes:
@@ -2346,6 +2358,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         attribution_enforce_stop: bool = False,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
+        scheduler_exclusion_dir: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -2396,6 +2409,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             segment=segment,
             replacement_group_size=replacement_group_size,
             nproc_per_node=nproc_per_node,
+            scheduler_exclusion_dir=scheduler_exclusion_dir,
         )
 
         return cls(
@@ -2451,6 +2465,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             )
         if settings.replacement_group_size is not None and settings.replacement_group_size < 1:
             raise ValueError("replacement_group_size must be a positive integer when configured.")
+        if settings.scheduler_exclusion_dir and not os.path.isabs(settings.scheduler_exclusion_dir):
+            raise ValueError("scheduler_exclusion_dir must be an absolute path.")
 
         self._this_node = node
         self._settings = settings
@@ -2499,6 +2515,16 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         # Storage path health checker instance
         self._storage_path_checker = (
             StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
+        )
+        self._segment_health_checker = (
+            SegmentHealthCheck(
+                lambda: scheduler_exclusion_segment_is_healthy(
+                    settings.scheduler_exclusion_dir,
+                    round_id=self._rendezvous_round,
+                )
+            )
+            if settings.scheduler_exclusion_dir
+            else None
         )
 
         # Attribution service client (optional, only on master node)
@@ -2624,6 +2650,15 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             log.error(f"Unexpected error during {check_name} for node {self._this_node}: {str(e)}")
             raise UnhealthyNodeException(str(e)) from e
 
+    def ensure_segment_is_healthy(self) -> None:
+        """Perform the configured task/segment-level health check."""
+        if self._segment_health_checker is not None:
+            self._run_health_check(
+                self._segment_health_checker,
+                "Segment health check",
+                "The current Slurm array task segment is excluded by scheduler state.",
+            )
+
     def ensure_node_is_healthy(self) -> None:
         """Perform GPU, NIC link state, and Node health checks for this node."""
         # Record the health check message
@@ -2701,6 +2736,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
             try:
+                self.ensure_segment_is_healthy()
                 self.ensure_node_is_healthy()
             finally:
                 health_check_elapsed = time.monotonic() - health_check_start
@@ -3088,6 +3124,7 @@ def create_handler(
         )
         cycle_info_dir = params.config.get('cycle_info_dir', None)
         cycle_log_prefix = params.config.get('cycle_log_prefix', None)
+        scheduler_exclusion_dir = params.config.get('scheduler_exclusion_dir', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -3109,6 +3146,7 @@ def create_handler(
             attribution_enforce_stop=attribution_enforce_stop,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
+            scheduler_exclusion_dir=scheduler_exclusion_dir,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

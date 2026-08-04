@@ -1,6 +1,6 @@
-# NVRX Attribution
+# NVRX Services
 
-Automated log analysis and failure attribution for distributed training jobs.
+Service entry points and deployment assets for NVRX.
 
 ## Components
 
@@ -8,12 +8,14 @@ Automated log analysis and failure attribution for distributed training jobs.
 |-----------|-------------|---------------|
 | **nvrx-attrsvc** | FastAPI server for LLM-based log analysis | [attrsvc/README.md](attrsvc/README.md) |
 | **nvrx-smonsvc** | SLURM job monitor for automatic log submission | [smonsvc/README.md](smonsvc/README.md) |
+| **nvrx-scheduler-exclusion-service** | Host-side Slurm monitor that publishes shared task-exclusion decisions | [scheduler_exclusion_service.rst](../docs/source/fault_tolerance/integration/scheduler_exclusion_service.rst) |
 
-See component READMEs for quick start, configuration, and API details.
+See the linked documentation for each service's contract. Scheduler Exclusion
+build and deployment assets are in [`scheduler_exclusions/`](scheduler_exclusions/).
 
-## Combined Deployment
+## Combined Attribution Deployment
 
-Run both services together on SLURM:
+Run attrsvc and smonsvc together on SLURM:
 
 ```bash
 NVRX_ATTRSVC_ALLOWED_ROOT=/path/to/logs \
@@ -22,11 +24,11 @@ NVRX_ATTRSVC_ALLOWED_ROOT=/path/to/logs \
 
 This starts `nvrx-attrsvc` and `nvrx-smonsvc` in a single job with health monitoring.
 
-For individual deployment, see each component's `deploy/` directory.
+For individual attrsvc or smonsvc deployment, see its `deploy/` directory.
 
 ## Container Image
 
-Build an enroot squash image containing both services:
+Build an enroot squash image containing the attribution services:
 
 ```bash
 ./services/scripts/build_enroot_image.sh
@@ -39,7 +41,7 @@ See [scripts/build_enroot_image.sh](scripts/build_enroot_image.sh) for usage wit
 Periodically snapshot service endpoints for debugging:
 
 ```bash
-# Both services
+# Attribution services
 ./scripts/snapshot_services.sh hostname
 
 # Individual services (in respective directories)
@@ -55,6 +57,7 @@ Configure via environment: `SNAPSHOT_INTERVAL`, `SNAPSHOT_OUTPUT_DIR`.
 |------|-------------|
 | `attrsvc/` | Attribution service deployment docs and assets |
 | `smonsvc/` | SLURM monitor deployment docs and assets |
+| `scheduler_exclusions/` | Standalone Scheduler Exclusion build and deployment assets |
 | `scripts/` | Shell scripts ([README](scripts/README.md)) |
 
 ## Library Layer
