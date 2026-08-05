@@ -15,7 +15,6 @@ from contextlib import AsyncExitStack
 from importlib.resources import files as pkg_files
 from typing import Any, Dict, List
 
-from nvidia_resiliency_ext.attribution._optional import reraise_if_missing_attribution_dependency
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import deserialize_result
 from nvidia_resiliency_ext.attribution.mcp_integration.transport_errors import (
     is_mcp_connection_error,
@@ -129,15 +128,8 @@ class NVRxMCPClient:
         """Async context manager entry."""
         import os
 
-        try:
-            from mcp.client.session import ClientSession
-            from mcp.client.stdio import StdioServerParameters, stdio_client
-        except ModuleNotFoundError as exc:
-            reraise_if_missing_attribution_dependency(
-                exc,
-                feature=f"{type(self).__module__}.{type(self).__name__}.__aenter__",
-            )
-            raise
+        from mcp.client.session import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
 
         # Convert server_command list to StdioServerParameters
         logger.info(f"pid: {os.getpid()} is connecting to server")

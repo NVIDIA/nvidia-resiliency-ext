@@ -111,9 +111,18 @@ def distributed_worker(
 
     ready_flag.set()
 
-    worker_fn(**kwargs)
-
-    torch.distributed.destroy_process_group()
+    try:
+        worker_fn(**kwargs)
+    finally:
+        # Must run even when worker_fn exits via sys.exit(), which most of them do.
+        # SystemExit propagates out of the call, so an unguarded destroy here is simply
+        # never reached and the process group survives into interpreter shutdown. Gloo
+        # then tears its background threads down during static destruction, the process
+        # aborts with "terminate called without an active exception", and the rank
+        # returns -6. It is timing dependent, so it surfaces as a flaky subset of ranks
+        # failing rather than a consistent error.
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
 
     sys.exit(0)
 

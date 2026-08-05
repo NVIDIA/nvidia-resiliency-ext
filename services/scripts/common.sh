@@ -5,19 +5,25 @@
 # Get the directory where this script lives
 COMMON_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Setup LLM API key for processes that read nvidia_resiliency_ext.attribution.api_keys.load_llm_api_key
-# Checks in order:
-#   1. LLM_API_KEY environment variable
-#   2. LLM_API_KEY_FILE (path to file; must exist)
-#   3. ~/.llm_api_key — sets export LLM_API_KEY_FILE to that path
-#   4. ~/.config/nvrx/llm_api_key
+# Setup the key contract for the selected attrsvc backend.
 setup_llm_api_key() {
-    if [[ -n "${LLM_API_KEY}" ]]; then
+    local backend="${NVRX_ATTRSVC_ANALYSIS_BACKEND:-lib}"
+
+    if [[ "${backend}" == "lib" && -n "${NVRX_ATTRSVC_RESTART_AGENT_CONFIG:-}" ]]; then
+        if [[ ! -f "${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}" ]]; then
+            echo "ERROR: Restart Agent config not found: ${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}"
+            return 1
+        fi
+        echo "Using Restart Agent config credentials: ${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}"
+        return 0
+    fi
+
+    if [[ "${backend}" == "mcp" && -n "${LLM_API_KEY:-}" ]]; then
         echo "Using LLM_API_KEY from environment"
         return 0
     fi
 
-    if [[ -n "${LLM_API_KEY_FILE}" ]]; then
+    if [[ -n "${LLM_API_KEY_FILE:-}" ]]; then
         if [[ ! -f "${LLM_API_KEY_FILE}" ]]; then
             echo "ERROR: LLM_API_KEY_FILE specified but not found: ${LLM_API_KEY_FILE}"
             return 1
@@ -39,20 +45,22 @@ setup_llm_api_key() {
     done
 
     echo "WARNING: LLM API key not found - LLM analysis may fail"
-    echo "  Set LLM_API_KEY, LLM_API_KEY_FILE, or create ~/.llm_api_key"
+    if [[ "${backend}" == "lib" ]]; then
+        echo "  Set LLM_API_KEY_FILE, provide NVRX_ATTRSVC_RESTART_AGENT_CONFIG, or create ~/.llm_api_key"
+    else
+        echo "  Set LLM_API_KEY, LLM_API_KEY_FILE, or create ~/.llm_api_key"
+    fi
     return 1
 }
 
 # Install NVRX packages from local repo (editable mode)
 # Args:
-#   $1 - "attrsvc" or "smonsvc" or "both" (default: both)
+#   $1 - service mode retained for caller compatibility; all modes install the same root package
 #   $2 - repo root directory (default: NVRX_REPO_DIR or ~/nvidia-resiliency-ext)
 # Environment:
 #   PIP_EXTRA_INDEX_URL - optional extra index for package resolution
 install_nvrx_packages() {
-    local mode="${1:-both}"
     local repo_dir="${2:-${NVRX_REPO_DIR:-${HOME}/nvidia-resiliency-ext}}"
-    local extras=""
     local -a pip_extra_args=()
     
     echo "Installing NVRX packages from ${repo_dir}..."
@@ -63,18 +71,15 @@ install_nvrx_packages() {
         pip uninstall nvidia-resiliency-ext nvrx-attrsvc -y --quiet 2>/dev/null || true
     fi
 
-    if [[ "$mode" == "attrsvc" || "$mode" == "both" ]]; then
-        extras="[attribution]"
-        if [[ -n "${PIP_EXTRA_INDEX_URL}" ]]; then
-            pip_extra_args=(--extra-index-url "${PIP_EXTRA_INDEX_URL}")
-        fi
+    if [[ -n "${PIP_EXTRA_INDEX_URL}" ]]; then
+        pip_extra_args=(--extra-index-url "${PIP_EXTRA_INDEX_URL}")
     fi
 
-    echo "  Installing nvidia-resiliency-ext${extras} (editable from repo)..."
+    echo "  Installing nvidia-resiliency-ext (editable from repo)..."
     STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install \
         --no-cache-dir \
         "${pip_extra_args[@]}" \
-        -e "${repo_dir}${extras}" \
+        -e "${repo_dir}" \
         --quiet
 
     echo "  Done."

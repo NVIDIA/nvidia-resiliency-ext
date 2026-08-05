@@ -9,9 +9,11 @@ import argparse
 from typing import Any, Callable, Optional, Sequence
 
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
+    ATTRIBUTION_STOP_ACTIONS,
     DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
+    DEFAULT_ATTRIBUTION_STOP_ACTION,
 )
-from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
+from nvidia_resiliency_ext.fault_tolerance.utils import DEFAULT_NO_RESTART_EXIT_CODE
 
 
 def str_to_bool(value: Any) -> bool:
@@ -138,6 +140,24 @@ def _add_ft_segment_arg(parser: argparse.ArgumentParser) -> None:
         "Domains with fewer than N nodes are excluded. From valid domains, complete segments are selected. "
         "min_nodes must be divisible by segment. "
         "Note: segment=None (default) is suitable for H100; segment=1 is similar but requires ClusterUUID.",
+    )
+
+
+def add_no_restart_args(parser: argparse.ArgumentParser) -> None:
+    """Register the exit code used when NVRx decides the job must not be restarted."""
+    parser.add_argument(
+        "--ft-no-restart-exit-code",
+        "--ft_no_restart_exit_code",
+        type=int,
+        default=None,
+        dest="ft_no_restart_exit_code",
+        help=(
+            "Process exit code reported by every launcher when NVRx decides the job must "
+            "not be restarted, either because attribution recommended stopping or because "
+            "the progress tracker saw no progress across restarts. Lets downstream tooling "
+            "tell 'do not requeue' apart from an ordinary failure. "
+            f"Default: {DEFAULT_NO_RESTART_EXIT_CODE}."
+        ),
     )
 
 
@@ -390,23 +410,27 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         type=str.lower,
         default=None,
         dest="ft_attribution_analysis_backend",
-        choices=("mcp",),
-        metavar="mcp",
+        choices=("lib", "mcp"),
+        metavar="{lib,mcp}",
         help=(
             "Analysis backend for launcher-managed attribution service. "
-            "Only mcp is supported; use standalone nvrx-attrsvc for lib backend experiments."
+            "lib runs the Restart Agent directly and is the attrsvc default; "
+            "mcp selects the legacy LogSage/Flight Recorder path."
         ),
     )
     parser.add_argument(
-        "--ft-attribution-decision-timeout",
-        "--ft_attribution_decision_timeout",
-        type=float,
+        "--ft-attribution-stop-action",
+        "--ft_attribution_stop_action",
+        type=str.lower,
         default=None,
-        dest="ft_attribution_decision_timeout",
+        dest="ft_attribution_stop_action",
+        choices=ATTRIBUTION_STOP_ACTIONS,
         help=(
-            "Total launcher-side attribution decision budget in seconds, measured from "
-            "terminal analysis request to rendezvous result fetch. "
-            f"Default: {AttributionService.DEFAULT_DECISION_TIMEOUT_SECONDS}."
+            "What to do when attribution recommends stopping the job. "
+            "'log' records the verdict without terminating anything, so a deployment can "
+            "measure how often attribution is right before trusting it. 'no-restart' ends "
+            "the job with the no-restart exit code and no requeue. "
+            f"Default: {DEFAULT_ATTRIBUTION_STOP_ACTION}."
         ),
     )
     parser.add_argument(
@@ -452,6 +476,7 @@ def add_cycle_info_args(parser: argparse.ArgumentParser) -> None:
 
 def add_control_services_args(parser: argparse.ArgumentParser) -> None:
     add_attribution_args(parser)
+    add_no_restart_args(parser)
     add_cycle_info_args(parser)
     parser.add_argument(
         "--ft-cycle-info-job-id",

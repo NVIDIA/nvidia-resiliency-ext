@@ -23,18 +23,12 @@ Example usage (no HTTP required):
     analyzer.shutdown()
 
 See ``README.md`` and ``ARCHITECTURE.md`` in this package for how the library is organized.
-
-Log-analysis features use optional dependencies. Install them with
-``pip install nvidia-resiliency-ext[attribution]`` when you need ``Analyzer``, LogSage,
-MCP integration, or related attribution tooling.
 """
 
 from __future__ import annotations
 
 from importlib import import_module
 from typing import TYPE_CHECKING
-
-from ._optional import reraise_if_missing_attribution_dependency
 
 if TYPE_CHECKING:
     from .analyzer import (
@@ -173,14 +167,7 @@ def __getattr__(name: str):
     if module_name is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-    try:
-        module = import_module(module_name, __name__)
-    except ModuleNotFoundError as exc:
-        reraise_if_missing_attribution_dependency(
-            exc,
-            feature=f"{__name__}.{name}",
-        )
-        raise
+    module = import_module(module_name, __name__)
 
     value = getattr(module, name)
     globals()[name] = value

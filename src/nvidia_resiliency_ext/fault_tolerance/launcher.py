@@ -61,7 +61,10 @@ from torch.distributed.elastic.multiprocessing import (
 from torch.distributed.elastic.multiprocessing.errors import ChildFailedError, record
 from torch.distributed.elastic.rendezvous import RendezvousParameters
 from torch.distributed.elastic.rendezvous import registry as rdzv_registry
-from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
+from torch.distributed.elastic.rendezvous.api import (
+    RendezvousClosedError,
+    RendezvousGracefulExitError,
+)
 from torch.distributed.elastic.rendezvous.utils import (
     _matches_machine_hostname,
     _parse_rendezvous_config,
@@ -79,6 +82,7 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_cycle_info_args,
     add_ft_config_file_args,
     add_log_funnel_args,
+    add_no_restart_args,
     add_rendezvous_args,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
@@ -93,6 +97,9 @@ from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgr
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import rdzv_config_get_as_bool
 from nvidia_resiliency_ext.fault_tolerance.utils import (
+    DEFAULT_NO_RESTART_EXIT_CODE,
+    RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+    RDZV_SHUTDOWN_REASON_NO_PROGRESS,
     get_log_aggregator_shard_index,
     get_processes_by_pgids,
     is_slurm_job_array,
@@ -121,8 +128,6 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
-
-_legacy_ft_rdzv_deprecation_warned: bool = False
 
 # Logger instance (configured later in run() via setup_logger())
 # Note: Must call run() before using logger to ensure proper configuration
@@ -173,52 +178,21 @@ def init_node_health_check(endpoint: Optional[str]) -> None:
 def get_node_health_check() -> Optional[NodeHealthCheck]:
     return _NODE_HEALTH_CHECK_INSTANCE
 
-def _register_ft_rdzv_handler(impl_type: str = "barrier"):
-    """Register the fault-tolerant rendezvous handler.
-
-    Args:
-        impl_type: FT rendezvous implementation to use.
-            ``"barrier"`` — atomic barrier-based algorithm (recommended default).
-            ``"legacy"`` — original compare-and-set implementation in ``_ft_rendezvous``;
-            deprecated and scheduled for removal; use ``"barrier"``.
-    """
-    global _legacy_ft_rdzv_deprecation_warned
+def _register_ft_rdzv_handler():
+    """Register the barrier-based fault-tolerant rendezvous handler."""
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
     from torch.distributed.elastic.rendezvous.c10d_rendezvous_backend import create_backend
 
     from .c10d_monkey_patch import apply_c10d_patch
+    from .ft_rendezvous_barrier import create_handler as create_barrier_handler
 
-    # Apply NVRx TCPStore creation behavior for all c10d-based FT rendezvous
-    # implementations. The patch consumes generic rdzv config such as
-    # store_connect_wait_seconds and use_libuv before either rendezvous protocol
-    # sees the store.
+    # Apply NVRx TCPStore creation behavior before the barrier rendezvous
+    # protocol sees the store.
     apply_c10d_patch()
 
-    if impl_type == "barrier":
-        from .ft_rendezvous_barrier import create_handler as create_barrier_handler
-
-        def _create_ft_rdzv_handler(params: RendezvousParameters):
-            backend, store = create_backend(params)
-            return create_barrier_handler(store, backend, params)
-
-    elif impl_type == "legacy":
-        if not _legacy_ft_rdzv_deprecation_warned:
-            warnings.warn(
-                "FT rendezvous implementation 'legacy' (_ft_rendezvous compare-and-set) is "
-                "deprecated and will be removed in a future release. Use the default "
-                "'barrier' implementation (--ft-rdzv-impl barrier / ft_rendezvous_barrier).",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            _legacy_ft_rdzv_deprecation_warned = True
-        from ._ft_rendezvous import create_handler as create_legacy_handler
-
-        def _create_ft_rdzv_handler(params: RendezvousParameters):
-            backend, store = create_backend(params)
-            return create_legacy_handler(store, backend, params)
-
-    else:
-        raise ValueError(f"Unknown FT rendezvous implementation: {impl_type}. Must be 'barrier' or 'legacy'.")
+    def _create_ft_rdzv_handler(params: RendezvousParameters):
+        backend, store = create_backend(params)
+        return create_barrier_handler(store, backend, params)
 
     del rendezvous_handler_registry._registry['c10d']  # FIXME: ugly hack to swap the c10d handler
     rendezvous_handler_registry.register("c10d", _create_ft_rdzv_handler)
@@ -234,6 +208,30 @@ class UnhealthyNodeException(Exception):
 
 class TerminalWorkerGroupFailure(Exception):
     """Raised when the worker group failed without local child failure details."""
+
+
+def _no_restart_exit_code(args: Any) -> int:
+    """Resolve the process exit code used when NVRx decides the job must not restart."""
+    value = getattr(args, "ft_no_restart_exit_code", None)
+    if value is None:
+        return DEFAULT_NO_RESTART_EXIT_CODE
+    return int(value)
+
+
+class NoRestartRequested(Exception):
+    """Raised when NVRx concluded the job must not be restarted.
+
+    Covers both causes that reach that conclusion -- an attribution STOP verdict and the
+    progress tracker finding no progress across restarts. Both exit with the same
+    dedicated code so downstream tooling gets one binary "do not requeue" signal; the
+    specific ``reason`` is recorded in the rendezvous store and the logs for diagnosis.
+
+    Every launcher in the job raises this, not just the node that made the decision.
+    """
+
+    def __init__(self, reason: str, message: Optional[str] = None):
+        self.reason = reason
+        super().__init__(message or f"NVRx decided the job must not be restarted ({reason})")
 
 
 def _wrap_entrypoint_with_numactl(
@@ -518,6 +516,23 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
+    def _raise_if_no_restart(self, e: Exception) -> None:
+        """Re-raise a rendezvous closure as NoRestartRequested when NVRx decided the stop.
+
+        A closure reaches this node as either RendezvousGracefulExitError or
+        RendezvousClosedError depending on which rendezvous step it was in, and both must
+        map to the same exit code. Returns without raising for ordinary closures.
+        """
+        no_restart = self._rdzv_handler.no_restart_reason()
+        if no_restart is None:
+            return
+        msg = (
+            "Rendezvous closed because NVRx decided the job must not be restarted "
+            f"({no_restart})."
+        )
+        logger.error("%s Original rendezvous message: %s", msg, e)
+        raise NoRestartRequested(no_restart, msg) from e
+
     def run(self, role: str = DEFAULT_ROLE) -> RunResult:
         # Re-sync _remaining_restarts: _round=0 at __init__ time (store not yet synced).
         # set_agent() -> _complete_initialization() has corrected _round by now.
@@ -533,6 +548,10 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._record_worker_events(result)
             return result
         except RendezvousGracefulExitError as e:
+            # Hot spares and nodes waiting for a round to open learn about the stop here
+            # rather than in the monitor loop. Without this they would exit 0 and report
+            # success while the rest of the job reports the no-restart exit code.
+            self._raise_if_no_restart(e)
             if self._rdzv_handler.is_shutdown_due_to_failure():
                 msg = (
                     "Rendezvous closed because another launcher reported "
@@ -542,6 +561,12 @@ class LocalElasticAgent(SimpleElasticAgent):
                 raise TerminalWorkerGroupFailure(msg) from e
             logger.info("Rendezvous gracefully exited: %s", e)
             return None
+        except RendezvousClosedError as e:
+            # Any node waiting for a round to close when the stop is broadcast takes the
+            # permanent-close path instead of the graceful one. Other closure reasons
+            # keep their existing behavior.
+            self._raise_if_no_restart(e)
+            raise
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
             if self._is_store_host:
@@ -563,13 +588,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         that a new rendezvous round can begin, allowing hot spares and restarting nodes
         to join.
         """
-        # Only applies to barrier-based rendezvous implementation
-        if hasattr(self._rdzv_handler, '_barrier_state'):
-            try:
-                self._rdzv_handler._barrier_state.open_rendezvous()
-            except Exception as e:
-                logger.error(f"Failed to open rendezvous: {e}")
-        # For legacy rendezvous, no action needed - it uses different mechanism
+        try:
+            self._rdzv_handler._barrier_state.open_rendezvous()
+        except Exception as e:
+            logger.error(f"Failed to open rendezvous: {e}")
 
     def _handle_restart_decision(
         self,
@@ -597,9 +619,19 @@ class LocalElasticAgent(SimpleElasticAgent):
             logger.error(
                 "[%s] Progress tracker detected no progress across restarts. "
                 "No more restarts will be attempted.",
-                role
+                role,
             )
-            return False
+            # Same scheduler-facing meaning as an attribution STOP: NVRx decided, do not
+            # requeue. Reported through the shared no-restart path so both causes are
+            # indistinguishable to downstream tooling, rather than this one looking like
+            # an ordinary crash.
+            self._rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_NO_PROGRESS)
+            self._stop_workers(self._worker_group)
+            self._worker_group.state = WorkerState.FAILED
+            raise NoRestartRequested(
+                RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+                "Progress tracker detected no progress across restarts.",
+            )
         elif self._remaining_restarts > 0:
             logger.info(log_msg, role)
             self._remaining_restarts -= 1
@@ -645,7 +677,34 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 self._exit_barrier()
                 return run_result
-            elif state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+
+            # An attribution STOP preempts any restart decision, in both healthy and
+            # failed states. Only the node that owns the attribution client can latch a
+            # verdict -- the store-host launcher when attribution runs colocated, and no
+            # launcher at all when it runs under a standalone nvrx-control process. This
+            # is a local attribute read, so it costs nothing at the monitor interval, and
+            # it runs before the store poll below so the stopping node skips a TCPStore
+            # round trip it no longer needs.
+            #
+            # Deliberately placed below SUCCEEDED: a workload that finished is not killed
+            # because an earlier cycle was later attributed as fatal.
+            if rdzv_handler.attribution_stop_requested():
+                logger.error(
+                    "[%s] Attribution recommended stopping the job; terminating workers "
+                    "and signalling the rest of the job.",
+                    role,
+                )
+                # Writes the shutdown reason and opens the next round, which is what peers
+                # already poll for. No node needs a new steady-state check.
+                rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
+                self._stop_workers(self._worker_group)
+                self._worker_group.state = WorkerState.FAILED
+                raise NoRestartRequested(
+                    RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+                    "Attribution recommended stopping the job.",
+                )
+
+            if state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
                 # Record failure detection event
                 record_profiling_event(
                     ProfilingEvent.FAILURE_DETECTED,
@@ -675,6 +734,21 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # open_rendezvous() sets round_done_{N+1}=0; this is both the spare-node
                 # wake-up signal and the peer-failure signal for healthy nodes here.
                 if rdzv_handler.is_next_round_open():
+                    # The round may have been opened to broadcast a no-restart decision rather
+                    # than to restart. One extra store read, only once, at the moment the
+                    # job is ending.
+                    no_restart = rdzv_handler.no_restart_reason()
+                    if no_restart is not None:
+                        logger.error(
+                            "[%s] Another launcher reported a no-restart decision (%s); "
+                            "terminating workers.",
+                            role,
+                            no_restart,
+                        )
+                        self._stop_workers(self._worker_group)
+                        self._worker_group.state = WorkerState.FAILED
+                        raise NoRestartRequested(no_restart)
+
                     group_rank = self._worker_group.group_rank
                     # Record failure detection event
                     record_profiling_event(
@@ -1312,7 +1386,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Set worker group reference in the rendezvous handler
         # Since we only support c10d backend and replace it with our custom handler,
-        # this will always be FtRendezvousBarrierHandler or FtRendezvousHandler (legacy)
+        # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
         # Call the parent class _rendezvous method
@@ -2497,13 +2571,11 @@ def get_args_parser() -> ArgumentParser:
         "--ft-rdzv-impl",
         "--ft-rdzv_impl",
         type=str,
-        choices=["barrier", "legacy"],
+        choices=["barrier"],
         default="barrier",
         dest="ft_rdzv_impl",
-        help="FT rendezvous implementation to use. "
-        "'barrier' uses the atomic barrier-based algorithm (ft_rendezvous_barrier.py; default, recommended). "
-        "'legacy' uses the original compare-and-set algorithm (_ft_rendezvous.py); deprecated and "
-        "will be removed in a future release—migrate to 'barrier'. "
+        help="FT rendezvous implementation to use. The only supported value is "
+        "'barrier', which uses the atomic barrier-based algorithm (ft_rendezvous_barrier.py). "
         "Note: This is independent of --rdzv-backend (which specifies "
         "the coordination backend like c10d or etcd).",
     )
@@ -2576,6 +2648,7 @@ def get_args_parser() -> ArgumentParser:
     )
 
     add_attribution_args(parser)
+    add_no_restart_args(parser)
     add_cycle_info_args(parser)
 
     parser.add_argument(
@@ -2596,8 +2669,10 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_max_no_progress_cycles",
         help="Maximum consecutive cycles (including initial cycle 0) without progress before early "
-        "termination. E.g. 2 = allow cycle 0 and 1 with no progress, then terminate before cycle 2. "
-        "Progress tracking is enabled when this value > 0. Set to 0 or -1 to disable. Default: 2.",
+        "termination. E.g. 3 = allow cycles 0, 1 and 2 with no progress, then terminate before "
+        "cycle 3. Raise this or disable tracking for workloads that deliberately replay an "
+        "iteration without advancing the checkpoint. Progress tracking is enabled when this value "
+        "> 0. Set to 0 or -1 to disable. Default: 3.",
     )
 
     parser.add_argument(
@@ -2870,10 +2945,6 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
     rdzv_configs = _parse_rendezvous_config(args.rdzv_conf)
 
-    # Add use_libuv=False for c10d backend with legacy rendezvous only
-    if args.rdzv_backend == 'c10d' and getattr(args, 'ft_rdzv_impl', 'legacy') == 'legacy':
-        rdzv_configs['use_libuv'] = False
-
     # Node health check endpoint is consumed by launcher to init singleton; not passed via rdzv configs
 
     if args.rdzv_backend == "static":
@@ -3008,11 +3079,9 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
         if attribution_endpoint is not None:
             rdzv_configs['attribution_endpoint'] = attribution_endpoint.endpoint
-            decision_timeout = getattr(attribution_endpoint, "decision_timeout", None)
-            if decision_timeout is not None:
-                rdzv_configs['attribution_decision_timeout'] = str(
-                    decision_timeout
-                )
+            rdzv_configs['attribution_enforce_stop'] = str(
+                attribution_endpoint.enforce_stop
+            )
 
         if getattr(args, 'ft_enable_log_server', False):
             assert log_funnel_ports is not None
@@ -3555,9 +3624,8 @@ def run(args):
             args.rdzv_id,
         )
 
-    # Register the selected FT rendezvous implementation
-    impl_type = getattr(args, 'ft_rdzv_impl', 'barrier')
-    _register_ft_rdzv_handler(impl_type)
+    # Register the barrier-based FT rendezvous implementation.
+    _register_ft_rdzv_handler()
     ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
     # Initialize NodeHealthCheck singleton at launcher start
     init_node_health_check(ft_hc_endpoint)
@@ -3580,6 +3648,12 @@ def main(args=None):
     args = parse_args(args)
     try:
         run(args)
+    except NoRestartRequested as e:
+        exit_code = _no_restart_exit_code(args)
+        logger.error(
+            f"NVRx decided the job must not be restarted ({e.reason}): {e}. "
+            f"Agent's exit code = {exit_code}"
+        )
     except ChildFailedError as e:
         logger.error(
             f"Some rank(s) exited with non-zero exit code: {e.failures}. Agent's exit code = 1"

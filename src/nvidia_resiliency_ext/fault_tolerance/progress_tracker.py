@@ -53,7 +53,7 @@ class TrainingProgressTracker:
     def __init__(
         self,
         min_progress_iterations: int = 1,
-        max_no_progress_cycles: int = 2,
+        max_no_progress_cycles: int = 3,
         initial_cycle_number: int = 0,
         checkpoint_iteration_file: Optional[str] = None,
     ):
@@ -64,9 +64,14 @@ class TrainingProgressTracker:
             min_progress_iterations: Minimum iteration increase to consider as "making progress"
                                      (default 1 = any increase).
             max_no_progress_cycles: Max consecutive cycles (including cycle 0) without progress
-                                    before early termination. E.g. 2 = allow cycle 0 and 1 with
-                                    no progress, then terminate before starting cycle 2.
+                                    before early termination. E.g. 3 = allow cycles 0, 1 and 2
+                                    with no progress, then terminate before starting cycle 3.
                                     Set to <= 0 to disable progress tracking.
+                                    Workloads that deliberately replay an iteration without
+                                    advancing the checkpoint (for example Megatron-LM's rerun
+                                    state machine investigating a suspect result) need this
+                                    above the number of replay cycles they can take, or
+                                    tracking disabled.
             initial_cycle_number: Initial global cycle number (for job array replacement nodes)
                                   Cycle 0 = initial attempt, cycle 1 = first restart, etc.
             checkpoint_iteration_file: Optional path to file containing latest checkpoint iteration.
@@ -86,6 +91,8 @@ class TrainingProgressTracker:
         self._iterations_not_reported_warned = (
             False  # Track if we've warned about missing iterations
         )
+        # Track if we've warned about an unreadable checkpoint iteration file
+        self._iteration_unknown_warned = False
 
         # Training resumes from last checkpoint; use it as baseline for progress (don't assume 0)
         self._read_iteration_from_checkpoint_file()
@@ -113,24 +120,37 @@ class TrainingProgressTracker:
         """
         self.cycle_number = new_cycle_number
 
-    def _read_iteration_from_checkpoint_file(self) -> None:
-        """Read checkpoint iteration file and update current_max_iteration if present."""
+    def _read_iteration_from_checkpoint_file(self) -> bool:
+        """Read the checkpoint iteration file into current_max_iteration.
+
+        Returns whether a usable iteration value was obtained. Callers must distinguish
+        "the iteration is unknown" from "the iteration is 0": current_max_iteration is
+        reset to 0 after every cycle, so a failed read leaves it at 0 and would otherwise
+        be scored as the workload having gone backwards.
+        """
         if not self.checkpoint_iteration_file:
-            return
+            return False
         try:
             with open(self.checkpoint_iteration_file, "r") as f:
                 raw = f.read().strip()
-            if raw:
-                iteration = int(raw)
-                self.update_iteration(iteration)
+            if not raw:
+                return False
+            iteration = int(raw)
+            self.update_iteration(iteration)
+            return True
         except FileNotFoundError:
-            pass  # File may not exist yet
+            # Normal before the first checkpoint is written.
+            return False
         except (ValueError, OSError) as e:
-            logger.debug(
+            # Logged at warning rather than debug: this suppresses a progress check, and
+            # a transient filesystem error is most likely exactly when the tracker is
+            # relied upon.
+            logger.warning(
                 "Could not read checkpoint iteration file %s: %s",
                 self.checkpoint_iteration_file,
                 e,
             )
+            return False
 
     def analyze_previous_cycle(self):
         """
@@ -142,13 +162,37 @@ class TrainingProgressTracker:
 
         If no iteration source is available (no file and both current and last are 0),
         the progress check is skipped and a warning is logged once.
+
+        If a checkpoint iteration file is configured but cannot be read, the cycle is
+        skipped entirely and no tracking state is touched. Scoring it would be wrong in
+        both directions: the unknown iteration reads as 0, which counts as a large
+        backwards step now, and it also clears last_restart_iteration, so the following
+        successful read looks like a large jump forwards and resets no_progress_count on
+        a genuinely stuck job.
         """
         # Skip if tracking is disabled
         if self.max_no_progress_cycles <= 0:
             return
 
         # When using checkpoint file, read it now (before new workers start)
-        self._read_iteration_from_checkpoint_file()
+        iteration_known = self._read_iteration_from_checkpoint_file()
+        if self.checkpoint_iteration_file and not iteration_known:
+            # Logged once per run of unknowns so the expected pre-first-checkpoint phase
+            # does not warn on every cycle.
+            if not self._iteration_unknown_warned:
+                logger.warning(
+                    "Training cycle #%s progress check skipped: the checkpoint iteration "
+                    "is unknown (file: %s). Tracking state is left unchanged; consecutive "
+                    "cycles without progress remain at %s/%s.",
+                    self.cycle_number,
+                    self.checkpoint_iteration_file,
+                    self.no_progress_count,
+                    self.max_no_progress_cycles,
+                )
+                self._iteration_unknown_warned = True
+            self.cycle_number += 1
+            return
+        self._iteration_unknown_warned = False
 
         # Check if previous cycle made progress (includes cycle 0; last_restart_iteration starts at 0)
         if self.last_restart_iteration == 0 and self.current_max_iteration == 0:

@@ -30,7 +30,6 @@ jobs:
             echo "Error: Documentation build failed. 'public/' directory not found."
             exit 1
           fi
-
       - name: Deploy to GitHub Pages
         run: |
           git config --global user.name "GitHub Actions"

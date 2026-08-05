@@ -7,8 +7,9 @@
 #   docker run -d \
 #       -p 8000:8000 \
 #       -e NVRX_ATTRSVC_ALLOWED_ROOT=/data/logs \
-#       -e LLM_API_KEY=your-llm-api-key-here \
+#       -e LLM_API_KEY_FILE=/run/secrets/llm_api_key \
 #       -v /path/to/logs:/data/logs:ro \
+#       -v /secure/llm_api_key:/run/secrets/llm_api_key:ro \
 #       nvrx-attrsvc
 #
 # Build from repo root to include nvidia_resiliency_ext library
@@ -25,12 +26,11 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy and install root package with attribution extras. The root package owns
-# both service entry points.
+# Copy and install the root package, which owns both service entry points.
 COPY pyproject.toml README.md build.py ./
 COPY src/ ./src/
 ENV STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1
-RUN pip install --no-cache-dir ".[attribution]"
+RUN pip install --no-cache-dir .
 
 # Verify commands are available
 RUN command -v nvrx-attrsvc && command -v nvrx-smonsvc

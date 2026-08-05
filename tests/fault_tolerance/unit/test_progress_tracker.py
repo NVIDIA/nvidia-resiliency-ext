@@ -18,6 +18,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 
 
@@ -29,12 +30,19 @@ class TestTrainingProgressTracker(unittest.TestCase):
         self.min_progress_iterations = 200
         self.max_no_progress_cycles = 3
 
-    def test_initialization_default_min_progress(self):
-        """Test tracker default min_progress_iterations is 1 and default max_no_progress_cycles is 2."""
-        tracker = TrainingProgressTracker(max_no_progress_cycles=2)
+    def test_initialization_defaults(self):
+        """Defaults: any iteration increase counts as progress, 3 no-progress cycles allowed."""
+        tracker = TrainingProgressTracker()
         self.assertEqual(tracker.min_progress_iterations, 1)
-        self.assertEqual(tracker.max_no_progress_cycles, 2)
+        self.assertEqual(tracker.max_no_progress_cycles, 3)
         self.assertIsNone(tracker.checkpoint_iteration_file)
+
+    def test_default_matches_fault_tolerance_config(self):
+        """The dataclass default and the tracker default must not drift apart."""
+        self.assertEqual(
+            FaultToleranceConfig().max_no_progress_cycles,
+            TrainingProgressTracker().max_no_progress_cycles,
+        )
 
     def test_initialization(self):
         """Test tracker initialization with explicit values."""
@@ -69,6 +77,79 @@ class TestTrainingProgressTracker(unittest.TestCase):
             self.assertEqual(tracker.last_restart_iteration, 351500)
         finally:
             os.unlink(path)
+
+    def test_unreadable_iteration_file_does_not_count_as_no_progress(self):
+        """A failed read means the iteration is unknown, not that the job went backwards.
+
+        current_max_iteration is reset to 0 after every cycle, so without this an I/O
+        error scores as a large backwards step and burns a no-progress cycle.
+        """
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("351500\n")
+            path = f.name
+        try:
+            tracker = TrainingProgressTracker(
+                min_progress_iterations=1,
+                max_no_progress_cycles=3,
+                checkpoint_iteration_file=path,
+            )
+            tracker.last_restart_iteration = 351500
+            tracker.no_progress_count = 1
+
+            with patch("builtins.open", side_effect=OSError("stale file handle")):
+                tracker.analyze_previous_cycle()
+
+            self.assertEqual(tracker.no_progress_count, 1)  # not incremented
+            self.assertEqual(tracker.last_restart_iteration, 351500)  # baseline preserved
+            self.assertEqual(tracker.cycle_number, 1)  # cycle still advances
+        finally:
+            os.unlink(path)
+
+    def test_unreadable_iteration_file_does_not_reset_no_progress_count(self):
+        """The recovery read must not look like a huge jump forwards.
+
+        Clobbering the baseline to 0 on a failed read makes the next successful read score
+        as large progress, silently clearing the counter on a genuinely stuck job.
+        """
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+            f.write("351500\n")
+            path = f.name
+        try:
+            tracker = TrainingProgressTracker(
+                min_progress_iterations=1,
+                max_no_progress_cycles=3,
+                checkpoint_iteration_file=path,
+            )
+            tracker.last_restart_iteration = 351500
+            tracker.no_progress_count = 2
+
+            # Transient failure, then the file becomes readable again at the same value:
+            # the job is still stuck, so the count must keep climbing to the threshold.
+            with patch("builtins.open", side_effect=OSError("stale file handle")):
+                tracker.analyze_previous_cycle()
+            tracker.analyze_previous_cycle()
+
+            self.assertEqual(tracker.no_progress_count, 3)
+            self.assertTrue(tracker.should_terminate_early())
+        finally:
+            os.unlink(path)
+
+    def test_missing_iteration_file_warns_once_not_every_cycle(self):
+        """The pre-first-checkpoint phase is expected and must not warn on every cycle."""
+        tracker = TrainingProgressTracker(
+            min_progress_iterations=1,
+            max_no_progress_cycles=3,
+            checkpoint_iteration_file="/nonexistent/latest_checkpointed_iteration.txt",
+        )
+
+        with self.assertLogs("nvrx", level="WARNING") as captured:
+            tracker.analyze_previous_cycle()
+            tracker.analyze_previous_cycle()
+            tracker.analyze_previous_cycle()
+
+        skips = [r for r in captured.records if "progress check skipped" in r.getMessage()]
+        self.assertEqual(len(skips), 1)
+        self.assertEqual(tracker.no_progress_count, 0)
 
     def test_update_iteration(self):
         """Test that iteration updates track maximum value."""

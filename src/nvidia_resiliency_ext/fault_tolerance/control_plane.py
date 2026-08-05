@@ -16,6 +16,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Optional
@@ -177,8 +178,9 @@ def _start_control_services(
             if attribution_endpoint is not None:
                 services.attribution_service = AttributionService(
                     endpoint=attribution_endpoint.endpoint,
-                    decision_timeout=getattr(attribution_endpoint, "decision_timeout", None),
+                    enforce_stop=attribution_endpoint.enforce_stop,
                 )
+                services.attribution_service.start_poller()
 
         if args.ft_enable_log_server:
             assert log_funnel_ports is not None
@@ -197,6 +199,9 @@ def _start_control_services(
                     services.grpc_processes,
                     float(args.ft_log_server_graceful_shutdown_timeout),
                 )
+        with contextlib.suppress(Exception):
+            if services.attribution_service is not None:
+                services.attribution_service.stop_poller()
         with contextlib.suppress(Exception):
             if services.attribution_manager is not None:
                 services.attribution_manager.stop()
@@ -263,6 +268,29 @@ def _run_control_rendezvous_loop(
     state._request_terminal_attribution_for_submitted_cycle()
 
 
+# Peers read the recorded shutdown reason from the TCPStore to decide their exit code,
+# and this process owns that store: it dies when nvrx-control exits. Leaving too fast
+# downgrades a no-restart stop to a generic failure exit on nodes that had not read it
+# yet. The embedded launcher holds the same window open in launch_agent().
+_STORE_READ_GRACE_SECONDS = 3.0
+
+
+def _wait_for_store_read_grace(since: float) -> None:
+    """Keep the TCPStore alive until _STORE_READ_GRACE_SECONDS after the loop ended.
+
+    Teardown of the other owned services already consumes part of that window, so only
+    the remainder is waited out and a slow teardown costs nothing extra.
+    """
+    remaining = _STORE_READ_GRACE_SECONDS - (time.monotonic() - since)
+    if remaining <= 0:
+        return
+    logger.info(
+        "nvrx-control waiting %.1fs before exit so other nodes can read final " "TCPStore state",
+        remaining,
+    )
+    time.sleep(remaining)
+
+
 def run(args: argparse.Namespace) -> None:
     setup_logger(node_local_tmp_prefix="nvrxcontrol")
     ft_cfg = FaultToleranceConfig.from_args(args)
@@ -286,6 +314,7 @@ def run(args: argparse.Namespace) -> None:
         services = _start_control_services(args, ft_cfg)
         _run_control_rendezvous_loop(args, ft_cfg, store, services, stop_event)
     finally:
+        rendezvous_loop_ended = time.monotonic()
         with contextlib.suppress(Exception):
             if services.cycle_info_reporter is not None:
                 services.cycle_info_reporter.shutdown()
@@ -296,8 +325,17 @@ def run(args: argparse.Namespace) -> None:
                     float(args.ft_log_server_graceful_shutdown_timeout),
                 )
         with contextlib.suppress(Exception):
+            # Stop polling before the service being polled goes away, otherwise the
+            # daemon keeps issuing requests at attrsvc through its shutdown and logs
+            # connection failures. The embedded launcher does this from
+            # FtRendezvousBarrierHandler._close(); nvrx-control owns the client itself.
+            if services.attribution_service is not None:
+                services.attribution_service.stop_poller()
+        with contextlib.suppress(Exception):
             if services.attribution_manager is not None:
                 services.attribution_manager.stop()
+        with contextlib.suppress(Exception):
+            _wait_for_store_read_grace(rendezvous_loop_ended)
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
 

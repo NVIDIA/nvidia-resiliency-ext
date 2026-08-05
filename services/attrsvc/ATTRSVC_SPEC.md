@@ -96,10 +96,12 @@ Two layers: **library** (`nvidia_resiliency_ext.attribution`) and **service**
 Summary:
 - Prefix **`NVRX_ATTRSVC_`** for service settings (see README for exceptions: LLM
   API key, Slack tokens, optional `LLM_API_KEY_FILE` / file paths in `api_keys.py`).
-- **`LLM_API_KEY`** / **`LLM_API_KEY_FILE`**: required for attribution (or default key files);
-  validated by `AttributionController` at startup — **empty/missing → log error and startup failure**.
-  Slack is optional.
-- LLM-related env vars are optional; unset → lower-layer LogSage/MCP defaults.
+- The default direct backend requires **`LLM_API_KEY_FILE`**, or the key-file
+  environment reference named by an explicit Restart Agent config. The legacy
+  backend retains the older `LLM_API_KEY` / file lookup behavior. Slack is
+  optional and legacy-only in the first direct integration.
+- LLM-related env vars are optional; unset values use the selected backend's
+  defaults.
 - Rate limits: slowapi, `RATE_LIMIT_SUBMIT` / `RATE_LIMIT_ANALYZE` / `RATE_LIMIT_PREVIEW`.
 
 **3.2 Constants** (library `orchestration/config.py` — single source)
@@ -131,7 +133,7 @@ Summary:
 Patterns tried in order (scheduler-agnostic where possible): `_(\d+)_date_`,
 `job_(\d+)`, `slurm-(\d+)\.(out|err|log)`, etc. User: often `"unknown"`.
 
-**3.7 Processed-files ledger (optional cache persistence)**
+**3.7 Processed-files ledger (legacy `mcp` backend only)**
 
 - Env: `NVRX_ATTRSVC_CACHE_FILE`, `NVRX_ATTRSVC_CACHE_GRACE_PERIOD_SECONDS` (see README).
 - Purpose: avoid duplicate LLM/analysis work after restarts when clients resubmit.
@@ -145,15 +147,16 @@ Patterns tried in order (scheduler-agnostic where possible): `_(\d+)_date_`,
 --------------------------------------------------------------------------------
 
 **Startup (conceptual)**  
-Load `Settings` → configure logging → construct `AttributionHttpAdapter` /
-**`AttributionController`** / **`Analyzer`**. Controller startup validates the LLM
-API key and wires postprocessing (direct dataflow HTTP poster, Slack) before analysis
-begins. Then background poll → Uvicorn. Optional cache import.
+Load `Settings` → configure logging → construct `AttributionHttpAdapter`. The
+default `lib` branch resolves `RestartAgentConfig` and constructs
+`RestartAgentRuntime`; the `mcp` branch constructs `AttributionController` and
+`Analyzer`. Then start Uvicorn. Legacy-only startup may also restore cache and
+start controller dependencies.
 
 **Shutdown**  
-Drain HTTP → stop poll → export cache (if configured) → exit. Job map is not
-persisted; ledger/cache persistence behavior is implementation-defined in the
-coalescer (see library).
+Drain HTTP and stop backend-owned workers. The direct backend drops its bounded
+execution registry and current-lifetime history. The legacy backend may export
+its configured cache; see the coalescer documentation.
 
 ================================================================================
 
@@ -209,7 +212,7 @@ mitigates abuse.
 | GET | /jobs | Paginated job dump (`mode`, `limit`, `offset`) |
 | GET | /print | First 4KB preview (`log_path`) |
 | GET | /inflight | In-flight analyses |
-| POST | /logs | Register job (`log_path`, `user`, optional `job_id`) |
+| POST | /logs | Register/signal an attempt (`log_path`, `user`, optional `job_id`, `cycle_id`, `analysis_intent`) |
 | GET | /logs | Analyze / return results (`log_path`, optional `file`, `wl_restart`) |
 
 **GET /healthz**  
@@ -225,10 +228,23 @@ deferred, permission errors, …) with **dataflow** counters and **Slack** stats
 **POST /logs** body
 
 ```json
-{ "log_path": "/abs/path/to/job.out", "user": "owner", "job_id": "optional" }
+{
+  "log_path": "/abs/path/to/job_cycle2.log",
+  "user": "owner",
+  "job_id": "optional",
+  "cycle_id": 2,
+  "analysis_intent": "progressive"
+}
 ```
 
-Response: `{ "mode": "pending" | "single" | "splitlog" }`.
+`cycle_id` is an optional strict integer. The `lib` Restart Agent backend
+infers it from `_cycle<N>.log` only when the field is absent.
+`analysis_intent` is `track_only`, `progressive`, or `terminal`.
+
+Response fields are `submitted`, `normalized_path`, `mode`, `logs_dir`,
+`sched_restarts`, and `files_analyzed`. `mode` remains the legacy
+pending/single/splitlog compatibility view; the direct Restart Agent lifecycle
+is read through `GET /logs` status.
 
 **GET /logs**  
 Returns single-file or splitlog-shaped JSON; optional `file` selects a file in
@@ -244,6 +260,16 @@ Flight-recorder findings are monitor-only; missing/hanging ranks are exposed in
 FR result fields and dataflow records, not as restart/stop policy.
 
 **6.1 GET /logs — processing flow (implementation)**
+
+The default `lib` flow is:
+
+```text
+POST progressive -> register attempt
+POST terminal -> bounded log drain -> RestartAgentRuntime in background
+GET wait=false -> pending | in_flight with optional fallback | completed
+```
+
+The following diagram describes only the legacy `mcp` backend:
 
 ```mermaid
 flowchart TD
@@ -278,8 +304,12 @@ flowchart TD
   end
 ```
 
-Notes: Coalescer key is the normalized log file path. `ANALYSIS_BACKEND` (`NVRX_ATTRSVC_ANALYSIS_BACKEND`) defaults to
-`mcp` (set `lib` for in-process LogSage and FR). See **ARCHITECTURE.md §7**. Splitlog: with `file=`, key is the per-file path.
+Notes: `ANALYSIS_BACKEND` (`NVRX_ATTRSVC_ANALYSIS_BACKEND`) defaults to `lib`,
+which runs the Restart Agent directly and does not use `RequestCoalescer`.
+The `mcp` backend preserves the diagrammed legacy flow, where the coalescer key
+is the normalized path and splitlog `file=` selects a per-file key. See
+`docs/design/attribution/restart_agent/ATTRSVC_INTEGRATION.md` for the direct
+contract and **ARCHITECTURE.md §7** for the legacy path.
 
 **curl / examples** — **README.md** (avoid duplicating here).
 
@@ -328,23 +358,26 @@ diagram.
 10. GET FLOW
 --------------------------------------------------------------------------------
 
-Validate → locate job → trigger analysis via coalescer (single-flight) → serialize
-result. Coalescing: concurrent GETs on same key share one compute — **ARCHITECTURE.md**
-(coalescing section).
+For `lib`, GET only projects a registered attempt's pending, in-flight, or
+completed result; terminal POST starts analysis. For `mcp`, validate → locate
+job → trigger analysis via the legacy coalescer → serialize result. Legacy
+coalescing details are in **ARCHITECTURE.md**.
 
 11. BACKGROUND POLL
 --------------------------------------------------------------------------------
 
-Periodic: pending promotion, splitlog file discovery, cleanup, stuck in-flight
-handling. Interval: `POLL_INTERVAL_SECONDS`. **Detail:** library splitlog tracker +
-coalescer.
+Legacy `mcp` only: pending promotion, splitlog discovery, cleanup, and stuck
+in-flight handling. The direct backend uses its bounded execution registry and
+background terminal futures instead of this poll loop.
 
 ================================================================================
                          LIBRARY TOPICS (POINTERS ONLY)
 ================================================================================
 
 12. LLM ANALYSIS  
-Availability, retries, timeouts, MCP vs lib — **ARCHITECTURE.md §7–9**, `LogAnalyzerConfig`,
+Direct Restart Agent behavior — `docs/design/attribution/restart_agent/`.
+Legacy availability, retries, timeouts, and MCP behavior —
+**ARCHITECTURE.md §7–9**, `LogAnalyzerConfig`, and
 `RequestCoalescer.compute_timeout`.
 
 13. LOG FILE MARKER PARSING  
@@ -366,16 +399,19 @@ workload chunk within that file.
 18. CLEANUP
 --------------------------------------------------------------------------------
 
-TTL-based removal of pending, terminated, abandoned jobs; coalescer eviction rules.
-Constants in **§3.2**.
+The direct backend evicts the oldest completed execution when its bounded
+registry is full. Legacy TTL-based job cleanup and coalescer eviction use the
+constants in **§3.2**.
 
 ================================================================================
 
 19. CONCURRENCY
 --------------------------------------------------------------------------------
 
-Thread/async model, locks, poll thread vs asyncio, `_in_flight` futures — **ARCHITECTURE.md**
-and inline comments in **`Analyzer`** / `RequestCoalescer`. Do not duplicate here.
+The direct backend schedules terminal runs on a bounded thread pool and guards
+its execution registry independently of `RestartAgentRuntime` history. Legacy
+poll-thread, asyncio, and coalescer behavior remains documented in
+**ARCHITECTURE.md** and the `Analyzer` / `RequestCoalescer` source.
 
 ================================================================================
 
@@ -384,10 +420,12 @@ and inline comments in **`Analyzer`** / `RequestCoalescer`. Do not duplicate her
 
 `GET /stats` aggregates:
 
-- **Library** (`Analyzer.get_stats`): coalescer stats (hits/misses, compute,
+- **Direct `lib`**: Restart Agent config fingerprint, execution-state counts,
+  fallback/route completion counts, errors, evictions, and history-record count.
+- **Legacy library** (`Analyzer.get_stats`): coalescer stats (hits/misses, compute,
   submissions, …), splitlog folder stats under the `splitlog` key, `detection`,
   `deferred`, `permission_errors`, poll gauges, etc. — **exact keys per implementation**.
-- **Controller/adapter** (`AttributionController.get_stats`, exposed by
+- **Legacy controller/adapter** (`AttributionController.get_stats`, exposed by
   `AttributionHttpAdapter.get_stats`): adds **`dataflow`** (direct HTTP post
   attempts) and **`slack`** (attempts, successes, failures, user lookup stats when enabled).
 
@@ -398,12 +436,13 @@ Refer to live **`GET /stats`** response or OpenAPI for the current JSON shape.
 21. DATAFLOW & SLACK (OPTIONAL)
 --------------------------------------------------------------------------------
 
-Postprocessing posts results when `EXPORT_URL` is configured with the
+Legacy `mcp` postprocessing posts results when `EXPORT_URL` is configured with the
 complete posting URI. No endpoint is built into the package. Slack posts when
 `SLACK_BOT_TOKEN` set or token fallback files are present. Wiring:
 `Settings` → `AttributionControllerConfig` → `AttributionController`. Record build:
 `build_dataflow_record`; backend: `postprocessing/post_backend.py`. Retry behavior in
-implementation.
+implementation. The first direct Restart Agent integration does not invoke
+legacy dataflow or Slack postprocessing.
 
 ================================================================================
                          OPERATIONS & DEVELOPMENT (POINTERS)

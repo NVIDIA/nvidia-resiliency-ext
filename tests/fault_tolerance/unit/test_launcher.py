@@ -26,9 +26,15 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import pytest
+from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
 
 from nvidia_resiliency_ext import fault_tolerance
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.utils import (
+    DEFAULT_NO_RESTART_EXIT_CODE,
+    RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+    RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+)
 
 WORLD_SIZE = 4
 DEFAULT_TIMEOUT = 90
@@ -99,14 +105,21 @@ def test_register_barrier_rdzv_handler_applies_c10d_patch():
         patch.object(rendezvous_handler_registry, "_registry", {"c10d": object()}),
         patch.object(rendezvous_handler_registry, "register") as register,
     ):
-        launcher._register_ft_rdzv_handler("barrier")
+        launcher._register_ft_rdzv_handler()
 
     apply_c10d_patch.assert_called_once()
     register.assert_called_once()
     assert register.call_args.args[0] == "c10d"
 
 
-def test_legacy_rdzv_impl_injects_use_libuv_false():
+@pytest.mark.parametrize(
+    ("extra_args", "expected"),
+    [
+        ([], "barrier"),
+        (["--ft-rdzv-impl", "barrier"], "barrier"),
+    ],
+)
+def test_ft_rdzv_impl_accepts_barrier(extra_args, expected):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     parser = launcher.get_args_parser()
@@ -118,16 +131,20 @@ def test_legacy_rdzv_impl_injects_use_libuv_false():
             "1",
             "--rdzv-endpoint",
             "127.0.0.1:29500",
-            "--ft-rdzv-impl",
-            "legacy",
+            *extra_args,
             "train.py",
         ]
     )
 
-    with patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}):
-        config, _, _ = launcher.config_from_args(args)
+    assert args.ft_rdzv_impl == expected
 
-    assert config.rdzv_configs["use_libuv"] is False
+
+def test_ft_rdzv_impl_rejects_legacy():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--ft-rdzv-impl", "legacy", "train.py"])
 
 
 def test_rank_not_send_initial_hb(tmp_dir):
@@ -360,6 +377,10 @@ def _make_agent_spec(rdzv_round=1):
     spec.rdzv_handler.get_standby_node_addrs.return_value = ["node003"]
     spec.rdzv_handler.get_active_ranks.return_value = [0, 1]
     spec.rdzv_handler._attribution_service = None
+    # Only the rendezvous store host holds an attribution client, and a stop is the
+    # exception rather than the rule, so default both attribution probes to "no stop".
+    spec.rdzv_handler.attribution_stop_requested.return_value = False
+    spec.rdzv_handler.no_restart_reason.return_value = None
     spec.max_restarts = 3
     return spec
 
@@ -571,7 +592,13 @@ class TestHandleRestartDecision(unittest.TestCase):
         )
 
     def test_handle_restart_decision_progress_terminate(self):
-        """Returns False without restarting when progress tracker says terminate early."""
+        """No-progress is a no-restart decision, reported like an attribution STOP.
+
+        Both mean "NVRx decided, do not requeue", so they must be indistinguishable to
+        downstream tooling rather than this one looking like an ordinary crash.
+        """
+        from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested
+
         agent = self._make_agent()
         agent._is_store_host = True
         agent._progress_tracker = MagicMock()
@@ -582,15 +609,23 @@ class TestHandleRestartDecision(unittest.TestCase):
         with (
             patch.object(agent, '_restart_workers') as mock_restart,
             patch.object(agent, '_open_rendezvous_for_restart') as mock_open,
+            patch.object(agent, '_stop_workers') as mock_stop,
         ):
-            result = agent._handle_restart_decision(
-                role="test", spec=self.spec, log_msg="[%s] restarting"
-            )
+            with self.assertRaises(NoRestartRequested) as ctx:
+                agent._handle_restart_decision(
+                    role="test", spec=self.spec, log_msg="[%s] restarting"
+                )
 
-        self.assertFalse(result)
+        self.assertEqual(ctx.exception.reason, RDZV_SHUTDOWN_REASON_NO_PROGRESS)
+        agent._rdzv_handler.signal_no_restart.assert_called_once_with(
+            RDZV_SHUTDOWN_REASON_NO_PROGRESS
+        )
+        mock_stop.assert_called_once_with(agent._worker_group)
         agent._rdzv_handler._attribution_service.request_terminal_analysis.assert_not_called()
         mock_restart.assert_not_called()
         mock_open.assert_not_called()
+        # The restart budget is untouched: this is a stop, not a consumed retry.
+        self.assertEqual(agent._remaining_restarts, 2)
 
     def test_handle_restart_decision_restarts_remaining(self):
         """Returns True and decrements _remaining_restarts when restarts are available."""
@@ -700,102 +735,230 @@ class TestHandleRestartDecision(unittest.TestCase):
 
         barrier_state.open_rendezvous.assert_called_once()
 
-    def test_open_rendezvous_for_restart_legacy_handler(self):
-        """Does nothing (no error) when handler lacks _barrier_state (legacy rdzv)."""
-        from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
-        # Use a spec-constrained mock so _barrier_state doesn't auto-exist
-        legacy_rdzv = MagicMock(
-            spec=[
-                'round',
-                'get_active_node_addrs',
-                'get_standby_node_addrs',
-            ]
+def _healthy_agent(fault_tol_cfg, logs_specs, **rdzv_overrides):
+    """Agent wired so one monitor-loop pass runs against a HEALTHY worker group."""
+    from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
+
+    spec = _make_agent_spec(rdzv_round=1)
+    spec.role = "trainer"
+    spec.monitor_interval = 0
+    for name, value in rdzv_overrides.items():
+        getattr(spec.rdzv_handler, name).return_value = value
+    agent = LocalElasticAgent(
+        spec=spec,
+        fault_tol_cfg=fault_tol_cfg,
+        logs_specs=logs_specs,
+    )
+    agent._worker_group.state = WorkerState.HEALTHY
+    agent._worker_group.group_rank = 0
+    return agent
+
+
+class TestNoRestartTermination(unittest.TestCase):
+    """The monitor loop consumes a latched STOP verdict and ends the job."""
+
+    def setUp(self):
+        self.fault_tol_cfg = FaultToleranceConfig()
+        self.logs_specs = MagicMock()
+        self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
+
+    def _run_one_monitor_pass(self, agent):
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        with (
+            patch.object(agent, '_initialize_workers'),
+            patch.object(
+                agent, '_monitor_workers', return_value=RunResult(state=WorkerState.HEALTHY)
+            ),
+            patch.object(agent, '_stop_workers') as stop_workers,
+            patch.object(launcher, 'record_profiling_event'),
+            patch.object(launcher, 'put_metric'),
+            patch.object(launcher.time, 'sleep'),
+        ):
+            try:
+                return agent._invoke_run_with_any_failed_policy(), stop_workers, None
+            except Exception as exc:  # noqa: BLE001 - the raised type is the assertion
+                return None, stop_workers, exc
+
+    def test_store_host_terminates_job_when_attribution_latches_stop(self):
+        """The latch is local, so acting on it needs no extra TCPStore poll."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested
+
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs, attribution_stop_requested=True)
+        rdzv_handler = agent._worker_group.spec.rdzv_handler
+
+        _, stop_workers, exc = self._run_one_monitor_pass(agent)
+
+        self.assertIsInstance(exc, NoRestartRequested)
+        rdzv_handler.signal_no_restart.assert_called_once_with(
+            RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP
         )
-        legacy_rdzv.round.return_value = 1
-        legacy_rdzv.get_active_node_addrs.return_value = []
-        legacy_rdzv.get_standby_node_addrs.return_value = []
-        self.spec.rdzv_handler = legacy_rdzv
+        stop_workers.assert_called_once_with(agent._worker_group)
+        # The latch is checked first, so the stopping node skips the round-open store read.
+        rdzv_handler.is_next_round_open.assert_not_called()
 
+    def test_store_host_terminates_job_when_latch_set_during_a_failed_cycle(self):
+        """The latch preempts the restart decision, not just the healthy path.
+
+        A verdict often lands while the group is FAILED rather than HEALTHY, especially in
+        a crash loop. Without preemption the node would spend a restart and a rendezvous
+        round trip before noticing.
+        """
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+        from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested
+
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs, attribution_stop_requested=True)
+        rdzv_handler = agent._worker_group.spec.rdzv_handler
+
+        with (
+            patch.object(agent, '_initialize_workers'),
+            patch.object(
+                agent, '_monitor_workers', return_value=RunResult(state=WorkerState.FAILED)
+            ),
+            patch.object(agent, '_stop_workers') as stop_workers,
+            patch.object(agent, '_handle_restart_decision') as restart_decision,
+            patch.object(launcher, 'record_profiling_event'),
+            patch.object(launcher, 'put_metric'),
+            patch.object(launcher.time, 'sleep'),
+        ):
+            with self.assertRaises(NoRestartRequested) as ctx:
+                agent._invoke_run_with_any_failed_policy()
+
+        self.assertEqual(ctx.exception.reason, RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
+        rdzv_handler.signal_no_restart.assert_called_once_with(
+            RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP
+        )
+        stop_workers.assert_called_once_with(agent._worker_group)
+        restart_decision.assert_not_called()
+
+    def test_successful_workers_are_not_killed_by_a_latched_stop(self):
+        """A workload that finished is not killed because an earlier cycle was fatal."""
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs, attribution_stop_requested=True)
+        rdzv_handler = agent._worker_group.spec.rdzv_handler
+        succeeded = RunResult(state=WorkerState.SUCCEEDED)
+
+        with (
+            patch.object(agent, '_initialize_workers'),
+            patch.object(agent, '_monitor_workers', return_value=succeeded),
+            patch.object(agent, '_exit_barrier'),
+            patch.object(agent, '_stop_workers') as stop_workers,
+            patch.object(launcher, 'record_profiling_event'),
+            patch.object(launcher, 'put_metric'),
+            patch.object(launcher.time, 'sleep'),
+        ):
+            result = agent._invoke_run_with_any_failed_policy()
+
+        self.assertEqual(result.state, WorkerState.SUCCEEDED)
+        rdzv_handler.signal_no_restart.assert_not_called()
+        stop_workers.assert_not_called()
+
+    def test_peer_terminates_job_when_round_opens_for_attribution_stop(self):
+        """Peers hold no attribution client; they learn about the stop from the store."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested
+
+        agent = _healthy_agent(
+            self.fault_tol_cfg,
+            self.logs_specs,
+            attribution_stop_requested=False,
+            is_next_round_open=True,
+            no_restart_reason=RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+        )
+
+        with patch.object(agent, '_handle_restart_decision') as restart_decision:
+            _, stop_workers, exc = self._run_one_monitor_pass(agent)
+
+        self.assertIsInstance(exc, NoRestartRequested)
+        stop_workers.assert_called_once_with(agent._worker_group)
+        # A stop is not a restart: the restart budget must not be consumed.
+        restart_decision.assert_not_called()
+
+    def test_peer_restarts_normally_when_round_opens_without_attribution_stop(self):
+        """An ordinary peer failure keeps the existing restart path."""
+        agent = _healthy_agent(
+            self.fault_tol_cfg,
+            self.logs_specs,
+            attribution_stop_requested=False,
+            is_next_round_open=True,
+            no_restart_reason=None,
+        )
+
+        with patch.object(agent, '_handle_restart_decision', return_value=False) as decision:
+            result, _, exc = self._run_one_monitor_pass(agent)
+
+        self.assertIsNone(exc)
+        self.assertEqual(result.state, WorkerState.FAILED)
+        decision.assert_called_once()
+
+    def test_graceful_rendezvous_exit_maps_no_restart_to_dedicated_exception(self):
+        """Hot spares exit via rendezvous, not the monitor loop, and must not report success."""
+        from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
+
+        from nvidia_resiliency_ext.fault_tolerance.launcher import (
+            LocalElasticAgent,
+            NoRestartRequested,
+        )
+
+        spec = _make_agent_spec(rdzv_round=3)
+        spec.rdzv_handler.no_restart_reason.return_value = RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP
         agent = LocalElasticAgent(
-            spec=self.spec,
+            spec=spec,
             fault_tol_cfg=self.fault_tol_cfg,
             logs_specs=self.logs_specs,
         )
-        # Should not raise
-        agent._open_rendezvous_for_restart()
-        # No open_rendezvous() on the legacy handler
-        self.assertFalse(hasattr(legacy_rdzv, '_barrier_state'))
+
+        with (
+            patch.object(
+                agent, '_invoke_run', side_effect=RendezvousGracefulExitError("round closed")
+            ),
+            patch.object(agent, '_shutdown'),
+        ):
+            with self.assertRaises(NoRestartRequested):
+                agent.run()
 
 
-def test_rendezvous_host_sets_failure_shutdown_when_attribution_says_stop():
-    from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
-
-    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
-        RDZV_SHUTDOWN_REASON_FAILURE,
-        _RendezvousBarrierState,
-    )
-
-    state = object.__new__(_RendezvousBarrierState)
-    state._round = 1
-    state._attribution_service = MagicMock()
-    state._attribution_service.get_last_result.return_value = True
-    state._attribution_gate_settled_round = -1
-    state._attribution_cycle_log_submitted = 0
-    state.set_shutdown = MagicMock()
-
-    with pytest.raises(RendezvousGracefulExitError):
-        state._attribution_gate("node-a")
-
-    state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
-    state.set_shutdown.assert_called_once_with(RDZV_SHUTDOWN_REASON_FAILURE)
+def test_no_restart_exit_code_default_is_outside_reserved_ranges():
+    """Downstream tooling keys on this code to tell "do not requeue" from a failure."""
+    assert DEFAULT_NO_RESTART_EXIT_CODE == 93
+    assert DEFAULT_NO_RESTART_EXIT_CODE not in (0, 1, 2, 255)
+    assert not 64 <= DEFAULT_NO_RESTART_EXIT_CODE <= 78
+    assert not 126 <= DEFAULT_NO_RESTART_EXIT_CODE <= 165
 
 
-def test_rendezvous_host_retries_close_round_when_attribution_pending():
-    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import _RendezvousBarrierState
+def test_main_reports_same_exit_code_for_both_no_restart_reasons():
+    """Attribution STOP and no-progress are one binary signal to the scheduler."""
+    from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested, main
 
-    state = object.__new__(_RendezvousBarrierState)
-    state._round = 1
-    state._attribution_service = MagicMock()
-    state._attribution_service.get_last_result.return_value = None
-    state._attribution_gate_settled_round = -1
-    state._attribution_cycle_log_submitted = 0
+    codes = []
+    for reason in (RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP, RDZV_SHUTDOWN_REASON_NO_PROGRESS):
+        with (
+            patch(
+                "nvidia_resiliency_ext.fault_tolerance.launcher.run",
+                side_effect=NoRestartRequested(reason),
+            ),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main(['train.py'])
+        codes.append(excinfo.value.code)
 
-    should_close = state._attribution_gate("node-a")
-
-    assert should_close is False
-    state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
-    assert state._attribution_gate_settled_round == -1
-
-
-def test_rendezvous_host_skips_attribution_gate_for_initial_round():
-    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import _RendezvousBarrierState
-
-    state = object.__new__(_RendezvousBarrierState)
-    state._round = 0
-    state._attribution_service = MagicMock()
-    state._attribution_gate_settled_round = -1
-    state._attribution_cycle_log_submitted = None
-
-    assert state._attribution_gate("node-a") is True
-    state._attribution_service.get_last_result.assert_not_called()
+    assert codes == [DEFAULT_NO_RESTART_EXIT_CODE, DEFAULT_NO_RESTART_EXIT_CODE]
 
 
-def test_rendezvous_host_closes_round_when_attribution_allows_restart():
-    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import _RendezvousBarrierState
+def test_main_honors_no_restart_exit_code_override():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested, main
 
-    state = object.__new__(_RendezvousBarrierState)
-    state._round = 1
-    state._attribution_service = MagicMock()
-    state._attribution_service.get_last_result.return_value = False
-    state._attribution_gate_settled_round = -1
-    state._attribution_cycle_log_submitted = 0
+    with (
+        patch(
+            "nvidia_resiliency_ext.fault_tolerance.launcher.run",
+            side_effect=NoRestartRequested(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP),
+        ),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        main(['--ft-no-restart-exit-code', '17', 'train.py'])
 
-    should_close = state._attribution_gate("node-a")
-
-    assert should_close is True
-    assert state._attribution_gate_settled_round == 1
-    state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
+    assert excinfo.value.code == 17
 
 
 def test_ft_log_aggregator_count_rejects_negative():

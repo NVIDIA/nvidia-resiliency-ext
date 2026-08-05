@@ -76,12 +76,19 @@ from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_h
 if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
     from ..testing_utils import health_check_injector
 
-from .utils import get_infrastructure_rank, is_slurm_job_array, parse_bool_env, slurm_sort_addrs
+from .utils import (  # noqa: F401  (shutdown reasons are re-exported for existing importers)
+    RDZV_NO_RESTART_REASONS,
+    RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+    RDZV_SHUTDOWN_REASON_FAILURE,
+    RDZV_SHUTDOWN_REASON_GRACEFUL,
+    RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+    get_infrastructure_rank,
+    is_slurm_job_array,
+    parse_bool_env,
+    slurm_sort_addrs,
+)
 
 log = logging.getLogger(LogConfig.name)
-
-RDZV_SHUTDOWN_REASON_GRACEFUL = "graceful"
-RDZV_SHUTDOWN_REASON_FAILURE = "failure"
 
 
 def _rdzv_signal_exception_handler(sig: int, frame: Optional[FrameType]) -> None:
@@ -638,7 +645,6 @@ class _RendezvousBarrierState:
         # Permanent shutdown reason: empty means open; non-empty means no further rounds.
         self.shutdown_key = f"{self.prefix}:shutdown"
         self._attribution_service: Optional[AttributionService] = None
-        self._attribution_gate_settled_round: int = -1
         self._attribution_cycle_log_submitted: Optional[int] = None
         self._attribution_terminal_requested_cycle: Optional[int] = None
         # Job-level unhealthy counter; persists across all rounds.
@@ -1327,6 +1333,12 @@ class _RendezvousBarrierState:
             if stop_event is not None and stop_event.is_set():
                 raise RendezvousGracefulExitError("Control rendezvous stop requested")
 
+            # This node owns the attribution poller (rendezvous store host). In the
+            # standalone control-plane deployment there is no agent monitor loop, so this
+            # wait is where the store host consumes a latched STOP verdict.
+            if self.attribution_stop_requested():
+                self.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
+
             # Check for permanent shutdown (no further rounds)
             if self.is_shutdown():
                 msg = f"The node '{node_desc}' detected that rendezvous was permanently closed"
@@ -1374,46 +1386,32 @@ class _RendezvousBarrierState:
             wait_count += 1
             time.sleep(1.0)  # Poll every 1 second
 
-    def _attribution_gate(self, node_desc: _NodeDesc) -> bool:
-        """Return whether attribution permits closing the current round.
+    def attribution_stop_requested(self) -> bool:
+        """Return whether the background attribution poller has latched a STOP verdict.
 
-        Raises ``RendezvousGracefulExitError`` if attribution recommends stopping.
-        Returns ``False`` while attribution is still pending.
+        Local attribute read; performs no TCPStore or network I/O, so it is safe to call
+        from the agent monitor loop at its native interval.
         """
-        if self._attribution_service is None or self._round == 0:
-            return True
-
-        if self._attribution_gate_settled_round == self._round:
-            return True
-
-        expected_submitted_round = self._round - 1
-        if self._attribution_cycle_log_submitted != expected_submitted_round:
-            log.warning(
-                "Attribution gate for round %s has no submitted log for cycle %s "
-                "(last submitted cycle: %s); failing open without polling a stale log",
-                self._round,
-                expected_submitted_round,
-                self._attribution_cycle_log_submitted,
-            )
-            self._attribution_gate_settled_round = self._round
-            return True
-
-        result = self._attribution_service.get_last_result(node_id=node_desc)
-
-        if result is None:
+        if self._attribution_service is None:
             return False
+        return self._attribution_service.stop_requested()
 
-        if result is True:
-            msg = (
-                f"The node '{node_desc}' is closing rendezvous because attribution "
-                f"recommended stopping the job."
-            )
-            log.error(msg)
-            self.set_shutdown(RDZV_SHUTDOWN_REASON_FAILURE)
-            raise RendezvousGracefulExitError(msg)
+    def signal_no_restart(self, reason: str) -> None:
+        """Broadcast to every node that the job must not be restarted.
 
-        self._attribution_gate_settled_round = self._round
-        return True
+        Must be called from the thread that owns rendezvous state: ``open_rendezvous()``
+        reads ``self._round``, and the attribution poller runs on its own thread.
+
+        Two store writes carry the whole broadcast:
+          - the shutdown key records why the job is ending;
+          - opening the next round makes peers' existing ``is_next_round_open()`` poll
+            fire, so no node needs a new steady-state poll to learn about the stop.
+
+        The shutdown key is written with ``compare_set``, so the first reason recorded
+        wins and a later, less specific shutdown cannot overwrite it.
+        """
+        self.set_shutdown(reason)
+        self.open_rendezvous()
 
     def _host_close_round(
         self,
@@ -1450,6 +1448,11 @@ class _RendezvousBarrierState:
             if stop_event is not None and stop_event.is_set():
                 raise RendezvousGracefulExitError("Control rendezvous stop requested")
 
+            # A verdict for an earlier cycle can land while this round is still gathering
+            # participants. Honor it before admitting anyone into a round that will not run.
+            if self.attribution_stop_requested():
+                self.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
+
             self._check_timeout_and_closure(node_desc)
 
             # Early termination: if too many nodes are unhealthy it is mathematically
@@ -1474,10 +1477,6 @@ class _RendezvousBarrierState:
 
             # Only attempt snapshot + constraint check when enough nodes have joined.
             if current_joined < min_nodes:
-                time.sleep(0.1)
-                continue
-
-            if not self._attribution_gate(node_desc):
                 time.sleep(0.1)
                 continue
 
@@ -1544,12 +1543,26 @@ class _RendezvousBarrierState:
                 )
                 continue
 
+            # Exclude participants that belong to a replacement group already marked
+            # unhealthy this round. This covers the SLURM job-array rack-refill race:
+            # when a task is terminated mid-round and its physical nodes are refilled
+            # into a new array task, the dead task's slots linger in the store with the
+            # current round id (round-fenced, not lifetime-fenced) and are otherwise
+            # indistinguishable from live participants. Their replacement_group_id
+            # (SLURM_ARRAY_TASK_ID) still identifies the dead cohort, so dropping them
+            # here keeps ghost nodes out of segment/replacement-group selection, the
+            # duplicate-addr scan, and the previous-active last-call gate. Filtering by
+            # replacement_group_id never touches co-located launchers from healthy
+            # groups (multi-launcher simulation), and is a no-op when no group is marked.
+            unhealthy_replacement_groups = self._get_unhealthy_replacement_groups()
             current_round_participants = [
-                participant for participant in slot_participants if participant is not None
+                participant
+                for participant in slot_participants
+                if participant is not None
+                and (participant[3] is None or participant[3] not in unhealthy_replacement_groups)
             ]
 
             # Check if the segment/replacement-group constraint is satisfied.
-            unhealthy_replacement_groups = self._get_unhealthy_replacement_groups()
             complete_replacement_group_participants, incomplete_replacement_group_participants = (
                 self._split_by_complete_replacement_groups(current_round_participants)
             )
@@ -2330,7 +2343,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
-        attribution_decision_timeout: Optional[float] = None,
+        attribution_enforce_stop: bool = False,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
     ):
@@ -2367,8 +2380,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 List of storage paths to check for health.
             attribution_endpoint:
                 Endpoint of the attribution service.
-            attribution_decision_timeout:
-                Launcher-side attribution decision budget in seconds.
+            attribution_enforce_stop:
+                Whether a STOP verdict ends the job. False observes and logs only.
         """
         # We associate each handler instance with a unique node descriptor.
         node = cls._node_desc_generator.generate(local_addr)
@@ -2396,7 +2409,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
-            attribution_decision_timeout=attribution_decision_timeout,
+            attribution_enforce_stop=attribution_enforce_stop,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
         )
@@ -2413,7 +2426,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         link_state_path_template: Optional[str] = None,
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
-        attribution_decision_timeout: Optional[float] = None,
+        attribution_enforce_stop: bool = False,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
     ) -> None:
@@ -2492,8 +2505,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         if is_store_host and attribution_endpoint:
             self._attribution_service = AttributionService(
                 endpoint=attribution_endpoint,
-                decision_timeout=attribution_decision_timeout,
+                enforce_stop=attribution_enforce_stop,
             )
+            self._attribution_service.start_poller(node_id=self._this_node)
         else:
             self._attribution_service = None
         self._barrier_state._attribution_service = self._attribution_service
@@ -2916,6 +2930,31 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def is_shutdown_due_to_failure(self) -> bool:
         return self._barrier_state.get_shutdown_reason() == RDZV_SHUTDOWN_REASON_FAILURE
 
+    def get_shutdown_reason(self) -> Optional[str]:
+        """Return the recorded shutdown reason, or None if the job is not shutting down.
+
+        Costs the same as ``is_shutdown()`` (one ``check`` plus one ``get``), so callers
+        that need to distinguish shutdown reasons should use this instead of calling both.
+        """
+        return self._barrier_state.get_shutdown_reason()
+
+    def no_restart_reason(self) -> Optional[str]:
+        """Return the reason NVRx decided this job must not be restarted, if any.
+
+        Returns ``None`` for a healthy job or for an ordinary failure shutdown. Costs one
+        ``check`` plus one ``get``, the same as ``is_shutdown()``.
+        """
+        reason = self._barrier_state.get_shutdown_reason()
+        return reason if reason in RDZV_NO_RESTART_REASONS else None
+
+    def attribution_stop_requested(self) -> bool:
+        """Return whether this node's attribution poller has latched a STOP verdict."""
+        return self._barrier_state.attribution_stop_requested()
+
+    def signal_no_restart(self, reason: str) -> None:
+        """Broadcast to the whole job that it must not be restarted."""
+        self._barrier_state.signal_no_restart(reason)
+
     def shutdown_cycle_info_reporter(self) -> None:
         if self._cycle_info_reporter is not None:
             self._cycle_info_reporter.shutdown()
@@ -2924,6 +2963,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """Permanently shut down the rendezvous (no further rounds)."""
         self._barrier_state.set_shutdown(reason)
         self.shutdown_cycle_info_reporter()
+        if self._attribution_service is not None:
+            # No one will consume a verdict once the job is ending. The final cycle's
+            # terminal POST is still issued afterwards for post-mortem analysis.
+            self._attribution_service.stop_poller()
 
         msg = f"The node '{self._this_node}' has permanently closed the rendezvous '{self._settings.run_id}'."
         self._record(message=msg, node_state=NodeState.SUCCEEDED)
@@ -3040,9 +3083,9 @@ def create_handler(
         storage_healthcheck_paths = params.config.get('storage_healthcheck_paths', None)
         link_state_path_template = params.config.get('link_state_path_template', None)
         attribution_endpoint = params.config.get('attribution_endpoint', None)
-        attribution_decision_timeout = params.config.get('attribution_decision_timeout', None)
-        if attribution_decision_timeout is not None:
-            attribution_decision_timeout = float(attribution_decision_timeout)
+        attribution_enforce_stop = (
+            str(params.config.get('attribution_enforce_stop', '')).lower() == 'true'
+        )
         cycle_info_dir = params.config.get('cycle_info_dir', None)
         cycle_log_prefix = params.config.get('cycle_log_prefix', None)
 
@@ -3063,7 +3106,7 @@ def create_handler(
             link_state_path_template=link_state_path_template,
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
-            attribution_decision_timeout=attribution_decision_timeout,
+            attribution_enforce_stop=attribution_enforce_stop,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
         )

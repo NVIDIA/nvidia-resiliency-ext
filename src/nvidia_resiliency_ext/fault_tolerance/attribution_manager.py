@@ -33,6 +33,13 @@ _EXTERNAL_ATTRIBUTION_SCHEMES = {"http", "grpc"}
 _ATTRSVC_EXPORT_URL_ENV = "NVRX_ATTRSVC_EXPORT_URL"
 _ATTRIBUTION_EXPORT_URL_CONFIG = "--ft-attribution-export-url / attribution_export_url"
 _EXPORT_URL_SCHEMES = {"http", "https"}
+# Acting on an attribution STOP is opt-in. "log" observes and records verdicts without
+# terminating anything, so a site can measure its own false-positive rate before enabling
+# "no-restart", which ends the job with the no-restart exit code.
+ATTRIBUTION_STOP_ACTION_LOG = "log"
+ATTRIBUTION_STOP_ACTION_NO_RESTART = "no-restart"
+ATTRIBUTION_STOP_ACTIONS = (ATTRIBUTION_STOP_ACTION_LOG, ATTRIBUTION_STOP_ACTION_NO_RESTART)
+DEFAULT_ATTRIBUTION_STOP_ACTION = ATTRIBUTION_STOP_ACTION_LOG
 
 
 @dataclass(frozen=True)
@@ -40,7 +47,7 @@ class AttributionEndpoint:
     """Endpoint used by the in-launcher attribution client."""
 
     endpoint: str
-    decision_timeout: Optional[float]
+    enforce_stop: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,7 +62,7 @@ class AttributionConfig:
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
     analysis_backend: Optional[str] = None
-    decision_timeout: Optional[float] = None
+    stop_action: str = DEFAULT_ATTRIBUTION_STOP_ACTION
     log_level: Optional[str] = None
     export_url: Optional[str] = None
 
@@ -78,6 +85,10 @@ class AttributionConfig:
         return is_managed_attribution_endpoint(self.endpoint)
 
     @property
+    def enforce_stop(self) -> bool:
+        return self.stop_action == ATTRIBUTION_STOP_ACTION_NO_RESTART
+
+    @property
     def client_endpoint(self) -> AttributionEndpoint:
         if not self.is_enabled:
             raise ValueError("attribution endpoint requested while attribution service is disabled")
@@ -85,12 +96,9 @@ class AttributionConfig:
         if self.is_managed:
             return AttributionEndpoint(
                 endpoint=_managed_attribution_client_endpoint(),
-                decision_timeout=self.decision_timeout,
+                enforce_stop=self.enforce_stop,
             )
-        return AttributionEndpoint(
-            endpoint=self.endpoint,
-            decision_timeout=self.decision_timeout,
-        )
+        return AttributionEndpoint(endpoint=self.endpoint, enforce_stop=self.enforce_stop)
 
     @classmethod
     def from_args(
@@ -124,7 +132,7 @@ class AttributionConfig:
         if startup_timeout <= 0:
             raise ValueError("--ft-attribution-startup-timeout must be positive")
 
-        decision_timeout = _resolve_decision_timeout(args, ft_cfg)
+        stop_action = _resolve_stop_action(args, ft_cfg)
 
         if endpoint is None:
             return cls(
@@ -136,7 +144,7 @@ class AttributionConfig:
                 llm_base_url=getattr(args, "ft_attribution_llm_base_url", None),
                 llm_model=getattr(args, "ft_attribution_llm_model", None),
                 analysis_backend=getattr(args, "ft_attribution_analysis_backend", None),
-                decision_timeout=decision_timeout,
+                stop_action=stop_action,
                 log_level=getattr(args, "ft_attribution_log_level", None),
                 export_url=None,
             )
@@ -165,7 +173,7 @@ class AttributionConfig:
             llm_base_url=getattr(args, "ft_attribution_llm_base_url", None),
             llm_model=getattr(args, "ft_attribution_llm_model", None),
             analysis_backend=getattr(args, "ft_attribution_analysis_backend", None),
-            decision_timeout=decision_timeout,
+            stop_action=stop_action,
             log_level=getattr(args, "ft_attribution_log_level", None),
             export_url=export_url,
         )
@@ -201,16 +209,11 @@ class AttributionManager:
 
         logger.info(
             "Starting managed attribution service on localhost:%s "
-            "(applog_dir=%s, log_file=%s, startup_timeout=%.1fs, decision_timeout=%s)",
+            "(applog_dir=%s, log_file=%s, startup_timeout=%.1fs)",
             DEFAULT_ATTRIBUTION_PORT,
             self.cfg.applog_dir,
             self.cfg.log_file,
             self.cfg.startup_timeout,
-            (
-                f"{self.cfg.decision_timeout:.1f}s"
-                if self.cfg.decision_timeout is not None
-                else "default"
-            ),
         )
 
         log_fd = open(self.cfg.log_file, "w")
@@ -396,6 +399,21 @@ def _validate_attribution_endpoint(endpoint: str) -> None:
     _validate_attribution_endpoint_host(parsed.hostname)
 
 
+def _resolve_stop_action(args: Any, ft_cfg: FaultToleranceConfig) -> str:
+    value = getattr(args, "ft_attribution_stop_action", None)
+    if value is None:
+        value = getattr(ft_cfg, "attribution_stop_action", None)
+    if value is None:
+        return DEFAULT_ATTRIBUTION_STOP_ACTION
+    normalized = str(value).strip().lower()
+    if normalized not in ATTRIBUTION_STOP_ACTIONS:
+        raise ValueError(
+            f"--ft-attribution-stop-action must be one of {list(ATTRIBUTION_STOP_ACTIONS)}, "
+            f"got {value!r}"
+        )
+    return normalized
+
+
 def _resolve_export_url(args: Any, ft_cfg: FaultToleranceConfig) -> Optional[str]:
     value = getattr(args, "ft_attribution_export_url", None)
     if value is None:
@@ -410,29 +428,14 @@ def _resolve_export_url(args: Any, ft_cfg: FaultToleranceConfig) -> Optional[str
     return value
 
 
-def _resolve_decision_timeout(args: Any, ft_cfg: FaultToleranceConfig) -> Optional[float]:
-    value = getattr(args, "ft_attribution_decision_timeout", None)
-    if value is None:
-        value = getattr(ft_cfg, "attribution_decision_timeout", None)
-    if value is None:
-        return None
-    value = float(value)
-    if value <= 0:
-        raise ValueError("--ft-attribution-decision-timeout must be positive")
-    return value
-
-
 def _normalize_analysis_backend(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     normalized = str(value).strip().lower()
     if not normalized:
         return None
-    if normalized != "mcp":
-        raise ValueError(
-            "--ft-attribution-analysis-backend supports only 'mcp'; "
-            f"'lib' is no longer supported by launcher-managed attrsvc, got {value!r}"
-        )
+    if normalized not in {"lib", "mcp"}:
+        raise ValueError(f"--ft-attribution-analysis-backend must be 'lib' or 'mcp', got {value!r}")
     return normalized
 
 

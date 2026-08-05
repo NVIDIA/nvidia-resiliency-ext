@@ -302,6 +302,7 @@ class Analyzer:
         log_path: str,
         user: str = "unknown",
         job_id: Optional[str] = None,
+        cycle_id: int | None = None,
         analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
     ) -> LogAnalyzerSubmitResult | LogAnalyzerError:
         """
@@ -314,6 +315,8 @@ class Analyzer:
             log_path: Path to the log file (or slurm output for splitlog mode)
             user: Job owner (for dataflow records)
             job_id: Job ID (required for split logging mode)
+            cycle_id: Optional restart-attempt identity. The legacy analyzer
+                accepts but does not consume it.
             analysis_intent: Track-only by default; ``progressive`` starts early
                 analysis when the configured backend supports it; ``terminal`` starts
                 final analysis through the coalescer without waiting for the result.
@@ -326,6 +329,7 @@ class Analyzer:
         except ValueError as e:
             return LogAnalyzerError(error_code=ErrorCode.INVALID_PARAMETER, message=str(e))
 
+        del cycle_id
         result = await self._log.submit(log_path, user=user, job_id=job_id)
         if isinstance(result, LogAnalyzerError):
             return result

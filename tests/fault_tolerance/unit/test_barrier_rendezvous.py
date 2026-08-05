@@ -280,36 +280,34 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE,
         )
 
-    def test_attribution_gate_sets_failure_shutdown_when_stop_recommended(self):
-        """Attribution-stop is a terminal failure reason, not a graceful shutdown."""
+    def test_attribution_stop_requested_reads_the_service_latch(self):
+        """The monitor loop polls this at its native interval, so it must stay local."""
         state = object.__new__(_RendezvousBarrierState)
-        state._round = 1
         state._attribution_service = MagicMock()
-        state._attribution_service.get_last_result.return_value = True
-        state._attribution_gate_settled_round = -1
-        state._attribution_cycle_log_submitted = 0
+        state._attribution_service.stop_requested.return_value = True
+
+        self.assertTrue(state.attribution_stop_requested())
+        state._attribution_service.stop_requested.assert_called_once_with()
+
+    def test_attribution_stop_requested_is_false_without_attribution(self):
+        """Only the rendezvous store host holds an attribution client."""
+        state = object.__new__(_RendezvousBarrierState)
+        state._attribution_service = None
+
+        self.assertFalse(state.attribution_stop_requested())
+
+    def test_signal_no_restart_records_reason_and_wakes_peers(self):
+        """Two store writes carry the whole broadcast; peers need no new steady-state poll."""
+        state = object.__new__(_RendezvousBarrierState)
         state.set_shutdown = MagicMock()
+        state.open_rendezvous = MagicMock()
 
-        with self.assertRaises(RendezvousGracefulExitError):
-            state._attribution_gate("node-a")
+        state.signal_no_restart(ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
 
-        state._attribution_service.get_last_result.assert_called_once_with(node_id="node-a")
         state.set_shutdown.assert_called_once_with(
-            ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_FAILURE
+            ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP
         )
-
-    def test_attribution_gate_does_not_poll_stale_submitted_log(self):
-        """A missing previous-cycle submit fails open without polling an older log."""
-        state = object.__new__(_RendezvousBarrierState)
-        state._round = 2
-        state._attribution_service = MagicMock()
-        state._attribution_gate_settled_round = -1
-        state._attribution_cycle_log_submitted = 0
-
-        self.assertTrue(state._attribution_gate("node-a"))
-
-        state._attribution_service.get_last_result.assert_not_called()
-        self.assertEqual(state._attribution_gate_settled_round, 2)
+        state.open_rendezvous.assert_called_once_with()
 
     def test_join_increments_join_count(self):
         """Test that joining increments join_count atomically."""
@@ -849,6 +847,80 @@ class Step2CompletionTest(BaseRendezvousTest):
         # The dead survivor's slot_3 rank key was never written by the host.
         self.assertFalse(self.store.check([f"{state.prefix}:slot_3_rank"]))
 
+    def test_step2_excludes_unhealthy_group_ghosts_on_rack_refill(self):
+        """SLURM job-array rack refill: dead task's ghost slots must not be selected.
+
+        Task A joins round 0 on two physical nodes, then SLURM terminates it (its
+        slots linger in the store, round-fenced but lifetime-stale). Task A's
+        replacement group is marked unhealthy (the failing node does this on its way
+        out). SLURM refills the SAME physical nodes into task B, which joins the same
+        open round -- so each addr now appears twice (ghost A + live B).
+
+        Without the unhealthy-group filter the duplicate-addr scan would fire and
+        permanently shut the job down. With it, the ghosts are dropped before
+        selection: the round closes on task B, and the ghost slots keep their
+        UNASSIGNED rank (never written by the host).
+        """
+        # Ensure the fatal duplicate-addr guard is active (not the simulation bypass),
+        # so this test proves the filter -- not the bypass -- prevents the shutdown.
+        os.environ.pop("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE", None)
+        min_nodes = 2
+        max_nodes = 4
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            replacement_group_size=2,
+        )
+        state._compute_step2_poll_interval = lambda min_nodes, segment_check_interval: 0.0
+
+        # Ghost task A (slots 1,2) and refill task B (slots 3,4) share physical nodes:
+        # host0/host1 appear in both cohorts, distinguished only by replacement group.
+        participants = [
+            (_NodeDesc("host0", 100, 0), 0, "none", "A"),  # ghost
+            (_NodeDesc("host1", 101, 0), 1, "none", "A"),  # ghost
+            (_NodeDesc("host0", 200, 1), 2, "none", "B"),  # live refill (same node as slot 1)
+            (_NodeDesc("host1", 201, 1), 3, "none", "B"),  # live refill (same node as slot 2)
+        ]
+        _seed_joined_participants(self.store, state, participants)
+        # Model Step 1: every joiner (ghost and live) writes an UNASSIGNED rank first.
+        for slot in range(1, len(participants) + 1):
+            self.store.set(
+                f"{state.prefix}:slot_{slot}_rank",
+                state._pack_rank_value(GroupRankStatus.UNASSIGNED.value, 0, state._round),
+            )
+
+        # The failing task A node marks its replacement group unhealthy on exit.
+        state._mark_replacement_group_unhealthy("A")
+
+        state._rendezvous_start_time = time.monotonic()
+        state._host_close_round(
+            _NodeDesc("control", 10, 0),
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
+            segment_check_interval=0.0,
+        )
+
+        # Round closes on task B; the job is NOT shut down.
+        self.assertFalse(state.is_shutdown())
+        self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
+
+        # Live task B (slots 3,4) receives the active ranks.
+        live_ranks = [
+            state._unpack_rank_value(self.store.get(f"{state.prefix}:slot_{slot}_rank"))[0]
+            for slot in (3, 4)
+        ]
+        self.assertEqual(sorted(live_ranks), [0, 1])
+
+        # Ghost task A (slots 1,2) keeps its UNASSIGNED rank from Step 1: the host never
+        # reassigns it, so a still-live task-A node reads UNASSIGNED and loops.
+        for slot in (1, 2):
+            ghost_rank = state._unpack_rank_value(
+                self.store.get(f"{state.prefix}:slot_{slot}_rank")
+            )[0]
+            self.assertEqual(ghost_rank, GroupRankStatus.UNASSIGNED.value)
+
     def test_step2_duplicate_addr_is_fatal_misconfiguration(self):
         """Two ft_launchers on one node (same addr) is a fatal misconfiguration."""
         os.environ.pop("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE", None)
@@ -908,8 +980,8 @@ class Step2CompletionTest(BaseRendezvousTest):
         finally:
             os.environ.pop("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE", None)
 
-    def test_step2_rechecks_close_state_after_attribution_resolves(self):
-        """Restart attribution resolution forces one fresh close-loop pass."""
+    def test_step2_closes_round_without_waiting_for_an_attribution_verdict(self):
+        """Restart latency no longer includes attribution: the round closes immediately."""
         min_nodes = 2
         max_nodes = 2
         state = _RendezvousBarrierState(
@@ -922,7 +994,8 @@ class Step2CompletionTest(BaseRendezvousTest):
         state._compute_step2_poll_interval = lambda min_nodes, segment_check_interval: 0.0
         state._get_unhealthy_count = MagicMock(return_value=0)
         state._attribution_service = MagicMock()
-        state._attribution_service.get_last_result.side_effect = [None, False]
+        # Verdict never arrives; the poller keeps working in the background.
+        state._attribution_service.stop_requested.return_value = False
         state._attribution_cycle_log_submitted = 0
         state.get_all_participants = MagicMock(wraps=state.get_all_participants)
 
@@ -940,11 +1013,36 @@ class Step2CompletionTest(BaseRendezvousTest):
             segment_check_interval=0.0,
         )
 
-        self.assertEqual(state._attribution_service.get_last_result.call_count, 2)
+        # Terminal analysis is still requested for the cycle that just failed.
         state._attribution_service.request_terminal_analysis.assert_called_once_with()
-        self.assertEqual(state._get_unhealthy_count.call_count, 2)
         state.get_all_participants.assert_called_once()
         self.assertEqual(self.store.get(state.round_done_key).decode("utf-8"), "1")
+
+    def test_step2_honors_a_latched_stop_before_admitting_participants(self):
+        """A verdict landing mid-round ends the job instead of opening a round nobody runs."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._round = 1
+        state._attribution_service = MagicMock()
+        state._attribution_service.stop_requested.return_value = True
+
+        state._rendezvous_start_time = time.monotonic()
+        with self.assertRaises(RendezvousClosedError):
+            state._host_close_round(
+                _NodeDesc("control", 10, 0),
+                min_nodes=2,
+                max_nodes=2,
+                segment_check_interval=0.0,
+            )
+
+        self.assertEqual(
+            state.get_shutdown_reason(),
+            ft_rendezvous_barrier_module.RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+        )
 
     def test_step2_waits_for_complete_replacement_group_before_segment_check(self):
         """Raw participants may satisfy segment while complete replacement groups do not."""
@@ -1497,6 +1595,7 @@ class GroupRankAssignmentTest(TestCase):
             cycle_log_prefix="/tmp/train.log",
         )
         state._attribution_service = MagicMock()
+        state._attribution_service.stop_requested.return_value = False
 
         def assert_submitted_cycle_recorded(_log_path):
             self.assertEqual(state._attribution_cycle_log_submitted, 0)
