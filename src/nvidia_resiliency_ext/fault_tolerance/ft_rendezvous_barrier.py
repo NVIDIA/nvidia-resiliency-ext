@@ -1899,7 +1899,15 @@ class _RendezvousBarrierState:
             # Hot spares and late-arriving nodes wait here indefinitely until a failure
             # opens the next round. Also checks for permanent shutdown.
             # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
-            self._wait_for_rendezvous_open(node_desc)
+            # Instrument this wait so a node that is not (yet) in the active rendezvous still
+            # emits a span; without it a hot spare is invisible for the entire cycle it waits
+            # through. The finally guarantees the close (and export) even when shutdown raises
+            # out of the wait.
+            record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
+            try:
+                self._wait_for_rendezvous_open(node_desc)
+            finally:
+                record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
 
             # Record start time for timeout monitoring.
             # Start timing AFTER Step 0 completes, since nodes may wait indefinitely at Step 0.
@@ -1916,6 +1924,14 @@ class _RendezvousBarrierState:
                 try:
                     pre_join_hook()
                 except UnhealthyNodeException:
+                    # This node bailed at its health check (evicted, injected, or genuinely
+                    # unhealthy) and is about to leave the job, so mark it: the telemetry
+                    # recorder closes and flushes this node's open cycle and phase spans
+                    # before the process is torn down.
+                    record_profiling_event(
+                        ProfilingEvent.NODE_EXCLUDED,
+                        node_id=node_desc,
+                    )
                     try:
                         self._maybe_mark_current_replacement_group_unhealthy()
                     except Exception as e:
