@@ -8,3 +8,4 @@ Examples
    examples/basic_example.rst
    examples/train_ddp_heartbeats.rst
    examples/train_ddp_sections.rst
+   examples/singleton_deployment.rst

@@ -1,0 +1,186 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Singleton job-array deployment (SLURM) &mdash; nvidia-resiliency-ext 0.1 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=2709fde1"></script>
+      <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Inprocess Restart" href="../../inprocess/index.html" />
+    <link rel="prev" title="Section API usage example with DDP" href="train_ddp_sections.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration Guides</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../examples.html">Examples</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="basic_example.html">Basic usage example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Singleton job-array deployment (SLURM)</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#quick-start">Quick start</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="../examples.html">Examples</a></li>
+      <li class="breadcrumb-item active">Singleton job-array deployment (SLURM)</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/fault_tolerance/examples/singleton_deployment.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="singleton-job-array-deployment-slurm">
+<h1>Singleton job-array deployment (SLURM)<a class="headerlink" href="#singleton-job-array-deployment-slurm" title="Link to this heading"></a></h1>
+<p>A reference deployment of <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> for large-scale training: colocated in-job
+restart with a spare pool, plus a singleton job-array chain that survives the one
+failure in-job restart cannot repair.</p>
+<p>Array task 0 is both a training rank and the rendezvous host, so its liveness is the
+generation’s liveness. Every other task can be replaced from the spare pool; task 0
+cannot, because the endpoint every other task dials is its hostname. Submitting the
+array with <code class="docutils literal notranslate"><span class="pre">--dependency=singleton</span></code> makes that loss cheap instead of fatal: losing
+task 0 ends the current array, and the scheduler immediately starts the next one, which
+rendezvouses on a new task 0 and resumes from the last checkpoint.</p>
+<p>The example trains public <a class="reference external" href="https://github.com/NVIDIA/Megatron-LM">Megatron-LM</a> on mock
+data, so it needs no corpus and no tokenizer model.</p>
+<p>Files (under <code class="docutils literal notranslate"><span class="pre">examples/fault_tolerance/deployment/</span></code>):</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">README.md</span></code></dt><dd><p>Restart models, the rank-0 failure gap, and how the design maps onto Kubernetes.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">slurm/nvrx_singleton_array.sbatch</span></code></dt><dd><p>One generation: rendezvous host publication, the peer gate, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>, and the
+teardown that releases the spare pool when task 0 exits.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">slurm/submit_chain.sh</span></code></dt><dd><p>Computes the array shape from one setting and enqueues K generations.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">slurm/README.md</span></code></dt><dd><p>Knobs, and hot vs cold spares.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">watch/</span></code></dt><dd><p><code class="docutils literal notranslate"><span class="pre">nvrx-watch</span></code>: an out-of-job watcher that reconciles the chain and detects restart
+anomalies – restart storms, restarts that never advance the checkpoint iteration,
+and stalled cycles. Reads NVRx cycle-info files, so its anomaly detection is
+scheduler-independent. See <code class="docutils literal notranslate"><span class="pre">watch/DESIGN.md</span></code>.</p>
+</dd>
+</dl>
+<section id="quick-start">
+<h2>Quick start<a class="headerlink" href="#quick-start" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>examples/fault_tolerance/deployment/slurm
+
+<span class="nb">export</span><span class="w"> </span><span class="nv">MEGATRON_PATH</span><span class="o">=</span>/workspace/megatron-lm
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_WORK_DIR</span><span class="o">=</span>/shared/<span class="nv">$USER</span>/nvrx-run
+
+<span class="nv">NVRX_DRY_RUN</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./submit_chain.sh<span class="w">    </span><span class="c1"># print the sbatch commands only</span>
+./submit_chain.sh<span class="w">                   </span><span class="c1"># default: no-restart (exit 93) demo</span>
+<span class="nv">NVRX_NO_RESTART_DEMO</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>./submit_chain.sh<span class="w">   </span><span class="c1"># hand-off demo instead</span>
+
+<span class="c1"># real training: injection off, scale up</span>
+<span class="nv">NVRX_NO_RESTART_DEMO</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="nv">NVRX_FAULT_INJECT</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="nv">NVRX_INJECT_GPU_FAILURE</span><span class="o">=</span><span class="w"> </span><span class="se">\</span>
+<span class="nv">NVRX_MODEL_PROFILE</span><span class="o">=</span>8b<span class="w"> </span><span class="nv">NVRX_TRAIN_TASKS</span><span class="o">=</span><span class="m">32</span><span class="w"> </span>./submit_chain.sh
+</pre></div>
+</div>
+<p>Then watch the run from a login node by its Slurm job id (name, owner and work dir
+resolve from Slurm; observe-only by default, <code class="docutils literal notranslate"><span class="pre">--act</span></code> to enable the one action):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>../watch
+python3<span class="w"> </span>-m<span class="w"> </span>nvrx_watch<span class="w"> </span>&lt;job_id&gt;
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="train_ddp_sections.html" class="btn btn-neutral float-left" title="Section API usage example with DDP" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../../inprocess/index.html" class="btn btn-neutral float-right" title="Inprocess Restart" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
