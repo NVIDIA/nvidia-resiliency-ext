@@ -1121,14 +1121,15 @@ def _selection_summary(
 
 def _line_numbering_anomaly() -> Mapping[str, str]:
     return {
-        "scheme": "linux_physical_lines",
+        "scheme": "python_text_universal_newlines",
         "line_field": (
-            "1-based physical line split on LF; a preceding CR is removed for "
-            "CRLF, while bare CR remains line content"
+            "1-based logical line after Python text-mode universal-newline "
+            "splitting on LF, CR, or CRLF"
         ),
         "shell_tool_note": (
-            "Line numbers align with Linux tools that count LF-delimited "
-            "records. Rank prefixes may also look like '<rank>:'."
+            "Rank prefixes also look like '<rank>:'. Tools that count only "
+            "LF-delimited records, or render embedded CR-delimited records, "
+            "may show different line numbers for the same text."
         ),
     }
 
@@ -2128,8 +2129,30 @@ def _select_primary_candidate(
         and match.fault_outcome
         not in {FaultOutcome.RECOVERED.value, FaultOutcome.PROGRESSED_AFTER.value}
     ]
-    if root_matches:
-        return sorted(root_matches, key=lambda match: match.line or 0)[0]
+    cascade_matches = [
+        match
+        for match in matches
+        if match.role == RegistryRole.CASCADE_CANDIDATE.value
+        and match.fault_outcome
+        not in {FaultOutcome.RECOVERED.value, FaultOutcome.PROGRESSED_AFTER.value}
+    ]
+    earliest_root = (
+        sorted(root_matches, key=lambda match: match.line or 0)[0] if root_matches else None
+    )
+    earliest_cascade = (
+        sorted(cascade_matches, key=lambda match: match.line or 0)[0] if cascade_matches else None
+    )
+    # If a terminal cascade candidate precedes the earliest root candidate, promote the
+    # cascade to primary. This handles cases where a scheduler cancel (root_candidate)
+    # follows an earlier NCCL watchdog CUDA-launch-failure (cascade_candidate) but no
+    # upstream root is visible in the log - the watchdog termination is genuinely the
+    # first observed failure.
+    if earliest_cascade is not None and (
+        earliest_root is None or (earliest_cascade.line or 0) < (earliest_root.line or 0)
+    ):
+        return earliest_cascade
+    if earliest_root is not None:
+        return earliest_root
 
     progressed_roots = [
         match
