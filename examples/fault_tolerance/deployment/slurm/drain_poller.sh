@@ -20,15 +20,28 @@
 # storm (SLURM tears down the other segment nodes). An out-of-container consumer poller was rejected:
 # can't set a controlled exit code, and would fight ft_launcher's restart logic.
 #
+# PRECONDITIONS -- a marker holds no allocation identity, so it is only meaningful while an index maps
+# to one allocation. Violate either and a replacement inherits its predecessor's verdict: it evicts
+# itself from a healthy node, or is waved through onto a drained one.
+#   1. --no-requeue, EXPLICIT in the sbatch (NODE_FAIL requeues wherever JobRequeue=1). Requeue is the
+#      only way an index is re-allocated within an array job; cold spares take a NEW index, whose
+#      marker is MISSING and so fails open.
+#   2. STATE_DIR keyed by SLURM_ARRAY_JOB_ID, i.e. per generation like the other control files. A
+#      singleton chain restarts the next generation at index 0, where a shared STATE_DIR would hand it
+#      the previous generation's task_0.drained.
+# A deployment that cannot hold both should stamp identity into the marker (a nodelist= line the
+# consumer compares against ${SLURM_JOB_NODELIST}, failing open on a mismatch).
+#
 # Ships with nvidia-resiliency-ext (examples/fault_tolerance/deployment/slurm). A deployment's array
 # coordinator backgrounds it on task 0; e.g. from a batch script:
-#   STATE_DIR="<shared-lustre-dir>/drained" ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID}" \
+#   STATE_DIR="<shared-lustre-dir>/${SLURM_ARRAY_JOB_ID}/drained" ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID}" \
 #     bash "$(dirname "$0")/drain_poller.sh" &
 #   DRAIN_POLLER_PID=$!; trap 'kill "${DRAIN_POLLER_PID}" 2>/dev/null' EXIT
 #
 # Env:
 #   ARRAY_JOB_ID   (req) SLURM_ARRAY_JOB_ID of the array to watch
-#   STATE_DIR      (req) shared Lustre dir for the output files (created if missing)
+#   STATE_DIR      (req) shared Lustre dir for the output files (created if missing). MUST be scoped
+#                  to this array job -- see PRECONDITIONS.
 #   POLL_INTERVAL  (opt, default 300) seconds between polls; drains aren't latency-critical, and
 #                  sinfo is the controller's heaviest RPC class, so keep this coarse (2-5 min)
 #   DRAIN_STATES   (opt, default "drain") sinfo -t filter; the DRAIN flag catches drng + drained
