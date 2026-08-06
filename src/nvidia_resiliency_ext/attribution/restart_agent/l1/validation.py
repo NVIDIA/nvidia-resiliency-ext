@@ -139,9 +139,7 @@ def repair_invalid_evidence_supports(payload: Any) -> list[str]:
             )
             continue
         item["supports"] = cleaned
-        notes.append(
-            f"evidence[{index}]: dropped invalid supports {dropped!r}, kept {cleaned!r}"
-        )
+        notes.append(f"evidence[{index}]: dropped invalid supports {dropped!r}, kept {cleaned!r}")
         kept.append(item)
     if len(kept) != len(evidence):
         payload["evidence"] = kept
