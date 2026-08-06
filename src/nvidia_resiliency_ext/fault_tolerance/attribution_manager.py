@@ -159,7 +159,10 @@ class AttributionConfig:
                 f"{applog_dir!r} does not contain {base_real!r}"
             )
 
-        log_file = _attribution_log_path(base_log_file)
+        log_file = _attribution_log_path(
+            base_log_file,
+            nvrx_log_file=getattr(args, "ft_nvrx_logfile", None),
+        )
         log_file = os.path.realpath(os.path.abspath(os.path.expanduser(log_file)))
         log_parent = os.path.dirname(log_file) or "."
         os.makedirs(log_parent, exist_ok=True)
@@ -354,10 +357,16 @@ def _attribution_command() -> list[str]:
     return [sys.executable, "-m", "nvidia_resiliency_ext.services.attrsvc"]
 
 
-def _attribution_log_path(base_log_file: str) -> str:
-    if base_log_file.endswith(".log"):
-        return base_log_file[:-4] + "_attribution.log"
-    return base_log_file + "_attribution.log"
+def _attribution_log_path(base_log_file: str, *, nvrx_log_file: Optional[str] = None) -> str:
+    name_source = nvrx_log_file or base_log_file
+    base_name = os.path.basename(name_source)
+    if base_name.endswith(".log"):
+        base_name = base_name[:-4]
+    attribution_name = base_name + "_attribution.log"
+
+    if nvrx_log_file:
+        return os.path.join(os.path.dirname(nvrx_log_file), attribution_name)
+    return os.path.join(os.path.dirname(base_log_file), "nvrx", attribution_name)
 
 
 def _validate_attribution_endpoint(endpoint: str) -> None:

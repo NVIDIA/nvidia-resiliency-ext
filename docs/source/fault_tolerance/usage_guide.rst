@@ -231,9 +231,12 @@ a launcher-managed attribution service:
   - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
 
   The managed attribution app-log directory is derived from
-  ``dirname(realpath(--ft-per-cycle-applog-prefix))``. Its stdout/stderr log is derived
-  from ``--ft-per-cycle-applog-prefix`` as ``*_attribution.log``. The managed service listens on
-  ``127.0.0.1:50050`` and is exposed to the in-job client as ``http://localhost:50050``.
+  ``dirname(realpath(--ft-per-cycle-applog-prefix))``. When ``--ft-nvrx-logfile`` is set, the
+  managed service stdout/stderr log is derived from it as ``*_attribution.log`` and written
+  beside it. Without ``--ft-nvrx-logfile``, the log is named from the application prefix and
+  written under an ``nvrx/`` subdirectory of the application-log directory. The managed service
+  listens on ``127.0.0.1:50050`` and is exposed to the in-job client as
+  ``http://localhost:50050``.
 
   The managed attribution API key must come from ``--ft-attribution-llm-api-key-file`` or inherited
   ``LLM_API_KEY_FILE``. If neither points to a readable file, the TCPStore-host launcher fails
