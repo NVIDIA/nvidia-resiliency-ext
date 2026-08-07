@@ -716,7 +716,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             if getattr(self, '_otel_handle', None) is not None:
                 try:
                     self._otel_end_cycle('terminated')
-                    self._otel_handle.shutdown()
+                    # _otel_end_cycle already bounded-flushed the spans, and handle.shutdown() can
+                    # block on a dead collector for longer than the SIGTERM-to-SIGKILL grace, so
+                    # bound it here as well.
+                    _otel_sd = threading.Thread(target=self._otel_handle.shutdown, daemon=True)
+                    _otel_sd.start()
+                    _otel_sd.join(1.5)
                 except Exception:
                     pass
             # record the execution time in case there were any exceptions during run.

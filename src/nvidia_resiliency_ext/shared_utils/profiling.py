@@ -25,6 +25,14 @@ from typing import Any, Optional
 
 from ..shared_utils.log_manager import LogConfig
 
+try:  # torchelastic delivers the FT death signal as SignalException (an Exception subclass)
+    from torch.distributed.elastic.multiprocessing import SignalException as _SignalException
+except Exception:  # torchelastic absent -> sentinel that never matches a real signal
+
+    class _SignalException(Exception):
+        pass
+
+
 _NODE_DESC_SUFFIX = re.compile(r'_\d+_\d+$')  # node_desc appends _<pid>_<local_rank>
 
 
@@ -47,9 +55,7 @@ class ProfilingEvent(Enum):
     ATTRIBUTION_GET_STARTED = "attribution_get_started"
     ATTRIBUTION_GET_COMPLETED = "attribution_get_completed"
     NODE_EXCLUDED = "node_excluded"  # bailed at the rendezvous health check (evicted/unhealthy)
-    AWAIT_ROUND_STARTED = (
-        "await_round_started"  # node entered the Step-0 wait for the round to open
-    )
+    AWAIT_ROUND_STARTED = "await_round_started"  # entered the Step-0 wait for the round
     AWAIT_ROUND_COMPLETED = "await_round_completed"  # round opened (or shutdown); node moves on
 
 
@@ -62,16 +68,17 @@ class FaultToleranceProfiler:
         # OTel per-cycle span-tree state, set by the ft_launcher agent via attach_otel.
         self._otel_tracer = None
         self._otel_flush = None
+        # Guards the recorder span state, which is mutated by the launcher's main thread
+        # and by the attribution poller daemon (health_check _poll_loop -> ATTRIBUTION_GET_*).
+        self._otel_lock = threading.RLock()
         self._otel_cycle_span = None  # per-cycle parent span ('nvrx.restart.cycle')
         self._otel_cycle_ctx = None  # parent context, so phases nest as children (one trace/cycle)
         self._otel_phase = None  # (name, span) of the single currently-open phase (sweep model)
         self._otel_attr = None  # attribution span (a nested lookup, tracked off the sweep)
         self._otel_await = None  # standby / round-open wait span (root; makes a spare visible)
-        self._otel_launch_start = (
-            None  # batch launch_script_start (outside srun) for the cold-start
-        )
+        self._otel_launch_start = None  # batch launch_script_start, for the cold-start span
         self._otel_cycle_start_ns = None  # current cycle span start (this round's rendezvous start)
-        self._otel_cold_done = False  # nvrx.cold_start emitted (once per agent = once per node)
+        self._otel_cold_done = False  # nvrx.cold_start emitted (once per agent = per node)
         self._otel_outcome = None  # outcome the agent staged for the current cycle
         self._otel_extra = {}  # extra attrs the agent staged for the current cycle
 
@@ -103,6 +110,10 @@ class FaultToleranceProfiler:
         'await_round_completed': [('await_close', None)],
     }
 
+    # Events after which this node may be killed, so its spans must be force-flushed
+    # synchronously before the kill; routine events rely on BatchSpanProcessor's normal export.
+    _OTEL_FLUSH_EVENTS = frozenset({'failure_detected', 'worker_terminated', 'node_excluded'})
+
     def attach_otel(self, tracer, flush=None):
         """Register the ft_launcher agent's nemo-lens tracer so profiling events become a
         per-cycle span tree. Called once, from the agent process, after setup_telemetry()."""
@@ -117,21 +128,23 @@ class FaultToleranceProfiler:
     def otel_cycle_start_seconds(self):
         """Wall-clock start of the current cycle span, meaning this round's rendezvous start,
         or None. The agent stamps it as NVRX_CYCLE_START_TIME on a restart or a promotion, so
-        pre_startup anchors here."""
+        pre_startup anchors here.
+        """
         return None if self._otel_cycle_start_ns is None else self._otel_cycle_start_ns / 1e9
 
     def otel_annotate_cycle(self, **attrs):
         """Agent enriches the currently-open cycle span with restart-budget/rendezvous metadata
         (the recorder opens the cycle at rendezvous; the agent is who knows the budget)."""
-        sp = self._otel_cycle_span
-        if sp is None:
-            return
-        try:
-            for k, v in attrs.items():
-                if v is not None:
-                    sp.set_attribute(k, v)
-        except Exception:
-            pass
+        with self._otel_lock:
+            sp = self._otel_cycle_span
+            if sp is None:
+                return
+            try:
+                for k, v in attrs.items():
+                    if v is not None:
+                        sp.set_attribute(k, v)
+            except Exception:
+                pass
 
     def otel_stage_outcome(self, outcome, **attrs):
         """Agent stages the cycle outcome (failed/peer_restart) before teardown; the recorder
@@ -141,15 +154,16 @@ class FaultToleranceProfiler:
 
     def otel_finish_cycle(self, outcome='completed', **attrs):
         """Close the cycle on a terminal state with no teardown event (success/terminated)."""
-        self._otel_outcome = outcome
-        if attrs:
-            self._otel_extra = attrs
-        self._otel_cycle_close(None, outcome)
-        if self._otel_flush is not None:
-            try:
-                self._otel_flush()
-            except Exception:
-                pass
+        with self._otel_lock:
+            self._otel_outcome = outcome
+            if attrs:
+                self._otel_extra = attrs
+            self._otel_cycle_close(None, outcome)
+            if self._otel_flush is not None:
+                try:
+                    self._otel_flush()
+                except Exception:
+                    pass
 
     def _otel_span(self, name, ns, node_id_str, rank=None, parent=True):
         """Start a span, parented to the current cycle span when one is open. parent=False forces
@@ -187,6 +201,23 @@ class FaultToleranceProfiler:
             self._otel_cycle_ctx = None
 
     def _otel_cycle_close(self, ns, outcome):
+        _ns = ns if ns is not None else int(time.time() * 1e9)
+        # Terminal/signal safety net: an unended span is an unexported span, so on a
+        # SIGTERM-driven close, sweep up any still-open await (standby round-wait) or
+        # attribution span too; otherwise a spare killed while waiting, or a node killed
+        # mid-attribution, leaks that span. No-op on a normal close (already None).
+        if self._otel_await is not None:
+            try:
+                self._otel_await.end(end_time=_ns)
+            except Exception:
+                pass
+            self._otel_await = None
+        if self._otel_attr is not None:
+            try:
+                self._otel_attr.end(end_time=_ns)
+            except Exception:
+                pass
+            self._otel_attr = None
         self._otel_end_phase(ns)
         sp = self._otel_cycle_span
         if sp is not None:
@@ -195,7 +226,7 @@ class FaultToleranceProfiler:
                 for k, v in (self._otel_extra or {}).items():
                     if v is not None:
                         sp.set_attribute(k, v)
-                sp.end(end_time=ns if ns is not None else int(time.time() * 1e9))
+                sp.end(end_time=_ns)
             except Exception:
                 pass
         self._otel_cycle_span = None
@@ -226,12 +257,13 @@ class FaultToleranceProfiler:
             pass
 
     def _otel_on_event(self, event, timestamp, node_id_str, rank):
-        """Drive the per-cycle span tree from this boundary event, then flush immediately so an
-        evicted node's spans survive its kill."""
+        """Drive the per-cycle span tree from this boundary event, flushing the kill-adjacent
+        events immediately so an evicted node's spans survive its kill."""
         if self._otel_tracer is None:
             return
         node_id_str = _clean_node(node_id_str)
         ns = int(timestamp * 1e9)
+        self._otel_lock.acquire()
         try:
             # One-time "outside srun to first nvrx" cold start: batch launch_script_start up to
             # this agent's first recorded event. Backdated, closed immediately, once per node.
@@ -253,6 +285,15 @@ class FaultToleranceProfiler:
                     self._otel_cycle_close(ns, arg)
                 elif action == 'phase':
                     self._otel_start_phase(arg, ns, node_id_str, rank)
+                    # Launching a worker means this node was selected active this
+                    # cycle, so stamp the cycle span at selection time; a node killed
+                    # after selection but before close then still shows membership=active
+                    # (complements cycle_outcome: standby=not selected, excluded=evicted).
+                    if arg == 'worker_launch' and self._otel_cycle_span is not None:
+                        try:
+                            self._otel_cycle_span.set_attribute('nvrx.membership', 'active')
+                        except Exception:
+                            pass
                 elif action == 'end':
                     self._otel_end_phase(ns)
                 elif action == 'mark':
@@ -282,6 +323,13 @@ class FaultToleranceProfiler:
                     self._otel_await = self._otel_span(
                         'nvrx.restart.await_round', ns, node_id_str, parent=False
                     )  # root: precedes any cycle
+                    # The await span's whole lifetime is the unselected/standby wait: it
+                    # opens at the Step-0 wait and closes when the round opens and the
+                    # node proceeds. Tag it so a spare is distinguishable by membership.
+                    try:
+                        self._otel_await.set_attribute('nvrx.membership', 'standby')
+                    except Exception:
+                        pass
                 elif action == 'await_close':
                     if self._otel_await is not None:
                         try:
@@ -289,10 +337,14 @@ class FaultToleranceProfiler:
                         except Exception:
                             pass
                         self._otel_await = None
-            if self._otel_flush is not None:
+            if self._otel_flush is not None and event.value in self._OTEL_FLUSH_EVENTS:
                 self._otel_flush()
+        except (_SignalException, KeyboardInterrupt, SystemExit):
+            raise  # never swallow the FT death signal (torchelastic raises it here)
         except Exception:
             pass  # telemetry must never break the launcher
+        finally:
+            self._otel_lock.release()
 
     def _timestamp_to_utc_datetime(self, timestamp: float) -> str:
         """Convert timestamp to UTC datetime string."""
