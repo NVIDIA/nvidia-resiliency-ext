@@ -185,12 +185,12 @@ class Settings(BaseSettings):
         ),
     )
     RESTART_AGENT_LOG_QUIET_SECONDS: float = Field(
-        default=2.0,
-        description="Required unchanged-log interval before terminal Restart Agent analysis.",
+        default=5.0,
+        description=("Required unchanged-log interval before live terminal source convergence."),
     )
     RESTART_AGENT_LOG_MAX_WAIT_SECONDS: float = Field(
-        default=20.0,
-        description="Maximum terminal log-drain wait before Restart Agent analysis starts.",
+        default=40.0,
+        description="Maximum live terminal observation period before the source freezes.",
     )
     RESTART_AGENT_LOG_POLL_SECONDS: float = Field(
         default=0.25,
