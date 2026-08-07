@@ -313,9 +313,12 @@ a launcher-managed attribution service:</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_export_url</span></code>)</p></li>
 </ul>
 <p>The managed attribution app-log directory is derived from
-<code class="docutils literal notranslate"><span class="pre">dirname(realpath(--ft-per-cycle-applog-prefix))</span></code>. Its stdout/stderr log is derived
-from <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code> as <code class="docutils literal notranslate"><span class="pre">*_attribution.log</span></code>. The managed service listens on
-<code class="docutils literal notranslate"><span class="pre">127.0.0.1:50050</span></code> and is exposed to the in-job client as <code class="docutils literal notranslate"><span class="pre">http://localhost:50050</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">dirname(realpath(--ft-per-cycle-applog-prefix))</span></code>. When <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> is set, the
+managed service stdout/stderr log is derived from it as <code class="docutils literal notranslate"><span class="pre">*_attribution.log</span></code> and written
+beside it. Without <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code>, the log is named from the application prefix and
+written under an <code class="docutils literal notranslate"><span class="pre">nvrx/</span></code> subdirectory of the application-log directory. The managed service
+listens on <code class="docutils literal notranslate"><span class="pre">127.0.0.1:50050</span></code> and is exposed to the in-job client as
+<code class="docutils literal notranslate"><span class="pre">http://localhost:50050</span></code>.</p>
 <p>The managed attribution API key must come from <code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span></code> or inherited
 <code class="docutils literal notranslate"><span class="pre">LLM_API_KEY_FILE</span></code>. If neither points to a readable file, the TCPStore-host launcher fails
 before starting the attribution service.</p>
