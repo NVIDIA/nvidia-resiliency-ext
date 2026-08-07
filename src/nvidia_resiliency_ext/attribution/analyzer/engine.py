@@ -330,7 +330,12 @@ class Analyzer:
             return LogAnalyzerError(error_code=ErrorCode.INVALID_PARAMETER, message=str(e))
 
         del cycle_id
-        result = await self._log.submit(log_path, user=user, job_id=job_id)
+        result = await self._log.submit(
+            log_path,
+            user=user,
+            job_id=job_id,
+            detect_splitlog=intent != ANALYSIS_INTENT_PROGRESSIVE,
+        )
         if isinstance(result, LogAnalyzerError):
             return result
 
