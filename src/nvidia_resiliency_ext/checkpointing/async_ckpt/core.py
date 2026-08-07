@@ -442,10 +442,36 @@ class PersistentAsyncCaller(AsyncCaller):
     # next checkpoint re-sends actual tensor data to the new worker.
     _worker_restart_callbacks: ClassVar[List[Callable]] = []
 
+    # Counter bumped once per worker spawn, and the process spawned last. Together
+    # they let the training side answer "which worker will receive the request I am
+    # about to build", so it can tell a cache entry primed into the current worker
+    # apart from one left over from a worker that has since been replaced.
+    _worker_generation: ClassVar[int] = 0
+    _current_worker_process: ClassVar[Optional[mp.Process]] = None
+
     @classmethod
     def register_worker_restart_callback(cls, fn: Callable) -> None:
         """Register a callable to be invoked when a new worker process is started."""
         cls._worker_restart_callbacks.append(fn)
+
+    @classmethod
+    def next_request_worker_generation(cls) -> int:
+        """Generation of the worker that will serve the next scheduled request.
+
+        If a worker is alive, that is the worker the request will go to. Otherwise
+        `schedule_async_call` spawns a replacement before dispatching, and that
+        replacement gets the next generation number -- so a request being planned
+        right now belongs to `_worker_generation + 1`.
+
+        Training-side caches tag their entries with the value returned here. An
+        entry then matches on a later save only while the same worker is still
+        around: closing it, aborting it, or having it die all move the answer on,
+        which is what stops a stale entry from being reused.
+        """
+        process = cls._current_worker_process
+        if process is not None and process.is_alive():
+            return cls._worker_generation
+        return cls._worker_generation + 1
 
     def __init__(
         self,
@@ -510,6 +536,8 @@ class PersistentAsyncCaller(AsyncCaller):
             daemon=self.background_worker_is_daemon,
         )
         self.process.start()
+        PersistentAsyncCaller._worker_generation += 1
+        PersistentAsyncCaller._current_worker_process = self.process
         logger.debug(f"PersistentAsyncCaller: {rank}, Started Async Caller {self.process}")
         for cb in PersistentAsyncCaller._worker_restart_callbacks:
             cb()
@@ -651,6 +679,17 @@ class PersistentAsyncCaller(AsyncCaller):
                 self.process.join()
 
             self.process = None
+
+            # The worker took its cached tensor data with it. Correctness is already
+            # handled by the generation check in prepare_write_data, which will not
+            # reuse entries primed into a worker that is gone. Dropping them here as
+            # well frees the shm tensors those entries hold right away, rather than
+            # leaving them alive until the next save replaces them.
+            #
+            # Deferred import: filesystem_async imports core.
+            from .filesystem_async import FileSystemWriterAsync
+
+            FileSystemWriterAsync.cleanup_tensor_caches()
 
     def __del__(self):
         self.close()

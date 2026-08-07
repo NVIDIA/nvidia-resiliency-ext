@@ -35,6 +35,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
     AsyncRequest,
+    PersistentAsyncCaller,
     abort_nvrx_checkpoint,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
@@ -51,6 +52,60 @@ from tests.checkpointing.unit.test_utilities import Model, Utils
 class _FrameWithCode:
     def __init__(self):
         self._code = (lambda: None).__code__
+
+
+class _StubProcess:
+    def __init__(self, alive):
+        self._alive = alive
+
+    def is_alive(self):
+        return self._alive
+
+
+def test_next_request_worker_generation_tracks_worker_lifetime(monkeypatch):
+    """The generation a request is planned against is the worker that will serve it.
+
+    Covers the three states the training side has to tell apart: no worker yet,
+    a live worker, and a worker that died without anyone calling close().
+    """
+    monkeypatch.setattr(PersistentAsyncCaller, '_worker_generation', 7)
+
+    # No worker: schedule_async_call will spawn one, and it gets the next number.
+    monkeypatch.setattr(PersistentAsyncCaller, '_current_worker_process', None)
+    assert PersistentAsyncCaller.next_request_worker_generation() == 8
+
+    # Live worker: the request goes to it, so what it already holds stays usable.
+    monkeypatch.setattr(PersistentAsyncCaller, '_current_worker_process', _StubProcess(True))
+    assert PersistentAsyncCaller.next_request_worker_generation() == 7
+
+    # Died without close(): a replacement will serve the request, so entries primed
+    # into the dead worker must no longer match.
+    monkeypatch.setattr(PersistentAsyncCaller, '_current_worker_process', _StubProcess(False))
+    assert PersistentAsyncCaller.next_request_worker_generation() == 8
+
+
+def test_cached_identifiers_do_not_survive_a_worker_change(monkeypatch):
+    """An identifier primed into one worker must not be treated as cached by the next.
+
+    This is the QA repro in miniature: the entry is left behind by the previous
+    save, the worker it referred to is gone, and prepare_write_data must decide to
+    re-send rather than hand an identifier to a worker with an empty cache.
+    """
+    monkeypatch.setattr(PersistentAsyncCaller, '_worker_generation', 3)
+    monkeypatch.setattr(PersistentAsyncCaller, '_current_worker_process', _StubProcess(True))
+    monkeypatch.setitem(FileSystemWriterAsync._cached_identifiers, 'k', 3)
+
+    def cache_hit():
+        generation = PersistentAsyncCaller.next_request_worker_generation()
+        return FileSystemWriterAsync._cached_identifiers.get('k') == generation
+
+    assert cache_hit(), 'same live worker should still count as cached'
+
+    monkeypatch.setattr(PersistentAsyncCaller, '_current_worker_process', _StubProcess(False))
+    assert not cache_hit(), 'entry from a dead worker must not count as cached'
+
+    monkeypatch.setattr(PersistentAsyncCaller, '_current_worker_process', None)
+    assert not cache_hit(), 'entry from a closed worker must not count as cached'
 
 
 def mock_open(
@@ -314,8 +369,8 @@ class TestAsyncSave:
         # Default path: persistent=True, is_daemon=True.
         # async_queue.close() terminates the worker process, which calls
         # cleanup_worker_data_cache() in async_loop on exit — so _worker_data_cache is
-        # reset inside the worker. _cached_identifiers lives in the main process and is
-        # NOT cleared by close(), so clear it here to avoid cross-test contamination.
+        # reset inside the worker — and clears the training-side _cached_identifiers.
+        # Cleared here too, defensively, against cross-test contamination.
         FileSystemWriterAsync._cached_identifiers.clear()
         async_queue = AsyncCallsQueue(persistent=True, is_daemon=True)
 
@@ -345,6 +400,61 @@ class TestAsyncSave:
         ), 'Cached data structure produced a state_dict that differs from the original'
 
         ckpt_dir.cleanup()
+        async_queue.close()
+
+    def test_cached_data_structure_survives_worker_teardown(self, tmp_path_dist_ckpt):
+        """
+        Verifies a save scheduled AFTER close() still writes a valid checkpoint.
+
+        close() terminates the worker, taking its _worker_data_cache with it. Reusing
+        a training-side identifier across that boundary plans the save as "the worker
+        already has these tensors" (cached_tensor_data=None) and sends it to a freshly
+        spawned worker with an empty cache — which fails with "Worker cache miss for
+        key ...". The worker-restart callback cannot prevent it on its own:
+        schedule_async_call spawns the replacement only after prepare_write_data has
+        already made the decision, which is why the decision is generation-based.
+
+        This is the last-checkpoint-of-a-job path in Megatron: the queue is torn down
+        at the end of train(), then pretrain() issues one more save when the final
+        iteration doesn't land on a save interval.
+        """
+        Utils.initialize_distributed()
+
+        FileSystemWriterAsync._cached_identifiers.clear()
+        async_queue = AsyncCallsQueue(persistent=True, is_daemon=True)
+
+        model = FSDP(Model((1024, 1024), 8))
+        state_dict = model.state_dict()
+        planner = DefaultSavePlanner()
+
+        # First save seeds both the worker cache and the training-side identifier set.
+        seed_dir = TempNamedDir(tmp_path_dist_ckpt / 'teardown_seed', sync=True)
+        self.async_save_checkpoint(
+            seed_dir, state_dict, planner, async_queue, use_cached_data_structure=True
+        )
+        async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+        assert FileSystemWriterAsync._cached_identifiers, 'first save should seed the cache'
+        seed_dir.cleanup()
+
+        # Tear the worker down, then save again on the same queue. The entries are
+        # dropped here as housekeeping; correctness does not rely on it, since the
+        # generation recorded with each entry no longer matches after the teardown.
+        async_queue.close()
+        assert not FileSystemWriterAsync._cached_identifiers, 'close() should release the entries'
+
+        final_dir = TempNamedDir(tmp_path_dist_ckpt / 'teardown_final', sync=True)
+        self.async_save_checkpoint(
+            final_dir, state_dict, planner, async_queue, use_cached_data_structure=True
+        )
+        async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+
+        loaded = self.load_checkpoint(final_dir, deepcopy(state_dict))
+        diffs = diff(loaded, state_dict)
+        assert not any(
+            len(x) for x in diffs
+        ), 'save after worker teardown produced a state_dict that differs from the original'
+
+        final_dir.cleanup()
         async_queue.close()
 
     def test_cpu_shm_for_gpu_tensors(self, tmp_path_dist_ckpt):

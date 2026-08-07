@@ -171,8 +171,13 @@ class FileSystemWriterAsync(FileSystemWriter):
     (intermediate state is stored as writer attributes).
     """
 
-    # Class-level cache to track identifiers that have been sent to worker across instances
-    _cached_identifiers: set = set()
+    # Class-level cache to track identifiers that have been sent to worker across instances.
+    # Key: identifier key. Value: the worker generation the key was sent to
+    # (PersistentAsyncCaller.next_request_worker_generation). Keeping the generation is
+    # what makes a leftover entry distinguishable from a live one: the worker that holds
+    # the matching data may have been closed, aborted or died since, and its replacement
+    # starts with an empty _worker_data_cache.
+    _cached_identifiers: ClassVar[Dict[str, int]] = {}
 
     # Training-side shm tensor cache: reuses allocations across checkpoints.
     # Only populated when use_cpu_shm_for_gpu_tensors=True AND use_cached_data_structure=True.
@@ -329,7 +334,12 @@ class FileSystemWriterAsync(FileSystemWriter):
         # (on the CPU shm path, dequantized GPU tensors ARE included)
         if (self.use_cached_data_structure or self.use_cpu_shm_for_gpu_tensors) and tensor_items:
             key = _compute_data_structure_key_from_plan(tensor_items)
-            cache_exists = key in FileSystemWriterAsync._cached_identifiers
+            # Which worker this request will actually reach. An entry only counts as
+            # cached if it was primed into that same worker -- otherwise the data it
+            # refers to lives in a process that is no longer there, and sending an
+            # identifier alone would fail worker-side with "Worker cache miss".
+            request_generation = PersistentAsyncCaller.next_request_worker_generation()
+            cache_exists = FileSystemWriterAsync._cached_identifiers.get(key) == request_generation
 
             # Always resolve tensors to separate uncached tensors (which can't be cached)
             resolved_tensors, dequantized_flags = resolve_data(tensor_items)
@@ -401,9 +411,10 @@ class FileSystemWriterAsync(FileSystemWriter):
                             f"{len(uncached_items)} uncached tensors passed fresh"
                         )
                     else:
-                        # First checkpoint with caching: send shm tensors to worker.
+                        # First checkpoint with caching, or the worker that held the
+                        # previous copy is gone: send shm tensors to the worker.
                         self.cached_tensor_data = (gpu_items, shm_tensors)
-                        FileSystemWriterAsync._cached_identifiers.add(key)
+                        FileSystemWriterAsync._cached_identifiers[key] = request_generation
                         logger.debug(
                             f"Sending {len(shm_tensors)} shm tensors to worker (key={key}), "
                             f"{len(uncached_items)} uncached tensors passed fresh"
@@ -425,10 +436,10 @@ class FileSystemWriterAsync(FileSystemWriter):
                     f"resolved {len(uncached_items)} uncached tensors fresh"
                 )
             elif gpu_items:
-                # --- original GPU IPC path, first time ---
+                # --- original GPU IPC path, first time for this worker ---
                 self.consistent_data_identifier = ConsistentDataIdentifier(key)
                 self.cached_tensor_data = (gpu_items, gpu_data)
-                FileSystemWriterAsync._cached_identifiers.add(key)
+                FileSystemWriterAsync._cached_identifiers[key] = request_generation
                 logger.debug(
                     f"Caching {len(gpu_items)} GPU tensors (key={key}), "
                     f"{len(uncached_items)} uncached tensors passed fresh"
@@ -492,16 +503,16 @@ class FileSystemWriterAsync(FileSystemWriter):
     def cleanup_tensor_caches(cls) -> None:
         """Release training-side tensor caches and invalidate the identifier set.
 
-        Must be called whenever the worker process is restarted.  A fresh worker
-        has an empty ``_worker_data_cache``, so both paths need re-priming:
+        A fresh worker has an empty ``_worker_data_cache``, so both the shm tensors
+        in ``_shm_tensor_cache`` and the entries in ``_cached_identifiers`` refer to
+        data the worker no longer holds, and the memory they pin can be released.
 
-        - **CPU shm path** (``use_cpu_shm_for_gpu_tensors=True``): clears
-          ``_shm_tensor_cache`` so the next checkpoint re-allocates shm tensors
-          and sends them to the worker instead of sending ``None`` (which would
-          cause a worker-side cache miss).
-        - **GPU IPC path** (``use_cached_data_structure=True``): clearing
-          ``_cached_identifiers`` forces the next checkpoint to re-send the GPU
-          tensor IPC handles rather than assuming the worker already has them.
+        This is housekeeping, not the correctness guard. Re-priming is decided per
+        save by comparing an entry's recorded worker generation against
+        ``PersistentAsyncCaller.next_request_worker_generation()``, which does not
+        depend on this being called at any particular moment -- it cannot be, since
+        a save is planned before ``schedule_async_call`` starts the replacement
+        worker that would trigger the restart callback.
         """
         if cls._shm_tensor_cache:
             logger.info(f"Clearing shm tensor cache ({len(cls._shm_tensor_cache)} entries)")
@@ -1206,8 +1217,8 @@ class FileSystemWriterAsync(FileSystemWriter):
             # Worker failed — its data cache may have been lost (e.g. after a restart).
             # Drop any identifier we recorded as cached so the next save re-populates it.
             if self.consistent_data_identifier is not None:
-                FileSystemWriterAsync._cached_identifiers.discard(
-                    self.consistent_data_identifier.key
+                FileSystemWriterAsync._cached_identifiers.pop(
+                    self.consistent_data_identifier.key, None
                 )
             try:
                 raise RuntimeError(
