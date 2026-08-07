@@ -360,9 +360,10 @@ reason.</p></li>
 <section id="compatibility">
 <h2>Compatibility<a class="headerlink" href="#compatibility" title="Link to this heading"></a></h2>
 <p>Existing attrsvc callers must continue to work without sending new fields.
-Service-mode <code class="docutils literal notranslate"><span class="pre">POST</span></code> calls with <code class="docutils literal notranslate"><span class="pre">job_id</span></code> continue to support splitlog
-detection and tracking. Single-file <code class="docutils literal notranslate"><span class="pre">POST</span></code> calls from older clients remain
-track-only.</p>
+Track-only and terminal service-mode <code class="docutils literal notranslate"><span class="pre">POST</span></code> calls with <code class="docutils literal notranslate"><span class="pre">job_id</span></code> continue to
+support splitlog detection and tracking. Progressive submissions identify NVRx
+per-cycle files and register them directly. Single-file <code class="docutils literal notranslate"><span class="pre">POST</span></code> calls from
+older clients remain track-only.</p>
 <p>The final <code class="docutils literal notranslate"><span class="pre">GET</span></code> result must remain semantically compatible with the current
 terminal analysis result. A progressive implementation may improve latency, but
 must not weaken final attribution correctness.</p>
