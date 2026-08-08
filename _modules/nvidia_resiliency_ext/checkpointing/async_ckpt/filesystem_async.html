@@ -213,6 +213,30 @@
     <span class="k">return</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">sha256</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">structure_info</span><span class="p">)</span><span class="o">.</span><span class="n">encode</span><span class="p">())</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()</span>
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">_compute_tensor_data_ptrs</span><span class="p">(</span><span class="n">items</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteItem</span><span class="p">],</span> <span class="n">tensors</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tuple</span><span class="p">,</span> <span class="o">...</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute a storage identity fingerprint for tensors cached via CUDA IPC.&quot;&quot;&quot;</span>
+    <span class="n">ptrs</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">items</span><span class="p">,</span> <span class="n">tensors</span><span class="p">):</span>
+        <span class="n">chunk</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">tensor_data</span><span class="o">.</span><span class="n">chunk</span> <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">tensor_data</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+        <span class="n">chunk_info</span> <span class="o">=</span> <span class="p">(</span><span class="nb">tuple</span><span class="p">(</span><span class="n">chunk</span><span class="o">.</span><span class="n">offsets</span><span class="p">),</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">chunk</span><span class="o">.</span><span class="n">sizes</span><span class="p">))</span> <span class="k">if</span> <span class="n">chunk</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">):</span>
+            <span class="n">storage</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">untyped_storage</span><span class="p">()</span>
+            <span class="n">tensor_info</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="nb">str</span><span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">device</span><span class="p">),</span>
+                <span class="n">tensor</span><span class="o">.</span><span class="n">data_ptr</span><span class="p">(),</span>
+                <span class="n">storage</span><span class="o">.</span><span class="n">data_ptr</span><span class="p">(),</span>
+                <span class="n">tensor</span><span class="o">.</span><span class="n">storage_offset</span><span class="p">(),</span>
+                <span class="nb">tuple</span><span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">size</span><span class="p">()),</span>
+                <span class="nb">tuple</span><span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">stride</span><span class="p">()),</span>
+                <span class="nb">str</span><span class="p">(</span><span class="n">tensor</span><span class="o">.</span><span class="n">dtype</span><span class="p">),</span>
+            <span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">tensor_info</span> <span class="o">=</span> <span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">tensor</span><span class="p">)</span><span class="o">.</span><span class="vm">__qualname__</span><span class="p">,)</span>
+        <span class="n">ptrs</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">item</span><span class="o">.</span><span class="n">index</span><span class="o">.</span><span class="n">fqn</span><span class="p">,</span> <span class="n">chunk_info</span><span class="p">,</span> <span class="n">tensor_info</span><span class="p">))</span>
+    <span class="k">return</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">ptrs</span><span class="p">)</span>
+
+
 <div class="viewcode-block" id="get_write_results_queue">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.get_write_results_queue">[docs]</a>
 <span class="nd">@_disable_gc</span><span class="p">()</span>
@@ -261,6 +285,11 @@
 
     <span class="c1"># Class-level cache to track identifiers that have been sent to worker across instances</span>
     <span class="n">_cached_identifiers</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+
+    <span class="c1"># Training-side CUDA IPC tensor fingerprint cache.</span>
+    <span class="c1"># Key: SHA-256 of plan items (same as ConsistentDataIdentifier).</span>
+    <span class="c1"># Value: data/storage pointer fingerprint for the GPU tensors sent to the worker.</span>
+    <span class="n">_cached_tensor_data_ptrs</span><span class="p">:</span> <span class="n">ClassVar</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Tuple</span><span class="p">,</span> <span class="o">...</span><span class="p">]]]</span> <span class="o">=</span> <span class="p">{}</span>
 
     <span class="c1"># Training-side shm tensor cache: reuses allocations across checkpoints.</span>
     <span class="c1"># Only populated when use_cpu_shm_for_gpu_tensors=True AND use_cached_data_structure=True.</span>
@@ -508,17 +537,27 @@
                     <span class="p">)</span>
             <span class="k">elif</span> <span class="n">cache_exists</span><span class="p">:</span>
                 <span class="c1"># --- original GPU IPC path, reuse ---</span>
+                <span class="n">current_data_ptrs</span> <span class="o">=</span> <span class="n">_compute_tensor_data_ptrs</span><span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">)</span>
+                <span class="n">cache_data_is_current</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_tensor_data_ptrs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span> <span class="o">==</span> <span class="n">current_data_ptrs</span>
+                <span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="o">=</span> <span class="n">ConsistentDataIdentifier</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Signal to reuse cached data</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">cache_data_is_current</span> <span class="k">else</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">cache_data_is_current</span><span class="p">:</span>
+                    <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_tensor_data_ptrs</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">current_data_ptrs</span>
+                <span class="n">cache_action</span> <span class="o">=</span> <span class="s2">&quot;Reusing&quot;</span> <span class="k">if</span> <span class="n">cache_data_is_current</span> <span class="k">else</span> <span class="s2">&quot;Refreshing&quot;</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                    <span class="sa">f</span><span class="s2">&quot;Reusing cached GPU tensors (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
-                    <span class="sa">f</span><span class="s2">&quot;resolved </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors fresh&quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">cache_action</span><span class="si">}</span><span class="s2"> cached GPU tensors (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
+                    <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
                 <span class="p">)</span>
             <span class="k">elif</span> <span class="n">gpu_items</span><span class="p">:</span>
                 <span class="c1"># --- original GPU IPC path, first time ---</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="o">=</span> <span class="n">ConsistentDataIdentifier</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">cached_tensor_data</span> <span class="o">=</span> <span class="p">(</span><span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span><span class="p">)</span>
                 <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+                <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_tensor_data_ptrs</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">_compute_tensor_data_ptrs</span><span class="p">(</span>
+                    <span class="n">gpu_items</span><span class="p">,</span> <span class="n">gpu_data</span>
+                <span class="p">)</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                     <span class="sa">f</span><span class="s2">&quot;Caching </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">gpu_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> GPU tensors (key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">), &quot;</span>
                     <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">uncached_items</span><span class="p">)</span><span class="si">}</span><span class="s2"> uncached tensors passed fresh&quot;</span>
@@ -599,7 +638,8 @@
         <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Clearing shm tensor cache (</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">)</span><span class="si">}</span><span class="s2"> entries)&quot;</span><span class="p">)</span>
             <span class="bp">cls</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
-        <span class="bp">cls</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span></div>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_cached_tensor_data_ptrs</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span></div>
 
 
 <div class="viewcode-block" id="FileSystemWriterAsync.register_shm_drain_callback">
@@ -1328,6 +1368,9 @@
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_identifiers</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span>
                     <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span><span class="o">.</span><span class="n">key</span>
+                <span class="p">)</span>
+                <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_cached_tensor_data_ptrs</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">consistent_data_identifier</span><span class="o">.</span><span class="n">key</span><span class="p">,</span> <span class="kc">None</span>
                 <span class="p">)</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
