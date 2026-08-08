@@ -223,6 +223,7 @@ class LogSageRunner:
             "exclude_nvrx_logs": False,
             **self._per_cycle_log_kwargs(path),
             **self.config.llm_runtime_overrides(),
+            **self.config.logsage_constructor_overrides(),
         }
         analyzer = await self._get_lib_log_analyzer(run_kwargs)
         result = await self._run_lib_log_analyzer_serialized(analyzer, run_kwargs)
@@ -237,6 +238,7 @@ class LogSageRunner:
             "exclude_nvrx_logs": False,
             **self._per_cycle_log_kwargs(path),
             **self.config.llm_runtime_overrides(),
+            **self.config.logsage_constructor_overrides(),
         }
 
         async with self._log_analysis_lock:
@@ -272,14 +274,13 @@ class LogSageRunner:
         job_id: str | None = None,
     ) -> ProgressiveStartResult:
         self._ensure_mcp_ready()
+        _ = (user, job_id)
         run_kwargs: Dict[str, Any] = {
             "log_path": path,
             **self._per_cycle_log_kwargs(path),
-            "user": user,
             **self.config.llm_runtime_overrides(),
+            **self.config.logsage_constructor_overrides(),
         }
-        if job_id:
-            run_kwargs["job_id"] = job_id
 
         async with self._log_analysis_lock:
             response = await self._mcp_client.run_module_resilient(

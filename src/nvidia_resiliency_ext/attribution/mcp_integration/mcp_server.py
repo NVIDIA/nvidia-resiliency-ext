@@ -233,10 +233,29 @@ class NVRxMCPServer:
         """Execute a single attribution module."""
         # Apply default values from input schema
         arguments_with_defaults = self.registry.apply_defaults(module_name, arguments)
+        tool_arguments = (
+            self._progressive_start_arguments(arguments_with_defaults)
+            if module_name == MODULE_LOG_ANALYZER_PROGRESSIVE_START
+            else arguments_with_defaults
+        )
 
         # Get or create module instance
         if module_name not in self.module_instances:
-            instance = self.registry.create_instance(module_name, arguments_with_defaults)
+            constructor_kwargs: Dict[str, Any] = {}
+            if module_name == MODULE_LOG_ANALYZER_PROGRESSIVE_START:
+                analyzer = self._get_or_create_log_analyzer(tool_arguments)
+                if analyzer is not None:
+                    constructor_kwargs["analyzer"] = analyzer
+            instance_args = (
+                self._log_analyzer_constructor_args(tool_arguments)
+                if module_name == LOG_ANALYZER_MODULE
+                else tool_arguments
+            )
+            instance = self.registry.create_instance(
+                module_name,
+                instance_args,
+                constructor_kwargs=constructor_kwargs,
+            )
             self.module_instances[module_name] = instance
         else:
             instance = self.module_instances[module_name]
@@ -244,14 +263,12 @@ class NVRxMCPServer:
         logger.info(
             "module=%s argument_keys=%s",
             module_name,
-            sorted(arguments_with_defaults.keys()),
+            sorted(tool_arguments.keys()),
         )
-        logger.debug(
-            "module=%s arguments=%s", module_name, bounded_log_value(arguments_with_defaults)
-        )
+        logger.debug("module=%s arguments=%s", module_name, bounded_log_value(tool_arguments))
 
         # Run the attribution with defaults applied
-        result = await instance.run(arguments_with_defaults)
+        result = await instance.run(tool_arguments)
 
         if module_name == MODULE_LOG_ANALYZER_PROGRESSIVE_START:
             response = dict(result) if isinstance(result, dict) else {"status": str(result)}
@@ -301,6 +318,29 @@ class NVRxMCPServer:
         self.registry.cache_result_by_id(module_name, result_id, response)
 
         return [TextContent(type="text", text=serialize_result(response))]
+
+    @staticmethod
+    def _log_analyzer_constructor_args(arguments: dict) -> dict:
+        """Drop NVRx orchestration-only request metadata before constructing LogSage."""
+        return {key: value for key, value in arguments.items() if key not in {"user", "job_id"}}
+
+    @staticmethod
+    def _progressive_start_arguments(arguments: dict) -> dict:
+        """Keep NVRx request/reporting metadata out of the MCP progressive tool."""
+        return {key: value for key, value in arguments.items() if key not in {"user", "job_id"}}
+
+    def _get_or_create_log_analyzer(self, arguments: dict) -> Optional[Any]:
+        """Return the shared LogSage analyzer instance for progressive and terminal MCP tools."""
+        if LOG_ANALYZER_MODULE in self.module_instances:
+            return self.module_instances[LOG_ANALYZER_MODULE]
+        if self.registry.get_module_metadata(LOG_ANALYZER_MODULE) is None:
+            return None
+        analyzer = self.registry.create_instance(
+            LOG_ANALYZER_MODULE,
+            self._log_analyzer_constructor_args(arguments),
+        )
+        self.module_instances[LOG_ANALYZER_MODULE] = analyzer
+        return analyzer
 
     async def run(self):
         """Run the MCP server."""

@@ -117,14 +117,20 @@ class AttributionModuleRegistry:
         """Get metadata for all registered modules."""
         return list(self._modules.values())
 
-    def create_instance(self, name: str, args: Any) -> MCPModule:
+    def create_instance(
+        self,
+        name: str,
+        args: Any,
+        *,
+        constructor_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> MCPModule:
         """Create an instance of a registered module."""
         metadata = self._modules.get(name)
         if not metadata:
             raise ValueError(f"Module '{name}' not registered")
 
         # Create instance
-        instance = metadata.module_class(args)
+        instance = metadata.module_class(args, **(constructor_kwargs or {}))
         self._instances[name] = instance
         return instance
 

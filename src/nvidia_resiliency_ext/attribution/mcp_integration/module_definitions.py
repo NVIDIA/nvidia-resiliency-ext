@@ -164,6 +164,13 @@ def _log_analyzer_input_schema() -> dict[str, Any]:
                 "default": False,
             },
             "cycle_counter": _cycle_counter_property(),
+            "chunks_per_time": {
+                "type": "number",
+                "description": (
+                    "Progressive log-analysis polling interval in minutes; omit to use analyzer default"
+                ),
+                "exclusiveMinimum": 0,
+            },
         },
         "required": ["log_path"],
     }
@@ -180,14 +187,12 @@ def _progressive_start_input_schema() -> dict[str, Any]:
                 "default": False,
             },
             "cycle_counter": _cycle_counter_property(),
-            "user": {
-                "type": "string",
-                "description": "Optional submitting user for observability",
-                "default": "unknown",
-            },
-            "job_id": {
-                "type": "string",
-                "description": "Optional scheduler job id for observability",
+            "chunks_per_time": {
+                "type": "number",
+                "description": (
+                    "Progressive log-analysis polling interval in minutes; omit to use analyzer default"
+                ),
+                "exclusiveMinimum": 0,
             },
             **_llm_runtime_properties(
                 model_description="LLM model to bind to the progressive session"

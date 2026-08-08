@@ -58,6 +58,7 @@ class AttributionAnalysisConfig:
     llm_temperature: float | None = None
     llm_top_p: float | None = None
     llm_max_tokens: int | None = None
+    progressive_chunks_per_time: float | None = None
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ class AttributionController:
             llm_temperature=config.analysis.llm_temperature,
             llm_top_p=config.analysis.llm_top_p,
             llm_max_tokens=config.analysis.llm_max_tokens,
+            progressive_chunks_per_time=config.analysis.progressive_chunks_per_time,
         )
 
         self._analyzer = Analyzer(

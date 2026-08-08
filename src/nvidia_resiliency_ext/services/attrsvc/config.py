@@ -161,6 +161,12 @@ class Settings(BaseSettings):
     )
     LLM_TOP_P: float | None = Field(default=None, description="LLM top-p for nucleus sampling")
     LLM_MAX_TOKENS: int | None = Field(default=None, description="Max tokens for LLM response")
+    PROGRESSIVE_CHUNKS_PER_TIME: float | None = Field(
+        default=None,
+        description=(
+            "Progressive log-analysis polling interval in minutes; None keeps the analyzer default"
+        ),
+    )
 
     # Analysis product selector retained under the existing backend setting for the first cut.
     ANALYSIS_BACKEND: str = Field(
@@ -382,10 +388,11 @@ class Settings(BaseSettings):
         "LLM_TEMPERATURE",
         "LLM_TOP_P",
         "LLM_MAX_TOKENS",
+        "PROGRESSIVE_CHUNKS_PER_TIME",
         mode="before",
     )
     @classmethod
-    def normalize_llm_override(cls, v: object) -> object:
+    def normalize_optional_override(cls, v: object) -> object:
         return _normalize_optional_override(v)
 
     @field_validator("LLM_TEMPERATURE")
@@ -407,6 +414,13 @@ class Settings(BaseSettings):
     def validate_llm_max_tokens(cls, v: int | None) -> int | None:
         if v is not None and v <= 0:
             raise ValueError(f"LLM_MAX_TOKENS must be positive, got {v}")
+        return v
+
+    @field_validator("PROGRESSIVE_CHUNKS_PER_TIME")
+    @classmethod
+    def validate_progressive_chunks_per_time(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:
+            raise ValueError(f"PROGRESSIVE_CHUNKS_PER_TIME must be positive, got {v}")
         return v
 
     @field_validator("ALLOWED_ROOT")

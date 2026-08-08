@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import json
 import sys
 import types
@@ -81,8 +82,10 @@ if PY310_PLUS:
         )
         from nvidia_resiliency_ext.attribution.orchestration.progressive import (
             MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            PROGRESSIVE_STATUS_STARTED,
             PROGRESSIVE_STATUS_UNSUPPORTED,
             ProgressiveLogAnalysisStartTool,
+            ProgressiveStartResult,
         )
         from nvidia_resiliency_ext.attribution.orchestration.types import (
             AttributionRecommendation,
@@ -101,8 +104,10 @@ if PY310_PLUS:
         )
         from nvidia_resiliency_ext.attribution.orchestration.progressive import (
             MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            PROGRESSIVE_STATUS_STARTED,
             PROGRESSIVE_STATUS_UNSUPPORTED,
             ProgressiveLogAnalysisStartTool,
+            ProgressiveStartResult,
         )
         from nvidia_resiliency_ext.attribution.orchestration.types import (
             AttributionRecommendation,
@@ -131,6 +136,27 @@ class FakeLogAnalyzer:
             ),
             AttributionState.STOP,
         )
+
+
+class SharedFakeLogAnalyzer(FakeLogAnalyzer):
+    instances = []
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.init_args = dict(args)
+        self.progressive_args = []
+        self.run_args = []
+        self.progressive_started = asyncio.Event()
+        self.__class__.instances.append(self)
+
+    async def analyze_logs_rt_start(self, args=None):
+        self.progressive_args.append(dict(args or {}))
+        self.progressive_started.set()
+        return ProgressiveStartResult(status=PROGRESSIVE_STATUS_STARTED).as_payload()
+
+    async def run(self, arguments):
+        self.run_args.append(dict(arguments))
+        return await super().run(arguments)
 
 
 class FakeFrAnalyzer:
@@ -195,6 +221,33 @@ class TestMCPServerCache(unittest.IsolatedAsyncioTestCase):
             module_class=ProgressiveLogAnalysisStartTool,
             description="progressive start",
             input_schema={"type": "object", "properties": {}, "required": []},
+            output_schema={"type": "object"},
+        )
+        return NVRxMCPServer(registry=registry)
+
+    def _server_with_shared_progressive_log_analyzer(self):
+        SharedFakeLogAnalyzer.instances = []
+        registry = AttributionModuleRegistry()
+        registry.register(
+            name="log_analyzer",
+            module_class=SharedFakeLogAnalyzer,
+            description="shared fake log analyzer",
+            input_schema={
+                "type": "object",
+                "properties": {"log_path": {"type": "string"}},
+                "required": ["log_path"],
+            },
+            output_schema={"type": "object"},
+        )
+        registry.register(
+            name=MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            module_class=ProgressiveLogAnalysisStartTool,
+            description="progressive start",
+            input_schema={
+                "type": "object",
+                "properties": {"log_path": {"type": "string"}},
+                "required": ["log_path"],
+            },
             output_schema={"type": "object"},
         )
         return NVRxMCPServer(registry=registry)
@@ -273,6 +326,48 @@ class TestMCPServerCache(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("recommendation", response)
         self.assertNotIn("result_id", response)
         self.assertEqual(server.registry.count_results_cache_entries(), 0)
+
+    async def test_progressive_start_reuses_terminal_log_analyzer_instance(self):
+        server = self._server_with_shared_progressive_log_analyzer()
+
+        # Direct MCP callers may still send obsolete orchestration metadata.
+        # Progressive start should ignore it rather than leaking it into LogSage.
+        content = await server._handle_module_execution(
+            MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+            {
+                "log_path": "/tmp/job_cycle0.log",
+                "user": "alice",
+                "job_id": "123",
+            },
+        )
+        response = json.loads(content[0].text)
+        analyzer = server.module_instances["log_analyzer"]
+
+        if not analyzer.progressive_args:
+            await asyncio.wait_for(analyzer.progressive_started.wait(), timeout=0.5)
+
+        self.assertEqual(response["module"], MODULE_LOG_ANALYZER_PROGRESSIVE_START)
+        self.assertEqual(response["status"], PROGRESSIVE_STATUS_STARTED)
+        self.assertIs(
+            server.module_instances[MODULE_LOG_ANALYZER_PROGRESSIVE_START]._analyzer,
+            analyzer,
+        )
+        self.assertEqual(
+            analyzer.progressive_args,
+            [{"log_path": "/tmp/job_cycle0.log"}],
+        )
+        self.assertEqual(analyzer.init_args, {"log_path": "/tmp/job_cycle0.log"})
+
+        await server._handle_module_execution(
+            "log_analyzer",
+            {"log_path": "/tmp/job_cycle0.log"},
+        )
+
+        self.assertEqual(len(SharedFakeLogAnalyzer.instances), 1)
+        self.assertEqual(
+            analyzer.run_args,
+            [{"log_path": "/tmp/job_cycle0.log"}],
+        )
 
 
 if __name__ == "__main__":

@@ -161,6 +161,7 @@ class LogAnalyzerConfig:
     llm_temperature: Optional[float] = None
     llm_top_p: Optional[float] = None
     llm_max_tokens: Optional[int] = None
+    progressive_chunks_per_time: Optional[float] = None
     use_lib_log_analysis: bool = False
     #: How LogSage and NCCL flight-recorder analysis are combined; see
     #: :class:`~nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline.AnalysisPipelineMode`.
@@ -183,6 +184,7 @@ class LogAnalyzerConfig:
             llm_temperature=self.llm_temperature,
             llm_top_p=self.llm_top_p,
             llm_max_tokens=self.llm_max_tokens,
+            progressive_chunks_per_time=self.progressive_chunks_per_time,
         )
 
 

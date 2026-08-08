@@ -4,15 +4,18 @@
 """Progressive log-analysis boundary for attribution orchestration.
 
 This module defines the NVRx-owned request shape for starting progressive log
-analysis. The concrete LogSage behavior is intentionally not implemented here
-yet; until that shared contract exists, the MCP/tool entry point reports
-``unsupported``.
+analysis. When the MCP server binds a LogSage analyzer, the tool schedules the
+poller in the background and returns status metadata immediately.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
 
 ANALYSIS_INTENT_TRACK_ONLY = "track_only"
 ANALYSIS_INTENT_PROGRESSIVE = "progressive"
@@ -74,11 +77,11 @@ def progressive_start_result_from_mcp_response(
 
 
 class ProgressiveLogAnalysisStartTool:
-    """MCP tool stub for starting progressive log analysis.
+    """MCP tool for starting progressive log analysis.
 
-    This is deliberately a non-result-producing tool. It advertises the
-    NVRx-owned loganalysis boundary now, while the LogSage progressive API is
-    still being defined.
+    This is deliberately a non-result-producing tool. It starts LogSage
+    progressive polling when the MCP server binds a shared analyzer, then
+    returns status metadata without waiting for terminal attribution.
     """
 
     def __init__(
@@ -88,13 +91,14 @@ class ProgressiveLogAnalysisStartTool:
         analyzer: Any = None,
     ):
         self._analyzer = analyzer
+        self._tasks: dict[str, asyncio.Task[Any]] = {}
 
     async def run(self, _arguments: Mapping[str, Any]) -> dict[str, str | None] | None:
         """Run the progressive start phase.
 
         With no analyzer bound, returns the ``unsupported`` status payload.
-        With an analyzer bound, delegates to
-        ``NVRxLogAnalyzer.analyze_logs_rt_start``.
+        With an analyzer bound, schedules
+        ``NVRxLogAnalyzer.analyze_logs_rt_start`` and returns immediately.
         """
         if self._analyzer is None:
             payload = ProgressiveStartResult(
@@ -102,14 +106,47 @@ class ProgressiveLogAnalysisStartTool:
                 message="LogSage progressive start API is not configured",
             ).as_payload()
         else:
-            result = await self._analyzer.analyze_logs_rt_start()
-            if isinstance(result, Mapping):
-                payload = dict(result)
+            path = str(_arguments.get("log_path") or "")
+            if not path:
+                raise ValueError("log_path is required")
+
+            task = self._tasks.get(path)
+            if task is None or task.done():
+                task = asyncio.create_task(
+                    self._analyzer.analyze_logs_rt_start(dict(_arguments)),
+                    name=f"nvrx-progressive-log-analysis:{path}",
+                )
+                self._tasks[path] = task
+                task.add_done_callback(
+                    lambda done_task, task_path=path: self._handle_task_done(
+                        task_path,
+                        done_task,
+                    )
+                )
+                message = f"progressive analysis started for {path}"
             else:
-                payload = ProgressiveStartResult(
-                    status=PROGRESSIVE_STATUS_FAILED,
-                    message="progressive start returned no payload",
-                ).as_payload()
+                message = f"progressive analysis already running for {path}"
+
+            payload = ProgressiveStartResult(
+                status=PROGRESSIVE_STATUS_STARTED,
+                message=message,
+                handle=path,
+            ).as_payload()
 
         payload["module"] = MODULE_LOG_ANALYZER_PROGRESSIVE_START
         return payload
+
+    def _handle_task_done(self, path: str, task: asyncio.Task[Any]) -> None:
+        if self._tasks.get(path) is task:
+            self._tasks.pop(path, None)
+        if task.cancelled():
+            logger.debug("Progressive log analysis poller cancelled for %s", path)
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error(
+                "Progressive log analysis poller failed for %s: %s",
+                path,
+                exc,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
