@@ -444,11 +444,23 @@ class BarrierStateBasicTest(BaseRendezvousTest):
 
         self.assertEqual(_RendezvousBarrierState._current_replacement_group_id(), "external-rg")
 
-    def test_current_replacement_group_id_uses_slurm_array_id(self):
-        """SLURM job arrays use the array task id as the replacement group id."""
+    def test_current_replacement_group_id_uses_slurm_array_generation(self):
+        """SLURM job arrays use a generation-aware replacement group id."""
         os.environ["SLURM_ARRAY_TASK_ID"] = "7"
+        os.environ["SLURM_RESTART_COUNT"] = "2"
 
-        self.assertEqual(_RendezvousBarrierState._current_replacement_group_id(), "7")
+        self.assertEqual(_RendezvousBarrierState._current_replacement_group_id(), "7:2")
+
+    def test_current_replacement_group_id_ignores_invalid_slurm_restart_count(self):
+        """Invalid scheduler metadata must not prevent rendezvous."""
+        os.environ["SLURM_ARRAY_TASK_ID"] = "7"
+        os.environ["SLURM_RESTART_COUNT"] = "invalid"
+
+        with self.assertLogs(level="WARNING") as logs:
+            replacement_group_id = _RendezvousBarrierState._current_replacement_group_id()
+
+        self.assertIsNone(replacement_group_id)
+        self.assertIn("Ignoring invalid Slurm replacement-group metadata", "\n".join(logs.output))
 
     def test_mark_replacement_group_unhealthy_is_idempotent(self):
         """Round-scoped unhealthy replacement-group markers are stored as a set."""
@@ -517,6 +529,7 @@ class BarrierStateBasicTest(BaseRendezvousTest):
         """Job-array health failures publish the marker before Step 1 joins."""
         try:
             os.environ["SLURM_ARRAY_TASK_ID"] = "4"
+            os.environ["SLURM_RESTART_COUNT"] = "0"
             os.environ["SLURM_PROCID"] = "0"
             os.environ["SLURM_NNODES"] = "2"
             os.environ["SLURM_JOB_ID"] = "job-id"
@@ -539,10 +552,16 @@ class BarrierStateBasicTest(BaseRendezvousTest):
                     pre_join_hook=fail_health_check,
                 )
 
-            self.assertEqual(state._get_unhealthy_replacement_groups(), {"4"})
+            self.assertEqual(state._get_unhealthy_replacement_groups(), {"4:0"})
             self.assertFalse(self.store.check([state.join_count_key]))
         finally:
-            for var in ("SLURM_ARRAY_TASK_ID", "SLURM_PROCID", "SLURM_NNODES", "SLURM_JOB_ID"):
+            for var in (
+                "SLURM_ARRAY_TASK_ID",
+                "SLURM_RESTART_COUNT",
+                "SLURM_PROCID",
+                "SLURM_NNODES",
+                "SLURM_JOB_ID",
+            ):
                 os.environ.pop(var, None)
 
     def test_get_all_participants_incremental_fetch(self):
@@ -2937,6 +2956,7 @@ class HandlerProfilingTest(TestCase):
         settings = MagicMock()
         settings.min_nodes = 1
         settings.max_nodes = 1
+        settings.scheduler_exclusion_dir = None
         handler._settings = settings
 
         barrier_state = MagicMock()
@@ -2952,6 +2972,7 @@ class HandlerProfilingTest(TestCase):
 
         barrier_state.perform_rendezvous.side_effect = perform_rendezvous
         handler._barrier_state = barrier_state
+        handler.ensure_segment_is_healthy = MagicMock()
         handler.ensure_node_is_healthy = MagicMock()
         handler.handle_control_requests_from_rank = MagicMock()
         return handler, settings
@@ -2967,6 +2988,7 @@ class HandlerProfilingTest(TestCase):
             ft_rendezvous_barrier_module.ProfilingEvent.HEALTH_CHECK_COMPLETED,
             node_id=handler._this_node,
         )
+        handler.ensure_segment_is_healthy.assert_called_once_with()
         handler.ensure_node_is_healthy.assert_called_once_with()
         handler.handle_control_requests_from_rank.assert_called_once_with()
         self.assertEqual(handler._assigned_rank, 0)
@@ -2987,8 +3009,41 @@ class HandlerProfilingTest(TestCase):
             ft_rendezvous_barrier_module.ProfilingEvent.HEALTH_CHECK_COMPLETED,
             node_id=handler._this_node,
         )
+        handler.ensure_segment_is_healthy.assert_called_once_with()
         handler.ensure_node_is_healthy.assert_called_once_with()
         handler.handle_control_requests_from_rank.assert_not_called()
+
+    def test_segment_health_check_runs_before_node_health_checks(self):
+        """An unhealthy task segment leaves before node checks."""
+        handler, _ = self._make_handler_with_pre_join_capture()
+        handler.ensure_segment_is_healthy.side_effect = (
+            ft_rendezvous_barrier_module.UnhealthyNodeException("bad segment")
+        )
+
+        with self.assertRaisesRegex(
+            ft_rendezvous_barrier_module.UnhealthyNodeException,
+            "bad segment",
+        ):
+            handler._perform_rendezvous()
+
+        handler.ensure_segment_is_healthy.assert_called_once_with()
+        handler.ensure_node_is_healthy.assert_not_called()
+        handler.handle_control_requests_from_rank.assert_not_called()
+
+    def test_segment_health_check_uses_standard_failure_flow(self):
+        handler = object.__new__(FtRendezvousBarrierHandler)
+        handler._this_node = _NodeDesc("node0", 100, 0)
+        handler._maybe_increment_unhealthy_count = MagicMock()
+        handler._segment_health_checker = MagicMock(return_value=False)
+
+        with self.assertRaisesRegex(
+            ft_rendezvous_barrier_module.UnhealthyNodeException,
+            "Slurm array task segment",
+        ):
+            handler.ensure_segment_is_healthy()
+
+        handler._segment_health_checker.assert_called_once_with()
+        handler._maybe_increment_unhealthy_count.assert_called_once_with()
 
 
 class HandlerIntegrationTest(BaseRendezvousTest):
@@ -3048,6 +3103,24 @@ class HandlerIntegrationTest(BaseRendezvousTest):
 
         self.assertEqual(handler.settings.replacement_group_size, 2)
         self.assertEqual(handler._barrier_state.replacement_group_size, 2)
+
+    def test_handler_accepts_scheduler_exclusion_directory(self):
+        handler = FtRendezvousBarrierHandler.from_backend(
+            run_id=self.run_id,
+            store=self.store,
+            backend=None,
+            min_nodes=2,
+            max_nodes=4,
+            timeout=RendezvousTimeout(),
+            is_store_host=True,
+            scheduler_exclusion_dir="/shared/nvrx",
+        )
+
+        self.assertEqual(handler.settings.scheduler_exclusion_dir, "/shared/nvrx")
+        self.assertIsInstance(
+            handler._segment_health_checker,
+            ft_rendezvous_barrier_module.SegmentHealthCheck,
+        )
 
     def test_create_handler_derives_replacement_group_size_for_slurm_array(self):
         """SLURM job arrays derive replacement_group_size from the per-array node count."""

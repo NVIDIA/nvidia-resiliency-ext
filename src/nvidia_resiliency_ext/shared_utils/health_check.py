@@ -1414,6 +1414,19 @@ class NVLinkWindowHealthCheck(PynvmlMixin):
         return counters
 
 
+class SegmentHealthCheck:
+    """Compose health predicates that apply to an entire task or segment."""
+
+    def __init__(self, *health_checks: Callable[[], bool]) -> None:
+        if not health_checks:
+            raise ValueError("SegmentHealthCheck requires at least one health predicate.")
+        self._health_checks = health_checks
+
+    def __call__(self) -> bool:
+        """Return whether every configured segment-level check passes."""
+        return all(health_check() for health_check in self._health_checks)
+
+
 class NodeHealthCheck:
     """
     Node-level health check that queries the node health check service used by InJob via gRPC over a Unix domain socket (UDS).

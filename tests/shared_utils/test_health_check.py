@@ -27,6 +27,7 @@ from nvidia_resiliency_ext.shared_utils.health_check import (
     NVLHealthCheck,
     PciMixin,
     PynvmlMixin,
+    SegmentHealthCheck,
 )
 
 
@@ -562,6 +563,24 @@ class TestNVLHealthCheck(unittest.TestCase):
                 result = checker._perform_health_check()
                 self.assertTrue(result)
                 mock_check.assert_called_once_with(0)
+
+
+class TestSegmentHealthCheck(unittest.TestCase):
+
+    def test_all_segment_predicates_must_pass(self):
+        first = MagicMock(return_value=True)
+        second = MagicMock(return_value=False)
+        third = MagicMock(return_value=True)
+
+        self.assertFalse(SegmentHealthCheck(first, second, third)())
+
+        first.assert_called_once_with()
+        second.assert_called_once_with()
+        third.assert_not_called()
+
+    def test_requires_at_least_one_predicate(self):
+        with self.assertRaisesRegex(ValueError, "at least one health predicate"):
+            SegmentHealthCheck()
 
 
 class TestNodeHealthCheck(unittest.TestCase):

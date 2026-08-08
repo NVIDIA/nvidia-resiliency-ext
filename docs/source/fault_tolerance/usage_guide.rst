@@ -199,6 +199,29 @@ Validation behavior:
   - Other existing types (e.g., devices/symlinks): performs ``stat`` access
 
 
+Scheduler Exclusion
+^^^^^^^^^^^^^^^^^^^
+
+Set ``--ft-scheduler-exclusion-dir <ABSOLUTE_PATH>`` to stop a Slurm array-task
+generation from rejoining after the scheduler marks one of its nodes
+unavailable. The host-side ``nvrx-scheduler-exclusion-service`` must receive the
+same directory as ``--output-dir``. Omitting the launcher option disables
+Scheduler Exclusion. A missing, expired, malformed, or unreadable decision
+artifact fails open.
+
+The equivalent YAML field is ``scheduler_exclusion_dir`` under
+``fault_tolerance``:
+
+.. code-block:: yaml
+
+   fault_tolerance:
+     scheduler_exclusion_dir: /shared/job/scheduler-exclusions
+
+See the :doc:`Scheduler Exclusion integration guide
+<integration/scheduler_exclusion_service>` for deployment, lifecycle, decision
+format, API, and supported replacement-group behavior.
+
+
 Attribution service integration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

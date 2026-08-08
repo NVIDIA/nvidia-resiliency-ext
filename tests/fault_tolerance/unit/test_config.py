@@ -66,6 +66,8 @@ def test_from_args():
         "custom1:111.1,custom2:222.2",
         "--ft-attribution-export-url",
         "https://dataflow.example.test/dataflow2/example-index/posting",
+        "--ft-scheduler-exclusion-dir",
+        "/shared/nvrx",
     ]
 
     # Add a the dummy training script required by the torchrun argparser
@@ -82,6 +84,7 @@ def test_from_args():
     assert (
         ft.attribution_export_url == "https://dataflow.example.test/dataflow2/example-index/posting"
     )
+    assert ft.scheduler_exclusion_dir == "/shared/nvrx"
 
 
 def test_signal_field_with_valid_values():

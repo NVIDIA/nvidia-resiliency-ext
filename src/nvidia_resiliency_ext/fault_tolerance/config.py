@@ -107,6 +107,9 @@ class FaultToleranceConfig:
       the cycle_info.<job_id>.current symlink there. The workload receives the path
       to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
       Default: None (disabled).
+    * `scheduler_exclusion_dir` [str|None] Shared directory containing the current
+      Scheduler Exclusion decision artifact. Array-task Node0 checks the artifact
+      before joining a rendezvous. Default: None (disabled).
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -155,6 +158,9 @@ class FaultToleranceConfig:
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None
+
+    # Scheduler Exclusion: shared directory containing the current decision artifact
+    scheduler_exclusion_dir: Optional[str] = None
 
     @property
     def is_progress_tracking_enabled(self) -> bool:
