@@ -184,6 +184,27 @@ mkdir -p "${NVRX_JOB_DIR}"/{control,cycle_infos,logs}
 RDZV_FILE=${NVRX_JOB_DIR}/control/rdzv_host
 RDZV_CLOSED=${NVRX_JOB_DIR}/control/rdzv_closed
 
+# The no-restart verdict as a file, because $? on task 0 cannot carry it wherever the site
+# sets KillOnBadExit=1 (srun's default source; slurm.conf defaults it to 0, and this script
+# does not override either way). There, at NODES_PER_TASK>1, the first peer to exit
+# NO_RESTART_EXIT_CODE tears the step down while the store host is by design the last one
+# alive -- it sleeps ~3s after closing the rendezvous so peers can read the final TCPStore
+# state -- so it is signalled mid-wait and srun hands this script 143. task0_exit would then
+# read the ordinary branch and the chain would restart a job NVRx said must not restart.
+# Measured, not deduced: srun returns 143 with the peer's 93 already on disk.
+#
+# Race-free because SLURM's task is the `sh` below, not ft_launcher: the step teardown
+# cannot begin until an `sh` exits, and the touch precedes that exit. Whichever node fires
+# the kill has already written the flag.
+#
+# Generation-scoped on purpose. A chain-scoped twin would make cancel_chain durable --
+# level-triggered, so a successor that escaped the scancel would stop itself -- but only if
+# something reliably clears it when a new chain starts, and the sbatch is submittable
+# without submit_chain.sh. A stale flag would then refuse every later run into the same
+# NVRX_WORK_DIR, which is a worse failure than the one it prevents. cancel_chain stays the
+# mechanism; nvrx-watch is the out-of-band backstop for a scancel that failed.
+NO_RESTART_FLAG=${NVRX_JOB_DIR}/control/no_restart
+
 # The file the progress tracker watches. Normally Megatron's live iteration file, which
 # advances every checkpoint. In the no-restart demo it is a static file seeded once by
 # task 0 and never touched again, so every restart cycle reads the same number -> no
@@ -349,15 +370,27 @@ options=" \
 # ---------------------------------------------------------------------------------
 # Generation teardown
 # ---------------------------------------------------------------------------------
-# Release this generation's queued cold spares; without it each is allocated a node
-# only to hit the gate below and exit. --state=PENDING leaves RUNNING tasks their NVRx
-# teardown, and $SLURM_ARRAY_JOB_ID scopes it to this generation.
-cancel_pending_spares() {
-    echo "Releasing pending cold spares of array ${SLURM_ARRAY_JOB_ID}."
-    if ! scancel --state=PENDING "${SLURM_ARRAY_JOB_ID}"; then
+# End this generation outright -- every task, any state, scoped to this array by
+# $SLURM_ARRAY_JOB_ID. Deliberately not --state=PENDING: that filter is evaluated once, so
+# it cannot touch a cold spare that already left PENDING, and such a spare then reads a
+# published rdzv_host, probes a store host that is gone, and waits out
+# store_connect_wait_seconds (300s) holding a node. --dependency=singleton holds the
+# successor generation until this array fully exits, so that drain is on the chain's
+# critical path. Cancelling the array job itself is also level-triggered: no remaining task
+# of it can start afterwards, which no state filter can promise.
+#
+# The cost is that RUNNING peers lose the tail of their NVRx teardown. Bounded, not abrupt:
+# SLURM sends SIGTERM first and waits KillWait before SIGKILL, and ft_launcher handles
+# SIGTERM by stopping its ranks (see --ft-* termination intervals). Confirm KillWait
+# exceeds those intervals for the site, or the tail is cut anyway.
+#
+# Includes task 0, i.e. this script: nothing may follow the call in the EXIT trap.
+cancel_generation() {
+    echo "Cancelling all remaining tasks of array ${SLURM_ARRAY_JOB_ID}."
+    if ! scancel "${SLURM_ARRAY_JOB_ID}"; then
         # Not fatal and not silent: nvrx-watch corrects this state from outside, on a
         # retrying loop. Swallowing the status here is what made it undiagnosable.
-        echo "WARNING: scancel of pending spares failed; nvrx-watch should reconcile."
+        echo "WARNING: scancel of this generation failed; nvrx-watch should reconcile."
     fi
 }
 
@@ -387,15 +420,20 @@ cancel_chain() {
 # $? must be read first -- any command here would overwrite it. Bash saves the pending
 # exit status before running an EXIT trap and restores it after, so nothing below can
 # change the code SLURM records.
+#
+# The flag is tested before rc and not merely alongside it: rc is the code that survived
+# ft_launcher -> sh -c -> srun, and under kill-on-bad-exit task 0's own launcher is the one
+# whose code the teardown rewrites (see NO_RESTART_FLAG). A flag written by any node that
+# did exit cleanly is the more trustworthy witness.
 task0_exit() {
     local rc=$?
     echo "Task 0 exiting (rc=${rc}), creating RDZV_CLOSED file"
     touch "$RDZV_CLOSED"
-    if (( rc == NO_RESTART_EXIT_CODE )); then
+    if [[ -f "$NO_RESTART_FLAG" ]] || (( rc == NO_RESTART_EXIT_CODE )); then
         cancel_chain "$rc"
-    else
-        cancel_pending_spares
     fi
+    # Last: this cancels task 0 too, so nothing after it is guaranteed to run.
+    cancel_generation
 }
 
 # ---------------------------------------------------------------------------------
@@ -464,14 +502,16 @@ OPTIONAL_ARGS=""
 [[ -n "$NVRX_MAX_NO_PROGRESS_CYCLES" ]] && \
     OPTIONAL_ARGS+=" --ft-max-no-progress-cycles ${NVRX_MAX_NO_PROGRESS_CYCLES}"
 
-# store_connect_wait_seconds bounds the dead-generation drain, and bounding it is the
-# whole mechanism: a cold spare that reaches CONFIGURING/RUNNING after task 0's srun
-# exits but before its EXIT trap writes RDZV_CLOSED cannot be stopped by the flag (not
-# written yet) or by cancel_pending_spares (no longer PENDING). It reads a published
+# store_connect_wait_seconds bounds the dead-generation drain: a cold spare that reaches
+# CONFIGURING/RUNNING after task 0's srun exits but before its EXIT trap writes
+# RDZV_CLOSED cannot be stopped by the flag (not written yet). It reads a published
 # rdzv_host, breaks the gate above on its first iteration, and probes a host that is
 # gone. Nothing upstream closes that race -- a task-0 liveness check does not either,
-# since task 0 is still RUNNING while its own trap executes -- so the cost is capped
-# here rather than prevented.
+# since task 0 is still RUNNING while its own trap executes.
+#
+# cancel_generation is what normally collects such a spare, seconds later and whatever
+# state it is in; this bound is the backstop for the case where that scancel failed, so
+# it stays sized for a spare nobody cancels.
 #
 # 300 matches NVRX_RDZV_HOST_WAIT, so both escape paths cost the same: a spare that
 # starts before publication waits out the gate, one that starts after waits out this.
@@ -494,7 +534,13 @@ LAUNCHER_ARGS=" \
     --ft-rank-out-of-section-timeout 90 \
     ${OPTIONAL_ARGS} "
 
-run_cmd="ft_launcher ${LAUNCHER_ARGS} ${MEGATRON_PATH}/pretrain_gpt.py ${options}"
+# The trailing shell is what carries the no-restart verdict out of the step teardown: the
+# launcher's own exit code does not survive it on the store host (see NO_RESTART_FLAG).
+# Every \$ is escaped so the outer bash leaves it for the `sh -c` that srun runs.
+run_cmd="ft_launcher ${LAUNCHER_ARGS} ${MEGATRON_PATH}/pretrain_gpt.py ${options}
+rc=\$?
+if [ \"\$rc\" -eq ${NO_RESTART_EXIT_CODE} ]; then touch '${NO_RESTART_FLAG}'; fi
+exit \$rc"
 
 # Names of host env vars to forward into the container. NVRX_GPUS_PER_NUMA (rank-to-NUMA
 # binding) and NVRX_INJECT_GPU_FAILURE (the HW-failure injector) must reach the ranks;
