@@ -9,4 +9,4 @@ Integration Guides
    integration/sections
    integration/ptl
    integration/inprocess
-
+   integration/segment_health_check

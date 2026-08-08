@@ -60,6 +60,7 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _RendezvousBarrierState,
     _StaleRendezvousRoundError,
 )
+from nvidia_resiliency_ext.fault_tolerance.segment_health_check import SegmentHealthCheck
 
 # Test timeout configuration - use short timeouts to make tests run faster
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
@@ -444,8 +445,8 @@ class BarrierStateBasicTest(BaseRendezvousTest):
 
         self.assertEqual(_RendezvousBarrierState._current_replacement_group_id(), "external-rg")
 
-    def test_current_replacement_group_id_uses_slurm_array_id(self):
-        """SLURM job arrays use the array task id as the replacement group id."""
+    def test_current_replacement_group_id_uses_slurm_array_task_id(self):
+        """SLURM job arrays use their task ID as the replacement group."""
         os.environ["SLURM_ARRAY_TASK_ID"] = "7"
 
         self.assertEqual(_RendezvousBarrierState._current_replacement_group_id(), "7")
@@ -542,7 +543,12 @@ class BarrierStateBasicTest(BaseRendezvousTest):
             self.assertEqual(state._get_unhealthy_replacement_groups(), {"4"})
             self.assertFalse(self.store.check([state.join_count_key]))
         finally:
-            for var in ("SLURM_ARRAY_TASK_ID", "SLURM_PROCID", "SLURM_NNODES", "SLURM_JOB_ID"):
+            for var in (
+                "SLURM_ARRAY_TASK_ID",
+                "SLURM_PROCID",
+                "SLURM_NNODES",
+                "SLURM_JOB_ID",
+            ):
                 os.environ.pop(var, None)
 
     def test_get_all_participants_incremental_fetch(self):
@@ -2937,6 +2943,7 @@ class HandlerProfilingTest(TestCase):
         settings = MagicMock()
         settings.min_nodes = 1
         settings.max_nodes = 1
+        settings.segment_health_check_dir = None
         handler._settings = settings
 
         barrier_state = MagicMock()
@@ -2989,6 +2996,33 @@ class HandlerProfilingTest(TestCase):
         )
         handler.ensure_node_is_healthy.assert_called_once_with()
         handler.handle_control_requests_from_rank.assert_not_called()
+
+    def test_segment_health_check_runs_before_node_health_checks(self):
+        """An unhealthy task segment leaves before node checks."""
+        handler = object.__new__(FtRendezvousBarrierHandler)
+        handler._this_node = _NodeDesc("node0", 100, 0)
+        handler._record = MagicMock()
+
+        def fail_after_event():
+            handler._record.assert_called_once_with(
+                message=f"Checking health status of {handler._this_node}."
+            )
+            return False
+
+        handler._segment_health_checker = MagicMock(side_effect=fail_after_event)
+        handler._maybe_increment_unhealthy_count = MagicMock()
+
+        with self.assertRaisesRegex(
+            ft_rendezvous_barrier_module.UnhealthyNodeException,
+            "Slurm array task segment",
+        ):
+            handler.ensure_node_is_healthy()
+
+        handler._segment_health_checker.assert_called_once_with()
+        handler._maybe_increment_unhealthy_count.assert_called_once_with()
+        handler._record.assert_called_once_with(
+            message=f"Checking health status of {handler._this_node}."
+        )
 
 
 class HandlerIntegrationTest(BaseRendezvousTest):
@@ -3048,6 +3082,104 @@ class HandlerIntegrationTest(BaseRendezvousTest):
 
         self.assertEqual(handler.settings.replacement_group_size, 2)
         self.assertEqual(handler._barrier_state.replacement_group_size, 2)
+
+    def test_handler_installs_segment_health_check_only_on_array_task_process_zero(self):
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_ARRAY_JOB_ID": "123",
+                "SLURM_ARRAY_TASK_ID": "7",
+                "SLURM_NODEID": "0",
+                "SLURM_PROCID": "0",
+                "SLURM_JOB_NUM_NODES": "2",
+            },
+            clear=False,
+        ):
+            with self.assertLogs(level="INFO") as logs:
+                handler = FtRendezvousBarrierHandler.from_backend(
+                    run_id=self.run_id,
+                    store=self.store,
+                    backend=None,
+                    min_nodes=2,
+                    max_nodes=4,
+                    timeout=RendezvousTimeout(),
+                    is_store_host=True,
+                    replacement_group_size=2,
+                    segment_health_check_dir="/shared/nvrx",
+                )
+
+        self.assertEqual(handler.settings.segment_health_check_dir, "/shared/nvrx")
+        self.assertIsInstance(
+            handler._segment_health_checker,
+            SegmentHealthCheck,
+        )
+        self.assertEqual(handler._segment_health_checker.directory, "/shared/nvrx")
+        self.assertEqual(handler._segment_health_checker.job_id, "123")
+        self.assertEqual(handler._segment_health_checker.task_id, "7")
+        self.assertTrue(
+            any(
+                "Segment health check installed directory=/shared/nvrx job_id=123 task_id=7"
+                in message
+                for message in logs.output
+            )
+        )
+        with patch.object(
+            handler._segment_health_checker,
+            "_perform_health_check",
+            return_value=True,
+        ) as check:
+            self.assertTrue(handler._segment_health_checker())
+        check.assert_called_once_with()
+
+    def test_handler_does_not_install_segment_health_check_on_other_processes(self):
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_ARRAY_JOB_ID": "123",
+                "SLURM_ARRAY_TASK_ID": "7",
+                "SLURM_NODEID": "1",
+                "SLURM_PROCID": "1",
+                "SLURM_NNODES": "2",
+            },
+            clear=False,
+        ):
+            handler = FtRendezvousBarrierHandler.from_backend(
+                run_id=self.run_id,
+                store=self.store,
+                backend=None,
+                min_nodes=2,
+                max_nodes=4,
+                timeout=RendezvousTimeout(),
+                is_store_host=True,
+                replacement_group_size=2,
+                segment_health_check_dir="/shared/nvrx",
+            )
+
+        self.assertIsNone(handler._segment_health_checker)
+
+    def test_handler_installs_segment_health_check_for_regular_job_process_zero(self):
+        with patch.dict(
+            os.environ,
+            {
+                "SLURM_JOB_ID": "456",
+                "SLURM_PROCID": "0",
+            },
+            clear=True,
+        ):
+            handler = FtRendezvousBarrierHandler.from_backend(
+                run_id=self.run_id,
+                store=self.store,
+                backend=None,
+                min_nodes=2,
+                max_nodes=4,
+                timeout=RendezvousTimeout(),
+                is_store_host=True,
+                segment_health_check_dir="/shared/nvrx",
+            )
+
+        self.assertIsInstance(handler._segment_health_checker, SegmentHealthCheck)
+        self.assertEqual(handler._segment_health_checker.job_id, "456")
+        self.assertEqual(handler._segment_health_checker.task_id, "456")
 
     def test_create_handler_derives_replacement_group_size_for_slurm_array(self):
         """SLURM job arrays derive replacement_group_size from the per-array node count."""
