@@ -22,9 +22,9 @@ SBATCH_SCRIPT="${SCRIPT_DIR}/nvrx_singleton_array.sbatch"
 # spare + 1 cold spare. Scale up for real training (see the README).
 export NVRX_TRAIN_TASKS="${NVRX_TRAIN_TASKS:-1}"     # tasks the model is sized for
 export NVRX_HOT_SPARES="${NVRX_HOT_SPARES:-1}"       # running, standby, absorb a failure
-NVRX_COLD_SPARES="${NVRX_COLD_SPARES:-3}"            # queued; several so the pending-task
-                                                    # cancellation (cancel_chain /
-                                                    # cancel_pending_spares) is visible
+NVRX_COLD_SPARES="${NVRX_COLD_SPARES:-3}"            # queued; several so the teardown
+                                                    # (cancel_chain / cancel_generation)
+                                                    # is visible
 NODES_PER_TASK="${NODES_PER_TASK:-1}"
 export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"   # GB200 tray default; 8 for HGX/DGX
 
