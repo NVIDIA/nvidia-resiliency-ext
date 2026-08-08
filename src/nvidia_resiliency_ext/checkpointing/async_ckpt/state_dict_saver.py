@@ -432,6 +432,11 @@ def save_state_dict_async_finalize(
     """
     write_results = storage_writer.retrieve_write_results()
 
+    # Node-local staging: the worker's background flusher (persist-remote) copies the shards to the
+    # durable dir before signalling completion, so by the time this finalize runs (on comp_q) all
+    # shards are already durable. The coordinator's `.metadata` write below is therefore the atomic
+    # commit -- no shard copy happens on this path.
+
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
     all_results = dist_wrapper.gather_object(write_results)
