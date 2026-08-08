@@ -79,6 +79,20 @@ class L1EvidenceResult:
             anomalies={"l1_enabled": False},
         )
 
+    def category_selection(self) -> dict[str, Any] | None:
+        """Return the model's optional curated-category selection, if any."""
+
+        if self.evidence is None:
+            return None
+        selection = self.evidence.get("category_selection")
+        if not isinstance(selection, Mapping):
+            return None
+        return {
+            "category_id": selection.get("category_id"),
+            "category_confidence": selection.get("category_confidence"),
+            "category_rationale": selection.get("category_rationale"),
+        }
+
     def to_trace(self) -> dict[str, Any]:
         return {
             "enabled": bool(self.model),
