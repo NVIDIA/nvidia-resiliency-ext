@@ -69,6 +69,11 @@ NVRX_MODEL_PROFILE="${NVRX_MODEL_PROFILE:-small}"
 
 # Optional. Endpoint of the node health check daemon; omitted when empty.
 NVRX_HEALTH_CHECK_ENDPOINT="${NVRX_HEALTH_CHECK_ENDPOINT:-}"
+# Optional. A shared artifact directory enables Scheduler Segment Health for
+# both the task-0 producer and every ft_launcher consumer. Empty disables it.
+NVRX_SEGMENT_HEALTH_CHECK_DIR="${NVRX_SEGMENT_HEALTH_CHECK_DIR:-}"
+NVRX_CONTROL_LOOP_INTERVAL_SECONDS="${NVRX_CONTROL_LOOP_INTERVAL_SECONDS:-600}"
+NVRX_SEGMENT_HEALTH_CHECK_PRODUCER="${NVRX_SEGMENT_HEALTH_CHECK_PRODUCER:-${NVRX_WORK_DIR}/scheduler_segment_health.sh}"
 # Minimum nodes per NVLink domain, identified by GPU ClusterUUID -- a restart cycle then
 # only ever selects complete segments. 1 suits GB200 NVL72 and other NVLink-domain
 # systems (DGX H200, HGX B200). Set empty on systems with no ClusterUUID (e.g. H100),
@@ -399,6 +404,97 @@ cancel_generation() {
 # Matches DEFAULT_NO_RESTART_EXIT_CODE in fault_tolerance/utils.py.
 NO_RESTART_EXIT_CODE="${NVRX_NO_RESTART_EXIT_CODE:-93}"
 
+CONTROL_LOOP_PID=""
+CONTROL_LOOP_CONFIGURED=0
+SEGMENT_HEALTH_CONFIGURED=0
+
+configure_segment_health() {
+    if [[ ! -r "${NVRX_SEGMENT_HEALTH_CHECK_PRODUCER}" ]]; then
+        echo "Scheduler Segment Health producer is not readable: ${NVRX_SEGMENT_HEALTH_CHECK_PRODUCER}" >&2
+        return 1
+    fi
+    if ! source "${NVRX_SEGMENT_HEALTH_CHECK_PRODUCER}"; then
+        echo "Could not load Scheduler Segment Health producer: ${NVRX_SEGMENT_HEALTH_CHECK_PRODUCER}" >&2
+        return 1
+    fi
+    if ! declare -F scheduler_segment_health_configure >/dev/null || \
+       ! declare -F scheduler_segment_health_poll_once >/dev/null || \
+       ! declare -F scheduler_segment_health_cleanup >/dev/null; then
+        echo "Scheduler Segment Health producer does not implement the required interface." >&2
+        return 1
+    fi
+
+    if ! scheduler_segment_health_configure; then
+        echo "Scheduler Segment Health producer configuration failed." >&2
+        return 1
+    fi
+
+    SEGMENT_HEALTH_CONFIGURED=1
+    echo "Scheduler Segment Health configured: dir=${NVRX_SEGMENT_HEALTH_CHECK_DIR}"
+}
+
+# This loop belongs to the example sbatch, not to Scheduler Segment Health. Other
+# host-side periodic controls can be added here without changing the producer API.
+run_control_loop_once() {
+    if (( SEGMENT_HEALTH_CONFIGURED )); then
+        scheduler_segment_health_poll_once || \
+            echo "Scheduler Segment Health poll failed; prior decision preserved." >&2
+    fi
+}
+
+configure_control_loop() {
+    [[ -n "${NVRX_SEGMENT_HEALTH_CHECK_DIR}" ]] || return 0
+
+    if ! configure_segment_health; then
+        return 1
+    fi
+
+    if [[ ! "${NVRX_CONTROL_LOOP_INTERVAL_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "NVRX_CONTROL_LOOP_INTERVAL_SECONDS must be a positive integer." >&2
+        return 1
+    fi
+    CONTROL_LOOP_CONFIGURED=1
+    return 0
+}
+
+start_control_loop() {
+    (( CONTROL_LOOP_CONFIGURED )) || return 0
+
+    (
+        # Keep the control loop readable even though this demo enables xtrace.
+        set +x
+        sleep_pid=""
+        control_loop_cleanup() {
+            [[ -z "${sleep_pid:-}" ]] || kill "${sleep_pid}" 2>/dev/null
+            scheduler_segment_health_cleanup || \
+                echo "Scheduler Segment Health cleanup failed." >&2
+        }
+        trap control_loop_cleanup EXIT
+        trap 'exit 0' TERM INT
+
+        while true; do
+            run_control_loop_once
+            sleep "${NVRX_CONTROL_LOOP_INTERVAL_SECONDS}" &
+            sleep_pid=$!
+            wait "${sleep_pid}" || true
+            sleep_pid=""
+        done
+    ) &
+    CONTROL_LOOP_PID=$!
+    echo "Host control loop started: pid=${CONTROL_LOOP_PID}"
+}
+
+stop_control_loop() {
+    [[ -n "${CONTROL_LOOP_PID}" ]] || return 0
+
+    # Do not wait here. Bash defers the child's TERM trap while a foreground Slurm
+    # command is running; generation teardown must not inherit that command's timeout.
+    # The EXIT path below immediately cancels the Slurm generation, which owns final
+    # cleanup of the batch script and any child still unwinding.
+    kill "${CONTROL_LOOP_PID}" 2>/dev/null || true
+    CONTROL_LOOP_PID=""
+}
+
 # On that verdict the queued successor generations have to go too, or the singleton
 # chain simply starts the next one and reproduces the same failure. Matched by job
 # name, so this also covers the current array's own pending spares. Blast radius is
@@ -429,6 +525,7 @@ task0_exit() {
     local rc=$?
     echo "Task 0 exiting (rc=${rc}), creating RDZV_CLOSED file"
     touch "$RDZV_CLOSED"
+    stop_control_loop
     if [[ -f "$NO_RESTART_FLAG" ]] || (( rc == NO_RESTART_EXIT_CODE )); then
         cancel_chain "$rc"
     fi
@@ -445,6 +542,10 @@ if [[ "${SLURM_ARRAY_TASK_ID:-0}" == "0" ]]; then
     # naive "validate, then exit 1" placed above this line would cause. Primary path:
     # covers every orderly exit, but not a hard node death.
     trap task0_exit EXIT
+    if ! configure_control_loop; then
+        exit 1
+    fi
+    start_control_loop
     # The batch script's own node, which SLURM guarantees is the first node of the
     # allocation -- the same value scontrol yields, but needing no SLURM, no env var
     # and no PATH.
@@ -498,6 +599,8 @@ NVRX_LOGFILE=${NVRX_JOB_DIR}/logs/nvrx_${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID}}_${
 OPTIONAL_ARGS=""
 [[ -n "$NVRX_HEALTH_CHECK_ENDPOINT" ]] && \
     OPTIONAL_ARGS+=" --ft-node-health-check-endpoint=${NVRX_HEALTH_CHECK_ENDPOINT}"
+[[ -n "$NVRX_SEGMENT_HEALTH_CHECK_DIR" ]] && \
+    OPTIONAL_ARGS+=" --ft-segment-health-check-dir=${NVRX_SEGMENT_HEALTH_CHECK_DIR}"
 [[ -n "$NVRX_SEGMENT" ]] && OPTIONAL_ARGS+=" --ft-segment ${NVRX_SEGMENT}"
 [[ -n "$NVRX_MAX_NO_PROGRESS_CYCLES" ]] && \
     OPTIONAL_ARGS+=" --ft-max-no-progress-cycles ${NVRX_MAX_NO_PROGRESS_CYCLES}"
