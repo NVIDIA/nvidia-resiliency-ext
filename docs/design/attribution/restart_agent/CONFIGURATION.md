@@ -22,14 +22,16 @@ The maintained example is
 | `routing` | object | `{}` | Controls route fanout and the whole-analysis timeout. |
 | `runtime` | object | `{}` | Controls in-process history and L0 source reading. |
 | `retry_policy` | object | documented defaults | Configures L4 retry budgets. |
-| `declared_recovery_capabilities` | array | `[]` | Trusted workload-managed recovery declarations consumed by L4. |
+| `policy_contexts` | object | documented defaults | Configures trusted L4 policy contexts supplied outside log semantics. |
 | `model_defaults` | object | `{}` | Shared defaults inherited by every model route. |
 | `model_routes` | array | `[]` | Independent L1 routes. Must be non-empty when enrichment is enabled and empty when it is disabled. |
 
 The configuration does not contain request data, attempt history, prompts,
 evidence, model responses, evaluation labels, API keys, or resolved
 credentials. Prompt, response-schema, detector, and stage-algorithm versions
-belong to the product build.
+belong to the product build. The immutable `ClusterExecutionContext` is also a
+product contract rendered into the static L1 prompt; it is not a deployment
+configuration field.
 
 ## Enrichment
 
@@ -91,40 +93,30 @@ not policy semantics.
 
 | Field | Type | Default | Meaning and constraints |
 | --- | --- | --- | --- |
-| `retry_policy.confirmation_retry_allowed_retries` | integer | `1` | Non-negative budget for exact root-and-entity confirmation. Must not exceed the general budget. |
-| `retry_policy.bounded_retry_allowed_retries` | integer | `1` | Non-negative bounded retry budget. Must not exceed the general budget. |
-| `retry_policy.general_retry_allowed_retries` | integer | `3` | Non-negative same-root safety ceiling. |
+| `retry_policy.concrete_confirmation_retry_allowed_retries` | integer | `1` | Non-negative budget for exact root-and-entity confirmation. Must not exceed the general budget. |
+| `retry_policy.workload_confirmation_retry_allowed_retries` | integer | `1` | Non-negative root-only budget for a qualifying L1 workload failure without full identity. Must not exceed the general budget. |
+| `retry_policy.general_retry_allowed_retries` | integer | `2` | Non-negative same-root safety ceiling for root identity; root-independent same-job no-progress budget for observation-only general retry. |
+| `retry_policy.job_no_progress_allowed_retries` | integer | `3` | Root-independent same-job no-progress guard. |
+| `retry_policy.job_unknown_progress_allowed_retries` | integer | `3` | Root-independent same-job unknown-progress guard. |
 
 L4 owns the interpretation and ordered selection of these budgets. See
 `L4.md`; configuring a number does not cause an earlier stage to select that
 rule.
 
-## Declared Recovery Capabilities
+## Policy Contexts
 
-The MVP supports one closed declaration:
+| Field | Type | Default | Meaning and constraints |
+| --- | --- | --- | --- |
+| `policy_contexts.cuda_oom_no_retry.enabled` | boolean | `true` | Applies the zero-retry product policy when the selected terminal failure has the typed CUDA OOM signature. |
+| `policy_contexts.port_bind_confirmation_retry.enabled` | boolean | `true` | Enables matching a selected terminal address-in-use bind failure independent of its L1 domain label. |
+| `policy_contexts.port_bind_confirmation_retry.allowed_retries` | integer | `1` | Non-negative same-root confirmation budget for a matched port-bind conflict. |
+| `policy_contexts.rejected_iteration_retry_then_skip.enabled` | boolean | `true` | Enables matching the typed rejected-nonfinite-iteration signature. |
+| `policy_contexts.rejected_iteration_retry_then_skip.allowed_retries` | integer | `2` | Non-negative retry budget supplied when that current signature matches. |
 
-```json
-{
-  "capability_id": "bad_token_retry_then_skip",
-  "behavior": "retry_then_skip",
-  "applies_to": ["bad_token_or_window"],
-  "required_entity_kind": "data_position",
-  "history_match_scope": "root_and_entity",
-  "allowed_retries": 2
-}
-```
-
-| Field | Type | Required value / constraint |
-| --- | --- | --- |
-| `capability_id` | string | `bad_token_retry_then_skip`; identifiers must be unique. |
-| `behavior` | string | `retry_then_skip`. |
-| `applies_to` | string array | Exactly `["bad_token_or_window"]`. |
-| `required_entity_kind` | string | `data_position`. |
-| `history_match_scope` | string | `root_and_entity`. |
-| `allowed_retries` | integer | Positive and no greater than `retry_policy.general_retry_allowed_retries`. |
-
-This is trusted deployment context, not a model conclusion. L4 may select it
-only when the grounded failure and affected entity satisfy the declaration.
+A policy context does not change L0 identity or L1 semantics. L4 records the
+ordinary base rule, then applies a matching context as the effective policy.
+History absence or mismatch affects budget consumption, not whether a valid
+current-attempt context is selected. See `L4.md` for the complete signature.
 
 ## Model Defaults And Routes
 
@@ -165,22 +157,27 @@ The environment value, file path, and key contents may not.
 | `request.top_p` | number or omitted | `0.7` | Nucleus-sampling value in `[0, 1]`. Some provider/model profiles omit sampling parameters. |
 
 Context budgeting accounts for the complete stateless conversation sent on
-each model turn, including prior messages and tool results.
+each model turn, including prior messages and tool results. Explicit route
+configuration takes precedence over a built-in model limit. If neither exists,
+Restart Agent records the estimated input but performs no client-side context
+rejection or output-cap adjustment; the provider remains authoritative.
 
 ### Tools
 
 | Field | Type | Default | Meaning and constraints |
 | --- | --- | --- | --- |
 | `tools.enabled` | boolean | `true` | Whether tool definitions are advertised and tool requests may execute. |
-| `tools.advertisement.overview` | boolean | `true` | Advertises compact source/evidence orientation. |
+| `tools.advertisement.overview` | boolean | `false` | Advertises source/evidence orientation for clients that do not already supply the normal L0B view. |
 | `tools.advertisement.grep_log` | boolean | `true` | Advertises source-log search. |
 | `tools.advertisement.read_window` | boolean | `true` | Advertises bounded raw source reading. |
-| `tools.advertisement.get_evidence_objects` | boolean | `false` | Advertises structured evidence-object retrieval. Implemented but opt-in. |
-| `tools.max_rounds` | integer | `8` | Non-negative maximum tool-request rounds for the route. |
+| `tools.advertisement.get_evidence_objects` | boolean | `true` | Advertises structured evidence-object retrieval for references emitted by L0B. |
+| `tools.max_rounds` | integer | `3` | Non-negative maximum tool-request rounds. `0` disables tool advertisement and execution for the route. |
 
 Tool implementation and response limits are defined in `TOOLS.md`. A tool is
 model-visible only when both `tools.enabled` and its advertisement value are
-true.
+true and `tools.max_rounds` is positive. With `max_rounds=0`, the route performs
+one tools-disabled model turn and reports `effective_advertised=[]` without
+altering its configured advertisement flags.
 
 ### Reasoning
 
@@ -200,7 +197,8 @@ response contract or transfer L4 policy ownership to the model.
 | `reliability.retry_backoff_seconds` | number | `0.5` | Non-negative delay between provider retries, bounded by the remaining deadline. |
 
 Retries, provider failures, and timeout exhaustion remain visible in the route
-trace and metrics.
+trace and metrics. `L1.md` defines the closed provider-outcome classification
+that determines which failures consume this retry budget.
 
 ## Credentials And Compliance
 
@@ -245,12 +243,12 @@ Every resolved configuration records:
 `config_fingerprint` is `sha256:` plus SHA-256 over canonical JSON for
 `effective_config`, with sorted object keys, compact separators, and array
 order preserved. It includes resolved routing, history, L0 source settings,
-retry policy, declared capabilities, and route settings. It excludes secrets,
+retry policy, policy contexts, and route settings. It excludes secrets,
 the source file path, `config_id`, and `config_version`.
 
 Different names or file locations with identical resolved behavior therefore
 produce the same fingerprint. A route, timeout, tool, reasoning, reliability,
-history, L0 source, capability, or retry-policy change produces a different
+history, L0 source, retry-policy, or policy-context change produces a different
 fingerprint.
 
 The fingerprint does not identify product code, prompt text, response-schema

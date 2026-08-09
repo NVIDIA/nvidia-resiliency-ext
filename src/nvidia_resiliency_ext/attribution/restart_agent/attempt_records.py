@@ -9,7 +9,7 @@ from dataclasses import replace
 from threading import RLock
 from typing import Literal, Protocol, Sequence
 
-from .l2.failure_facts import build_attempt_failure_facts
+from .current_failure_facts import build_attempt_failure_facts
 from .models import (
     AttemptFailureFacts,
     AttemptFailureFactsSource,
@@ -245,6 +245,7 @@ class AttemptRecordAssembler:
             decision_evidence.deterministic_primary_candidate,
             decision_evidence,
             source=AttemptFailureFactsSource.L0_DETERMINISTIC,
+            selected_observation=decision_evidence.selected_observed_failure,
         )
         return AttemptRecord(
             job_id=job_id,
@@ -259,12 +260,19 @@ class AttemptRecordAssembler:
         record: AttemptRecord,
         *,
         route_id: str,
-        facts: AttemptFailureFacts,
+        primary: AttemptFailureFacts | None,
+        observation: AttemptFailureFacts | None,
     ) -> AttemptRecord:
         if not route_id:
             raise ValueError("route_id is required for enriched attempt facts")
+        if primary is None and observation is None:
+            return record
         entries = {entry.route_id: entry for entry in record.enriched}
-        entries[route_id] = EnrichedAttemptFacts(route_id=route_id, facts=facts)
+        entries[route_id] = EnrichedAttemptFacts(
+            route_id=route_id,
+            primary=primary,
+            observation=observation,
+        )
         return replace(
             record,
             enriched=tuple(entries[key] for key in sorted(entries)),
@@ -318,7 +326,6 @@ def build_attempt_progress_summary(
                 if (
                     bundle.run_progress_summary.progress_after_failure_episode is False
                     and bundle.progress.training_progress_dialect_recognized
-                    and bool(bundle.selection_summary.get("primary_after_context_available"))
                 )
                 else "unknown"
             )
@@ -361,15 +368,6 @@ def _validate_storable_record(record: AttemptRecord) -> None:
         raise ValueError("AttemptRecord job_id is required")
     if isinstance(record.cycle_id, bool) or not isinstance(record.cycle_id, int):
         raise TypeError("AttemptRecord cycle_id must be an integer")
-    if not record.deterministic.root_fingerprint:
-        raise ValueError("AttemptRecord deterministic root_fingerprint is required")
-    if not record.deterministic.root_fingerprint_source:
-        raise ValueError("AttemptRecord deterministic root_fingerprint_source is required")
-    if not record.deterministic.fault_outcome:
-        raise ValueError("AttemptRecord deterministic fault_outcome is required")
-    for entry in record.enriched:
-        if not entry.facts.fault_outcome:
-            raise ValueError(f"AttemptRecord enriched[{entry.route_id}] fault_outcome is required")
 
 
 def _positive_int(value: int, field_name: str) -> int:

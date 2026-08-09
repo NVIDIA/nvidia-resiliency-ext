@@ -9,11 +9,23 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from ..models import DecisionEvidence, FailureEpisode, L0Bundle
+from .registry import failure_signal_classifiers
+
+_MODEL_SAFE_PROVENANCE_FIELDS = frozenset(
+    {
+        "source",
+        "log_line_count",
+        "log_byte_size",
+        "log_rescanned",
+        "model_used",
+    }
+)
 
 
 @dataclass(frozen=True)
 class _DecisionSelection:
     primary: Any | None
+    selected_observation: Any | None
     primary_line: int | None
     identity_line: int | None
     identity_reason: str
@@ -29,9 +41,10 @@ def build_decision_evidence(bundle: L0Bundle) -> DecisionEvidence:
 
     selected = _select_decision_context(bundle)
     primary = selected.primary
+    selected_observation = selected.selected_observation
+    selected_failure = primary or selected_observation
     primary_line = selected.primary_line
     identity_line = selected.identity_line
-    episode = selected.episode
     incident = selected.incident
     root_fingerprint = selected.root_fingerprint
 
@@ -47,30 +60,82 @@ def build_decision_evidence(bundle: L0Bundle) -> DecisionEvidence:
             or observation.failure_class == primary.failure_class
         )
     ]
+    root_occurrence_groups = _root_occurrence_groups(bundle, selected)
+    root_observer_ranks = (
+        sorted({rank for group in root_occurrence_groups for rank in group.rank_spread})
+        if root_occurrence_groups
+        else None
+    )
+    unattributed_root_occurrence_count = (
+        sum(group.unattributed_occurrence_count for group in root_occurrence_groups)
+        if root_occurrence_groups
+        else None
+    )
+    root_observer_coverage = {
+        "status": "complete" if root_occurrence_groups else "unavailable",
+        "reason": (
+            "root_occurrence_group_associated"
+            if root_occurrence_groups
+            else (
+                "no_deterministic_primary"
+                if primary is None
+                else "root_occurrence_group_not_associated"
+            )
+        ),
+        "source": "complete_l0_occurrence_groups",
+        "projection_caps_applied": False,
+    }
 
-    return DecisionEvidence(
+    decision_evidence = DecisionEvidence(
         deterministic_primary_candidate=primary,
+        selected_observed_failure=selected_observation,
         canonical_observed_identity={
-            "available": primary is not None,
-            "failure_class": primary.failure_class if primary is not None else None,
-            "signature": primary.signature if primary is not None else None,
+            "available": selected_failure is not None,
+            "identity_kind": (
+                "root"
+                if primary is not None
+                else "observation_only" if selected_observation is not None else "none"
+            ),
+            "failure_class": (
+                selected_failure.failure_class if selected_failure is not None else None
+            ),
+            "signature": selected_failure.signature if selected_failure is not None else None,
             "identity_anchor_line": identity_line,
             "identity_anchor_reason": selected.identity_reason,
             "root_fingerprint": root_fingerprint,
             "root_fingerprint_source": selected.root_fingerprint_source,
-            "registry_id": primary.registry_id if primary is not None else None,
+            "observation_fingerprint": (
+                selected_observation.observation_fingerprint
+                if selected_observation is not None
+                else None
+            ),
+            "observation_fingerprint_source": (
+                selected_observation.observation_fingerprint_source
+                if selected_observation is not None
+                else None
+            ),
+            "registry_id": selected_failure.registry_id if selected_failure is not None else None,
+            "classifiers": (
+                list(failure_signal_classifiers(selected_failure.quote or ""))
+                if selected_failure is not None
+                else []
+            ),
         },
         selected_evidence_references=selected.references,
         failure_position={
             "primary_line": primary_line,
             "identity_anchor_line": identity_line,
-            "failure_iteration": primary.failure_iteration if primary is not None else None,
-            "phase": primary.phase if primary is not None else None,
-            "fault_outcome": primary.fault_outcome if primary is not None else None,
-            "causal_role": primary.causal_role if primary is not None else None,
-            "data_position_fingerprint": (
-                primary.data_position_fingerprint if primary is not None else None
+            "selected_observation_line": (
+                selected_observation.line if selected_observation is not None else None
             ),
+            "failure_iteration": (
+                selected_failure.failure_iteration if selected_failure is not None else None
+            ),
+            "phase": selected_failure.phase if selected_failure is not None else None,
+            "fault_outcome": (
+                selected_failure.fault_outcome if selected_failure is not None else None
+            ),
+            "causal_role": selected_failure.causal_role if selected_failure is not None else None,
             "first_terminal_incident_line": run.first_terminal_incident_line,
             "latest_observed_failure_iteration": run.latest_observed_failure_iteration,
             "latest_observed_failure_iteration_line": (run.latest_observed_failure_iteration_line),
@@ -108,18 +173,21 @@ def build_decision_evidence(bundle: L0Bundle) -> DecisionEvidence:
             "progress_after_failure_episode": run.progress_after_failure_episode,
         },
         locality={
-            "rank": primary.rank if primary is not None else None,
-            "node": primary.node if primary is not None else None,
-            "gpu": primary.gpu if primary is not None else None,
+            "rank": selected_failure.rank if selected_failure is not None else None,
+            "node": selected_failure.node if selected_failure is not None else None,
+            "gpu": selected_failure.gpu if selected_failure is not None else None,
             "distributed_incident_kind": (incident.incident_kind if incident is not None else None),
             "distributed_incident_type": (incident.incident_type if incident is not None else None),
             "observed_rank_count": (incident.observed_rank_count if incident is not None else 0),
             "rank_spread": list(incident.rank_spread) if incident is not None else [],
+            "root_observer_ranks": root_observer_ranks,
+            "unattributed_root_occurrence_count": unattributed_root_occurrence_count,
             "job_metadata": asdict(bundle.job_metadata),
         },
         coverage_lossiness={
             "evidence_coverage": dict(bundle.evidence_coverage),
             "selection_summary": dict(bundle.selection_summary),
+            "root_observer_facts": root_observer_coverage,
         },
         provenance={
             "source": "l0a_deterministic_selection",
@@ -129,12 +197,43 @@ def build_decision_evidence(bundle: L0Bundle) -> DecisionEvidence:
             "model_used": False,
         },
     )
+    _validate_model_safe_provenance(decision_evidence.provenance)
+    return decision_evidence
+
+
+def _validate_model_safe_provenance(provenance: Mapping[str, Any]) -> None:
+    unexpected = sorted(set(provenance) - _MODEL_SAFE_PROVENANCE_FIELDS)
+    if unexpected:
+        raise ValueError(
+            "Decision Evidence provenance contains non-model-safe fields: " + ", ".join(unexpected)
+        )
+
+
+def _root_occurrence_groups(
+    bundle: L0Bundle,
+    selected: _DecisionSelection,
+) -> tuple[Any, ...]:
+    primary = selected.primary
+    identity_line = selected.identity_line
+    if primary is None or identity_line is None:
+        return ()
+
+    anchored_groups = tuple(
+        group
+        for group in bundle.occurrence_groups
+        if identity_line in {group.first_line, *group.sample_lines}
+    )
+    if primary.registry_id is None:
+        return anchored_groups
+    return tuple(group for group in anchored_groups if group.registry_id == primary.registry_id)
 
 
 def _select_decision_context(bundle: L0Bundle) -> _DecisionSelection:
     primary = bundle.deterministic_primary_candidate
+    selected_observation = bundle.selected_observed_failure if primary is None else None
+    selected_failure = primary or selected_observation
     primary_line = primary.line if primary is not None else None
-    identity_line = primary_line
+    identity_line = selected_failure.line if selected_failure is not None else None
     identity_reason = "no_deterministic_primary"
     if primary_line is not None:
         identity_line, identity_reason = canonical_identity_anchor_line(
@@ -143,6 +242,8 @@ def _select_decision_context(bundle: L0Bundle) -> _DecisionSelection:
             selection_label="deterministic_primary",
         )
 
+    elif selected_observation is not None:
+        identity_reason = "selected_terminal_observation"
     episode = _failure_episode_for_lines(bundle, primary_line, identity_line)
     incident = (
         distributed_incident_for_line(bundle, identity_line) if identity_line is not None else None
@@ -150,10 +251,10 @@ def _select_decision_context(bundle: L0Bundle) -> _DecisionSelection:
     identity_match = _registry_match_for_line(bundle, identity_line)
     root_fingerprint = None
     root_fingerprint_source = None
-    if incident is not None and incident.history_fingerprint:
+    if primary is not None and incident is not None and incident.history_fingerprint:
         root_fingerprint = incident.history_fingerprint
         root_fingerprint_source = incident.history_fingerprint_source
-    elif identity_match is not None and identity_match.root_fingerprint:
+    elif primary is not None and identity_match is not None and identity_match.root_fingerprint:
         root_fingerprint = identity_match.root_fingerprint
         root_fingerprint_source = identity_match.root_fingerprint_source
     elif primary is not None:
@@ -162,6 +263,9 @@ def _select_decision_context(bundle: L0Bundle) -> _DecisionSelection:
 
     referenced_lines = {line for line in (primary_line, identity_line) if line is not None}
     if episode is not None:
+        referenced_lines.update(episode.lifecycle_fault_lines)
+        referenced_lines.update(episode.recovery_attempt_lines)
+        referenced_lines.update(episode.recovery_confirmation_lines)
         referenced_lines.update(episode.precursor_lines)
         referenced_lines.update(episode.exception_chain_lines)
         if episode.terminal_exception_line is not None:
@@ -199,6 +303,7 @@ def _select_decision_context(bundle: L0Bundle) -> _DecisionSelection:
     }
     return _DecisionSelection(
         primary=primary,
+        selected_observation=selected_observation,
         primary_line=primary_line,
         identity_line=identity_line,
         identity_reason=identity_reason,
@@ -225,6 +330,9 @@ def canonical_identity_anchor_line(
             continue
         chain_end = max((*episode.exception_chain_lines, terminal_line))
         observed_episode_lines = {
+            *episode.lifecycle_fault_lines,
+            *episode.recovery_attempt_lines,
+            *episode.recovery_confirmation_lines,
             *episode.precursor_lines,
             *episode.exception_chain_lines,
             *(confirmation.line for confirmation in episode.cause_confirmations),
@@ -266,6 +374,9 @@ def _failure_episode_for_lines(
             episode.first_exception_line,
             episode.terminal_exception_line,
             episode.identity_anchor_line,
+            *episode.lifecycle_fault_lines,
+            *episode.recovery_attempt_lines,
+            *episode.recovery_confirmation_lines,
             *episode.precursor_lines,
             *episode.exception_chain_lines,
         }

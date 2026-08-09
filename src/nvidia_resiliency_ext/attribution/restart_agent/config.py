@@ -27,12 +27,7 @@ from .l1 import (
     LlmConfig,
     ModelRoute,
 )
-from .models import (
-    DeclaredRecoveryCapability,
-    normalize_declared_recovery_capabilities,
-    normalize_retry_policy,
-    validate_recovery_capability_budgets,
-)
+from .models import PolicyContextConfig, normalize_retry_policy
 
 RESTART_AGENT_CONFIG_SCHEMA_VERSION = "restart_agent_config.v1"
 RESTART_AGENT_CONFIG_FIELDS = frozenset(
@@ -44,12 +39,15 @@ RESTART_AGENT_CONFIG_FIELDS = frozenset(
         "routing",
         "runtime",
         "retry_policy",
-        "declared_recovery_capabilities",
+        "policy_contexts",
         "model_defaults",
         "model_routes",
     }
 )
-TOOL_ADVERTISEMENT_ORDER = (*DEFAULT_ADVERTISED_TOOLS, "get_evidence_objects")
+TOOL_ADVERTISEMENT_ORDER = (
+    "overview",
+    *DEFAULT_ADVERTISED_TOOLS,
+)
 
 
 @dataclass(frozen=True)
@@ -96,7 +94,7 @@ class RestartAgentConfig:
     history: HistoryConfig
     l0_source: L0SourceConfig
     retry_policy: Mapping[str, Any]
-    declared_recovery_capabilities: tuple[DeclaredRecoveryCapability, ...]
+    policy_contexts: PolicyContextConfig
     model_route_specs: tuple[ModelRouteSpec, ...]
     effective_config: Mapping[str, Any]
     config_fingerprint: str
@@ -120,6 +118,7 @@ class RestartAgentConfig:
                 "read_mode": self.l0_source.read_mode,
                 "chunk_size_bytes": self.l0_source.chunk_size_bytes,
             },
+            "policy_contexts": self.policy_contexts.to_payload(),
             "effective_config": self.effective_config,
         }
 
@@ -131,8 +130,15 @@ def load_restart_agent_config(
 ) -> RestartAgentConfig:
     """Read and parse restart-agent configuration from disk."""
 
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    return parse_restart_agent_config(payload, environ=environ)
+    config_path = Path(path).expanduser()
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        return parse_restart_agent_config(payload, environ=environ)
+    except OSError:
+        # Filesystem exceptions already retain the offending filename and type.
+        raise
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"failed to load Restart Agent config {config_path}: {error}") from error
 
 
 def parse_restart_agent_config(
@@ -172,12 +178,8 @@ def parse_restart_agent_config(
     if routing_mode != "collect_all":
         raise ValueError("restart-agent config routing.mode must be 'collect_all'")
     retry_policy = normalize_retry_policy(_optional_mapping(payload, "retry_policy"))
-    declared_recovery_capabilities = normalize_declared_recovery_capabilities(
-        payload.get("declared_recovery_capabilities", ())
-    )
-    validate_recovery_capability_budgets(
-        declared_recovery_capabilities,
-        retry_policy,
+    policy_contexts = PolicyContextConfig.from_mapping(
+        _optional_mapping(payload, "policy_contexts")
     )
     history, l0_source = _parse_runtime_config(_optional_mapping(payload, "runtime"))
 
@@ -246,9 +248,7 @@ def parse_restart_agent_config(
             },
         },
         "retry_policy": dict(retry_policy),
-        "declared_recovery_capabilities": [
-            capability.to_payload() for capability in declared_recovery_capabilities
-        ],
+        "policy_contexts": policy_contexts.to_payload(),
         "model_routes": effective_routes,
     }
     return RestartAgentConfig(
@@ -261,7 +261,7 @@ def parse_restart_agent_config(
         history=history,
         l0_source=l0_source,
         retry_policy=retry_policy,
-        declared_recovery_capabilities=declared_recovery_capabilities,
+        policy_contexts=policy_contexts,
         model_route_specs=tuple(model_route_specs),
         effective_config=effective_config,
         config_fingerprint=_stable_hash(effective_config),
@@ -395,7 +395,7 @@ def _resolve_route(
             "advertisement": {
                 name: name in config.advertised_tools for name in TOOL_ADVERTISEMENT_ORDER
             },
-            "effective_advertised": (list(config.advertised_tools) if config.tools_enabled else []),
+            "effective_advertised": list(config.resolved_advertised_tools()),
             "max_rounds": config.max_tool_rounds,
         },
         "reasoning": {

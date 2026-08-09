@@ -25,7 +25,9 @@ from nvidia_resiliency_ext.attribution.restart_agent.l1 import L1EvidenceResult,
 from nvidia_resiliency_ext.attribution.restart_agent.l3 import (
     DETERMINISTIC_FACT_SELECTOR,
     HistoryEvaluationInput,
+    evaluate_cycle_history,
     evaluate_history,
+    primary_fact_selector,
 )
 from nvidia_resiliency_ext.attribution.restart_agent.models import (
     AffectedEntity,
@@ -34,6 +36,7 @@ from nvidia_resiliency_ext.attribution.restart_agent.models import (
     AttemptFailureFactsSource,
     AttemptProgressSummary,
     AttemptRecord,
+    HistoryIdentityKind,
     PriorAttemptView,
     RestartAgentRequest,
     normalize_attempt_records,
@@ -56,9 +59,12 @@ class _EvidenceExtractor:
                     "operation": "cuda_initialization",
                     "mechanism": "runtime_error",
                     "component": "cuda",
-                    "artifact_path": None,
+                    "direct_failure_object_path": None,
+                    "affected_artifact_path": None,
                 },
             },
+            "observed_failures": [],
+            "selected_observed_failure_id": None,
             "root_cause_assessment": {
                 "summary": "CUDA initialization failed.",
                 "status": "supported_but_unconfirmed",
@@ -94,7 +100,7 @@ class _EvidenceExtractor:
             ],
         }
         return L1EvidenceResult(
-            evidence=evidence,
+            semantic_payload=evidence,
             model="test-model",
             raw_model_output=json.dumps(evidence),
             success=True,
@@ -134,6 +140,8 @@ def _facts(
     outcome: str = "terminal",
     failure_iteration: int | None = None,
     affected_entity: AffectedEntity | None = None,
+    root_observer_ranks: tuple[str, ...] | None = None,
+    unattributed_root_occurrence_count: int | None = None,
     source: AttemptFailureFactsSource = AttemptFailureFactsSource.L0_DETERMINISTIC,
 ) -> AttemptFailureFacts:
     return AttemptFailureFacts(
@@ -141,8 +149,11 @@ def _facts(
         root_fingerprint=root,
         root_fingerprint_source="test_fixture",
         fault_outcome=outcome,
+        primary_line=1,
         failure_iteration=failure_iteration,
         affected_entity=affected_entity,
+        root_observer_ranks=root_observer_ranks,
+        unattributed_root_occurrence_count=unattributed_root_occurrence_count,
     )
 
 
@@ -173,6 +184,8 @@ def _record(
     checkpoint: int | None = None,
     failure_iteration: int | None = None,
     affected_entity: AffectedEntity | None = None,
+    root_observer_ranks: tuple[str, ...] | None = None,
+    unattributed_root_occurrence_count: int | None = None,
 ) -> AttemptRecord:
     return AttemptRecord(
         job_id=job_id,
@@ -182,6 +195,8 @@ def _record(
             root,
             failure_iteration=failure_iteration,
             affected_entity=affected_entity,
+            root_observer_ranks=root_observer_ranks,
+            unattributed_root_occurrence_count=unattributed_root_occurrence_count,
         ),
     )
 
@@ -293,6 +308,75 @@ def test_attempt_failure_facts_exclude_semantic_failure_class():
         normalize_attempt_records([payload])
 
 
+def test_attempt_record_round_trip_preserves_root_observer_availability():
+    unknown = _record("job-unknown", 1)
+    known_unattributed = _record(
+        "job-known",
+        1,
+        root_observer_ranks=(),
+        unattributed_root_occurrence_count=2,
+    )
+
+    unknown_payload = unknown.to_payload()
+    known_payload = known_unattributed.to_payload()
+    replayed = normalize_attempt_records((unknown_payload, known_payload))
+    replayed_by_job = {record.job_id: record for record in replayed}
+
+    assert unknown_payload["deterministic"]["root_observer_ranks"] is None
+    assert unknown_payload["deterministic"]["unattributed_root_occurrence_count"] is None
+    assert known_payload["deterministic"]["root_observer_ranks"] == []
+    assert known_payload["deterministic"]["unattributed_root_occurrence_count"] == 2
+    assert replayed_by_job["job-unknown"].deterministic.root_observer_ranks is None
+    assert replayed_by_job["job-known"].deterministic.root_observer_ranks == ()
+
+
+def test_attempt_failure_facts_require_paired_root_observer_availability():
+    with pytest.raises(ValueError, match="must be available or unavailable together"):
+        _facts(root_observer_ranks=(), unattributed_root_occurrence_count=None)
+
+
+def test_l3_root_observer_comparison_distinguishes_unknown_from_known_empty():
+    unknown_summary = evaluate_history(
+        HistoryEvaluationInput(
+            current_record=_record("job-1", 2),
+            fact_selector=DETERMINISTIC_FACT_SELECTOR,
+            prior_attempts=PriorAttemptView(
+                records=(_record("job-1", 1),),
+                available=True,
+                availability_reason="ready",
+            ),
+        )
+    )
+    known_summary = evaluate_history(
+        HistoryEvaluationInput(
+            current_record=_record(
+                "job-1",
+                2,
+                root_observer_ranks=(),
+                unattributed_root_occurrence_count=1,
+            ),
+            fact_selector=DETERMINISTIC_FACT_SELECTOR,
+            prior_attempts=PriorAttemptView(
+                records=(
+                    _record(
+                        "job-1",
+                        1,
+                        root_observer_ranks=(),
+                        unattributed_root_occurrence_count=1,
+                    ),
+                ),
+                available=True,
+                availability_reason="ready",
+            ),
+        )
+    )
+
+    assert unknown_summary.comparisons[0].same_root_observer_count is False
+    assert unknown_summary.comparisons[0].same_unattributed_root_occurrence_count is False
+    assert known_summary.comparisons[0].same_root_observer_count is True
+    assert known_summary.comparisons[0].same_unattributed_root_occurrence_count is True
+
+
 def test_l3_reports_conflicting_positive_progress_dimensions_as_unknown():
     prior = _record("job-1", 1, completed=10, checkpoint=20)
     current = _record("job-1", 2, completed=11, checkpoint=19)
@@ -317,25 +401,25 @@ def test_l3_reports_conflicting_positive_progress_dimensions_as_unknown():
 
 
 def test_l3_tracks_root_and_exact_affected_entity_recurrence_separately():
-    token_42 = _entity("token:42", kind=AffectedEntityKind.DATA_POSITION)
-    token_43 = _entity("token:43", kind=AffectedEntityKind.DATA_POSITION)
+    checkpoint_42 = _entity("/checkpoints/42", kind=AffectedEntityKind.ARTIFACT)
+    checkpoint_43 = _entity("/checkpoints/43", kind=AffectedEntityKind.ARTIFACT)
     current = _record(
         "job-1",
         3,
         completed=10,
-        affected_entity=token_42,
+        affected_entity=checkpoint_42,
     )
     prior_same = _record(
         "job-1",
         1,
         completed=10,
-        affected_entity=token_42,
+        affected_entity=checkpoint_42,
     )
     prior_different = _record(
         "job-1",
         2,
         completed=10,
-        affected_entity=token_43,
+        affected_entity=checkpoint_43,
     )
 
     summary = evaluate_history(
@@ -397,23 +481,25 @@ def test_l3_entity_scoped_progress_ignores_a_different_artifact():
     assert summary.advanced_beyond_all_same_entity_comparable_attempts is False
 
 
-def test_l3_uses_deterministic_identity_for_prior_records_in_mvp():
+def test_l3_uses_same_route_enriched_identity_for_prior_records():
     assembler = AttemptRecordAssembler()
     prior = assembler.with_enriched(
         _record("job-1", 1, root="deterministic:prior", completed=10),
         route_id="gpt",
-        facts=_facts("enriched:shared", source=AttemptFailureFactsSource.L2_GROUNDED),
+        primary=_facts("enriched:shared", source=AttemptFailureFactsSource.L2_GROUNDED),
+        observation=None,
     )
     current = assembler.with_enriched(
         _record("job-1", 2, root="deterministic:current", completed=10),
         route_id="gpt",
-        facts=_facts("enriched:shared", source=AttemptFailureFactsSource.L2_GROUNDED),
+        primary=_facts("enriched:shared", source=AttemptFailureFactsSource.L2_GROUNDED),
+        observation=None,
     )
 
     summary = evaluate_history(
         HistoryEvaluationInput(
             current_record=current,
-            fact_selector="gpt",
+            fact_selector=primary_fact_selector("gpt"),
             prior_attempts=PriorAttemptView(
                 records=(prior,),
                 available=True,
@@ -423,7 +509,44 @@ def test_l3_uses_deterministic_identity_for_prior_records_in_mvp():
     )
 
     assert summary.same_job_attempts == 1
-    assert summary.matching_root_attempts == 0
+    assert summary.matching_root_attempts == 1
+
+
+def test_l3_keeps_tracks_route_local_without_deterministic_fallback():
+    assembler = AttemptRecordAssembler()
+    prior = _record("job-1", 1, root="shared-root", completed=10)
+    current = assembler.with_enriched(
+        _record("job-1", 2, root="different-deterministic-root", completed=10),
+        route_id="gpt",
+        primary=_facts("shared-root", source=AttemptFailureFactsSource.L2_GROUNDED),
+        observation=AttemptFailureFacts(
+            source=AttemptFailureFactsSource.L2_GROUNDED,
+            identity_kind=HistoryIdentityKind.OBSERVATION_ONLY.value,
+            root_fingerprint=None,
+            root_fingerprint_source=None,
+            observation_fingerprint="observation:transport-loss",
+            observation_fingerprint_source="test_fixture",
+            fault_outcome="terminal",
+            selected_observation_line=2,
+        ),
+    )
+
+    summary = evaluate_cycle_history(
+        current_record=current,
+        prior_attempts=PriorAttemptView(
+            records=(prior,),
+            available=True,
+            availability_reason="ready",
+        ),
+    )
+
+    route = summary.route("gpt")
+    assert route is not None
+    assert route.primary is not None
+    assert route.primary.matching_root_attempts == 0
+    assert route.observation is not None
+    assert route.observation.matching_observation_attempts == 0
+    assert summary.job_progress.same_job_attempts == 1
 
 
 def test_attempt_record_assembler_replaces_one_enriched_route():
@@ -434,10 +557,11 @@ def test_attempt_record_assembler_replaces_one_enriched_route():
         root_fingerprint="observed:checkpoint:read",
         root_fingerprint_source="l2_grounded_primary",
         fault_outcome="terminal",
+        primary_line=1,
     )
 
-    once = assembler.with_enriched(record, route_id="gpt", facts=enriched)
-    twice = assembler.with_enriched(once, route_id="gpt", facts=enriched)
+    once = assembler.with_enriched(record, route_id="gpt", primary=enriched, observation=None)
+    twice = assembler.with_enriched(once, route_id="gpt", primary=enriched, observation=None)
 
     assert len(twice.enriched) == 1
     assert twice.enriched[0].route_id == "gpt"
@@ -458,9 +582,9 @@ def test_runtime_publishes_l0_record_and_reuses_it_as_prior_history(tmp_path):
 
     assert first.trace["runtime_history"]["initial_upserted"] is True
     assert second.trace["runtime_history"]["prior_attempt_count"] == 1
-    assert second.trace["l3_history"]["matching_root_attempts"] == 1
-    assert second.trace["l3_history"]["unknown_progress_attempts"] == 1
-    assert second.result.retry_policy["general_root_ceiling"]["matching_prior_failures"] == 0
+    assert second.trace["l3_history"]["deterministic"]["matching_root_attempts"] == 1
+    assert second.trace["l3_history"]["deterministic"]["unknown_progress_attempts"] == 1
+    assert second.result.retry_policy["general_root_ceiling"]["matching_prior_attempts"] == 0
     assert [item.cycle_id for item in store.records("job-1")] == [1, 2]
 
 
@@ -496,9 +620,10 @@ def test_attempt_progress_can_prove_absence_for_a_recognized_dialect(tmp_path):
     assert progress.training_progress == "not_observed"
     assert progress.checkpoint_progress == "not_observed"
     assert progress.failure_position == "before_observed_training_progress"
+    assert progress.progress_after_failure == "not_observed"
 
 
-def test_store_rejects_deterministic_history_without_fault_outcome():
+def test_store_accepts_attempt_without_failure_for_job_progress_guard():
     record = AttemptRecord(
         job_id="job-1",
         cycle_id=1,
@@ -508,11 +633,14 @@ def test_store_rejects_deterministic_history_without_fault_outcome():
             root_fingerprint="observed:runtimeerror:test",
             root_fingerprint_source="test_fixture",
             fault_outcome=None,
+            primary_line=1,
         ),
     )
 
-    with pytest.raises(ValueError, match="deterministic fault_outcome is required"):
-        InMemoryAttemptRecordStore().upsert_attempt(record)
+    store = InMemoryAttemptRecordStore()
+    store.upsert_attempt(record)
+
+    assert store.records("job-1") == (record,)
 
 
 def test_runtime_reanalysis_replaces_same_cycle_and_clears_old_enrichment(tmp_path):
@@ -523,12 +651,14 @@ def test_runtime_reanalysis_replaces_same_cycle_and_clears_old_enrichment(tmp_pa
     enriched = AttemptRecordAssembler().with_enriched(
         base,
         route_id="old-route",
-        facts=AttemptFailureFacts(
+        primary=AttemptFailureFacts(
             source=AttemptFailureFactsSource.L2_GROUNDED,
             root_fingerprint=base.deterministic.root_fingerprint,
             root_fingerprint_source="old",
             fault_outcome="terminal",
+            primary_line=1,
         ),
+        observation=None,
     )
     store.upsert_attempt(enriched)
     runtime = RestartAgentRuntime(RestartAgent(), attempt_record_store=store)
@@ -608,7 +738,7 @@ def test_runtime_missing_attempt_identity_is_explicit_and_not_stored(
     assert store.records() == ()
 
 
-def test_runtime_does_not_store_attempt_without_deterministic_fingerprint(tmp_path):
+def test_runtime_stores_attempt_without_fingerprint_for_job_progress_guard(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text("training process exited normally\n", encoding="utf-8")
     store = InMemoryAttemptRecordStore()
@@ -619,10 +749,10 @@ def test_runtime_does_not_store_attempt_without_deterministic_fingerprint(tmp_pa
     )
 
     runtime_history = run.trace["runtime_history"]
-    assert runtime_history["upsert_reason"] == "missing_root_fingerprint"
-    assert runtime_history["initial_upserted"] is False
+    assert runtime_history["upsert_reason"] == "stored"
+    assert runtime_history["initial_upserted"] is True
     assert runtime_history["current_attempt_record"] is not None
-    assert store.records() == ()
+    assert len(store.records()) == 1
 
 
 def test_runtime_reports_l0_not_ready_when_log_is_unavailable(tmp_path):
@@ -656,7 +786,9 @@ def test_runtime_does_not_accept_route_enrichment_after_deadline(tmp_path):
     )
     time.sleep(0.15)
 
-    assert run.result.model_results[0].execution_status == "deadline_exceeded"
+    route_result = run.result.model_results[0]
+    assert route_result.execution_status == "failed"
+    assert route_result.l1_execution_assessment["unusable_reason"] == ("analysis_deadline_exceeded")
     assert store.records("job-1")[0].enriched == ()
     assert run.trace["runtime_history"]["enriched_updates"] == 0
 

@@ -143,8 +143,8 @@ def _observed_mechanism_text(text: str) -> str:
     return text[:cut].rstrip(" .,:;-")
 
 
-def grounded_artifact_path(value: object, *, texts: Iterable[str]) -> str | None:
-    """Return a model-proposed artifact path only when source text contains it."""
+def grounded_affected_artifact_path(value: object, *, texts: Iterable[str]) -> str | None:
+    """Return a model-proposed affected artifact only when source text contains it."""
 
     if not isinstance(value, str) or not value.strip():
         return None
@@ -181,35 +181,6 @@ def extract_failure_iteration(text: str) -> int | None:
 
     match = _FAILURE_ITERATION_RE.search(_strip_routing_prefix(text))
     return int(match.group(1)) if match else None
-
-
-def extract_data_position_fingerprint(text: str) -> str | None:
-    identity = extract_data_position_identity(text)
-    if identity is None:
-        return None
-    _kind, _separator, value = identity.partition(":")
-    return fingerprint_for("data_position", [value])
-
-
-def extract_data_position_identity(text: str) -> str | None:
-    """Return an exact typed data position suitable for entity comparison."""
-
-    patterns = (
-        ("token", r"\btoken_id[=:\s]+([a-z0-9_.-]+)"),
-        ("sample", r"\bsample_id[=:\s]+([a-z0-9_.-]+)"),
-        ("window", r"\bwindow_id[=:\s]+([a-z0-9_.-]+)"),
-        ("token", r"\btoken[=:]+([a-z0-9_.-]+)"),
-        ("sample", r"\bsample[=:]+([a-z0-9_.-]+)"),
-        ("window", r"\bwindow[=:]+([a-z0-9_.-]+)"),
-        ("token", r"\btoken\s+(\d+)\b"),
-        ("sample", r"\bsample\s+(\d+)\b"),
-        ("window", r"\bwindow\s+(\d+)\b"),
-    )
-    for kind, pattern in patterns:
-        match = re.search(pattern, text, re.I)
-        if match:
-            return f"{kind}:{match.group(1)}"
-    return None
 
 
 def build_affected_entity(

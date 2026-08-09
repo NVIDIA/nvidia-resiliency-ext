@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import stat
 import time
@@ -51,6 +52,10 @@ from nvidia_resiliency_ext.attribution.restart_agent import (
     RestartAgentRequest,
     RestartAgentRuntime,
 )
+
+from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperationalLogger
+
+logger = logging.getLogger(__name__)
 
 _STATUS_REGISTERED = "registered"
 _STATUS_ANALYZING = "analyzing"
@@ -183,6 +188,7 @@ class RestartAgentServiceBackend:
         self._allowed_root = os.path.realpath(allowed_root)
         self._runtime = runtime
         self._config = config
+        self._operational_log = RestartAgentOperationalLogger(logger)
         self._convergence = convergence
         self._progressive = progressive
         self._accumulator_factory = accumulator_factory
@@ -295,6 +301,13 @@ class RestartAgentServiceBackend:
             if isinstance(entry_or_error, LogAnalyzerError):
                 return entry_or_error
             entry = entry_or_error
+            self._emit_operational(
+                self._operational_log.info,
+                "restart_agent.request.accepted",
+                self._log_context(entry),
+                analysis_intent=intent,
+                status=entry.status,
+            )
             if intent == ANALYSIS_INTENT_TERMINAL:
                 self._start_terminal(entry)
             elif intent == ANALYSIS_INTENT_PROGRESSIVE:
@@ -531,12 +544,37 @@ class RestartAgentServiceBackend:
             return
         if not self._progressive.enabled:
             entry.progressive_phase = "disabled"
+            self._emit_operational(
+                self._operational_log.info,
+                "restart_agent.progressive.registered",
+                self._log_context(entry),
+                status="disabled",
+                pre_end_poll_seconds=self._progressive.pre_end_poll_seconds,
+                active_idle_seconds=self._progressive.active_idle_seconds,
+            )
             return
         self._ensure_accumulator(entry)
         if entry.accumulator is not None:
             entry.progressive_phase = "scheduled"
             entry.next_poll_at = time.monotonic()
             self._scheduler_wakeup.set()
+            self._emit_operational(
+                self._operational_log.info,
+                "restart_agent.progressive.registered",
+                self._log_context(entry),
+                status="scheduled",
+                pre_end_poll_seconds=self._progressive.pre_end_poll_seconds,
+                active_idle_seconds=self._progressive.active_idle_seconds,
+            )
+        else:
+            self._emit_operational(
+                self._operational_log.warning,
+                "restart_agent.progressive.registered",
+                self._log_context(entry),
+                status=entry.progressive_phase,
+                pre_end_poll_seconds=self._progressive.pre_end_poll_seconds,
+                active_idle_seconds=self._progressive.active_idle_seconds,
+            )
 
     def _start_terminal(self, entry: _AttemptExecution) -> None:
         if entry.status in {_STATUS_ANALYZING, _STATUS_COMPLETED}:
@@ -548,6 +586,12 @@ class RestartAgentServiceBackend:
         entry.error = None
         entry.next_poll_at = None
         self._scheduler_wakeup.set()
+        self._emit_operational(
+            self._operational_log.info,
+            "restart_agent.terminal.started",
+            self._log_context(entry),
+            progressive_phase=entry.progressive_phase,
+        )
         entry.future = self._executor.submit(self._execute_terminal, entry.key)
 
     def _execute_terminal(self, key: Hashable) -> None:
@@ -555,6 +599,7 @@ class RestartAgentServiceBackend:
             entry = self._entries.get(key)
             if entry is None:
                 return
+            log_context = self._log_context(entry)
             request = RestartAgentRequest(
                 log_path=entry.log_path,
                 job_id=entry.job_id,
@@ -563,8 +608,41 @@ class RestartAgentServiceBackend:
             accumulator = entry.accumulator
         try:
             drain = self._wait_for_log_convergence(request.log_path, accumulator)
+            drain_fields = {
+                "converged": drain.converged,
+                "completion_reason": drain.completion_reason,
+                "wall_clock_s": drain.wall_clock_s,
+                "poll_count": drain.poll_count,
+                "growth_count": drain.growth_count,
+                "incomplete_tail_included": drain.include_incomplete_tail,
+            }
+            if drain.max_wait_expired:
+                self._emit_operational(
+                    self._operational_log.warning,
+                    "restart_agent.terminal.drain_completed",
+                    log_context,
+                    **drain_fields,
+                )
+            else:
+                self._emit_operational(
+                    self._operational_log.info,
+                    "restart_agent.terminal.drain_completed",
+                    log_context,
+                    **drain_fields,
+                )
+
+            progressive_metrics: Mapping[str, Any] = {}
+
+            def l0_ready(artifacts: Any) -> None:
+                self._emit_operational(
+                    self._operational_log.l0_completed,
+                    log_context,
+                    artifacts,
+                    progressive_metrics=progressive_metrics,
+                )
 
             def deterministic_ready(candidate: DecisionCandidate) -> None:
+                terminal_to_ready_s = None
                 with self._lock:
                     current = self._entries.get(key)
                     if current is None:
@@ -575,19 +653,27 @@ class RestartAgentServiceBackend:
                     current.candidate_source = candidate.candidate_kind
                     current.deterministic_ready_count += 1
                     if current.terminal_at is not None:
-                        current.deterministic_ready_wall_clock_s = (
-                            time.monotonic() - current.terminal_at
-                        )
+                        terminal_to_ready_s = time.monotonic() - current.terminal_at
+                        current.deterministic_ready_wall_clock_s = terminal_to_ready_s
+                self._emit_operational(
+                    self._operational_log.deterministic_candidate_ready,
+                    log_context,
+                    candidate,
+                    terminal_to_ready_s=terminal_to_ready_s,
+                )
 
             def route_complete(result: ModelAnalysisResult, trace: Mapping[str, Any]) -> None:
-                del trace
+                terminal_to_ready_s = None
+                candidate_kind = result.selected_candidate_kind
                 with self._lock:
                     current = self._entries.get(key)
                     if current is None:
                         return
                     current.best_result = result.analysis_result
                     current.best_source = (
-                        f"l1_enriched:{result.route_id}" if result.l1_usable else "deterministic"
+                        f"{candidate_kind}:{result.route_id}"
+                        if candidate_kind == "l1_enriched"
+                        else candidate_kind
                     )
                     current.candidate_result = result.analysis_result
                     current.candidate_source = current.best_source
@@ -596,9 +682,17 @@ class RestartAgentServiceBackend:
                         current.first_route_ready_wall_clock_s is None
                         and current.terminal_at is not None
                     ):
-                        current.first_route_ready_wall_clock_s = (
-                            time.monotonic() - current.terminal_at
-                        )
+                        terminal_to_ready_s = time.monotonic() - current.terminal_at
+                        current.first_route_ready_wall_clock_s = terminal_to_ready_s
+                    elif current.terminal_at is not None:
+                        terminal_to_ready_s = time.monotonic() - current.terminal_at
+                self._emit_operational(
+                    self._operational_log.route_completed,
+                    log_context,
+                    result,
+                    trace,
+                    terminal_to_ready_s=terminal_to_ready_s,
+                )
 
             finalized_l0a = None
             if accumulator is not None:
@@ -623,6 +717,7 @@ class RestartAgentServiceBackend:
                             ),
                         },
                     )
+                    progressive_metrics = dict(finalized_l0a.progressive_metrics)
                     with self._lock:
                         current = self._entries.get(key)
                         if current is not None:
@@ -644,6 +739,7 @@ class RestartAgentServiceBackend:
                     finalized_l0a,
                     on_deterministic_ready=deterministic_ready,
                     on_route_complete=route_complete,
+                    on_l0_ready=l0_ready,
                     retain_detailed_artifacts=False,
                 )
             else:
@@ -651,6 +747,7 @@ class RestartAgentServiceBackend:
                     request,
                     on_deterministic_ready=deterministic_ready,
                     on_route_complete=route_complete,
+                    on_l0_ready=l0_ready,
                     retain_detailed_artifacts=False,
                 )
             model_results = tuple(getattr(run.result, "model_results", ()))
@@ -672,7 +769,25 @@ class RestartAgentServiceBackend:
                             current.completed_at - current.terminal_at
                         )
                     current.future = None
+                    completed_source = current.best_source
+                    completed_total_s = current.analysis_completed_wall_clock_s
+                    completed_route_count = current.route_complete_count
                     self._trim_completed_results()
+                else:
+                    completed_source = "unknown"
+                    completed_total_s = None
+                    completed_route_count = 0
+            self._emit_operational(
+                self._operational_log.info,
+                "restart_agent.analysis.completed",
+                log_context,
+                status="completed",
+                decision=final.decision,
+                decision_basis=final.decision_basis,
+                source=completed_source,
+                terminal_total_s=completed_total_s,
+                route_count=completed_route_count,
+            )
         except Exception as exc:
             with self._lock:
                 self._execution_errors += 1
@@ -689,6 +804,12 @@ class RestartAgentServiceBackend:
                     current.next_poll_at = None
                     current.future = None
                     self._trim_completed_results()
+            self._emit_operational(
+                self._operational_log.error,
+                "restart_agent.analysis.failed",
+                log_context,
+                error_classification=type(exc).__name__,
+            )
 
     def _public_result(self, entry: _AttemptExecution) -> LogAnalysisCycleResult:
         with self._lock:
@@ -703,14 +824,30 @@ class RestartAgentServiceBackend:
             _STATUS_REGISTERED: _PUBLIC_PENDING,
             _STATUS_ANALYZING: _PUBLIC_IN_FLIGHT,
             _STATUS_COMPLETED: _STATUS_COMPLETED,
-            _STATUS_FAILED: _STATUS_FAILED,
+            # ``status`` is the public request lifecycle. A terminal analysis
+            # failure is complete even though its internal execution outcome
+            # remains failed for diagnostics and metrics.
+            _STATUS_FAILED: _STATUS_COMPLETED,
         }[status]
-        payload = result.to_payload() if result is not None else ({"error": error} if error else {})
+        if status == _STATUS_FAILED:
+            payload = {"analysis_outcome": _STATUS_FAILED}
+            if error:
+                payload["error"] = error
+            recommendation = {
+                "action": RECOMMENDATION_UNKNOWN,
+                "reason": "analysis_failed",
+                "source": "restart_agent",
+            }
+        else:
+            payload = (
+                result.to_payload() if result is not None else ({"error": error} if error else {})
+            )
+            recommendation = self._recommendation(result, source)
         return LogAnalysisCycleResult(
             result=payload,
             status=public_status,
             wl_restart=cycle_id or 0,
-            recommendation=self._recommendation(result, source),
+            recommendation=recommendation,
             candidate_recommendation=self._recommendation(candidate_result, candidate_source),
         )
 
@@ -727,6 +864,29 @@ class RestartAgentServiceBackend:
             "reason": result.justification,
             "source": source or "restart_agent",
         }
+
+    @staticmethod
+    def _log_context(entry: _AttemptExecution) -> RestartAgentLogContext:
+        return RestartAgentLogContext(
+            job_id=entry.job_id,
+            cycle_id=entry.cycle_id,
+            log_path=entry.log_path,
+        )
+
+    @staticmethod
+    def _emit_operational(callback: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+        """Keep log-handler or projection failures outside the decision path."""
+
+        try:
+            callback(*args, **kwargs)
+        except Exception as exc:  # pragma: no cover - defensive logging boundary
+            try:
+                logger.warning(
+                    "event=restart_agent.observability.failed error_classification=%s",
+                    type(exc).__name__,
+                )
+            except Exception:  # pragma: no cover - last-resort handler isolation
+                return
 
     def _identity(
         self,
@@ -1034,6 +1194,7 @@ class RestartAgentServiceBackend:
         key: Hashable,
         accumulator: ProgressiveL0Accumulator,
     ) -> bool:
+        started = time.monotonic()
         changed = False
         error: str | None = None
         try:
@@ -1041,6 +1202,9 @@ class RestartAgentServiceBackend:
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
         now = time.monotonic()
+        log_context: RestartAgentLogContext | None = None
+        phase = "unknown"
+        state = accumulator.state()
         with self._lock:
             current = self._entries.get(key)
             if current is None or current.accumulator is not accumulator:
@@ -1059,6 +1223,35 @@ class RestartAgentServiceBackend:
             if error is not None:
                 self._progressive_precompute_errors += 1
                 current.progressive_phase = "precompute_error"
+            log_context = self._log_context(current)
+            phase = current.progressive_phase
+        if log_context is not None:
+            fields = {
+                "changed": changed,
+                "wall_clock_s": time.monotonic() - started,
+                "phase": phase,
+                "bytes_ingested": state.bytes_ingested,
+                "source_ingest_s": state.source_ingest_wall_clock_s,
+                "l0a_reduction_s": state.l0a_reduction_wall_clock_s,
+                "l0a_build_count": state.l0a_build_count,
+                "poll_count": state.poll_count,
+                "growth_count": state.growth_count,
+            }
+            if error is None:
+                self._emit_operational(
+                    self._operational_log.debug,
+                    "restart_agent.progressive.refresh.completed",
+                    log_context,
+                    **fields,
+                )
+            else:
+                self._emit_operational(
+                    self._operational_log.warning,
+                    "restart_agent.progressive.refresh.failed",
+                    log_context,
+                    **fields,
+                    error_classification=error.split(":", 1)[0],
+                )
         self._scheduler_wakeup.set()
         return changed
 
