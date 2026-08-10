@@ -77,8 +77,9 @@ class FaultToleranceProfiler:
         self._otel_attr = None  # attribution span (a nested lookup, tracked off the sweep)
         self._otel_await = None  # standby / round-open wait span (root; makes a spare visible)
         self._otel_launch_start = None  # batch launch_script_start, for the cold-start span
+        self._otel_slurm_job_start = None  # Slurm job-start, for the pre_startup span
         self._otel_cycle_start_ns = None  # current cycle span start (this round's rendezvous start)
-        self._otel_cold_done = False  # nvrx.cold_start emitted (once per agent = per node)
+        self._otel_cold_done = False  # cold_start + pre_startup emitted (once per node)
         self._otel_outcome = None  # outcome the agent staged for the current cycle
         self._otel_extra = {}  # extra attrs the agent staged for the current cycle
 
@@ -124,6 +125,13 @@ class FaultToleranceProfiler:
         """Batch-script launch_script_start, captured outside the single srun. Used once, to emit
         the nvrx.cold_start span spanning launch_script_start to this node's first nvrx event."""
         self._otel_launch_start = ts
+
+    def otel_set_slurm_job_start(self, ts):
+        """Slurm's own job-start time (SLURM_JOB_START_TIME). Used once, to emit the pre_startup
+        span spanning the SLURM job-start -> launch_script_start queue/prolog gap. Under NVRx the
+        agent owns this window (megatron suppresses its own pre_startup when ft_launcher is present),
+        so the whole pre-Python scheduling envelope has a single owner."""
+        self._otel_slurm_job_start = ts
 
     def otel_cycle_start_seconds(self):
         """Wall-clock start of the current cycle span, meaning this round's rendezvous start,
@@ -269,6 +277,24 @@ class FaultToleranceProfiler:
             # this agent's first recorded event. Backdated, closed immediately, once per node.
             if not self._otel_cold_done and self._otel_launch_start is not None:
                 self._otel_cold_done = True
+                # pre_startup (SLURM job-start -> launch_script_start): the queue/prolog gap before
+                # the launch script's first line. The agent owns it under NVRx (megatron suppresses
+                # its own on any ft_launcher cohort), so the pre-Python envelope has one owner. Only
+                # when Slurm's stamp precedes launch_start; name matches the bare-path span so the
+                # goodput taxonomy classifies it identically (BAD;scheduling;pre_startup).
+                if (
+                    self._otel_slurm_job_start is not None
+                    and self._otel_slurm_job_start < self._otel_launch_start
+                ):
+                    ps = self._otel_tracer.start_span(
+                        'pre_startup',
+                        start_time=int(self._otel_slurm_job_start * 1e9),
+                        attributes={
+                            'is_goodput_span': True,
+                            'nvrx.node': node_id_str,
+                        },
+                    )
+                    ps.end(end_time=int(self._otel_launch_start * 1e9))
                 cs = self._otel_tracer.start_span(
                     'nvrx.cold_start',
                     start_time=int(self._otel_launch_start * 1e9),

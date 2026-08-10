@@ -497,6 +497,14 @@ class LocalElasticAgent(SimpleElasticAgent):
                             _prof.otel_set_launch_start(float(_ls))
                         except (TypeError, ValueError):
                             pass
+                    # Slurm job-start gives the pre_startup span (queue/prolog gap before the launch
+                    # script). The agent owns pre_startup under NVRx; megatron suppresses its own.
+                    _js = os.environ.get('SLURM_JOB_START_TIME')
+                    if _js:
+                        try:
+                            _prof.otel_set_slurm_job_start(float(_js))
+                        except (TypeError, ValueError):
+                            pass
                 except Exception as _e:
                     logger.debug("otel recorder attach skipped: %s", _e)
 
