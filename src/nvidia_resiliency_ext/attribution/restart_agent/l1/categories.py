@@ -46,9 +46,7 @@ CATEGORIES: tuple[CategoryDef, ...] = (
     CategoryDef(
         id=3,
         name="Node failure / SLURM externally terminated",
-        description=(
-            "SLURM 'CANCELLED DUE TO NODE FAILURE' or other external node termination."
-        ),
+        description=("SLURM 'CANCELLED DUE TO NODE FAILURE' or other external node termination."),
         decision="RESTART",
         failure_domain="infrastructure",
         retry_outlook="may_recover",
