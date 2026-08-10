@@ -264,9 +264,10 @@ Compatibility
 -------------
 
 Existing attrsvc callers must continue to work without sending new fields.
-Service-mode ``POST`` calls with ``job_id`` continue to support splitlog
-detection and tracking. Single-file ``POST`` calls from older clients remain
-track-only.
+Track-only and terminal service-mode ``POST`` calls with ``job_id`` continue to
+support splitlog detection and tracking. Progressive submissions identify NVRx
+per-cycle files and register them directly. Single-file ``POST`` calls from
+older clients remain track-only.
 
 The final ``GET`` result must remain semantically compatible with the current
 terminal analysis result. A progressive implementation may improve latency, but

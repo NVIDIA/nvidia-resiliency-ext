@@ -68,8 +68,8 @@ the legacy `AttributionControllerConfig` for `mcp`.
 | `NVRX_ATTRSVC_COMPUTE_TIMEOUT`  | Timeout for analysis in seconds                                                                                                                                                                               |
 | `NVRX_ATTRSVC_ANALYSIS_BACKEND` | `lib` (direct Restart Agent, default) or `mcp` (legacy LogSage/Flight Recorder path). |
 | `NVRX_ATTRSVC_RESTART_AGENT_CONFIG` | Optional authoritative `restart_agent_config.v1` JSON file for `lib`; the first attrsvc integration requires exactly one route. |
-| `NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS` | Unchanged-log interval before terminal analysis; default `2`. |
-| `NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS` | Maximum terminal log-drain wait; default `20`. |
+| `NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS` | Required unchanged-log interval after the internal 10-second minimum live observation period; default `5`. |
+| `NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS` | Maximum live terminal observation period before the source freezes; default `40`. |
 | `NVRX_ATTRSVC_RESTART_AGENT_LOG_POLL_SECONDS` | Log-drain polling interval; default `0.25`. |
 
 **LLM API Key**: the default `lib` route requires `LLM_API_KEY_FILE`. A supplied

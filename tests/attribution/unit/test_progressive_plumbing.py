@@ -20,6 +20,7 @@ from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ProgressiveLogAnalysisStartTool,
     ProgressiveStartResult,
 )
+from nvidia_resiliency_ext.attribution.orchestration.tracked_jobs import TrackedJobs
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalyzerError,
     LogAnalyzerSubmitResult,
@@ -116,6 +117,7 @@ def _import_analyzer_with_optional_dependency_stubs(monkeypatch):
 class FakeLogAnalyzer:
     def __init__(self) -> None:
         self.submissions: list[tuple[str, str, str | None]] = []
+        self.splitlog_detection: list[bool] = []
         self.progressive_starts: list[tuple[str, str, str | None]] = []
         self.progressive_started: asyncio.Event | None = None
         self.progressive_release: asyncio.Event | None = None
@@ -151,8 +153,11 @@ class FakeLogAnalyzer:
         log_path: str,
         user: str = "unknown",
         job_id: str | None = None,
+        *,
+        detect_splitlog: bool = True,
     ) -> LogAnalyzerSubmitResult:
         self.submissions.append((log_path, user, job_id))
+        self.splitlog_detection.append(detect_splitlog)
         self.jobs[log_path] = types.SimpleNamespace(
             mode=JobMode.SINGLE,
             user=user,
@@ -253,6 +258,7 @@ def test_progressive_submit_starts_backend_when_enabled(monkeypatch, tmp_path):
     asyncio.run(run())
 
     assert log_analyzer.submissions == [(str(tmp_path / "train_cycle0.log"), "alice", None)]
+    assert log_analyzer.splitlog_detection == [False]
     assert log_analyzer.progressive_starts == [(str(tmp_path / "train_cycle0.log"), "alice", None)]
 
 
@@ -274,6 +280,61 @@ def test_progressive_submit_is_ignored_when_feature_gate_disabled(monkeypatch, t
     asyncio.run(run())
 
     assert log_analyzer.progressive_starts == []
+    assert log_analyzer.splitlog_detection == [False]
+
+
+def test_progressive_registration_skips_splitlog_detection(monkeypatch, tmp_path):
+    log_path = tmp_path / "train_cycle0.log"
+    log_path.write_text("LOGS_DIR=/should/not/be/discovered\n")
+    tracked_paths: list[str] = []
+
+    async def track_submission(path: str) -> None:
+        tracked_paths.append(path)
+
+    def unexpected_detection(_path: str):
+        raise AssertionError("progressive submission attempted split-log detection")
+
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs."
+        "read_and_parse_slurm_output",
+        unexpected_detection,
+    )
+    tracked = TrackedJobs(track_submission=track_submission)
+
+    result = asyncio.run(
+        tracked.create_new_job(
+            str(log_path),
+            "alice",
+            "123",
+            detect_splitlog=False,
+        )
+    )
+
+    assert result.mode == JobMode.SINGLE.value
+    assert tracked.get_job(str(log_path)).job_id == "123"
+    assert tracked_paths == [str(log_path)]
+
+
+def test_non_progressive_registration_retains_splitlog_detection(tmp_path):
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    log_path = tmp_path / "slurm.out"
+    log_path.write_text(f"<< START PATHS >>\nLOGS_DIR={logs_dir}\n<< END PATHS >>\n")
+
+    async def track_submission(_path: str) -> None:
+        raise AssertionError("split-log registration should not track a single file")
+
+    tracked = TrackedJobs(track_submission=track_submission)
+    result = asyncio.run(
+        tracked.create_new_job(
+            str(log_path),
+            "alice",
+            "123",
+        )
+    )
+
+    assert result.mode == JobMode.SPLITLOG.value
+    assert result.logs_dir == str(logs_dir)
 
 
 def test_terminal_submit_starts_final_analysis_that_get_can_join(monkeypatch, tmp_path):
@@ -313,6 +374,7 @@ def test_terminal_submit_starts_final_analysis_that_get_can_join(monkeypatch, tm
     asyncio.run(run())
 
     assert log_analyzer.terminal_runs == [(log_path, "alice", "123")]
+    assert log_analyzer.splitlog_detection == [True]
 
 
 def test_terminal_get_nonblocking_reports_in_flight_without_joining(monkeypatch, tmp_path):

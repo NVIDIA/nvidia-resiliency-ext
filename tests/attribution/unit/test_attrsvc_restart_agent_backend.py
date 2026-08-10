@@ -137,7 +137,12 @@ def _backend(tmp_path, runtime, *, max_total_records: int = 8):
         allowed_root=str(tmp_path),
         runtime=runtime,
         config=_config(max_total_records=max_total_records),
-        convergence=LogConvergencePolicy(quiet_seconds=0, max_wait_seconds=0, poll_seconds=0),
+        convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0,
+            quiet_seconds=0,
+            max_wait_seconds=0,
+            poll_seconds=0,
+        ),
         progressive=ProgressiveAnalysisPolicy(
             enabled=True,
             pre_end_poll_seconds=180,
@@ -146,6 +151,15 @@ def _backend(tmp_path, runtime, *, max_total_records: int = 8):
             max_completed_results=max_total_records,
         ),
     )
+
+
+def test_live_log_convergence_policy_defaults():
+    policy = LogConvergencePolicy()
+
+    assert policy.minimum_wait_seconds == 10.0
+    assert policy.quiet_seconds == 5.0
+    assert policy.max_wait_seconds == 40.0
+    assert policy.poll_seconds == 0.25
 
 
 def test_progressive_start_accepts_expected_file_before_creation_and_preserves_cycle_zero(
@@ -185,6 +199,7 @@ def test_default_terminal_first_policy_registers_then_analyzes_at_terminal(tmp_p
         runtime=runtime,
         config=_config(),
         convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0,
             quiet_seconds=0,
             max_wait_seconds=0,
             poll_seconds=0,
@@ -227,6 +242,7 @@ def test_progressive_start_precomputes_and_terminal_reuses_finalized_l0a(tmp_pat
         runtime=runtime,
         config=_config(),
         convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0,
             quiet_seconds=0,
             max_wait_seconds=0,
             poll_seconds=0,
@@ -299,6 +315,7 @@ def test_terminal_drain_ingests_late_rank_output_and_precomputes_final_boundary(
         runtime=runtime,
         config=_config(),
         convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0,
             quiet_seconds=0.04,
             max_wait_seconds=0.3,
             poll_seconds=0.01,
@@ -373,6 +390,36 @@ def test_terminal_drain_ingests_late_rank_output_and_precomputes_final_boundary(
         backend.shutdown()
 
 
+def test_terminal_drain_requires_minimum_observation_before_quiet_convergence(tmp_path):
+    runtime = _FakeRuntime()
+    backend = RestartAgentServiceBackend(
+        allowed_root=str(tmp_path),
+        runtime=runtime,
+        config=_config(),
+        convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0.04,
+            quiet_seconds=0.02,
+            max_wait_seconds=0.2,
+            poll_seconds=0.005,
+        ),
+    )
+    log_path = tmp_path / "train_cycle1.log"
+    log_path.write_text("RuntimeError: CUDA out of memory\n", encoding="utf-8")
+
+    try:
+        outcome = backend._wait_for_log_convergence(str(log_path), accumulator=None)
+
+        assert outcome.converged is True
+        assert outcome.max_wait_expired is False
+        assert outcome.wall_clock_s >= 0.05
+        assert outcome.completion_reason == "quiet_after_minimum_wait"
+        assert outcome.minimum_wait_seconds == 0.04
+        assert outcome.quiet_seconds == 0.02
+        assert outcome.max_wait_seconds == 0.2
+    finally:
+        backend.shutdown()
+
+
 def test_terminal_drain_observes_source_while_initial_ingest_is_running(tmp_path, monkeypatch):
     # Arrange
     runtime = _FakeRuntime()
@@ -381,6 +428,7 @@ def test_terminal_drain_observes_source_while_initial_ingest_is_running(tmp_path
         runtime=runtime,
         config=_config(),
         convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0,
             quiet_seconds=0.02,
             max_wait_seconds=0.5,
             poll_seconds=0.01,
@@ -432,6 +480,7 @@ def test_terminal_drain_completion_wakes_reader_without_poll_delay(tmp_path, mon
         runtime=runtime,
         config=_config(),
         convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0,
             quiet_seconds=0.01,
             max_wait_seconds=2,
             poll_seconds=1,
@@ -587,7 +636,12 @@ def test_terminal_missing_log_returns_explicit_restart_agent_unavailable_result(
         allowed_root=str(tmp_path),
         runtime=build_restart_agent_runtime(config),
         config=config,
-        convergence=LogConvergencePolicy(quiet_seconds=0, max_wait_seconds=0, poll_seconds=0),
+        convergence=LogConvergencePolicy(
+            minimum_wait_seconds=0,
+            quiet_seconds=0,
+            max_wait_seconds=0,
+            poll_seconds=0,
+        ),
     )
     log_path = tmp_path / "never_created_cycle1.log"
 
