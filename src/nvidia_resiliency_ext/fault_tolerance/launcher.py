@@ -108,6 +108,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
+from nvidia_resiliency_ext.shared_utils import _otel_fallbacks
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
@@ -451,7 +452,147 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
 
+        # The ft_launcher agent runs in its own process, separate from the training workers, so
+        # it stands up its own nemo-lens tracer to emit injob restart-cycle spans to the node's
+        # collector, mirroring the async checkpoint worker's independent setup_telemetry(). The
+        # per-cycle span tree is owned by the ProfilingEvent recorder; the agent only annotates,
+        # stages and closes it through the _otel_* helpers below. The tracer is only stood up
+        # when the workload configured lens telemetry; otherwise everything stays no-op.
+        self._otel_handle = None
+        if os.environ.get('NEMO_LENS_EXPORTER'):
+            try:
+                _otel_cfg = _otel_fallbacks.NemoLensConfig.from_env(prefix='NEMO_LENS')
+                _otel_cfg.enabled = True
+                self._otel_handle = _otel_fallbacks.setup_telemetry(
+                    _otel_cfg,
+                    rank=0,
+                    world_size=1,
+                    resource_attributes={
+                        'nvrx.role': 'ft_launcher_agent',
+                        'nvrx.node': str(self._node_id),
+                    },
+                )
+            except Exception as _otel_e:  # never let telemetry setup break the launcher
+                logger.debug("OTel agent tracer setup skipped: %s", _otel_e)
+                self._otel_handle = None
+            # Register the agent tracer with the ProfilingEvent recorder so its pre-placed
+            # boundary events (rendezvous, health_check, worker_launch, run, teardown and
+            # attribution, fired both from here and from the rendezvous handler) become phase
+            # spans that are flushed immediately. That is what lets an evicted node's short,
+            # completed phase spans reach the collector before its kill.
+            if self._otel_handle is not None:
+                try:
+                    from opentelemetry import trace as _ot_trace
+
+                    from nvidia_resiliency_ext.shared_utils.profiling import _get_global_profiler
+                    _prov = _ot_trace.get_tracer_provider()
+                    _flush = (lambda: _prov.force_flush(timeout_millis=1500)) \
+                        if hasattr(_prov, 'force_flush') else None
+                    _prof = _get_global_profiler()
+                    _prof.attach_otel(self._otel_handle.tracer, flush=_flush)
+                    # batch launch_script_start (outside the single srun) gives the cold-start span
+                    _ls = os.environ.get('LENS_LAUNCH_SCRIPT_START_TIME')
+                    if _ls:
+                        try:
+                            _prof.otel_set_launch_start(float(_ls))
+                        except (TypeError, ValueError):
+                            pass
+                    # Slurm job-start gives the pre_startup span (queue/prolog gap before the launch
+                    # script). The agent owns pre_startup under NVRx; megatron suppresses its own.
+                    _js = os.environ.get('SLURM_JOB_START_TIME')
+                    if _js:
+                        try:
+                            _prof.otel_set_slurm_job_start(float(_js))
+                        except (TypeError, ValueError):
+                            pass
+                except Exception as _e:
+                    logger.debug("otel recorder attach skipped: %s", _e)
+
     DEFAULT_ROLE = "default"  # FIXME
+
+    # OTel injob restart-cycle spans (agent process).
+    # The per-cycle span tree is owned by the ProfilingEvent recorder (shared_utils/profiling.py):
+    # it opens 'nvrx.restart.cycle' at RENDEZVOUS_STARTED and nests the phase children
+    # (health_check, rendezvous, worker_launch, run, teardown and attribution) as a sweep,
+    # closing the cycle at WORKER_TERMINATED or NODE_EXCLUDED. The agent's job is only to (a)
+    # enrich the open cycle span with restart-budget metadata, (b) stage the outcome
+    # (failed/peer_restart) before the teardown event closes it, and (c) close terminal cycles
+    # (success/terminated) that have no teardown event. All of it delegates to the recorder.
+    def _otel_profiler(self):
+        if self._otel_handle is None:
+            return None
+        try:
+            from nvidia_resiliency_ext.shared_utils.profiling import _get_global_profiler
+            return _get_global_profiler()
+        except Exception as _e:
+            logger.debug("otel profiler lookup skipped: %s", _e)
+            return None
+
+    def _otel_annotate_cycle(self):
+        """Enrich the recorder's currently-open cycle span with this agent's restart-budget
+        and rendezvous metadata. The recorder opens the cycle at rendezvous; the agent is what
+        knows the budget."""
+        prof = self._otel_profiler()
+        if prof is None:
+            return
+        try:
+            spec = self._worker_group.spec
+            wg = self._worker_group
+            attrs = {
+                'nvrx.remaining_restarts': self._remaining_restarts,
+                'nvrx.max_restarts': spec.max_restarts,
+                'nvrx.node': str(self._node_id),
+                'nvrx.membership': 'active',   # annotate runs after this node launched workers
+            }
+            try:
+                attrs['nvrx.group_rank'] = wg.group_rank
+                attrs['nvrx.group_world_size'] = wg.group_world_size
+            except Exception:
+                pass
+            try:
+                attrs['nvrx.rdzv_run_id'] = spec.rdzv_handler.get_run_id()
+            except Exception:
+                pass
+            # cluster topology for this cycle, from the same source as cycle_info (rdzv-handler
+            # getters plus infra_rank). Lets a cycle span answer who was active or standby, and
+            # which physical rank this node held.
+            try:
+                from nvidia_resiliency_ext.fault_tolerance.utils import get_infrastructure_rank
+                attrs['nvrx.infra_rank'] = get_infrastructure_rank(skip_nodename_logic=True)
+            except Exception:
+                pass
+            for _key, _getter in (('nvrx.active_nodes', 'get_active_node_addrs'),
+                                  ('nvrx.standby_nodes', 'get_standby_node_addrs'),
+                                  ('nvrx.active_ranks', 'get_active_ranks')):
+                try:
+                    _v = getattr(spec.rdzv_handler, _getter)()
+                    if _v is not None:
+                        attrs[_key] = ",".join(str(x) for x in _v)
+                except Exception:
+                    pass
+            prof.otel_annotate_cycle(**attrs)
+        except Exception as _e:
+            logger.debug("otel annotate_cycle skipped: %s", _e)
+
+    def _otel_stage_outcome(self, outcome, **attrs):
+        """Stage the cycle outcome (failed/peer_restart) before the teardown event closes it."""
+        prof = self._otel_profiler()
+        if prof is None:
+            return
+        try:
+            prof.otel_stage_outcome(outcome, **attrs)
+        except Exception as _e:
+            logger.debug("otel stage_outcome skipped: %s", _e)
+
+    def _otel_end_cycle(self, outcome, **attrs):
+        """Close a terminal cycle (success/terminated) that has no teardown event to close it."""
+        prof = self._otel_profiler()
+        if prof is None:
+            return
+        try:
+            prof.otel_finish_cycle(outcome, **attrs)
+        except Exception as _e:
+            logger.debug("otel end_cycle skipped: %s", _e)
 
     # ============================================================================
     # Global Restart/Cycle Tracking for Job Array Deployments
@@ -577,6 +718,20 @@ class LocalElasticAgent(SimpleElasticAgent):
         finally:
             if not shutdown_called:
                 self._shutdown()
+            # Close any still-open cycle span and flush the agent tracer. BatchSpanProcessor
+            # only flushes on shutdown, so without this the last cycle's spans would be
+            # dropped on exit.
+            if getattr(self, '_otel_handle', None) is not None:
+                try:
+                    self._otel_end_cycle('terminated')
+                    # _otel_end_cycle already bounded-flushed the spans, and handle.shutdown() can
+                    # block on a dead collector for longer than the SIGTERM-to-SIGKILL grace, so
+                    # bound it here as well.
+                    _otel_sd = threading.Thread(target=self._otel_handle.shutdown, daemon=True)
+                    _otel_sd.start()
+                    _otel_sd.join(1.5)
+                except Exception:
+                    pass
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
 
@@ -655,6 +810,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         logger.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
 
         self._initialize_workers(self._worker_group)
+        self._otel_annotate_cycle()  # OTel: enrich the cycle the recorder opened at rendezvous
         monitor_interval = spec.monitor_interval
         rdzv_handler = spec.rdzv_handler
 
@@ -675,6 +831,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                     self._exit_barrier_timeout,
                 )
+                self._otel_end_cycle('succeeded')  # OTel: close the cycle span (clean finish)
                 self._exit_barrier()
                 return run_result
 
@@ -717,11 +874,19 @@ class LocalElasticAgent(SimpleElasticAgent):
                     f"{self._remaining_restarts}/{spec.max_restarts} attempts left; "
                     f"will restart worker group"
                 )
+                # Stage the outcome before the restart; the recorder stamps it and closes the cycle
+                # when the teardown (WORKER_TERMINATED) event fires inside
+                # _handle_restart_decision. The teardown, rendezvous and worker_launch phase spans
+                # are what now covers the restart gap.
+                self._otel_stage_outcome(
+                    'failed',
+                    **{'nvrx.state': state.name, 'nvrx.failures': len(run_result.failures or {})},
+                )
                 should_restart = self._handle_restart_decision(
                     role, spec, log_msg, open_rendezvous=True,
                 )
-
                 if should_restart:
+                    self._otel_annotate_cycle()  # enrich the cycle the recorder just re-opened
                     continue  # Continue monitoring after restart
 
                 # No more restarts (either exhausted or early termination)
@@ -759,14 +924,17 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
                     # The node that triggered the failure already opened the rendezvous.
+                    # Stage the peer-restart outcome; the recorder closes this cycle at the teardown
+                    # event inside _handle_restart_decision and re-opens the next at rendezvous.
+                    self._otel_stage_outcome('peer_restart')
                     should_restart = self._handle_restart_decision(
                         role, spec, log_msg, open_rendezvous=False,
                     )
-
                     if not should_restart:
                         self._stop_workers(self._worker_group)
                         self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
+                    self._otel_annotate_cycle()  # joined the restart -> enrich the new cycle
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
 
@@ -1107,6 +1275,20 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         current_cycle_info_path = self._current_cycle_info_path()
 
+        # One launch stamp for this worker cohort, so every restart hands its workers a fresh
+        # per-restart anchor. The batch script's launch_script_start is set once, outside the
+        # single srun, and is stale for restarts; NVRX_LAUNCH_TIME is the in-srun equivalent each
+        # cohort actually needs. The trainer uses it as its per-restart launch anchor, so its
+        # startup span measures this relaunch (rendezvous rejoin, spawn, import) inside this
+        # cycle's run span.
+        _nvrx_cohort_launch = repr(time.time())
+        _nvrx_cycle = str(self._get_global_cycle_number())
+        try:
+            from nvidia_resiliency_ext.fault_tolerance.utils import get_infrastructure_rank
+            _nvrx_infra = str(get_infrastructure_rank(skip_nodename_logic=True))
+        except Exception:
+            _nvrx_infra = None
+
         for worker in worker_group.workers:
             local_rank = worker.local_rank
 
@@ -1136,6 +1318,23 @@ class LocalElasticAgent(SimpleElasticAgent):
                 worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
                 worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
+            worker_env["NVRX_LAUNCH_TIME"] = _nvrx_cohort_launch
+            worker_env["NVRX_CYCLE"] = _nvrx_cycle
+            worker_env["NVRX_MEMBERSHIP"] = "active"   # a launched worker is active this cycle
+            if _nvrx_infra is not None:
+                worker_env["NVRX_INFRA_RANK"] = _nvrx_infra
+            # For any cycle after the first (an in-place restart or a promoted spare, both of
+            # which launch at cycle > 0) anchor pre_startup at this round's rendezvous start,
+            # meaning the recorder's cycle-span start, rather than the stale sbatch job start.
+            # Cycle 0 leaves it unset so pre_startup falls back to the real sbatch queue time.
+            if _nvrx_cycle and _nvrx_cycle != "0":
+                try:
+                    from nvidia_resiliency_ext.shared_utils.profiling import _get_global_profiler
+                    _cs = _get_global_profiler().otel_cycle_start_seconds()
+                    if _cs is not None:
+                        worker_env["NVRX_CYCLE_START_TIME"] = repr(_cs)
+                except Exception:
+                    pass
 
             if self._log_line_prefix_template:
                 log_line_prefix = Template(self._log_line_prefix_template).safe_substitute(
