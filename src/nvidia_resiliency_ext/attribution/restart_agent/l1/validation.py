@@ -202,9 +202,7 @@ def repair_schema_version(payload: Any) -> list[str]:
         return notes
     if actual is None:
         payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
-        notes.append(
-            f"schema_version: added missing field, set to {L1_EVIDENCE_SCHEMA_VERSION!r}"
-        )
+        notes.append(f"schema_version: added missing field, set to {L1_EVIDENCE_SCHEMA_VERSION!r}")
     elif isinstance(actual, str) and actual.startswith("restart_agent"):
         payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
         notes.append(
