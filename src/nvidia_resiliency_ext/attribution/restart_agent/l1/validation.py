@@ -174,10 +174,51 @@ def repair_overlong_category_rationale(payload: Any) -> list[str]:
     return notes
 
 
+def repair_schema_version(payload: Any) -> list[str]:
+    """In-place fix: normalize a similar-but-wrong schema_version string.
+
+    Some models (observed: gemini) hallucinate a schema version like
+    "restart_agent_decision_evidence.v1" instead of the expected
+    "restart_agent_evidence.v1" - the "decision" substring is bleed-through
+    from another schema name used elsewhere in the analyzer artifacts.
+
+    Only rewrites when the payload is otherwise shaped like this schema
+    (has an analysis_status field) and the current schema_version either
+    is missing or starts with "restart_agent". This prevents silently
+    accepting a truly foreign payload while forgiving cosmetic model errors.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    if payload.get("analysis_status") is None:
+        # Not obviously our schema; do not touch.
+        return notes
+    actual = payload.get("schema_version")
+    if actual == L1_EVIDENCE_SCHEMA_VERSION:
+        return notes
+    if actual is None:
+        payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
+        notes.append(
+            f"schema_version: added missing field, set to {L1_EVIDENCE_SCHEMA_VERSION!r}"
+        )
+    elif isinstance(actual, str) and actual.startswith("restart_agent"):
+        payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
+        notes.append(
+            f"schema_version: normalized {actual!r} -> {L1_EVIDENCE_SCHEMA_VERSION!r} "
+            f"(model hallucinated similar version string)"
+        )
+    return notes
+
+
 def repair_model_evidence(payload: Any) -> list[str]:
     """Aggregate all in-place repairs. Returns the concatenated repair notes."""
 
     notes: list[str] = []
+    notes.extend(repair_schema_version(payload))
     notes.extend(repair_biconditional_unknowns(payload))
     notes.extend(repair_overlong_lists(payload))
     notes.extend(repair_invalid_evidence_supports(payload))
