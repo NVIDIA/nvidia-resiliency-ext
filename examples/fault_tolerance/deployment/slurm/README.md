@@ -93,9 +93,10 @@ ClusterUUID, e.g. H100), `NVRX_GPUS_PER_NUMA` (2), `NVRX_LOG_DEBUG` (true),
 
 `NVRX_STORE_CONNECT_WAIT` and `NVRX_RDZV_HOST_WAIT` share a default on purpose. A cold
 spare that starts in the window between task 0's `srun` exiting and its `EXIT` trap
-writing `RDZV_CLOSED` escapes both the flag and `cancel_pending_spares`, and will hold
-its node until one of these two expires — the gate wait if it started before task 0
-published `rdzv_host`, the store wait if after. That drain is on the critical path:
+writing `RDZV_CLOSED` escapes the flag, and holds its node until `cancel_generation`
+collects it — or, if that `scancel` failed, until one of these two expires: the gate wait
+if it started before task 0 published `rdzv_host`, the store wait if after. That drain is
+on the critical path:
 `--dependency=singleton` holds the successor generation until the array's last task
 exits. Raise `NVRX_STORE_CONNECT_WAIT` where task 0's startup can exceed it (container
 pull, cold shared filesystem) — set too tight, no generation ever forms.
@@ -143,6 +144,13 @@ restart a few times before giving up) and `NVRX_FAULT_DELAY` (60).
 init + `NVRX_FAULT_DELAY` + the progress check; lower `NVRX_FAULT_DELAY` to speed it up).
 Watch for `ft_launcher` exit `93`, then `cancel_chain` in task 0's stdout; the watcher
 then reports `chain_exhausted` (and, if `cancel_chain` had failed, `chain_not_cancelled`).
+At the demo's `NODES_PER_TASK=1` task 0 records 93 itself: one task per step, no peer to
+trigger a teardown. At `NODES_PER_TASK>1` on a site with `KillOnBadExit=1` it will not — a
+peer exits 93 first, the step comes down, and task 0 is signalled during its store-host
+grace wait, so `srun` returns 143. That is why the trap reads `control/no_restart` rather
+than `$?`. `chain_not_cancelled` keys on sacct's code, so it cannot see that case either; a
+`cancel_chain` that fails there shows up as `chain_exhausted` or in `squeue`, not in that
+detector.
 
 ### Hot spares vs cold spares
 
@@ -181,10 +189,21 @@ neither the job nor `squeue` will tell you about.
 3. **`ft_launcher` runs.** Sections bound each phase — `setup:900,step:60,
    checkpointing:300` — and out-of-section code gets 90s. NVRx restarts in place, up to
    `--max-restarts`, promoting standby nodes as needed.
-4. **Teardown.** Task 0's trap writes `RDZV_CLOSED` and releases the pool. On exit
-   code 93 (NVRx: do not restart) it cancels the queued chain instead, because
-   otherwise the singleton dependency would start the next generation and reproduce
-   the same failure.
+4. **Teardown.** Task 0's trap writes `RDZV_CLOSED`, cancels the queued chain if NVRx
+   returned the no-restart verdict (otherwise the singleton dependency would start the
+   next generation and reproduce the same failure), and finally `scancel`s this array
+   outright — every task, any state, so a cold spare that escaped the gate does not hold
+   a node for the length of `NVRX_STORE_CONNECT_WAIT`.
+
+   The verdict is read from a **file**, not from task 0's exit code. Where the site sets
+   `KillOnBadExit=1` and `NODES_PER_TASK>1`, the first peer to exit 93 takes the step down,
+   and the store host — last alive by design, since it waits ~3s after closing the
+   rendezvous so peers can read the final TCPStore state — is signalled mid-wait, leaving
+   `srun` to hand the batch script 143. So each task's `sh` writes
+   `control/no_restart` before exiting 93; SLURM's task is that `sh`, so the write always
+   precedes the exit that triggers the teardown, and any node that exited cleanly is a
+   better witness than task 0's own code. The flag is per-generation and needs no cleanup;
+   `cancel_chain` remains the one mechanism that stops the successors.
 
 ---
 

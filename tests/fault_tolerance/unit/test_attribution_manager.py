@@ -26,6 +26,7 @@ def _args(**overrides):
         "ft_attribution_stop_action": None,
         "ft_attribution_log_level": None,
         "ft_attribution_export_url": None,
+        "ft_nvrx_logfile": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -94,9 +95,25 @@ def test_managed_attribution_config_derives_applog_dir_and_log_file(tmp_path):
     assert cfg.endpoint == "localhost"
     assert cfg.client_endpoint.endpoint == f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}"
     assert cfg.applog_dir == str(tmp_path / "logs")
-    assert cfg.log_file == str(tmp_path / "logs" / "train_attribution.log")
+    assert cfg.log_file == str(tmp_path / "logs" / "nvrx" / "train_attribution.log")
     assert cfg.is_enabled
     assert cfg.is_managed
+
+
+def test_managed_attribution_log_uses_nvrx_log_stem_and_directory(tmp_path):
+    base_log = tmp_path / "application" / "train.log"
+    nvrx_log = tmp_path / "nvrx" / "job" / "logs" / "launcher.log"
+    cfg = AttributionConfig.from_args(
+        _args(
+            ft_attribution_endpoint="localhost",
+            ft_nvrx_logfile=str(nvrx_log),
+        ),
+        str(base_log),
+        FaultToleranceConfig(),
+    )
+
+    assert cfg.applog_dir == str(tmp_path / "application")
+    assert cfg.log_file == str(nvrx_log.parent / "launcher_attribution.log")
 
 
 @pytest.mark.parametrize(
@@ -213,6 +230,17 @@ def test_attribution_config_accepts_lib_analysis_backend(tmp_path):
     )
 
     assert cfg.analysis_backend == "lib"
+
+
+def test_managed_attrsvc_inherits_log_convergence_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS", "15")
+    monkeypatch.setenv("NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS", "60")
+    cfg = _managed_cfg(tmp_path)
+
+    env = AttributionManager(cfg, is_store_host=True)._child_env(str(tmp_path / "key"))
+
+    assert env["NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS"] == "15"
+    assert env["NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS"] == "60"
 
 
 def test_attribution_stop_action_defaults_to_log_only(tmp_path):

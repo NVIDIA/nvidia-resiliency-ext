@@ -1337,8 +1337,11 @@ retention.
 The existing terminal-drain settings remain
 `NVRX_ATTRSVC_RESTART_AGENT_LOG_POLL_SECONDS`,
 `NVRX_ATTRSVC_RESTART_AGENT_LOG_QUIET_SECONDS`, and
-`NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS`, with defaults of `0.25`, `2`,
-and `20` seconds respectively.
+`NVRX_ATTRSVC_RESTART_AGENT_LOG_MAX_WAIT_SECONDS`, with defaults of `0.25`, `5`,
+and `40` seconds respectively. Live attrsvc analysis also requires an internal
+10-second minimum observation period before quiet can establish convergence.
+Direct CLI/library analysis treats an existing input as a known-complete
+snapshot and does not wait for source convergence.
 
 The progressive implementation introduces two internal typed contracts:
 

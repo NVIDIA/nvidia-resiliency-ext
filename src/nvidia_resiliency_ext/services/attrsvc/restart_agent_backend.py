@@ -65,8 +65,9 @@ _ELIGIBLE_NVRX_USES = frozenset({"eligible", "eligible_degraded"})
 class LogConvergencePolicy:
     """Bounded wait for log-funnel writes visible after terminal notification."""
 
-    quiet_seconds: float = 2.0
-    max_wait_seconds: float = 20.0
+    minimum_wait_seconds: float = 10.0
+    quiet_seconds: float = 5.0
+    max_wait_seconds: float = 40.0
     poll_seconds: float = 0.25
 
 
@@ -77,6 +78,10 @@ class _DrainOutcome:
     wall_clock_s: float = 0.0
     poll_count: int = 0
     growth_count: int = 0
+    completion_reason: str = "unknown"
+    minimum_wait_seconds: float = 0.0
+    quiet_seconds: float = 0.0
+    max_wait_seconds: float = 0.0
 
     @property
     def include_incomplete_tail(self) -> bool:
@@ -89,6 +94,10 @@ class _DrainOutcome:
             "wall_clock_s": round(self.wall_clock_s, 6),
             "poll_count": self.poll_count,
             "growth_count": self.growth_count,
+            "completion_reason": self.completion_reason,
+            "minimum_wait_seconds": self.minimum_wait_seconds,
+            "quiet_seconds": self.quiet_seconds,
+            "max_wait_seconds": self.max_wait_seconds,
         }
 
 
@@ -774,7 +783,14 @@ class RestartAgentServiceBackend:
     ) -> _DrainOutcome:
         policy = self._convergence
         if policy.max_wait_seconds <= 0:
-            return _DrainOutcome(converged=True, max_wait_expired=False)
+            return _DrainOutcome(
+                converged=True,
+                max_wait_expired=False,
+                completion_reason="disabled",
+                minimum_wait_seconds=policy.minimum_wait_seconds,
+                quiet_seconds=policy.quiet_seconds,
+                max_wait_seconds=policy.max_wait_seconds,
+            )
         reader_ready = Event()
         stop_observer = Event()
         notifications: SimpleQueue[str] = SimpleQueue()
@@ -843,6 +859,7 @@ class RestartAgentServiceBackend:
     ) -> _DrainOutcome | None:
         policy = self._convergence
         started = time.monotonic()
+        quiet_eligible_at = started + policy.minimum_wait_seconds
         unchanged_since: float | None = None
         previous: tuple[int, int] | None = None
         precompute_notified_for: tuple[int, int] | None = None
@@ -872,7 +889,8 @@ class RestartAgentServiceBackend:
             if (
                 current is not None
                 and unchanged_since is not None
-                and now - unchanged_since >= policy.quiet_seconds
+                and now >= quiet_eligible_at
+                and now - max(unchanged_since, quiet_eligible_at) >= policy.quiet_seconds
                 and reader_ready.is_set()
             ):
                 return _DrainOutcome(
@@ -881,6 +899,10 @@ class RestartAgentServiceBackend:
                     wall_clock_s=now - started,
                     poll_count=poll_count,
                     growth_count=growth_count,
+                    completion_reason="quiet_after_minimum_wait",
+                    minimum_wait_seconds=policy.minimum_wait_seconds,
+                    quiet_seconds=policy.quiet_seconds,
+                    max_wait_seconds=policy.max_wait_seconds,
                 )
             if now - started >= policy.max_wait_seconds:
                 return _DrainOutcome(
@@ -889,6 +911,10 @@ class RestartAgentServiceBackend:
                     wall_clock_s=now - started,
                     poll_count=poll_count,
                     growth_count=growth_count,
+                    completion_reason="max_wait_expired",
+                    minimum_wait_seconds=policy.minimum_wait_seconds,
+                    quiet_seconds=policy.quiet_seconds,
+                    max_wait_seconds=policy.max_wait_seconds,
                 )
             remaining = policy.max_wait_seconds - (time.monotonic() - started)
             if remaining <= 0:
@@ -898,6 +924,10 @@ class RestartAgentServiceBackend:
                     wall_clock_s=time.monotonic() - started,
                     poll_count=poll_count,
                     growth_count=growth_count,
+                    completion_reason="max_wait_expired",
+                    minimum_wait_seconds=policy.minimum_wait_seconds,
+                    quiet_seconds=policy.quiet_seconds,
+                    max_wait_seconds=policy.max_wait_seconds,
                 )
             if stop_observer.wait(min(max(policy.poll_seconds, 0.01), remaining)):
                 return None
