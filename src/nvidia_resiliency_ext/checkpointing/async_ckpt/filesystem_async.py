@@ -301,8 +301,6 @@ class FileSystemWriterAsync(FileSystemWriter):
                     return ten, True
                 # GPU tensors will be moved to CPU in preload_tensors
                 return ten, False
-            # Do not gate this on is_shared(): queue promotion happens after this point.
-            # Unconditional cloning also preserves the existing CPU-view handling.
             return ten.clone(), False
 
         def resolve_data(items):
