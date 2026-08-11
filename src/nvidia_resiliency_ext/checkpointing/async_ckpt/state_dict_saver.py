@@ -183,7 +183,7 @@ class CheckpointMetadataCache:
                 save_state_dict_ret[1] = self.cached_global_metadata
         return save_state_dict_ret
 
-    def get_cache_metadata(self) -> Optional[Tuple[SavePlan, SavePlan, bool, List[SavePlan]]]:
+    def get_cache_metadata(self) -> Tuple[SavePlan, SavePlan, bool, List[SavePlan]]:
         """
         Retrieves the cached metadata components.
 
