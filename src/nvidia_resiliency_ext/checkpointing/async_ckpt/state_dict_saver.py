@@ -197,15 +197,6 @@ class CheckpointMetadataCache:
             self.loaded_all_plans,
         )
 
-    def get_metadata_caching_status(self):
-        """
-        Retrieves the current caching status
-
-        This function returns the current caching status of the checkpoint metadata
-        """
-        return self.validated_cache_reuse, self.validated_loaded_metadata_reuse
-
-
 _checkpoint_metadata_cache = None
 
 
@@ -220,17 +211,6 @@ def init_checkpoint_metadata_cache(cached_global_metadata: Metadata = None):
     if _checkpoint_metadata_cache is None:
         _checkpoint_metadata_cache = CheckpointMetadataCache()
     _checkpoint_metadata_cache.set_cached_global_metadata(cached_global_metadata)
-
-
-def get_metadata_caching_status():
-    """
-    Retrieves the current caching status
-
-    This function returns the current caching status of the checkpoint metadata
-    """
-    global _checkpoint_metadata_cache
-    if _checkpoint_metadata_cache is not None:
-        return _checkpoint_metadata_cache.get_metadata_caching_status()
 
 
 def save_state_dict_async_plan(
