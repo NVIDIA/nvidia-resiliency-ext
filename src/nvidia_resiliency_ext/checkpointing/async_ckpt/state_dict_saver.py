@@ -77,19 +77,19 @@ class CheckpointMetadataCache:
         # Cached SavePlans to skip plan in `save_state_dict_async_plan`
         # cached outcome of `SavePlan.prepare_global_plan`,
         # which aggregates local plans from all ranks
-        self.cached_central_plan: SavePlan = None
+        self.cached_central_plan: Optional[SavePlan] = None
         # cached outcome of `SavePlan.prepare_local_plan` describes how local state_dict is written
-        self.cached_local_plan: SavePlan = None
+        self.cached_local_plan: Optional[SavePlan] = None
         # Cached global metadata, only `coordinator` for dist-ckpt holds
         # if central plans are consistent over iters
-        self.cached_global_metadata: Metadata = None
+        self.cached_global_metadata: Optional[Metadata] = None
         # This variable records if the ckpt structures are consistent
         # so the following checkpoint savings reuse `cached_global_metadata`
         self.validated_cache_reuse: bool = False
         # The knob to enable cached metadata communication in saving
         self.validated_loaded_metadata_reuse: bool = False
         # The cached all_local_plans from the loaded metadata file of the previous checkpoint
-        self.loaded_all_plans: List[SavePlan] = None
+        self.loaded_all_plans: Optional[List[SavePlan]] = None
 
     def set_cached_global_metadata(self, cached_global_metadata):
         """
@@ -183,7 +183,9 @@ class CheckpointMetadataCache:
                 save_state_dict_ret[1] = self.cached_global_metadata
         return save_state_dict_ret
 
-    def get_cache_metadata(self) -> Tuple[SavePlan, SavePlan, bool, List[SavePlan]]:
+    def get_cache_metadata(
+        self,
+    ) -> Tuple[Optional[SavePlan], Optional[SavePlan], bool, Optional[List[SavePlan]]]:
         """
         Retrieves the cached metadata components.
 
