@@ -34,6 +34,7 @@ import torch
 from torch import multiprocessing as mp
 
 from ..utils import _disable_gc, debug_time
+from .telemetry import CheckpointWorkerTelemetry
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +455,7 @@ class PersistentAsyncCaller(AsyncCaller):
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
@@ -478,6 +480,11 @@ class PersistentAsyncCaller(AsyncCaller):
         self.cpu_priority = cpu_priority
         self.io_priority = io_priority
         self.cpu_shm_mode = cpu_shm_mode
+        # Plain dict of otel config + resource attributes (see async_ckpt/telemetry.py).
+        # spawn gives this process nothing from the parent's memory, so telemetry has
+        # to be bootstrapped fresh there from data passed explicitly through the
+        # ctx.Process args, the same channel as cpu_priority/io_priority above.
+        self.otel_bootstrap = otel_bootstrap
 
     def _start_worker(self, rank: int) -> None:
         """Start the background worker process.
@@ -506,6 +513,7 @@ class PersistentAsyncCaller(AsyncCaller):
                 self.cpu_priority,
                 self.io_priority,
                 self.cpu_shm_mode,
+                self.otel_bootstrap,
             ),
             daemon=self.background_worker_is_daemon,
         )
@@ -687,6 +695,7 @@ class PersistentAsyncCaller(AsyncCaller):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """Main function for the persistent checkpoint worker
 
@@ -714,6 +723,11 @@ class PersistentAsyncCaller(AsyncCaller):
                                         I/O priority unchanged. Use 3 (idle) to deprioritize
                                         checkpoint I/O. NOTE: class 1 = realtime (highest
                                         priority — NOT recommended for checkpoint workers).
+            otel_bootstrap (dict, Optional): otel config + resource attributes built by the
+                                             caller and threaded through via ctx.Process args,
+                                             since this process is spawned fresh and inherits
+                                             nothing from the parent. None/empty means telemetry
+                                             stays disabled.
 
         """
         # Align library loggers in this process without mutating the root logger
@@ -750,6 +764,12 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
+        # Telemetry must be stood up fresh here: spawn inherits no TracerProvider from
+        # the parent, so this is a second, independent setup driven by whatever the caller
+        # put in otel_bootstrap. Disabled and no-op unless the caller passed a bootstrap
+        # and nemo-lens is installed.
+        telemetry = CheckpointWorkerTelemetry.from_bootstrap(otel_bootstrap, rank)
+
         # Start busy loop waiting for and executing checkpoint saves.
         try:
             while True:
@@ -758,20 +778,22 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    async_fn_args = list(item.async_fn_args)
-                    if item.preload_fn:
-                        call_idx = preload_q.get()
-                        # the 2nd arg is state dict
-                        async_fn_args[1] = item.preload_fn()
-                        logger.debug(f"{rank} has completed D2H of {call_idx}")
-                        preload_q.task_done()
-                    if item.async_fn is not None:
-                        async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                        item.async_fn(*async_fn_args, **async_fn_kwargs)
-                    logger.debug(f"{rank} has completed saving {item.call_idx}")
-                    comp_q.put(item.call_idx)
-                    queue.task_done()
-                    del async_fn_args
+                    with telemetry.request_span(item.call_idx):
+                        async_fn_args = list(item.async_fn_args)
+                        if item.preload_fn:
+                            call_idx = preload_q.get()
+                            # the 2nd arg is state dict
+                            async_fn_args[1] = item.preload_fn()
+                            logger.debug(f"{rank} has completed D2H of {call_idx}")
+                            preload_q.task_done()
+                        if item.async_fn is not None:
+                            async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                            with telemetry.write_span():
+                                item.async_fn(*async_fn_args, **async_fn_kwargs)
+                        logger.debug(f"{rank} has completed saving {item.call_idx}")
+                        comp_q.put(item.call_idx)
+                        queue.task_done()
+                        del async_fn_args
                 del item
                 gc.collect()
         except RuntimeError as e:
@@ -787,6 +809,7 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
+            telemetry.shutdown()
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
         else:
@@ -803,13 +826,22 @@ class PersistentAsyncCaller(AsyncCaller):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """
         Main function for the persistent checkpoint worker called by a non daemon async process.
         In this loop, child processes may be created (For example: to parallelize File IO)
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank,
+            queue,
+            preload_q,
+            comp_q,
+            log_level,
+            cpu_priority,
+            io_priority,
+            cpu_shm_mode,
+            otel_bootstrap,
         )
 
     @staticmethod
@@ -822,12 +854,21 @@ class PersistentAsyncCaller(AsyncCaller):
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """
         Main function for the persistent checkpoint worker called by a daemon async process
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank,
+            queue,
+            preload_q,
+            comp_q,
+            log_level,
+            cpu_priority,
+            io_priority,
+            cpu_shm_mode,
+            otel_bootstrap,
         )
 
 
@@ -865,6 +906,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         self.async_calls: deque[_ActiveAsyncRequest] = deque([])
         self.call_idx: int = -1
@@ -874,6 +916,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         self.io_priority = io_priority
         self.sigterm_timeout = sigterm_timeout
         self.cpu_shm_mode = cpu_shm_mode
+        self.otel_bootstrap = otel_bootstrap
         self.persistent_caller: AsyncCaller = None
 
         if cpu_shm_mode:
@@ -907,6 +950,21 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                     )
                     warmed.process.join()  # reap the zombie before discarding
                     warmed.process = None
+                if warmed.process is None:
+                    # A fresh worker will be spawned for this caller, so this queue's
+                    # telemetry configuration can still take effect.
+                    warmed.otel_bootstrap = self.otel_bootstrap
+                elif warmed.otel_bootstrap != self.otel_bootstrap:
+                    # The bootstrap is fixed at spawn: a live pre-warmed worker keeps the
+                    # configuration it was started with, and this queue's is ignored. Say so,
+                    # rather than silently emitting no checkpoint spans.
+                    logger.warning(
+                        "Pre-warmed checkpoint worker (PID %s) was started with a different "
+                        "telemetry configuration than this queue requests; the worker's own "
+                        "configuration stays in effect. Pass the same otel_bootstrap to "
+                        "warmup_persistent_caller() to avoid losing checkpoint spans.",
+                        warmed.process.pid,
+                    )
                 self.persistent_caller = warmed
             else:
                 self.persistent_caller = PersistentAsyncCaller(
@@ -915,6 +973,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                     io_priority=self.io_priority,
                     sigterm_timeout=self.sigterm_timeout,
                     cpu_shm_mode=self.cpu_shm_mode,
+                    otel_bootstrap=self.otel_bootstrap,
                 )
         return self.persistent_caller
 
@@ -927,6 +986,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
+        otel_bootstrap: Optional[dict] = None,
     ):
         """Pre-start the persistent async worker to avoid startup latency on the first checkpoint.
 
@@ -939,6 +999,10 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 NOT recommended for checkpoint workers).
             sigterm_timeout (float): seconds to wait after SIGTERM before escalating to SIGKILL.
             cpu_shm_mode (bool): if True, skip CUDA device init in the worker (no CUDA IPC needed).
+            otel_bootstrap (dict, Optional): otel config + resource attributes for the worker to
+                bootstrap its own independent telemetry with (see async_process_target). Plain
+                dict only: this crosses a spawn() boundary via pickling, so it must not hold a
+                class instance or anything else with an import-path dependency.
         """
         if cls._warmup_persistent_caller is None:
             caller = PersistentAsyncCaller(
@@ -947,6 +1011,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 io_priority=io_priority,
                 sigterm_timeout=sigterm_timeout,
                 cpu_shm_mode=cpu_shm_mode,
+                otel_bootstrap=otel_bootstrap,
             )
             caller._start_worker(rank)
             caller.rank = rank

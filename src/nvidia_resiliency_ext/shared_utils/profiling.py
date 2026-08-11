@@ -18,6 +18,8 @@
 import logging
 import threading
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
@@ -37,6 +39,20 @@ class ProfilingEvent(Enum):
     WORKER_START_COMPLETED = "worker_start_completed"
     ATTRIBUTION_GET_STARTED = "attribution_get_started"
     ATTRIBUTION_GET_COMPLETED = "attribution_get_completed"
+    NODE_EXCLUDED = "node_excluded"  # bailed at the rendezvous health check (evicted/unhealthy)
+    AWAIT_ROUND_STARTED = "await_round_started"  # entered the Step-0 wait for the round
+    AWAIT_ROUND_COMPLETED = "await_round_completed"  # round opened (or shutdown); node moves on
+
+
+@dataclass(frozen=True)
+class ProfilingEventRecord:
+    """A recorded profiling event, as handed to the observer."""
+
+    event: ProfilingEvent
+    timestamp: float  # wall clock, seconds
+    node_id: str
+    rank: Optional[int]
+    cycle: int
 
 
 class FaultToleranceProfiler:
@@ -45,6 +61,12 @@ class FaultToleranceProfiler:
     def __init__(self):
         self._current_cycle = 0
         self._logger = logging.getLogger(LogConfig.name)
+        # Optional observer of the event stream, set by whoever wants to do something with
+        # the restart timeline beyond logging it - today, the OTel recorder in
+        # fault_tolerance/telemetry.py. Kept as a plain slot so this module never needs to
+        # know what telemetry is. The observer is called inline on whichever thread recorded
+        # the event, so it must be quick and must not raise.
+        self._observer = None
 
     def _timestamp_to_utc_datetime(self, timestamp: float) -> str:
         """Convert timestamp to UTC datetime string."""
@@ -83,6 +105,13 @@ class FaultToleranceProfiler:
         # Convert node_id to string for event ID and logging
         node_id_str = str(node_id) if node_id is not None else 'unknown'
         event_id = f"{event.value}_{timestamp}_{node_id_str}_{rank or 'unknown'}"
+
+        # Notify before the cycle bump below, so the observer attributes a failure to the
+        # cycle it ended rather than to the one it starts.
+        if self._observer is not None:
+            self._observer.on_event(
+                ProfilingEventRecord(event, timestamp, node_id_str, rank, self._current_cycle)
+            )
 
         # Increment cycle count for failure detection events
         if event == ProfilingEvent.FAILURE_DETECTED:
@@ -129,6 +158,33 @@ def record_profiling_event(
         Event ID string
     """
     return _get_global_profiler().record_event(event, node_id, rank)
+
+
+@contextmanager
+def profiling_phase(
+    start_event: ProfilingEvent,
+    end_event: ProfilingEvent,
+    node_id: Optional[Any] = None,
+    rank: Optional[int] = None,
+):
+    """Record `start_event` on entry and `end_event` on exit, exceptions included.
+
+    The exit event fires even when the body raises, which keeps an observer's span from
+    leaking when e.g. a shutdown unwinds out of a wait.
+    """
+    record_profiling_event(start_event, node_id=node_id, rank=rank)
+    try:
+        yield
+    finally:
+        record_profiling_event(end_event, node_id=node_id, rank=rank)
+
+
+def set_profiling_observer(observer) -> None:
+    """Install (or clear, with None) the observer of the global profiler's event stream.
+
+    `observer` needs one method, `on_event(record: ProfilingEventRecord)`.
+    """
+    _get_global_profiler()._observer = observer
 
 
 def get_profiling_cycle() -> int:

@@ -96,6 +96,7 @@ from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSp
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import rdzv_config_get_as_bool
+from nvidia_resiliency_ext.fault_tolerance.telemetry import CycleOutcome, LauncherTelemetry
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
@@ -451,7 +452,21 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
 
+        # Telemetry for this agent process (see shared_utils/telemetry). The agent runs
+        # separately from the training workers, so it stands up its own nemo-lens tracer and
+        # registers the restart-cycle recorder as a profiling listener; the recorder then owns
+        # the per-cycle span tree, built from the boundary events already recorded here and in
+        # the rendezvous handler. The agent's own part is only to annotate the open cycle,
+        # stage its outcome, and close terminal cycles. This is a null object unless the
+        # workload configured lens telemetry, so the call sites below need no guards.
+        self._telemetry = LauncherTelemetry(self._node_id)
+
     DEFAULT_ROLE = "default"  # FIXME
+
+    def _annotate_telemetry_cycle(self):
+        """Describe the cycle the recorder opened at rendezvous. The recorder owns the span;
+        the agent is what knows the restart budget and the rendezvous topology."""
+        self._telemetry.annotate_cycle(self._worker_group, self._remaining_restarts)
 
     # ============================================================================
     # Global Restart/Cycle Tracking for Job Array Deployments
@@ -577,6 +592,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         finally:
             if not shutdown_called:
                 self._shutdown()
+            self._telemetry.shutdown()
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
 
@@ -655,6 +671,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         logger.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
 
         self._initialize_workers(self._worker_group)
+        self._annotate_telemetry_cycle()  # describe the cycle the recorder opened at rendezvous
         monitor_interval = spec.monitor_interval
         rdzv_handler = spec.rdzv_handler
 
@@ -675,6 +692,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                     self._exit_barrier_timeout,
                 )
+                self._telemetry.finish_cycle(CycleOutcome.SUCCEEDED)  # no teardown event follows
                 self._exit_barrier()
                 return run_result
 
@@ -717,11 +735,19 @@ class LocalElasticAgent(SimpleElasticAgent):
                     f"{self._remaining_restarts}/{spec.max_restarts} attempts left; "
                     f"will restart worker group"
                 )
+                # Stage the outcome before the restart; the recorder stamps it and closes the cycle
+                # when the teardown (WORKER_TERMINATED) event fires inside
+                # _handle_restart_decision. The teardown, rendezvous and worker_launch phase spans
+                # are what now covers the restart gap.
+                self._telemetry.stage_outcome(
+                    CycleOutcome.FAILED,
+                    **{'nvrx.state': state.name, 'nvrx.failures': len(run_result.failures or {})},
+                )
                 should_restart = self._handle_restart_decision(
                     role, spec, log_msg, open_rendezvous=True,
                 )
-
                 if should_restart:
+                    self._annotate_telemetry_cycle()  # describe the cycle just re-opened
                     continue  # Continue monitoring after restart
 
                 # No more restarts (either exhausted or early termination)
@@ -759,14 +785,17 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
                     # The node that triggered the failure already opened the rendezvous.
+                    # Stage the peer-restart outcome; the recorder closes this cycle at the teardown
+                    # event inside _handle_restart_decision and re-opens the next at rendezvous.
+                    self._telemetry.stage_outcome(CycleOutcome.PEER_RESTART)
                     should_restart = self._handle_restart_decision(
                         role, spec, log_msg, open_rendezvous=False,
                     )
-
                     if not should_restart:
                         self._stop_workers(self._worker_group)
                         self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
+                    self._annotate_telemetry_cycle()  # joined the restart -> describe the new cycle
             else:
                 raise Exception(f"[{role}] Worker group in {state.name} state")
 
@@ -1107,6 +1136,12 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         current_cycle_info_path = self._current_cycle_info_path()
 
+        # Telemetry anchors for this worker cohort, stamped once so every restart hands its
+        # workers a fresh per-restart anchor rather than the batch script's stale one. The
+        # trainer uses them to place its startup span (rendezvous rejoin, spawn, import)
+        # inside this cycle's run span.
+        telemetry_env = self._telemetry.worker_env(self._get_global_cycle_number())
+
         for worker in worker_group.workers:
             local_rank = worker.local_rank
 
@@ -1136,6 +1171,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
                 worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
+            worker_env.update(telemetry_env)
 
             if self._log_line_prefix_template:
                 log_line_prefix = Template(self._log_line_prefix_template).safe_substitute(
