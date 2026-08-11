@@ -63,6 +63,13 @@ def test_attrsvc_analysis_backend_uses_current_env_name_only(tmp_path, monkeypat
     assert cfg.ANALYSIS_BACKEND == "lib"
 
 
+def test_attrsvc_analysis_backend_rejects_mcp(tmp_path, monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_ANALYSIS_BACKEND", "mcp")
+
+    with pytest.raises(ValueError, match="only supports 'lib'"):
+        Settings(ALLOWED_ROOT=str(tmp_path), _env_file=None)
+
+
 def test_attrsvc_progressive_analysis_defaults_to_all_explicit(tmp_path, monkeypatch):
     monkeypatch.delenv("NVRX_ATTRSVC_PROGRESSIVE_ANALYSIS", raising=False)
 

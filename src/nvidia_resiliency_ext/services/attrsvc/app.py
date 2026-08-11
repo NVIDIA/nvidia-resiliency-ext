@@ -137,7 +137,7 @@ def create_app(cfg: Settings) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """Startup and shutdown for controller-owned runtime dependencies."""
+        """Startup and shutdown for backend-owned runtime dependencies."""
         # Startup
         started = await app.state.attribution.start(asyncio.get_running_loop())
         loaded = started.get("cache_entries_loaded", 0)
@@ -209,7 +209,7 @@ def create_app(cfg: Settings) -> FastAPI:
         """
         Health check endpoint.
 
-        Returns status based on controller dependency health:
+        Returns status based on backend health:
         - "ok": All systems healthy
         - "degraded": Some issues but service is functional (20-50% error rate)
         - "fail": Critical issues (>50% error rate)
@@ -226,7 +226,7 @@ def create_app(cfg: Settings) -> FastAPI:
             default=None, description="Indentation level (overrides pretty)"
         ),
     ) -> Response:
-        """Get cache and request coalescing statistics. See spec Section 20."""
+        """Get backend statistics. See spec Section 20."""
         adapter: AttributionHttpAdapter = request.app.state.attribution
         stats = await adapter.get_stats()
         return json_response(stats, pretty=pretty, indent=indent)

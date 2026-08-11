@@ -3,11 +3,11 @@
 These examples cover the existing attribution MCP integration and the Restart
 Agent CLI configuration.
 
-Install NVIDIA Resiliency Extension, then run the examples from the repository
-root:
+Install NVIDIA Resiliency Extension with the optional attribution dependencies
+when running the MCP example, then run the examples from the repository root:
 
 ```bash
-pip install nvidia-resiliency-ext
+pip install 'nvidia-resiliency-ext[attribution]'
 ```
 
 | File | Description |

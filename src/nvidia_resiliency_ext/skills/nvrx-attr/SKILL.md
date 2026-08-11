@@ -4,7 +4,7 @@ description: >
   Orchestration layer over nvidia_resiliency_ext attribution modules. Provides
   log-analysis, fr-analysis, and a Megatron-LM-oriented fault-injection feedback
   loop for benchmarking attribution quality on SLURM workloads.
-compatibility: Requires Python 3.10+, nvidia-resiliency-ext installed, logsage, langchain-openai, and LLM_API_KEY (env var, LLM_API_KEY_FILE, or ~/.llm_api_key). The fault-injection loop has only been validated with Megatron-LM workloads.
+compatibility: Requires Python 3.10+, nvidia-resiliency-ext[attribution] installed, and LLM_API_KEY (env var, LLM_API_KEY_FILE, or ~/.llm_api_key). The fault-injection loop has only been validated with Megatron-LM workloads.
 metadata:
   author: nvidia
 ---
@@ -46,9 +46,7 @@ full coalescing stack.
 ## Common prerequisites
 
 - `LLM_API_KEY` environment variable, `LLM_API_KEY_FILE`, or `~/.llm_api_key`
-- `langchain-openai` installed
-- `logsage` package installed (required by `log_analysis`)
-- Package installed: `pip install nvidia-resiliency-ext` or `pip install -e .` from repo root
+- Package installed: `pip install 'nvidia-resiliency-ext[attribution]'` or `pip install -e '.[attribution]'` from repo root
 - The fault-injection loop has only been validated with Megatron-LM training scripts
 
 ## Fault-Loop Local Setup

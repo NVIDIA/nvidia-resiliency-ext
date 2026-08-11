@@ -410,12 +410,12 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
         type=str.lower,
         default=None,
         dest="ft_attribution_analysis_backend",
-        choices=("lib", "mcp"),
-        metavar="{lib,mcp}",
+        choices=("lib",),
+        metavar="{lib}",
         help=(
             "Analysis backend for launcher-managed attribution service. "
-            "lib runs the Restart Agent directly and is the attrsvc default; "
-            "mcp selects the legacy LogSage/Flight Recorder path."
+            "Only lib is supported; it runs the Restart Agent directly and is the "
+            "attrsvc default."
         ),
     )
     parser.add_argument(

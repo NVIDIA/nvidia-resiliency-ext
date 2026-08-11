@@ -443,8 +443,11 @@ def _normalize_analysis_backend(value: Optional[str]) -> Optional[str]:
     normalized = str(value).strip().lower()
     if not normalized:
         return None
-    if normalized not in {"lib", "mcp"}:
-        raise ValueError(f"--ft-attribution-analysis-backend must be 'lib' or 'mcp', got {value!r}")
+    if normalized != "lib":
+        raise ValueError(
+            "--ft-attribution-analysis-backend only supports 'lib' for launcher-managed "
+            f"attribution, got {value!r}"
+        )
     return normalized
 
 

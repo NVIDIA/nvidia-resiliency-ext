@@ -5,9 +5,14 @@
 # Get the directory where this script lives
 COMMON_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Setup the key contract for the selected attrsvc backend.
+# Setup the key contract for the attrsvc Restart Agent backend.
 setup_llm_api_key() {
     local backend="${NVRX_ATTRSVC_ANALYSIS_BACKEND:-lib}"
+
+    if [[ "${backend}" != "lib" ]]; then
+        echo "ERROR: NVRX_ATTRSVC_ANALYSIS_BACKEND only supports lib"
+        return 1
+    fi
 
     if [[ "${backend}" == "lib" && -n "${NVRX_ATTRSVC_RESTART_AGENT_CONFIG:-}" ]]; then
         if [[ ! -f "${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}" ]]; then
@@ -15,11 +20,6 @@ setup_llm_api_key() {
             return 1
         fi
         echo "Using Restart Agent config credentials: ${NVRX_ATTRSVC_RESTART_AGENT_CONFIG}"
-        return 0
-    fi
-
-    if [[ "${backend}" == "mcp" && -n "${LLM_API_KEY:-}" ]]; then
-        echo "Using LLM_API_KEY from environment"
         return 0
     fi
 
@@ -45,11 +45,7 @@ setup_llm_api_key() {
     done
 
     echo "WARNING: LLM API key not found - LLM analysis may fail"
-    if [[ "${backend}" == "lib" ]]; then
-        echo "  Set LLM_API_KEY_FILE, provide NVRX_ATTRSVC_RESTART_AGENT_CONFIG, or create ~/.llm_api_key"
-    else
-        echo "  Set LLM_API_KEY, LLM_API_KEY_FILE, or create ~/.llm_api_key"
-    fi
+    echo "  Set LLM_API_KEY_FILE, provide NVRX_ATTRSVC_RESTART_AGENT_CONFIG, or create ~/.llm_api_key"
     return 1
 }
 

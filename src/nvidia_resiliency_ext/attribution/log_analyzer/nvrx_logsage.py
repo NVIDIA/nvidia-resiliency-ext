@@ -9,33 +9,6 @@ import time
 from collections import deque
 from typing import Any, Dict, Mapping, Optional, Tuple, Union
 
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_openai import ChatOpenAI
-from logsage.auto_resume_policy.attribution_classes import (
-    ApplicationData,
-    Attribution,
-    AutoResumeAction,
-    ErrorAttribution,
-    FinishedStatus,
-    LRUCache,
-)
-from logsage.auto_resume_policy.error_attribution import (
-    CONTEXT_SIZE,
-    get_attribution,
-    get_auto_resume,
-    get_proposed_solution_cat,
-)
-from logsage.auto_resume_policy.error_extraction import (
-    finished_validation,
-    return_application_errors,
-    return_application_errors_rt,
-)
-from logsage.auto_resume_policy.prompts import template_post_error_check
-from logsage.auto_resume_policy.util_postprocessing import get_auto_resume_postprocessing
-from logsage.auto_resume_policy.utils import chunk_indices
-
 from nvidia_resiliency_ext.attribution.base import (
     AttributionState,
     NVRxAttribution,
@@ -64,6 +37,46 @@ from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogSageAnalysisResult,
     RawAnalysisResultItem,
 )
+
+_ATTRIBUTION_EXTRA_MESSAGE = (
+    "LogSage attribution dependencies are not installed. "
+    "Install with: pip install 'nvidia-resiliency-ext[attribution]'"
+)
+
+try:
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.runnables import RunnablePassthrough
+    from langchain_openai import ChatOpenAI
+    from logsage.auto_resume_policy.attribution_classes import (
+        ApplicationData,
+        Attribution,
+        AutoResumeAction,
+        ErrorAttribution,
+        FinishedStatus,
+        LRUCache,
+    )
+    from logsage.auto_resume_policy.error_attribution import (
+        CONTEXT_SIZE,
+        get_attribution,
+        get_auto_resume,
+        get_proposed_solution_cat,
+    )
+    from logsage.auto_resume_policy.error_extraction import (
+        finished_validation,
+        return_application_errors,
+        return_application_errors_rt,
+    )
+    from logsage.auto_resume_policy.prompts import template_post_error_check
+    from logsage.auto_resume_policy.util_postprocessing import get_auto_resume_postprocessing
+    from logsage.auto_resume_policy.utils import chunk_indices
+except ModuleNotFoundError as exc:
+    if exc.name and (
+        exc.name in {"langchain_core", "langchain_openai", "logsage"}
+        or exc.name.startswith("logsage.")
+    ):
+        raise ModuleNotFoundError(_ATTRIBUTION_EXTRA_MESSAGE) from exc
+    raise
 
 logger = logging.getLogger(__name__)
 

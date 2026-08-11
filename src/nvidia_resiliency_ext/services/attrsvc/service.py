@@ -1,17 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""HTTP adapter selecting the direct Restart Agent or legacy controller.
+"""HTTP adapter selecting the direct Restart Agent backend.
 
 This module keeps FastAPI-facing concerns in ``services/attrsvc``. The default
-``lib`` backend owns a direct Restart Agent runtime. ``mcp`` keeps
-the pre-existing LogSage/flight-recorder controller path during migration.
+``lib`` backend owns a direct Restart Agent runtime.
 """
 
 import asyncio
 import logging
 from functools import partial
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from nvidia_resiliency_ext.attribution.coalescing import (
     CacheResult,
@@ -43,10 +42,6 @@ from .restart_agent_backend import (
 from .restart_agent_config import restart_agent_config_from_settings
 
 logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from nvidia_resiliency_ext.attribution.controller import AttributionControllerConfig
-
 
 # Re-export result types for convenience
 __all__ = [
@@ -118,50 +113,12 @@ class AttributionServiceBackend(Protocol):
     async def status(self) -> dict[str, Any]: ...
 
 
-def _controller_config_from_settings(cfg: Settings) -> "AttributionControllerConfig":
-    """Translate HTTP service settings into controller startup config."""
-    from nvidia_resiliency_ext.attribution.controller import (
-        AttributionAnalysisConfig,
-        AttributionCacheConfig,
-        AttributionControllerConfig,
-        AttributionPostprocessingConfig,
-        AttributionProgressiveConfig,
-    )
-
-    return AttributionControllerConfig(
-        allowed_root=cfg.ALLOWED_ROOT,
-        analysis=AttributionAnalysisConfig(
-            engine_backend=cfg.ANALYSIS_BACKEND,
-            mcp_server_log_level=cfg.LOG_LEVEL,
-            llm_model=cfg.LLM_MODEL,
-            llm_base_url=cfg.LLM_BASE_URL,
-            llm_temperature=cfg.LLM_TEMPERATURE,
-            llm_top_p=cfg.LLM_TOP_P,
-            llm_max_tokens=cfg.LLM_MAX_TOKENS,
-        ),
-        cache=AttributionCacheConfig(
-            compute_timeout=cfg.COMPUTE_TIMEOUT,
-            grace_period_seconds=(
-                cfg.CACHE_GRACE_PERIOD_SECONDS if cfg.CACHE_GRACE_PERIOD_SECONDS else None
-            ),
-            cache_file=cfg.CACHE_FILE,
-        ),
-        postprocessing=AttributionPostprocessingConfig(
-            cluster_name=cfg.CLUSTER_NAME,
-            slack_bot_token=(cfg.SLACK_BOT_TOKEN or "").strip() or None,
-            slack_channel=cfg.SLACK_CHANNEL,
-        ),
-        progressive=AttributionProgressiveConfig(mode=cfg.PROGRESSIVE_ANALYSIS),
-    )
-
-
 class AttributionHttpAdapter:
     """
     HTTP adapter facade over the selected attribution implementation.
 
     ``AttributionHttpAdapter`` owns Settings conversion and keeps the public service
-    method names stable for FastAPI routes. ``lib`` bypasses the legacy
-    controller and cache; ``mcp`` delegates to the existing controller.
+    method names stable for FastAPI routes.
     """
 
     def __init__(self, cfg: Settings):
@@ -172,40 +129,33 @@ class AttributionHttpAdapter:
             cfg: Application settings (ALLOWED_ROOT must be validated via setup())
         """
         self.cfg = cfg
-        if cfg.ANALYSIS_BACKEND == "lib":
-            restart_config = restart_agent_config_from_settings(cfg)
-            self._backend: AttributionServiceBackend = RestartAgentServiceBackend(
-                allowed_root=cfg.ALLOWED_ROOT,
-                runtime=build_restart_agent_runtime(restart_config),
-                config=restart_config,
-                convergence=LogConvergencePolicy(
-                    quiet_seconds=cfg.RESTART_AGENT_LOG_QUIET_SECONDS,
-                    max_wait_seconds=cfg.RESTART_AGENT_LOG_MAX_WAIT_SECONDS,
-                    poll_seconds=cfg.RESTART_AGENT_LOG_POLL_SECONDS,
+        restart_config = restart_agent_config_from_settings(cfg)
+        self._backend: AttributionServiceBackend = RestartAgentServiceBackend(
+            allowed_root=cfg.ALLOWED_ROOT,
+            runtime=build_restart_agent_runtime(restart_config),
+            config=restart_config,
+            convergence=LogConvergencePolicy(
+                quiet_seconds=cfg.RESTART_AGENT_LOG_QUIET_SECONDS,
+                max_wait_seconds=cfg.RESTART_AGENT_LOG_MAX_WAIT_SECONDS,
+                poll_seconds=cfg.RESTART_AGENT_LOG_POLL_SECONDS,
+            ),
+            progressive=ProgressiveAnalysisPolicy(
+                enabled=(
+                    cfg.RESTART_AGENT_PROGRESSIVE_ENABLED and cfg.PROGRESSIVE_ANALYSIS != "off"
                 ),
-                progressive=ProgressiveAnalysisPolicy(
-                    enabled=(
-                        cfg.RESTART_AGENT_PROGRESSIVE_ENABLED and cfg.PROGRESSIVE_ANALYSIS != "off"
-                    ),
-                    pre_end_poll_seconds=cfg.RESTART_AGENT_PRE_END_POLL_SECONDS,
-                    active_idle_seconds=cfg.RESTART_AGENT_ACTIVE_IDLE_SECONDS,
-                    max_active_states=cfg.RESTART_AGENT_MAX_ACTIVE_STATES,
-                    max_completed_results=cfg.RESTART_AGENT_MAX_COMPLETED_RESULTS,
+                pre_end_poll_seconds=cfg.RESTART_AGENT_PRE_END_POLL_SECONDS,
+                active_idle_seconds=cfg.RESTART_AGENT_ACTIVE_IDLE_SECONDS,
+                max_active_states=cfg.RESTART_AGENT_MAX_ACTIVE_STATES,
+                max_completed_results=cfg.RESTART_AGENT_MAX_COMPLETED_RESULTS,
+            ),
+            accumulator_factory=partial(
+                ProgressiveL0Accumulator,
+                reader=ChunkedLogReader(
+                    chunk_bytes=restart_config.l0_source.chunk_size_bytes,
+                    read_mode=restart_config.l0_source.read_mode,
                 ),
-                accumulator_factory=partial(
-                    ProgressiveL0Accumulator,
-                    reader=ChunkedLogReader(
-                        chunk_bytes=restart_config.l0_source.chunk_size_bytes,
-                        read_mode=restart_config.l0_source.read_mode,
-                    ),
-                ),
-            )
-        else:
-            if cfg.RESTART_AGENT_CONFIG:
-                raise ValueError("RESTART_AGENT_CONFIG requires ANALYSIS_BACKEND=lib")
-            from nvidia_resiliency_ext.attribution.controller import AttributionController
-
-            self._backend = AttributionController(_controller_config_from_settings(cfg))
+            ),
+        )
         logger.info("Initialized AttributionHttpAdapter backend=%s", cfg.ANALYSIS_BACKEND)
 
     def shutdown(self) -> None:
@@ -214,24 +164,24 @@ class AttributionHttpAdapter:
         logger.info("AttributionHttpAdapter shutdown complete")
 
     async def shutdown_async(self) -> None:
-        """Shutdown the adapter including MCP client cleanup."""
+        """Shutdown the adapter and stop backend-owned async resources."""
         await self._backend.shutdown_async()
         logger.info("AttributionHttpAdapter shutdown complete")
 
     async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> dict[str, Any]:
-        """Start controller-owned runtime dependencies."""
+        """Start backend-owned runtime dependencies."""
         return await self._backend.start(loop)
 
     async def save_cache(self, cache_file: str | None = None) -> bool:
-        """Save controller cache to file for persistence across restarts."""
+        """Save backend cache to file when the backend supports persistence."""
         return await self._backend.save_cache(cache_file)
 
     async def load_cache(self, cache_file: str | None = None) -> int:
-        """Load controller cache from file."""
+        """Load backend cache from file when the backend supports persistence."""
         return await self._backend.load_cache(cache_file)
 
     async def check_mcp_health(self, timeout_seconds: float = 5.0) -> tuple[str, str]:
-        """Check MCP backend health."""
+        """Return MCP health compatibility status."""
         return await self._backend.check_mcp_health(timeout_seconds)
 
     def validate_path(
@@ -272,7 +222,7 @@ class AttributionHttpAdapter:
         wl_restart: int | None = None,
         wait: bool = True,
     ) -> LogAnalysisCycleResult | LogAnalysisSplitlogResult | LogAnalyzerError:
-        """Analyze a log file using the configured attribution backend."""
+        """Analyze a log file using the direct Restart Agent backend."""
         return await self._backend.analyze_log(
             log_path,
             file=file,
@@ -287,7 +237,7 @@ class AttributionHttpAdapter:
         return self._backend.read_file_preview(log_path, max_bytes=max_bytes)
 
     async def get_stats(self) -> dict[str, Any]:
-        """Get controller, cache, posting/dataflow, and Slack statistics."""
+        """Get direct Restart Agent backend statistics."""
         return await self._backend.get_stats()
 
     async def get_cache(self) -> CacheResult:

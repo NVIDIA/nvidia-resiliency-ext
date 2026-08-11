@@ -376,7 +376,7 @@ class CollectiveAnalyzer(NVRxAttribution):
                 return result
             except ImportError:
                 eprint("LangChain is not installed. Please install it with:")
-                eprint("pip install langchain langchain-nvidia-ai-endpoints")
+                eprint("pip install 'nvidia-resiliency-ext[attribution]'")
             except Exception as e:
                 eprint(f"\nError using LangChain: {e}")
                 eprint(llm_api_key_help_text())
