@@ -13,13 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""nvbug 6439229 regression tests: CPU tensors received by the async worker share
-memory with the trainer's, so they must be copied before training resumes."""
+"""nvbug 6439229 regression tests for async CPU tensor snapshots."""
+
+from unittest.mock import Mock
 
 import torch
-from torch.distributed.checkpoint.filesystem import _StoragePrefix
 from torch.distributed.checkpoint.metadata import MetadataIndex
-from torch.distributed.checkpoint.planner import WriteItem, WriteItemType
+from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.utils import preload_tensors
@@ -32,49 +32,37 @@ def _tensor_write_items(count):
     ]
 
 
-class TestFileSystemWriterPreloadSnapshot:
-    def _preload(self, checkpoint_dir, items, tensors):
-        # (identifier, data_structure) layout as produced by get_save_function_and_args,
-        # with caching disabled and all tensors uncached
-        data_to_pass = (None, (None, None, (items, tensors), None, 1, _StoragePrefix("__0_")))
-        return FileSystemWriterAsync.preload_tensors(
-            (str(checkpoint_dir), data_to_pass), non_blocking=False
-        )
+class TestFileSystemWriterPrepareSnapshot:
+    def _prepare(self, checkpoint_dir, tensors):
+        planner = Mock()
+        planner.resolve_data.side_effect = tensors
+        writer = FileSystemWriterAsync(checkpoint_dir)
+        writer.prepare_write_data(SavePlan(_tensor_write_items(len(tensors))), planner)
+        _, snapshotted = writer.uncached_tensor_data
+        return snapshotted
 
-    def test_shared_cpu_tensors_are_snapshotted(self, tmp_path):
-        """Shared-memory CPU tensors (as received via the worker queue) must be cloned."""
-        step = torch.tensor(1.0).share_memory_()
-        items = _tensor_write_items(1)
+    def test_cpu_tensors_are_snapshotted_before_queueing(self, tmp_path):
+        """Resolved CPU tensors must not retain aliases to live training state."""
+        step = torch.tensor(1.0)
+        counter = torch.arange(4, dtype=torch.float32)
 
-        write_buckets = self._preload(tmp_path, items, [step])
+        snapshotted = self._prepare(tmp_path, [step, counter])
 
-        (bucket,) = write_buckets
-        _, _, (_, tensor_data) = bucket
-        preloaded = {item.index.fqn: tensor for item, tensor in tensor_data}
+        assert snapshotted[0].data_ptr() != step.data_ptr()
+        assert snapshotted[1].data_ptr() != counter.data_ptr()
 
-        assert (
-            preloaded["tensor_0"].untyped_storage().data_ptr() != step.untyped_storage().data_ptr()
-        ), "preloaded tensor must not alias the shared-memory buffer"
-
-        # A post-preload in-place mutation must not leak into the snapshot
         step.fill_(2.0)
-        assert torch.equal(preloaded["tensor_0"], torch.tensor(1.0))
+        counter.add_(1.0)
+        assert torch.equal(snapshotted[0], torch.tensor(1.0))
+        assert torch.equal(snapshotted[1], torch.arange(4, dtype=torch.float32))
 
-    def test_private_cpu_tensors_are_not_copied(self, tmp_path):
-        """Non-shared CPU tensors (fork-based or synchronous save paths) pass by reference."""
-        private = torch.arange(4, dtype=torch.float32)
-        items = _tensor_write_items(1)
+    def test_prepare_snapshot_detaches_from_autograd(self, tmp_path):
+        tensor = torch.ones(2, requires_grad=True)
 
-        write_buckets = self._preload(tmp_path, items, [private])
+        (snapshotted,) = self._prepare(tmp_path, [tensor])
 
-        (bucket,) = write_buckets
-        _, _, (_, tensor_data) = bucket
-        preloaded = {item.index.fqn: tensor for item, tensor in tensor_data}
-
-        assert (
-            preloaded["tensor_0"].untyped_storage().data_ptr()
-            == private.untyped_storage().data_ptr()
-        ), "private CPU tensors must not be needlessly copied"
+        assert not snapshotted.requires_grad
+        assert torch.equal(snapshotted, tensor)
 
 
 class TestUtilsPreloadSnapshot:

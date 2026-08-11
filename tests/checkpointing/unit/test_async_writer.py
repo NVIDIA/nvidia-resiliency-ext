@@ -467,7 +467,7 @@ class TestAsyncSave:
 
     @pytest.mark.parametrize(
         ('use_cached_data_structure', 'use_cpu_shm_for_gpu_tensors'),
-        [(False, False), (True, True)],
+        [(False, False), (False, True), (True, False), (True, True)],
     )
     def test_no_torn_checkpoint_when_state_mutated_after_schedule(
         self, tmp_path_dist_ckpt, use_cached_data_structure, use_cpu_shm_for_gpu_tensors

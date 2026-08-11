@@ -276,10 +276,12 @@ class FileSystemWriterAsync(FileSystemWriter):
             ), "thread_count must be at least 2 if separation_hint is provided"
 
         def _clone_or_dequantize_if_needed(ten: torch.Tensor):
-            """Clone if we detect incontiguous storage for CPU tensors.
+            """Snapshot CPU tensors and dequantize supported GPU tensors.
 
-            Makes sure we perform a `clone` only if we detect incontiguous storage,
-            so that we don't blow up host memory unnecessarily.
+            CPU tensors must be cloned before an ``AsyncRequest`` is sent to a
+            persistent worker. ``ForkingPickler`` promotes their storage to shared
+            memory when the request is queued, so passing a live tensor through here
+            would let later in-place training updates change the pending checkpoint.
 
             For GPU tensors, returns as-is since they'll be moved to CPU in preload_tensors.
 
@@ -299,9 +301,9 @@ class FileSystemWriterAsync(FileSystemWriter):
                     return ten, True
                 # GPU tensors will be moved to CPU in preload_tensors
                 return ten, False
-            # For CPU tensors, clone if they are views to ensure contiguous storage
-            is_view = ten.untyped_storage().size() != ten.numel() * ten.itemsize
-            return (ten.clone() if is_view else ten), False
+            # Do not gate this on is_shared(): queue promotion happens after this point.
+            # Unconditional cloning also preserves the existing CPU-view handling.
+            return ten.clone(), False
 
         def resolve_data(items):
             resolved = []
@@ -623,9 +625,6 @@ class FileSystemWriterAsync(FileSystemWriter):
         (not in prepare_write_data) so that cached GPU tensor data stored in the
         worker process can be retrieved and reused without re-pickling.
 
-        The training process stays blocked on ``preload_q.join()`` until this
-        function returns, so this is the last point to snapshot shared tensors.
-
         Args:
             resolved_plan_data (Tuple): Tuple containing
                 (checkpoint_dir, (identifier, data_structure)) where:
@@ -663,21 +662,6 @@ class FileSystemWriterAsync(FileSystemWriter):
             thread_count,
             storage_plan,
         ) = data_structure
-
-        if uncached_tensor_data is not None:
-            # Clone the cpu tensors so they are snapshotted properly
-            uncached_items, uncached_data = uncached_tensor_data
-            uncached_data = [
-                (
-                    data.detach().clone()
-                    if isinstance(data, torch.Tensor)
-                    and data.device.type == 'cpu'
-                    and data.untyped_storage().is_shared()
-                    else data
-                )
-                for data in uncached_data
-            ]
-            uncached_tensor_data = (uncached_items, uncached_data)
 
         if isinstance(identifier, ConsistentDataIdentifier):
             # Caching enabled: get or cache GPU tensor data in the worker process
