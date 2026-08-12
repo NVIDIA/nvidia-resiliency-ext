@@ -46,9 +46,7 @@ CATEGORIES: tuple[CategoryDef, ...] = (
     CategoryDef(
         id=3,
         name="Node failure / SLURM externally terminated",
-        description=(
-            "SLURM 'CANCELLED DUE TO NODE FAILURE' or other external node termination."
-        ),
+        description=("SLURM 'CANCELLED DUE TO NODE FAILURE' or other external node termination."),
         decision="RESTART",
         failure_domain="infrastructure",
         retry_outlook="may_recover",
@@ -180,10 +178,7 @@ CATEGORIES: tuple[CategoryDef, ...] = (
         name="Post-checkpoint progress-log assertion",
         description=(
             "Assertion after checkpoint resume (progress-log bookkeeping); restart from "
-            "last committed checkpoint is appropriate. Prefer over cat 16 whenever the "
-            "AssertionError is raised in get_start_time_from_progress_log or references "
-            "a missing 'Starting job' progress-log entry - that specific bookkeeping "
-            "failure is transient and recoverable, not a deterministic code fault."
+            "last committed checkpoint is appropriate."
         ),
         decision="RESTART",
         failure_domain="workload",
@@ -233,9 +228,7 @@ CATEGORIES: tuple[CategoryDef, ...] = (
         name="PermissionError / dataset cache or filesystem permission",
         description=(
             "Deterministic permission-denied (EACCES/Errno 13) on dataset cache or "
-            "filesystem path. Prefer over cat 13 whenever the underlying errno is 13 "
-            "(EACCES) or the message reads PermissionError - unchanged retry will hit "
-            "the same permission fault, not a transient filesystem stall."
+            "filesystem path."
         ),
         decision="STOP",
         failure_domain="workload",
@@ -279,12 +272,7 @@ CATEGORIES: tuple[CategoryDef, ...] = (
     CategoryDef(
         id=22,
         name="Checkpoint failure / missing checkpoint path",
-        description=(
-            "Missing checkpoint path; cannot self-heal by restarting. Prefer over "
-            "cat 9 whenever the FileNotFoundError names a specific missing shard file "
-            "(e.g. iter_XXXXX/__NNN_M.distcp) - restart cannot conjure the missing "
-            "file, so the retry is guaranteed to fail identically."
-        ),
+        description="Missing checkpoint path; cannot self-heal by restarting.",
         decision="STOP",
         failure_domain="workload",
         retry_outlook="cannot_recover",
@@ -338,11 +326,7 @@ CATEGORIES: tuple[CategoryDef, ...] = (
         name="CUDA OOM during checkpoint async-save",
         description=(
             "CUDA OOM inside the async checkpoint-save path on a near-full GPU; "
-            "determinism evidence lives outside the log. Prefer over cat 25 whenever "
-            "the CUDA OOM appears in an async-checkpoint-save context (async_utils, "
-            "gather_object, save_state_dict_async, or any async ckpt-save frame) - "
-            "checkpoint-save OOMs need a checkpoint-side response rather than "
-            "generic OOM handling."
+            "determinism evidence lives outside the log."
         ),
         decision="RESTART",
         failure_domain="workload",
