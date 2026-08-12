@@ -225,7 +225,7 @@ a launcher-managed attribution service:
   - ``--ft-attribution-llm-api-key-file <PATH>`` (alias: ``--ft_attribution_llm_api_key_file``)
   - ``--ft-attribution-llm-base-url <URL>`` (alias: ``--ft_attribution_llm_base_url``)
   - ``--ft-attribution-llm-model <MODEL>`` (alias: ``--ft_attribution_llm_model``)
-  - ``--ft-attribution-analysis-backend {lib,mcp}`` (alias: ``--ft_attribution_analysis_backend``)
+  - ``--ft-attribution-analysis-backend {lib}`` (alias: ``--ft_attribution_analysis_backend``)
   - ``--ft-attribution-stop-action {log,no-restart}`` (alias: ``--ft_attribution_stop_action``), default ``log``
   - ``--ft-attribution-startup-timeout <SECONDS>`` (alias: ``--ft_attribution_startup_timeout``), default ``20``
   - ``--ft-attribution-export-url <URL>`` (alias: ``--ft_attribution_export_url``)
@@ -247,7 +247,8 @@ a launcher-managed attribution service:
 
   Launcher-managed attribution defaults to the ``lib`` backend, which runs the Restart Agent
   directly in the attrsvc process. The backend flag may be left unset to use that default or set
-  explicitly to ``lib``. Set it to ``mcp`` only for the legacy LogSage/Flight Recorder path.
+  explicitly to ``lib``. The optional MCP/LogSage analysis path is no longer selectable from
+  launcher-managed attribution.
 
   Attribution never delays a restart. When a cycle ends, the rendezvous host requests
   terminal analysis and immediately closes the next round, so the workload restarts while

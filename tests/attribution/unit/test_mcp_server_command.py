@@ -3,7 +3,6 @@
 
 import sys
 import unittest
-from unittest.mock import patch
 
 PY310_PLUS = sys.version_info >= (3, 10)
 
@@ -13,21 +12,19 @@ if PY310_PLUS:
 
 @unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")
 class TestGetServerCommand(unittest.TestCase):
-    def test_prefers_nvrx_mcp_analysis_on_path(self):
-        with patch(
-            "nvidia_resiliency_ext.attribution.mcp_integration.mcp_client.shutil.which"
-        ) as w:
-            w.return_value = "/opt/conda/bin/nvrx-mcp-analysis"
-            cmd = get_server_command()
-        self.assertEqual(cmd, ["/opt/conda/bin/nvrx-mcp-analysis", "--log-level", "INFO"])
+    def test_uses_packaged_server_launcher(self):
+        cmd = get_server_command()
+
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertTrue(cmd[1].endswith("server_launcher.py"))
+        self.assertEqual(cmd[2:], ["--log-level", "INFO"])
 
     def test_log_level_override(self):
-        with patch(
-            "nvidia_resiliency_ext.attribution.mcp_integration.mcp_client.shutil.which"
-        ) as w:
-            w.return_value = "/opt/conda/bin/nvrx-mcp-analysis"
-            cmd = get_server_command(log_level="debug")
-        self.assertEqual(cmd, ["/opt/conda/bin/nvrx-mcp-analysis", "--log-level", "DEBUG"])
+        cmd = get_server_command(log_level="debug")
+
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertTrue(cmd[1].endswith("server_launcher.py"))
+        self.assertEqual(cmd[2:], ["--log-level", "DEBUG"])
 
 
 if __name__ == "__main__":

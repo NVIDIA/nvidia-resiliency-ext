@@ -50,8 +50,7 @@ sudo ./scripts/setup_systemd.sh start
 
 The default direct backend accepts `LLM_API_KEY_FILE`, an explicit Restart
 Agent config with its own credential reference, or the default key-file paths
-`~/.llm_api_key` and `~/.config/nvrx/llm_api_key`. A raw `LLM_API_KEY` is
-accepted only by the legacy `mcp` backend.
+`~/.llm_api_key` and `~/.config/nvrx/llm_api_key`.
 
 **Output files** (in `~/nvrx_logs/` by default):
 - `<timestamp>_attrsvc.log` - Attribution service stdout/stderr

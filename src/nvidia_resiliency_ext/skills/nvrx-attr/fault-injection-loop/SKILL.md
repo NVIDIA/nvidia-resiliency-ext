@@ -8,7 +8,7 @@ description: >
   After all jobs complete, runs /log-analysis and /fr-analysis on every experiment,
   scores attribution vs. ground truth, aggregates gaps, and iterates on attribution
   modules to close them.
-compatibility: Requires SLURM cluster access, sbatch, LLM_API_KEY, langchain-openai, logsage, and nvidia-resiliency-ext installed. This workflow has only been validated with Megatron-LM workloads.
+compatibility: Requires SLURM cluster access, sbatch, LLM_API_KEY, and nvidia-resiliency-ext[attribution] installed. This workflow has only been validated with Megatron-LM workloads.
 metadata:
   author: nvidia
   sub-skills: [log-analysis, fr-analysis]

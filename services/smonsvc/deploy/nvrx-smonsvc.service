@@ -5,12 +5,13 @@
 #   sudo ./setup_systemd.sh
 #
 # Manual installation:
-#   1. Create venv:     python3 -m venv /opt/nvrx/venv
-#   2. Install:         /opt/nvrx/venv/bin/pip install -e services
-#   3. Copy service:    sudo cp nvrx-smonsvc.service /etc/systemd/system/
-#   4. Reload:          sudo systemctl daemon-reload
-#   5. Enable:          sudo systemctl enable nvrx-smonsvc
-#   6. Start:           sudo systemctl start nvrx-smonsvc
+#   1. Set repo root:   export NVRX_REPO_DIR=/path/to/nvidia-resiliency-ext
+#   2. Create venv:     python3 -m venv /opt/nvrx/venv
+#   3. Install:         /opt/nvrx/venv/bin/pip install -e "$NVRX_REPO_DIR"
+#   4. Copy service:    sudo cp nvrx-smonsvc.service /etc/systemd/system/
+#   5. Reload:          sudo systemctl daemon-reload
+#   6. Enable:          sudo systemctl enable nvrx-smonsvc
+#   7. Start:           sudo systemctl start nvrx-smonsvc
 #
 # Logging:
 #   Default: File-based with timestamps

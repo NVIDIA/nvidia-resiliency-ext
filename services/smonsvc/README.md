@@ -7,7 +7,7 @@ SLURM job monitor that automatically submits completed job logs to the Attributi
 ```bash
 # Install
 cd services
-pip install -e .
+pip install -e ..
 
 # Run (requires nvrx-attrsvc running)
 export NVRX_ATTRSVC_ENDPOINT=http://localhost:8000

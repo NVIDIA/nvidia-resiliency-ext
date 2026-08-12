@@ -3,19 +3,21 @@
 Launcher for the NVRX Attribution MCP server (tool-agnostic: clients call ``log_analyzer``,
 ``fr_analyzer``, etc. by MCP tool name).
 
-Installed as ``nvrx-mcp-analysis`` for a short ``ps`` name; process title matches via
-``setproctitle`` when available.
+MCP dependencies are optional and are not installed by the default NVRx wheel.
+Install ``nvidia-resiliency-ext[attribution]`` before launching this server.
+The process title is set to ``nvrx-mcp-analysis`` via ``setproctitle`` when available.
 
 Usage:
     # Launch server with all modules
-    nvrx-mcp-analysis
-    python server_launcher.py
+    python -m nvidia_resiliency_ext.attribution.mcp_integration.server_launcher
 
     # Launch with specific modules only
-    nvrx-mcp-analysis --modules log_analyzer fr_analyzer
+    python -m nvidia_resiliency_ext.attribution.mcp_integration.server_launcher \
+        --modules log_analyzer fr_analyzer
 
     # Launch with custom server name
-    nvrx-mcp-analysis --server-name my-attribution-server
+    python -m nvidia_resiliency_ext.attribution.mcp_integration.server_launcher \
+        --server-name my-attribution-server
 """
 
 import argparse
@@ -37,16 +39,42 @@ def _set_process_title(title: str) -> None:
 
 logger = logging.getLogger(__name__)
 
+_ATTRIBUTION_EXTRA_MESSAGE = (
+    "Attribution MCP/LogSage dependencies are not installed. "
+    "Install with: pip install 'nvidia-resiliency-ext[attribution]'"
+)
+
+
+def _is_attribution_extra_dependency(exc: ModuleNotFoundError) -> bool:
+    return bool(
+        exc.name
+        and (
+            exc.name in {"langchain_core", "langchain_openai", "logsage", "mcp"}
+            or exc.name.startswith("logsage.")
+        )
+    )
+
 
 def main():
     """Main entry point for the MCP server."""
     _set_process_title(_PROC_TITLE)
 
-    from nvidia_resiliency_ext.attribution.mcp_integration.mcp_server import NVRxMCPServer
-    from nvidia_resiliency_ext.attribution.mcp_integration.module_definitions import (
-        register_all_modules,
-    )
-    from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
+    try:
+        from nvidia_resiliency_ext.attribution.mcp_integration.mcp_server import NVRxMCPServer
+    except ModuleNotFoundError as exc:
+        if not _is_attribution_extra_dependency(exc):
+            raise
+        raise SystemExit(_ATTRIBUTION_EXTRA_MESSAGE) from exc
+
+    try:
+        from nvidia_resiliency_ext.attribution.mcp_integration.module_definitions import (
+            register_all_modules,
+        )
+        from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
+    except ModuleNotFoundError as exc:
+        if not _is_attribution_extra_dependency(exc):
+            raise
+        raise SystemExit(_ATTRIBUTION_EXTRA_MESSAGE) from exc
 
     parser = argparse.ArgumentParser(description='Launch NVRX Attribution MCP Server')
     parser.add_argument(

@@ -10,7 +10,7 @@ This client allows:
 import asyncio
 import json
 import logging
-import shutil
+import sys
 from contextlib import AsyncExitStack
 from importlib.resources import files as pkg_files
 from typing import Any, Dict, List
@@ -61,8 +61,9 @@ def get_server_command(*, log_level: str = "INFO") -> List[str]:
     """
     Resolve and return the server launcher command for the MCP client.
 
-    Prefers the ``nvrx-mcp-analysis`` console script when on PATH (clearer in ``ps``);
-    falls back to ``python path/to/server_launcher.py`` for editable installs.
+    Uses the current Python executable and packaged ``server_launcher.py`` so MCP
+    remains available to explicit callers without installing a default NVRx
+    console entry point.
 
     Args:
         log_level: Subprocess logging level (same names as ``server_launcher --log-level``).
@@ -72,10 +73,6 @@ def get_server_command(*, log_level: str = "INFO") -> List[str]:
         Command list to launch the MCP server subprocess.
     """
     lvl = normalize_mcp_server_log_level(log_level)
-    script = shutil.which("nvrx-mcp-analysis")
-    if script:
-        return [script, "--log-level", lvl]
-
     pkg = "nvidia_resiliency_ext.attribution.mcp_integration"
     try:
         resource = pkg_files(pkg).joinpath("server_launcher.py")
@@ -83,7 +80,7 @@ def get_server_command(*, log_level: str = "INFO") -> List[str]:
         raise FileNotFoundError(f"failed to locate server_launcher.py in package {pkg}: {e}")
     if not resource.exists():
         raise FileNotFoundError(f"server launcher not found in package: {pkg}/server_launcher.py")
-    return ["python", str(resource), "--log-level", lvl]
+    return [sys.executable, str(resource), "--log-level", lvl]
 
 
 def create_mcp_client(*, mcp_server_log_level: str = "INFO") -> "NVRxMCPClient":

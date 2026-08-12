@@ -5,13 +5,14 @@
 #   sudo ./setup_systemd.sh
 #
 # Manual installation:
-#   1. Create venv:     python3 -m venv /opt/nvrx/venv
-#   2. Install:         /opt/nvrx/venv/bin/pip install -e services
-#   3. Create API key:  echo "your-llm-api-key-here" | sudo tee /etc/nvrx/llm_api_key
-#   4. Copy service:    sudo cp nvrx-attrsvc.service /etc/systemd/system/
-#   5. Reload:          sudo systemctl daemon-reload
-#   6. Enable:          sudo systemctl enable nvrx-attrsvc
-#   7. Start:           sudo systemctl start nvrx-attrsvc
+#   1. Set repo root:   export NVRX_REPO_DIR=/path/to/nvidia-resiliency-ext
+#   2. Create venv:     python3 -m venv /opt/nvrx/venv
+#   3. Install:         /opt/nvrx/venv/bin/pip install -e "$NVRX_REPO_DIR"
+#   4. Create API key:  echo "your-llm-api-key-here" | sudo tee /etc/nvrx/llm_api_key
+#   5. Copy service:    sudo cp nvrx-attrsvc.service /etc/systemd/system/
+#   6. Reload:          sudo systemctl daemon-reload
+#   7. Enable:          sudo systemctl enable nvrx-attrsvc
+#   8. Start:           sudo systemctl start nvrx-attrsvc
 #
 # Logging:
 #   Default: File-based with timestamps

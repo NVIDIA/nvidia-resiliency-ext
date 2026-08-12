@@ -195,7 +195,7 @@ def test_attribution_config_maps_launcher_args(tmp_path):
             ft_attribution_llm_api_key_file=str(api_key_file),
             ft_attribution_llm_base_url="https://llm.example/v1",
             ft_attribution_llm_model="model-a",
-            ft_attribution_analysis_backend="mcp",
+            ft_attribution_analysis_backend="lib",
             ft_attribution_log_level="DEBUG",
             ft_attribution_export_url=(
                 "https://dataflow.example.test/dataflow2/example-index/posting"
@@ -211,7 +211,7 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     assert env["NVRX_ATTRSVC_ALLOWED_ROOT"] == str(applog_dir)
     assert env["NVRX_ATTRSVC_LLM_BASE_URL"] == "https://llm.example/v1"
     assert env["NVRX_ATTRSVC_LLM_MODEL"] == "model-a"
-    assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "mcp"
+    assert env["NVRX_ATTRSVC_ANALYSIS_BACKEND"] == "lib"
     assert env["NVRX_ATTRSVC_LOG_LEVEL"] == "DEBUG"
     assert (
         env["NVRX_ATTRSVC_EXPORT_URL"]
@@ -230,6 +230,18 @@ def test_attribution_config_accepts_lib_analysis_backend(tmp_path):
     )
 
     assert cfg.analysis_backend == "lib"
+
+
+def test_attribution_config_rejects_mcp_analysis_backend(tmp_path):
+    with pytest.raises(ValueError, match="only supports 'lib'"):
+        AttributionConfig.from_args(
+            _args(
+                ft_attribution_endpoint="localhost",
+                ft_attribution_analysis_backend="mcp",
+            ),
+            str(tmp_path / "train.log"),
+            FaultToleranceConfig(),
+        )
 
 
 def test_managed_attrsvc_inherits_log_convergence_overrides(tmp_path, monkeypatch):

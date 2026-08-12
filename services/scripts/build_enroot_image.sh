@@ -97,7 +97,7 @@ enroot start --rw --root --mount "${REPO_ROOT}:/tmp/repo" "${CONTAINER_NAME}" ba
     set -e
     cd /tmp/repo
     
-    # Install the root package, which owns both nvrx-attrsvc and nvrx-smonsvc entry points.
+    # Install the root package, which owns both service entry points.
     echo "  Installing nvidia-resiliency-ext..."
     STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install --no-cache-dir .
     

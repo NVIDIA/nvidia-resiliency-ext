@@ -19,7 +19,7 @@
 #
 # Optional environment variables:
 #   NVRX_LOGS_DIR             - Output directory for logs (default: ~/nvrx_logs)
-#   NVRX_ATTRSVC_ANALYSIS_BACKEND - lib Restart Agent (default) or legacy mcp
+#   NVRX_ATTRSVC_ANALYSIS_BACKEND - lib Restart Agent backend
 #   NVRX_SMONSVC_PARTITIONS   - SLURM partitions to monitor (default: "batch batch_long")
 #   NVRX_ATTRSVC_ENDPOINT     - Unified attrsvc endpoint: http://host:port or unix:///path.sock
 #   NVRX_ATTRSVC_PORT         - TCP port fallback when endpoint is unset (default: 8000)

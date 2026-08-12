@@ -96,12 +96,11 @@ Two layers: **library** (`nvidia_resiliency_ext.attribution`) and **service**
 Summary:
 - Prefix **`NVRX_ATTRSVC_`** for service settings (see README for exceptions: LLM
   API key, Slack tokens, optional `LLM_API_KEY_FILE` / file paths in `api_keys.py`).
-- The default direct backend requires **`LLM_API_KEY_FILE`**, or the key-file
-  environment reference named by an explicit Restart Agent config. The legacy
-  backend retains the older `LLM_API_KEY` / file lookup behavior. Slack is
-  optional and legacy-only in the first direct integration.
-- LLM-related env vars are optional; unset values use the selected backend's
-  defaults.
+- The direct backend requires **`LLM_API_KEY_FILE`**, the default key-file paths,
+  or the key-file environment reference named by an explicit Restart Agent config.
+  The retained library path keeps the older `LLM_API_KEY` / file lookup behavior
+  for manual use.
+- LLM-related env vars are optional; unset values use the direct backend defaults.
 - Rate limits: slowapi, `RATE_LIMIT_SUBMIT` / `RATE_LIMIT_ANALYZE` / `RATE_LIMIT_PREVIEW`.
 
 **3.2 Constants** (library `orchestration/config.py` — single source)
@@ -111,7 +110,7 @@ Summary:
 | TTL | `TTL_PENDING_SECONDS`, `TTL_TERMINATED_SECONDS`, `TTL_MAX_JOB_AGE_SECONDS` |
 | Intervals | `POLL_INTERVAL_SECONDS`, `DEFAULT_COMPUTE_TIMEOUT_SECONDS` |
 | Limits | `MAX_JOBS`, `MIN_FILE_SIZE_KB` |
-| Health thresholds | ~20% degraded, ~50% fail (compute / dataflow error rates in health) |
+| Health thresholds | ~20% degraded, ~50% fail (compute error rates in health) |
 
 **3.3 Markers** (mode detection)
 
@@ -133,7 +132,7 @@ Summary:
 Patterns tried in order (scheduler-agnostic where possible): `_(\d+)_date_`,
 `job_(\d+)`, `slurm-(\d+)\.(out|err|log)`, etc. User: often `"unknown"`.
 
-**3.7 Processed-files ledger (legacy `mcp` backend only)**
+**3.7 Processed-files ledger (controller path, not exposed by `nvrx-attrsvc`)**
 
 - Env: `NVRX_ATTRSVC_CACHE_FILE`, `NVRX_ATTRSVC_CACHE_GRACE_PERIOD_SECONDS` (see README).
 - Purpose: avoid duplicate LLM/analysis work after restarts when clients resubmit.
@@ -148,15 +147,15 @@ Patterns tried in order (scheduler-agnostic where possible): `_(\d+)_date_`,
 
 **Startup (conceptual)**  
 Load `Settings` → configure logging → construct `AttributionHttpAdapter`. The
-default `lib` branch resolves `RestartAgentConfig` and constructs
-`RestartAgentRuntime`; the `mcp` branch constructs `AttributionController` and
-`Analyzer`. Then start Uvicorn. Legacy-only startup may also restore cache and
-start controller dependencies.
+direct `lib` backend resolves `RestartAgentConfig` and constructs
+`RestartAgentRuntime`. Then start Uvicorn. The controller/MCP flow remains
+available as lower-level library code for manual use, not as a selectable
+`nvrx-attrsvc` backend.
 
 **Shutdown**  
 Drain HTTP and stop backend-owned workers. The direct backend drops its bounded
-execution registry and current-lifetime history. The legacy backend may export
-its configured cache; see the coalescer documentation.
+execution registry and current-lifetime history. Controller cache export
+is documented with the lower-level coalescer path.
 
 ================================================================================
 
@@ -216,14 +215,14 @@ mitigates abuse.
 | GET | /logs | Analyze / return results (`log_path`, optional `file`, `wl_restart`) |
 
 **GET /healthz**  
-Uses cumulative compute stats (errors + timeouts vs total) and dataflow failure rate
-when dataflow posting is active. Thresholds: ~20% → degraded, ~50% → fail (see service
-implementation). Worst issue wins. MCP connectivity may add issues when backend is `mcp`.
+Uses cumulative compute stats (errors + timeouts vs total). Thresholds:
+~20% → degraded, ~50% → fail (see service implementation). Worst issue wins.
 
 **GET /stats**  
-Merges `Analyzer.get_stats()` (coalescer, splitlog folder stats, detection,
-deferred, permission errors, …) with **dataflow** counters and **Slack** stats.
-**`dataflow`** holds `total_posts`, `total_successful`, `total_failed`.
+Returns direct Restart Agent backend stats: execution-state counts, route and
+fallback counters, errors, evictions, config fingerprint, and history-record
+count. `Analyzer.get_stats()` / dataflow / Slack counters are available
+only on the retained controller path.
 
 **POST /logs** body
 
@@ -269,7 +268,8 @@ POST terminal -> bounded log drain -> RestartAgentRuntime in background
 GET wait=false -> pending | in_flight with optional fallback | completed
 ```
 
-The following diagram describes only the legacy `mcp` backend:
+The following diagram describes the retained controller/MCP path; it is
+not exposed as a selectable `nvrx-attrsvc` backend:
 
 ```mermaid
 flowchart TD
@@ -306,10 +306,11 @@ flowchart TD
 
 Notes: `ANALYSIS_BACKEND` (`NVRX_ATTRSVC_ANALYSIS_BACKEND`) defaults to `lib`,
 which runs the Restart Agent directly and does not use `RequestCoalescer`.
-The `mcp` backend preserves the diagrammed legacy flow, where the coalescer key
-is the normalized path and splitlog `file=` selects a per-file key. See
-`docs/design/attribution/restart_agent/ATTRSVC_INTEGRATION.md` for the direct
-contract and **ARCHITECTURE.md §7** for the legacy path.
+The controller/MCP flow preserves the diagrammed coalescer behavior for
+manual library use, where the coalescer key is the normalized path and splitlog
+`file=` selects a per-file key. See
+`docs/design/attribution/restart_agent/ATTRSVC_INTEGRATION.md` for the service
+contract and **ARCHITECTURE.md §7** for the controller path.
 
 **curl / examples** — **README.md** (avoid duplicating here).
 
@@ -358,17 +359,16 @@ diagram.
 10. GET FLOW
 --------------------------------------------------------------------------------
 
-For `lib`, GET only projects a registered attempt's pending, in-flight, or
-completed result; terminal POST starts analysis. For `mcp`, validate → locate
-job → trigger analysis via the legacy coalescer → serialize result. Legacy
-coalescing details are in **ARCHITECTURE.md**.
+GET only projects a registered attempt's pending, in-flight, or completed
+result; terminal POST starts analysis. Coalescing details for the manual
+controller path are in **ARCHITECTURE.md**.
 
 11. BACKGROUND POLL
 --------------------------------------------------------------------------------
 
-Legacy `mcp` only: pending promotion, splitlog discovery, cleanup, and stuck
-in-flight handling. The direct backend uses its bounded execution registry and
-background terminal futures instead of this poll loop.
+The direct backend uses its bounded execution registry and background terminal
+futures instead of the controller pending-promotion/splitlog/coalescer poll loop.
+Those details remain documented in **ARCHITECTURE.md**.
 
 ================================================================================
                          LIBRARY TOPICS (POINTERS ONLY)
@@ -376,7 +376,7 @@ background terminal futures instead of this poll loop.
 
 12. LLM ANALYSIS  
 Direct Restart Agent behavior — `docs/design/attribution/restart_agent/`.
-Legacy availability, retries, timeouts, and MCP behavior —
+Controller/MCP availability, retries, timeouts, and behavior —
 **ARCHITECTURE.md §7–9**, `LogAnalyzerConfig`, and
 `RequestCoalescer.compute_timeout`.
 
@@ -400,7 +400,7 @@ workload chunk within that file.
 --------------------------------------------------------------------------------
 
 The direct backend evicts the oldest completed execution when its bounded
-registry is full. Legacy TTL-based job cleanup and coalescer eviction use the
+registry is full. Controller TTL-based job cleanup and coalescer eviction use the
 constants in **§3.2**.
 
 ================================================================================
@@ -409,7 +409,7 @@ constants in **§3.2**.
 --------------------------------------------------------------------------------
 
 The direct backend schedules terminal runs on a bounded thread pool and guards
-its execution registry independently of `RestartAgentRuntime` history. Legacy
+its execution registry independently of `RestartAgentRuntime` history. Controller
 poll-thread, asyncio, and coalescer behavior remains documented in
 **ARCHITECTURE.md** and the `Analyzer` / `RequestCoalescer` source.
 
@@ -422,10 +422,10 @@ poll-thread, asyncio, and coalescer behavior remains documented in
 
 - **Direct `lib`**: Restart Agent config fingerprint, execution-state counts,
   fallback/route completion counts, errors, evictions, and history-record count.
-- **Legacy library** (`Analyzer.get_stats`): coalescer stats (hits/misses, compute,
+- **Analyzer library** (`Analyzer.get_stats`): coalescer stats (hits/misses, compute,
   submissions, …), splitlog folder stats under the `splitlog` key, `detection`,
   `deferred`, `permission_errors`, poll gauges, etc. — **exact keys per implementation**.
-- **Legacy controller/adapter** (`AttributionController.get_stats`, exposed by
+- **Controller/adapter** (`AttributionController.get_stats`, exposed by
   `AttributionHttpAdapter.get_stats`): adds **`dataflow`** (direct HTTP post
   attempts) and **`slack`** (attempts, successes, failures, user lookup stats when enabled).
 
@@ -436,13 +436,12 @@ Refer to live **`GET /stats`** response or OpenAPI for the current JSON shape.
 21. DATAFLOW & SLACK (OPTIONAL)
 --------------------------------------------------------------------------------
 
-Legacy `mcp` postprocessing posts results when `EXPORT_URL` is configured with the
-complete posting URI. No endpoint is built into the package. Slack posts when
-`SLACK_BOT_TOKEN` set or token fallback files are present. Wiring:
-`Settings` → `AttributionControllerConfig` → `AttributionController`. Record build:
-`build_dataflow_record`; backend: `postprocessing/post_backend.py`. Retry behavior in
-implementation. The first direct Restart Agent integration does not invoke
-legacy dataflow or Slack postprocessing.
+The direct backend does not invoke controller dataflow or Slack postprocessing.
+Those integrations remain on the retained controller/manual path: `EXPORT_URL`
+configures complete-result posting, Slack posts when `SLACK_BOT_TOKEN` is set or
+token fallback files are present, and the controller wiring is
+`AttributionControllerConfig` → `AttributionController`. Record build:
+`build_dataflow_record`; backend: `postprocessing/post_backend.py`.
 
 ================================================================================
                          OPERATIONS & DEVELOPMENT (POINTERS)

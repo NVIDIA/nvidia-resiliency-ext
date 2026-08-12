@@ -4,6 +4,10 @@
 
 This document describes the architecture and design decisions behind the MCP integration for NVIDIA Resiliency Extension (NVRX) Attribution modules.
 
+MCP support is optional and is not installed by the default NVRx wheel. Install
+`nvidia-resiliency-ext[attribution]` before launching the MCP server or
+using the MCP client transport.
+
 ## Design Goals
 
 1. **Modularity**: Each attribution module operates independently

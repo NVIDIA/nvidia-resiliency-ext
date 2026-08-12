@@ -122,11 +122,10 @@ class Settings(BaseSettings):
     Attribution fields are translated into either a direct Restart Agent config
     or the legacy controller config by
     :class:`~nvidia_resiliency_ext.services.attrsvc.service.AttributionHttpAdapter`;
-    unset fields keep the selected implementation's defaults.
+    unset fields keep direct Restart Agent defaults.
 
-    ``LOG_LEVEL`` sets the root log level, FastAPI ``debug`` (when ``LOG_LEVEL`` is ``DEBUG``), MCP
-    subprocess ``--log-level``, and verbosity for in-process MCP client loggers. Allowed values:
-    ``DEBUG``, ``INFO``, ``WARNING`` (default ``INFO``).
+    ``LOG_LEVEL`` sets the root log level and FastAPI ``debug`` (when ``LOG_LEVEL`` is ``DEBUG``).
+    Allowed values: ``DEBUG``, ``INFO``, ``WARNING`` (default ``INFO``).
     """
 
     FAST_API_ROOT_PATH: str = Field(default="", description="FastAPI root path")
@@ -145,15 +144,15 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(
         default="INFO",
         description=(
-            "Service log level: DEBUG, INFO, or WARNING. Drives logging.basicConfig, MCP "
-            "``nvrx-mcp-analysis --log-level``, and FastAPI debug when set to DEBUG."
+            "Service log level: DEBUG, INFO, or WARNING. Drives logging.basicConfig "
+            "and FastAPI debug when set to DEBUG."
         ),
     )
     COMPUTE_TIMEOUT: float | None = Field(
         default=None, description="Timeout for compute_fn in seconds (None = library default)"
     )
 
-    # LLM overrides resolved by the selected backend (see AttributionHttpAdapter).
+    # LLM overrides resolved by the direct Restart Agent backend.
     LLM_MODEL: str | None = Field(default=None, description="LLM model override")
     LLM_BASE_URL: str | None = Field(default=None, description="LLM base url override")
     LLM_TEMPERATURE: float | None = Field(
@@ -166,8 +165,8 @@ class Settings(BaseSettings):
     ANALYSIS_BACKEND: str = Field(
         default="lib",
         description=(
-            "Analysis implementation: 'lib' runs the Restart Agent directly in attrsvc "
-            "(default); 'mcp' preserves the legacy LogSage/flight-recorder MCP path."
+            "Analysis implementation. Only 'lib' is supported; it runs the Restart Agent "
+            "directly in attrsvc."
         ),
     )
     RESTART_AGENT_CONFIG: str | None = Field(
@@ -276,10 +275,9 @@ class Settings(BaseSettings):
     @field_validator("ANALYSIS_BACKEND")
     @classmethod
     def validate_analysis_backend(cls, v: str) -> str:
-        allowed = ("lib", "mcp")
         v_lower = v.strip().lower()
-        if v_lower not in allowed:
-            raise ValueError(f"ANALYSIS_BACKEND must be one of {allowed}, got '{v}'")
+        if v_lower != "lib":
+            raise ValueError(f"ANALYSIS_BACKEND only supports 'lib', got '{v}'")
         return v_lower
 
     @field_validator("RESTART_AGENT_CONFIG", mode="before")
@@ -477,8 +475,6 @@ def setup() -> Settings:
     # Suppress verbose logs from dependencies
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("mcp").setLevel(_root_lvl)
-    logging.getLogger("nvidia_resiliency_ext.attribution.mcp_integration").setLevel(_root_lvl)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
     return cfg
