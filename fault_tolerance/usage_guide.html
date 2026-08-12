@@ -307,7 +307,7 @@ a launcher-managed attribution service:</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span> <span class="pre">&lt;PATH&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_api_key_file</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-base-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_base_url</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-model</span> <span class="pre">&lt;MODEL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_model</span></code>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-analysis-backend</span> <span class="pre">{lib,mcp}</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_analysis_backend</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-analysis-backend</span> <span class="pre">{lib}</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_analysis_backend</span></code>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">{log,no-restart}</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_stop_action</span></code>), default <code class="docutils literal notranslate"><span class="pre">log</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-startup-timeout</span> <span class="pre">&lt;SECONDS&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_startup_timeout</span></code>), default <code class="docutils literal notranslate"><span class="pre">20</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_export_url</span></code>)</p></li>
@@ -326,7 +326,8 @@ before starting the attribution service.</p>
 set <code class="docutils literal notranslate"><span class="pre">attribution_export_url</span></code> in the fault tolerance YAML config.</p>
 <p>Launcher-managed attribution defaults to the <code class="docutils literal notranslate"><span class="pre">lib</span></code> backend, which runs the Restart Agent
 directly in the attrsvc process. The backend flag may be left unset to use that default or set
-explicitly to <code class="docutils literal notranslate"><span class="pre">lib</span></code>. Set it to <code class="docutils literal notranslate"><span class="pre">mcp</span></code> only for the legacy LogSage/Flight Recorder path.</p>
+explicitly to <code class="docutils literal notranslate"><span class="pre">lib</span></code>. The optional MCP/LogSage analysis path is no longer selectable from
+launcher-managed attribution.</p>
 <p>Attribution never delays a restart. When a cycle ends, the rendezvous host requests
 terminal analysis and immediately closes the next round, so the workload restarts while
 analysis is still running. A background poller on the rendezvous host fetches the verdict
