@@ -38,34 +38,17 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-Exports three names: `managed_span`, `setup_telemetry`, `force_flush`.
+Exports four names: `managed_span`, `setup_telemetry`, `force_flush`, `record_event`.
 
 ### NVRxSpanGroup
 
 nemo-lens's base `SpanGroup.resolve()` only recognises its built-in groups. Without a subclass, `"nvrx.ft"` or `"nvrx.ckpt"` in `NEMO_LENS_SPAN_GROUPS` raises `ValueError`, and the base `"default"` preset emits no NVRx spans even with `NEMO_LENS_ENABLED=1`. `NVRxSpanGroup` adds FT and CKPT to the `"default"` preset so `NEMO_LENS_ENABLED=1` alone is sufficient.
 
-```python
-from nemo.lens import SpanGroup
-from typing import ClassVar, Final
-
-class NVRxSpanGroup(SpanGroup):
-    FT   = "nvrx.ft"
-    CKPT = "nvrx.ckpt"
-
-    ALL_GROUPS: Final[frozenset] = SpanGroup.ALL_GROUPS | frozenset([FT, CKPT])
-    _PRESETS: ClassVar[dict] = {
-        **SpanGroup._PRESETS,
-        "default": SpanGroup._PRESETS["default"] | frozenset([FT, CKPT]),
-        "nvrx": frozenset([FT, CKPT]),
-        "all": SpanGroup.ALL_GROUPS | frozenset([FT, CKPT]),
-    }
-```
-
 ### Implementation
 
-The module-level `try/except` handles both the absent and the broken-install cases — a `ModuleNotFoundError` and any other import failure are both caught, so neither can prevent importing FT or checkpointing code.
+The module-level `try/except` handles both the absent and the broken-install cases. `ModuleNotFoundError` (nemo-lens not installed) is silent. Any other import failure logs a warning.
 
-`managed_span` suppresses exceptions from span entry and exit only — exceptions from the instrumented body always propagate. `setup_telemetry` catches all exceptions and degrades to a no-op handle with a warning. `ModuleNotFoundError` (nemo-lens simply not installed) is silent.
+`managed_span` suppresses exceptions from span entry and exit only. Exceptions from the instrumented body — including `SignalException`, `KeyboardInterrupt`, and `SystemExit` — always propagate via `raise` and are never swallowed.
 
 ```python
 import logging
@@ -108,7 +91,6 @@ def managed_span(group, name, tracer=None, **attributes):
     if _real_managed_span is None:
         yield None
         return
-    # Suppress entry/exit failures; body exceptions always propagate.
     try:
         cm = _real_managed_span(group, name, tracer=tracer, **attributes)
         span = cm.__enter__()
@@ -119,6 +101,7 @@ def managed_span(group, name, tracer=None, **attributes):
     try:
         yield span
     except BaseException as exc:
+        # Body exceptions (including signals) always propagate.
         try:
             cm.__exit__(type(exc), exc, exc.__traceback__)
         except Exception:
@@ -156,6 +139,15 @@ def force_flush(timeout_ms: int = 1500) -> None:
         trace.get_tracer_provider().force_flush(timeout_millis=timeout_ms)
     except Exception:
         pass
+
+
+def record_event(name: str, attributes: dict | None = None) -> None:
+    """Add a timestamped event to the current active span. No-op if telemetry is disabled."""
+    try:
+        from opentelemetry import trace
+        trace.get_current_span().add_event(name, attributes or {})
+    except Exception:
+        pass
 ```
 
 `world_size` is required by the upstream `nemo.lens.setup_telemetry` API for OTel resource attributes.
@@ -166,7 +158,7 @@ classDiagram
         <<context manager>>
         +__init__(group: str, name: str, tracer=None, **attributes)
         +__enter__() Span | None
-        +__exit__(...) propagates body exceptions
+        +__exit__(...) propagates BaseException
     }
 
     class setup_telemetry {
@@ -178,17 +170,32 @@ classDiagram
         <<function>>
         +__call__(timeout_ms: int = 1500)
     }
+
+    class record_event {
+        <<function>>
+        +__call__(name: str, attributes: dict | None)
+    }
 ```
 
 ## Fault Tolerance Span Lifecycle
 
+### Spans vs events
+
+`next_rendezvous()` is a single blocking call that internally mixes standby retries, health check, barrier join, and rank assignment. Producing child spans from that boundary would require invasive callbacks into the barrier internals. Instead, the rendezvous internals use OTel **events** — timestamped points attached to the current active span via `record_event()`. Events have timestamps, so durations between them (e.g. `health_check.started` → `health_check.completed`) are available in backends that support event-based analytics.
+
+OTel propagates the active span implicitly via `contextvars`. Because `next_rendezvous()` is called synchronously from the launcher's main thread, `record_event()` calls inside `ft_rendezvous_barrier.py` automatically attach to the open `cycle` span with no reference passing.
+
+**Spans** are used only where there are clear, code-controlled start/end boundaries.
+
 ### Initialization
 
-`setup_telemetry(rank=0, world_size=1)` is called once per launcher-agent process before the first rendezvous, at the start of `_invoke_run_with_any_failed_policy`. Each launcher agent is a distinct telemetry emitter; elastic `group_rank` and `group_world_size` are recorded on spans as attributes, not as the OTel resource identity. This avoids the single-rank export filter eliminating all but one node's spans.
+`setup_telemetry(rank=0, world_size=1)` is called once per launcher-agent process at the start of `_invoke_run_with_any_failed_policy`, before the first rendezvous. Each launcher agent is a distinct telemetry emitter with its own OTel resource identity. Elastic `group_rank` and `group_world_size` are set as span attributes after rendezvous assigns them.
 
-`atexit.register(self._tel_handle.shutdown)` registers shutdown for clean process exits.
+`atexit.register(self._tel_handle.shutdown)` registers the terminal shutdown for clean process exits.
 
-### Span lifecycle per cycle
+### Lifecycle per cycle
+
+The `cycle` span opens at the start of the `_rendezvous` override — this covers both the initial launch and all restart cycles, and means standby wait events attach to the cycle span naturally.
 
 ```mermaid
 sequenceDiagram
@@ -198,85 +205,73 @@ sequenceDiagram
     Note over L: setup_telemetry(0, 1) once at agent start
 
     loop each cycle (initial + restarts)
-        R->>R: open nvrx.ft.await_round (root span)
-        Note over R: standby nodes may loop here across rounds
-        R->>R: round opens — close nvrx.ft.await_round
-        L->>L: open nvrx.ft.cycle into self._cycle_stack
-        R->>R: with managed_span("nvrx.ft", "nvrx.ft.health_check")
-        Note over R: UnhealthyNodeException → nvrx.ft.excluded + close cycle
-        L->>L: with managed_span("nvrx.ft", "nvrx.ft.rendezvous")
+        L->>L: open nvrx.ft.cycle → self._cycle_span (ExitStack)
+        L->>R: _rendezvous() → next_rendezvous() [sync]
+        R->>R: record_event("rendezvous.started")
+        R->>R: record_event("health_check.started")
+        Note over R: excluded → record_event("excluded")<br/>force_flush → set outcome → close cycle
+        R->>R: record_event("health_check.completed")
+        R->>R: record_event("standby.round") [repeats if standby]
+        R->>R: record_event("rendezvous.completed", {nvrx.rank, nvrx.rdzv_run_id})
+        R-->>L: return
         L->>L: with managed_span("nvrx.ft", "nvrx.ft.worker_start")
-        L->>L: open nvrx.ft.run into self._run_stack
+        L->>L: open nvrx.ft.run → self._run_span (ExitStack)
         Note over L: workers executing
         L->>L: failure detected
-        L->>L: self._run_stack.close()
-        L->>L: with managed_span("nvrx.ft", "nvrx.ft.fault")
+        L->>L: self._run_span.close()
+        L->>L: record_event("fault")
         L->>L: force_flush(timeout_ms=1500)
         L->>L: with managed_span("nvrx.ft", "nvrx.ft.teardown")
-        L->>L: set nvrx.cycle_outcome + close self._cycle_stack
+        L->>L: set nvrx.cycle_outcome + close self._cycle_span
     end
 ```
 
-**`await_round` is a root span** (parent of nothing, not nested inside `cycle`) that wraps the period from when rendezvous begins to when the node is assigned a round. Standby nodes may traverse multiple rounds, each emitting its own `await_round` span with outcome `standby`. When a node is selected as active, `await_round` closes and `cycle` opens. Implementing this requires `_barrier_state.perform_rendezvous()` to support an `on_round_open` notification callback, separate from the existing `pre_join_hook`.
+### Long-lived spans
 
-**Long-lived spans** (`cycle`, `run`) are held in `ExitStack` instances on the agent instance so they survive across monitor loop iterations. nemo-lens PR #37's `_OpenSpanCloser` processor forcibly ends any spans still open at `shutdown()`, so spans are exported even if the process exits before explicit close.
+`cycle` and `run` are held in `ExitStack` instances on the agent (`self._cycle_stack`, `self._run_stack`). The yielded span object is stored separately (`self._cycle_span`, `self._run_span`) for event attachment and outcome setting.
+
+nemo-lens PR #37's `_OpenSpanCloser` processor forcibly ends any spans still open at `shutdown()`, so spans are exported even if the process exits before explicit close.
 
 ### Flush and shutdown
 
-`force_flush(timeout_ms=1500)` is called immediately after failure detection (before `_stop_workers`). This exports pending spans without terminating the SDK, allowing telemetry to continue for subsequent restarts.
+`force_flush(timeout_ms=1500)` is called:
+- Immediately after failure detection (before `_stop_workers`)
+- At node exclusion (before closing the cycle)
 
-`handle.shutdown()` is called only at process exit (via `atexit`). It is the terminal operation and must not be called between restart cycles.
+`handle.shutdown()` is called only at process exit (via `atexit`). It is the terminal operation; calling it between restart cycles would disable telemetry for subsequent cycles.
 
-`force_flush` is also called after worker termination and node exclusion to preserve spans before any SIGKILL sequence.
+Outcomes and `nvrx.cycle_outcome` are set on the span **before** `force_flush` and before closing the `ExitStack`, so the exported data is complete.
 
-### Node exclusion
+### Attribution
 
-When `ensure_node_is_healthy()` raises `UnhealthyNodeException` inside the `health_check` span, the exclusion path must:
-1. Emit `nvrx.ft.excluded` (an instantaneous marker span)
-2. Call `force_flush(timeout_ms=1500)`
-3. Set `nvrx.cycle_outcome = "excluded"` and close `self._cycle_stack`
-
-This closes the cycle from the rendezvous exception path, not later in the monitor loop.
-
-### Attribution telemetry
-
-The attribution client already runs on a daemon thread. When the attribution result arrives, it should emit spans as children of the cycle span by attaching the cycle's OTel context:
+The attribution client runs on a long-lived daemon thread. It emits events directly on the current cycle span using the stored reference:
 
 ```python
-import opentelemetry.context as otel_ctx
+# In launcher, when cycle span opens:
+self._cycle_span = ...  # yielded from ExitStack.enter_context(managed_span(...))
 
-# Before starting the attribution daemon thread, capture current context:
-_attribution_ctx = otel_ctx.get_current()
-
-def _attribution_poll():
-    token = otel_ctx.attach(_attribution_ctx)
-    try:
-        with managed_span("nvrx.ft", "nvrx.ft.attribution"):
-            ...
-    finally:
-        otel_ctx.detach(token)
+# In attribution poller thread, when result arrives:
+if self._cycle_span is not None:
+    self._cycle_span.add_event("attribution.result", {"outcome": result, ...})
 ```
 
-The attribution context must be captured after `cycle` opens so `nvrx.ft.attribution` nests correctly.
+Using the span reference directly (rather than OTel context attach/detach) avoids the problem of a long-lived thread capturing a stale context. The span reference is updated each time a new cycle opens and cleared when the cycle closes.
 
 ## Span Attributes
 
-All FT spans carry `nvrx.cycle`, `nvrx.node`, and `nvrx.rank` at open time.
-
 | Attribute | Type | Spans | Notes |
 |---|---|---|---|
-| `nvrx.cycle` | int | all FT | restart cycle counter |
-| `nvrx.node` | str | all FT | node hostname |
-| `nvrx.rank` | int | all FT | elastic group rank (known after first rendezvous; 0 before) |
+| `nvrx.cycle` | int | all FT spans | restart cycle counter |
+| `nvrx.node` | str | all FT spans | node hostname |
+| `nvrx.rank` | int | `cycle` | elastic group rank; set after rendezvous (initially absent) |
 | `nvrx.membership` | str | `cycle`, `run` | `"active"` or `"standby"` |
-| `nvrx.group_world_size` | int | `cycle` | number of active nodes |
-| `nvrx.rdzv_run_id` | str | `cycle`, `rendezvous` | rendezvous run ID for cross-rank correlation |
+| `nvrx.group_world_size` | int | `cycle` | number of active nodes; set after rendezvous |
 | `nvrx.max_restarts` | int | `cycle` | configured restart budget |
 | `nvrx.remaining_restarts` | int | `cycle` | set at close time |
 | `nvrx.failures` | int | `cycle` | set at close time |
 | `nvrx.active_nodes` | str | `cycle` | comma-separated active node addresses |
 | `nvrx.standby_nodes` | str | `cycle` | comma-separated standby node addresses |
-| `nvrx.cycle_outcome` | str | `cycle` | set at close time; see outcomes below |
+| `nvrx.cycle_outcome` | str | `cycle` | set before close; see outcomes below |
 | `nvrx.call_idx` | int | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join |
 | `is_goodput_span` | bool | all | see below |
 
@@ -292,21 +287,31 @@ All FT spans carry `nvrx.cycle`, `nvrx.node`, and `nvrx.rank` at open time.
 | `terminated` | job terminated by policy (attribution stop, no-progress, etc.) |
 | `completed` | fallback for any other clean termination |
 
-`remaining_restarts = 0` on the span communicates budget exhaustion; there is no separate outcome value for it.
+`remaining_restarts = 0` communicates budget exhaustion; there is no separate outcome for it.
+
+### Events on the cycle span
+
+These are emitted via `record_event()` at the existing `ProfilingEvent` instrumentation points in `ft_rendezvous_barrier.py` and `launcher.py`.
+
+| Event name | Source | Attributes |
+|---|---|---|
+| `rendezvous.started` | `ft_rendezvous_barrier.py` | |
+| `health_check.started` | `ft_rendezvous_barrier.py` | |
+| `health_check.completed` | `ft_rendezvous_barrier.py` | elapsed_s |
+| `standby.round` | `ft_rendezvous_barrier.py` | round number |
+| `excluded` | `ft_rendezvous_barrier.py` | reason |
+| `rendezvous.completed` | `ft_rendezvous_barrier.py` | nvrx.rank, nvrx.rdzv_run_id |
+| `fault` | `launcher.py` | nvrx.state, nvrx.failures |
+| `attribution.result` | attribution daemon thread | outcome, details |
 
 ### `is_goodput_span`
 
 | Span | `is_goodput_span` | Rationale |
 |---|---|---|
-| `nvrx.ft.await_round` | `True` | standby wait is overhead |
 | `nvrx.ft.cycle` | `True` | restart/recovery overhead |
-| `nvrx.ft.health_check` | `True` | training blocked |
-| `nvrx.ft.rendezvous` | `True` | training blocked |
 | `nvrx.ft.worker_start` | `True` | training blocked |
 | `nvrx.ft.run` | `False` | training is executing |
-| `nvrx.ft.fault` | `True` | failure detection overhead |
 | `nvrx.ft.teardown` | `True` | cleanup overhead |
-| `nvrx.ft.excluded` | `True` | overhead |
 | `nvrx.ckpt.save.request` | `True` | training blocks for D2H preload |
 | `nvrx.ckpt.save.write` | `False` | write overlaps with training |
 
@@ -316,9 +321,9 @@ The persistent checkpoint worker is launched with `start_method="spawn"`. It inh
 
 `rank` and `world_size` are passed as positional arguments to `async_loop` and `async_loop_for_daemon_worker`. The worker does not correlate with the launcher's OTel trace — it emits independent `nvrx.ckpt.*` spans identified by `nvrx.call_idx`.
 
-**`warmup_persistent_caller` world_size fallback** — `warmup_persistent_caller(rank)` may be called before `torch.distributed` is initialized. `world_size` is resolved in order: explicit keyword argument → `torch.distributed.get_world_size()` if initialized → `int(os.environ["WORLD_SIZE"])` if set → `1`.
+**`warmup_persistent_caller` world_size fallback** — may be called before `torch.distributed` is initialized. Resolved in order: explicit keyword argument → `torch.distributed.get_world_size()` if initialized → `int(os.environ["WORLD_SIZE"])` if set → `1`.
 
-**Checkpoint bootstrap** — NVRx relies on environment variable inheritance for checkpoint worker telemetry configuration rather than passing an explicit bootstrap dict. This is a deliberate simplification: spawned processes inherit the parent's environment, so `NemoLensConfig.from_env()` reads the same configuration in the worker as in the trainer. Callers requiring explicit per-worker override can set env vars before spawning.
+**Checkpoint bootstrap** — NVRx relies on environment variable inheritance for checkpoint worker telemetry configuration. This is a deliberate simplification: spawned processes inherit the parent's environment, so `NemoLensConfig.from_env()` reads the same configuration in the worker as in the trainer.
 
 ```mermaid
 sequenceDiagram
@@ -334,9 +339,20 @@ sequenceDiagram
     W->>W: _tel_handle.shutdown()
 ```
 
+## Spans
+
+| Span | Group | Source | `is_goodput_span` |
+|---|---|---|---|
+| `nvrx.ft.cycle` | `nvrx.ft` | `launcher.py` | `True` |
+| `nvrx.ft.worker_start` | `nvrx.ft` | `launcher.py` | `True` |
+| `nvrx.ft.run` | `nvrx.ft` | `launcher.py` | `False` |
+| `nvrx.ft.teardown` | `nvrx.ft` | `launcher.py` | `True` |
+| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `True` |
+| `nvrx.ckpt.save.write` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `False` |
+
 ## Worker Environment Variables
 
-The launcher injects these into each restarted worker cohort's environment so workers can self-identify and correlate with launcher telemetry:
+The launcher injects these into each restarted worker cohort's environment:
 
 | Variable | Value | Purpose |
 |---|---|---|
@@ -345,22 +361,6 @@ The launcher injects these into each restarted worker cohort's environment so wo
 | `NVRX_INFRA_RANK` | node infrastructure rank (int) | stable physical identity across rescheduling |
 | `NVRX_CYCLE_START_TIME` | epoch seconds (float) | shared time anchor for cross-process correlation |
 | `NVRX_LAUNCH_TIME` | epoch seconds (float) | cohort launch anchor |
-
-## Spans
-
-| Span | Group | Source | `is_goodput_span` |
-|---|---|---|---|
-| `nvrx.ft.await_round` | `nvrx.ft` | `ft_rendezvous_barrier.py` | `True` |
-| `nvrx.ft.cycle` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ft.health_check` | `nvrx.ft` | `ft_rendezvous_barrier.py` | `True` |
-| `nvrx.ft.rendezvous` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ft.worker_start` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ft.run` | `nvrx.ft` | `launcher.py` | `False` |
-| `nvrx.ft.fault` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ft.teardown` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ft.excluded` | `nvrx.ft` | `ft_rendezvous_barrier.py` | `True` |
-| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `True` |
-| `nvrx.ckpt.save.write` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `False` |
 
 ## pyproject.toml
 
