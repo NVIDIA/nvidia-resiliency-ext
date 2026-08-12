@@ -82,11 +82,17 @@ classDiagram
 
 All call sites import from `shared_utils.telemetry`. Nothing in the codebase imports from `nemo.lens` directly.
 
+`world_size` is required by the upstream `nemo.lens.setup_telemetry` API — it uses it to populate OTel resource attributes (e.g. `process.world_size`) on the tracer.
+
 The `group` argument to `managed_span` is a string that gates whether the span is emitted. NVRx defines two groups: `"nvrx.ft"` for fault tolerance spans and `"nvrx.ckpt"` for checkpoint spans. Users enable them via the `NEMO_LENS_SPAN_GROUPS` environment variable (or equivalent `NemoLensConfig` field).
 
 ## Fault Tolerance Span Lifecycle
 
 The FT restart cycle runs synchronously on the launcher's main thread. OTel propagates span context implicitly via `contextvars`, so spans opened inside synchronously-called functions (including `ft_rendezvous_barrier.py`) automatically nest under the current span with no explicit parent passing.
+
+`setup_telemetry` is called once in `_invoke_run_with_any_failed_policy` after the first rendezvous completes (when `group_rank` and `group_world_size` are first known). Shutdown is registered via `atexit`.
+
+The `nvrx.ft.cycle` span wraps `_restart_workers`; `nvrx.ft.rendezvous` wraps `super()._rendezvous()` in the `_rendezvous` override; `nvrx.ft.worker_start` wraps the body of `_start_workers`. Both `nvrx.ft.health_check` and `nvrx.ft.rdzv.await_round` live in `ft_rendezvous_barrier.py` where the health check and barrier wait execute.
 
 ```mermaid
 sequenceDiagram
@@ -94,29 +100,29 @@ sequenceDiagram
     participant R as ft_rendezvous_barrier.py
 
     L->>L: handle = setup_telemetry(rank, world_size)
+    Note over L: atexit.register(handle.shutdown)
     L->>L: with managed_span("nvrx.ft", "nvrx.ft.cycle")
     L->>L: with managed_span("nvrx.ft", "nvrx.ft.rendezvous")
-    L->>R: run_next_rendezvous() [sync]
+    L->>R: next_rendezvous() [sync]
+    R->>R: with managed_span("nvrx.ft", "nvrx.ft.health_check")
     R->>R: with managed_span("nvrx.ft", "nvrx.ft.rdzv.await_round")
     R-->>L: return
-    L->>L: with managed_span("nvrx.ft", "nvrx.ft.health_check")
     L->>L: with managed_span("nvrx.ft", "nvrx.ft.worker_start")
     Note over L: end nvrx.ft.cycle
-    L->>L: handle.shutdown()
 ```
 
 ## Async Checkpoint Worker: Spawn Boundary
 
-The persistent checkpoint worker is launched with `start_method="spawn"`. A spawned process is a fresh interpreter — it inherits environment variables from the parent but no in-memory state – so it must re-initialize telemetry.
+The persistent checkpoint worker is launched with `start_method="spawn"`. A spawned process is a fresh interpreter — it inherits environment variables from the parent but no in-memory state — so it must re-initialize telemetry.
 
-Spawned processes inherit environment variables, so `NemoLensConfig.from_env()` inside `setup_telemetry` reads the same configuration in the worker as in the parent. Nothing telemetry-related needs to cross the spawn boundary. The worker already receives `rank` as a normal argument to `async_loop`; `world_size` is not currently passed and needs to be added to `_start_worker` and the `async_loop` signature.
+Spawned processes inherit environment variables, so `NemoLensConfig.from_env()` inside `setup_telemetry` reads the same configuration in the worker as in the parent. Nothing telemetry-related needs to cross the spawn boundary. `rank` and `world_size` are passed as normal arguments to `async_loop` and `async_loop_for_daemon_worker`. `warmup_persistent_caller(rank, world_size, ...)` also takes `world_size`.
 
 ```mermaid
 sequenceDiagram
     participant C as async_ckpt/core.py (caller)
     participant W as Worker process (spawned)
 
-    C->>W: spawn(_worker_fn, args=(..., rank, world_size))
+    C->>W: spawn(async_loop, args=(rank, world_size, ...))
     W->>W: handle = setup_telemetry(rank, world_size)
     loop each checkpoint request
         W->>W: with managed_span("nvrx.ckpt", "nvrx.ckpt.save.request")
@@ -133,8 +139,8 @@ sequenceDiagram
 | -------------------------- | ----------- | ----------------------------- |
 | `nvrx.ft.cycle`            | `nvrx.ft`   | `launcher.py`                 |
 | `nvrx.ft.rendezvous`       | `nvrx.ft`   | `launcher.py`                 |
+| `nvrx.ft.health_check`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    |
 | `nvrx.ft.rdzv.await_round` | `nvrx.ft`   | `ft_rendezvous_barrier.py`    |
-| `nvrx.ft.health_check`     | `nvrx.ft`   | `launcher.py`                 |
 | `nvrx.ft.worker_start`     | `nvrx.ft`   | `launcher.py`                 |
 | `nvrx.ckpt.save.request`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) |
 | `nvrx.ckpt.save.write`     | `nvrx.ckpt` | `async_ckpt/core.py` (worker) |

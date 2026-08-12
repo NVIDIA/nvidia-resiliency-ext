@@ -67,6 +67,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
+from ..shared_utils.telemetry import managed_span
 from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -2701,7 +2702,8 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
             try:
-                self.ensure_node_is_healthy()
+                with managed_span("nvrx.ft", "nvrx.ft.health_check"):
+                    self.ensure_node_is_healthy()
             finally:
                 health_check_elapsed = time.monotonic() - health_check_start
                 record_profiling_event(
@@ -2714,12 +2716,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             self.handle_control_requests_from_rank()
 
         # Perform complete rendezvous process
-        group_rank, total_participants = self._barrier_state.perform_rendezvous(
-            self._this_node,
-            self._settings.min_nodes,
-            self._settings.max_nodes,
-            pre_join_hook=pre_join_hook,
-        )
+        with managed_span("nvrx.ft", "nvrx.ft.rdzv.await_round"):
+            group_rank, total_participants = self._barrier_state.perform_rendezvous(
+                self._this_node,
+                self._settings.min_nodes,
+                self._settings.max_nodes,
+                pre_join_hook=pre_join_hook,
+            )
 
         # Store the assigned rank and world size
         self._assigned_rank = group_rank

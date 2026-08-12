@@ -12,6 +12,7 @@
 # - Changed shutdown logic
 # - security fix for watchdog_file_path
 
+import atexit
 import asyncio
 
 # fmt: off
@@ -113,6 +114,7 @@ from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
+from nvidia_resiliency_ext.shared_utils.telemetry import managed_span, setup_telemetry
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -655,6 +657,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         logger.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
 
         self._initialize_workers(self._worker_group)
+        _tel_handle = setup_telemetry(
+            self._worker_group.group_rank,
+            self._worker_group.group_world_size,
+        )
+        atexit.register(_tel_handle.shutdown)
         monitor_interval = spec.monitor_interval
         rdzv_handler = spec.rdzv_handler
 
@@ -1077,139 +1084,140 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
 
-        # Record worker start start event
-        record_profiling_event(
-            ProfilingEvent.WORKER_START_STARTED,
-            node_id=self._rdzv_handler._this_node,
-            rank=worker_group.group_rank,
-        )
+        with managed_span("nvrx.ft", "nvrx.ft.worker_start"):
+            # Record worker start start event
+            record_profiling_event(
+                ProfilingEvent.WORKER_START_STARTED,
+                node_id=self._rdzv_handler._this_node,
+                rank=worker_group.group_rank,
+            )
 
-        use_agent_store = spec.rdzv_handler.use_agent_store
+            use_agent_store = spec.rdzv_handler.use_agent_store
 
-        args: Dict[int, Tuple] = {}
-        envs: Dict[int, Dict[str, str]] = {}
-        log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
+            args: Dict[int, Tuple] = {}
+            envs: Dict[int, Dict[str, str]] = {}
+            log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
 
-        # Get master_addr and master_port, handling compatibility with older PyTorch versions
-        try:
-            master_addr = worker_group.master_addr
-            master_port = worker_group.master_port
-        except AttributeError:
-            # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
-            master_addr, master_port = super()._get_master_addr_port(store)
+            # Get master_addr and master_port, handling compatibility with older PyTorch versions
+            try:
+                master_addr = worker_group.master_addr
+                master_port = worker_group.master_port
+            except AttributeError:
+                # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
+                master_addr, master_port = super()._get_master_addr_port(store)
 
-        # Debug logging: Log worker start info once for all workers
-        logger.debug(
-            f"Starting {len(worker_group.workers)} worker(s) "
-            f"[group_rank={worker_group.group_rank}] with "
-            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
-        )
+            # Debug logging: Log worker start info once for all workers
+            logger.debug(
+                f"Starting {len(worker_group.workers)} worker(s) "
+                f"[group_rank={worker_group.group_rank}] with "
+                f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+            )
 
-        current_cycle_info_path = self._current_cycle_info_path()
+            current_cycle_info_path = self._current_cycle_info_path()
 
-        for worker in worker_group.workers:
-            local_rank = worker.local_rank
+            for worker in worker_group.workers:
+                local_rank = worker.local_rank
 
-            worker_env = {
-                "LOCAL_RANK": str(local_rank),
-                "RANK": str(worker.global_rank),
-                "GROUP_RANK": str(worker_group.group_rank),
-                "ROLE_RANK": str(worker.role_rank),
-                "ROLE_NAME": spec.role,
-                "LOCAL_WORLD_SIZE": str(spec.local_world_size),
-                "WORLD_SIZE": str(worker.world_size),
-                "GROUP_WORLD_SIZE": str(worker_group.group_world_size),
-                "ROLE_WORLD_SIZE": str(worker.role_world_size),
-                "MASTER_ADDR": master_addr,
-                "MASTER_PORT": str(master_port),
-                "TORCHELASTIC_RESTART_COUNT": str(restart_count),
-                "TORCHELASTIC_MAX_RESTARTS": str(spec.max_restarts),
-                "TORCHELASTIC_RUN_ID": spec.rdzv_handler.get_run_id(),
-                "TORCHELASTIC_USE_AGENT_STORE": str(use_agent_store),
-                "TORCH_NCCL_ASYNC_ERROR_HANDLING": os.getenv(
-                    "TORCH_NCCL_ASYNC_ERROR_HANDLING", str(1)
-                ),
-                FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
-                FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
-            }
-            if current_cycle_info_path is not None:
-                worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
-            if "OMP_NUM_THREADS" in os.environ:
-                worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
+                worker_env = {
+                    "LOCAL_RANK": str(local_rank),
+                    "RANK": str(worker.global_rank),
+                    "GROUP_RANK": str(worker_group.group_rank),
+                    "ROLE_RANK": str(worker.role_rank),
+                    "ROLE_NAME": spec.role,
+                    "LOCAL_WORLD_SIZE": str(spec.local_world_size),
+                    "WORLD_SIZE": str(worker.world_size),
+                    "GROUP_WORLD_SIZE": str(worker_group.group_world_size),
+                    "ROLE_WORLD_SIZE": str(worker.role_world_size),
+                    "MASTER_ADDR": master_addr,
+                    "MASTER_PORT": str(master_port),
+                    "TORCHELASTIC_RESTART_COUNT": str(restart_count),
+                    "TORCHELASTIC_MAX_RESTARTS": str(spec.max_restarts),
+                    "TORCHELASTIC_RUN_ID": spec.rdzv_handler.get_run_id(),
+                    "TORCHELASTIC_USE_AGENT_STORE": str(use_agent_store),
+                    "TORCH_NCCL_ASYNC_ERROR_HANDLING": os.getenv(
+                        "TORCH_NCCL_ASYNC_ERROR_HANDLING", str(1)
+                    ),
+                    FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
+                    FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
+                }
+                if current_cycle_info_path is not None:
+                    worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
+                if "OMP_NUM_THREADS" in os.environ:
+                    worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
 
-            if self._log_line_prefix_template:
-                log_line_prefix = Template(self._log_line_prefix_template).safe_substitute(
-                    role_name=spec.role,
-                    rank=worker.global_rank,
-                    local_rank=local_rank,
-                )
-                log_line_prefixes[local_rank] = log_line_prefix
+                if self._log_line_prefix_template:
+                    log_line_prefix = Template(self._log_line_prefix_template).safe_substitute(
+                        role_name=spec.role,
+                        rank=worker.global_rank,
+                        local_rank=local_rank,
+                    )
+                    log_line_prefixes[local_rank] = log_line_prefix
 
-            envs[local_rank] = worker_env
-            worker_args = list(spec.args)
-            worker_args = macros.substitute(worker_args, str(local_rank))
-            args[local_rank] = tuple(worker_args)
+                envs[local_rank] = worker_env
+                worker_args = list(spec.args)
+                worker_args = macros.substitute(worker_args, str(local_rank))
+                args[local_rank] = tuple(worker_args)
 
-        self._setup_local_watchdog(envs=envs)
+            self._setup_local_watchdog(envs=envs)
 
-        # Rank monitors are already created early (before gRPC) and connections established
-        # in LocalElasticAgent.__init__(), so no need to call setup_rank_monitors here
+            # Rank monitors are already created early (before gRPC) and connections established
+            # in LocalElasticAgent.__init__(), so no need to call setup_rank_monitors here
 
-        # Standby nodes loop inside perform_rendezvous() until they become active or training ends.
-        # next_rendezvous() only returns with an active rank, so all nodes here start workers.
+            # Standby nodes loop inside perform_rendezvous() until they become active or training ends.
+            # next_rendezvous() only returns with an active rank, so all nodes here start workers.
 
-        assert spec.entrypoint is not None
-        assert self._logs_specs is not None
+            assert spec.entrypoint is not None
+            assert self._logs_specs is not None
 
-        # Wrap entrypoint with numactl if needed (for binary entrypoints only)
-        entrypoint_to_use = spec.entrypoint
-        args_to_use = args
+            # Wrap entrypoint with numactl if needed (for binary entrypoints only)
+            entrypoint_to_use = spec.entrypoint
+            args_to_use = args
 
-        # Only wrap if entrypoint is a string (binary), not a function
-        if isinstance(spec.entrypoint, str) and os.getenv("NVRX_GPUS_PER_NUMA") is not None:
-            # Wrap each worker's arguments with numactl
-            wrapped_args = {}
-            for local_rank, worker_args in args.items():
-                wrapped_args[local_rank] = _wrap_entrypoint_with_numactl(
-                    spec.entrypoint, worker_args, local_rank, self._ft_cfg.numa_bind_strict
-                )
-            entrypoint_to_use = "numactl"
-            args_to_use = wrapped_args
+            # Only wrap if entrypoint is a string (binary), not a function
+            if isinstance(spec.entrypoint, str) and os.getenv("NVRX_GPUS_PER_NUMA") is not None:
+                # Wrap each worker's arguments with numactl
+                wrapped_args = {}
+                for local_rank, worker_args in args.items():
+                    wrapped_args[local_rank] = _wrap_entrypoint_with_numactl(
+                        spec.entrypoint, worker_args, local_rank, self._ft_cfg.numa_bind_strict
+                    )
+                entrypoint_to_use = "numactl"
+                args_to_use = wrapped_args
 
-        self._pcontext = start_processes(
-            name=spec.role,
-            entrypoint=entrypoint_to_use,
-            args=args_to_use,
-            envs=envs,
-            logs_specs=self._logs_specs,
-            log_line_prefixes=log_line_prefixes,
-            start_method=self._start_method,
-        )
+            self._pcontext = start_processes(
+                name=spec.role,
+                entrypoint=entrypoint_to_use,
+                args=args_to_use,
+                envs=envs,
+                logs_specs=self._logs_specs,
+                log_line_prefixes=log_line_prefixes,
+                start_method=self._start_method,
+            )
 
-        self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
+            self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
-        # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
-        if isinstance(self._logs_specs, PipeBasedLogsSpecs):
-            # PipeBasedLogsSpecs requires SubprocessContext (binary entrypoints)
-            # MultiprocessContext (function entrypoints) is not supported
-            if not hasattr(self._pcontext, 'subprocess_handlers'):
-                raise RuntimeError(
-                    "PipeBasedLogsSpecs requires SubprocessContext but got "
-                    f"{type(self._pcontext).__name__}. This usually means the entrypoint "
-                    "is a Python function instead of a script path. PipeBasedLogsSpecs only "
-                    "works with script/binary entrypoints (e.g., 'python train.py')."
-                )
+            # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
+            if isinstance(self._logs_specs, PipeBasedLogsSpecs):
+                # PipeBasedLogsSpecs requires SubprocessContext (binary entrypoints)
+                # MultiprocessContext (function entrypoints) is not supported
+                if not hasattr(self._pcontext, 'subprocess_handlers'):
+                    raise RuntimeError(
+                        "PipeBasedLogsSpecs requires SubprocessContext but got "
+                        f"{type(self._pcontext).__name__}. This usually means the entrypoint "
+                        "is a Python function instead of a script path. PipeBasedLogsSpecs only "
+                        "works with script/binary entrypoints (e.g., 'python train.py')."
+                    )
 
-            self._logs_specs.update_reader_for_cycle(self._pcontext.subprocess_handlers)
+                self._logs_specs.update_reader_for_cycle(self._pcontext.subprocess_handlers)
 
-        # Record worker start completion event
-        record_profiling_event(
-            ProfilingEvent.WORKER_START_COMPLETED,
-            node_id=self._rdzv_handler._this_node,
-            rank=worker_group.group_rank,
-        )
+            # Record worker start completion event
+            record_profiling_event(
+                ProfilingEvent.WORKER_START_COMPLETED,
+                node_id=self._rdzv_handler._this_node,
+                rank=worker_group.group_rank,
+            )
 
-        return self._pcontext.pids()
+            return self._pcontext.pids()
 
     def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> None:
         """
@@ -1380,6 +1388,10 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _restart_workers(self, worker_group: WorkerGroup) -> None:
+        with managed_span("nvrx.ft", "nvrx.ft.cycle"):
+            super()._restart_workers(worker_group)
+
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
         spec = worker_group.spec
@@ -1390,7 +1402,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec.rdzv_handler.set_worker_group(worker_group)
 
         # Call the parent class _rendezvous method
-        super()._rendezvous(worker_group)
+        with managed_span("nvrx.ft", "nvrx.ft.rendezvous"):
+            super()._rendezvous(worker_group)
 
 
 # Source

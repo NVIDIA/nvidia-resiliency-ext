@@ -34,6 +34,7 @@ import torch
 from torch import multiprocessing as mp
 
 from ..utils import _disable_gc, debug_time
+from ...shared_utils.telemetry import managed_span, setup_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +470,7 @@ class PersistentAsyncCaller(AsyncCaller):
         self.cur_item: int = None
         self.cur_idx: int = -1
         self.rank: int = None
+        self.world_size: int = None
         # When background_worker_is_daemon flag is True, the async background
         # worker is spawned as a daemon making async worker shutdown cleaner.
         # The restriction of spawning the async worker as a daemon is that
@@ -479,11 +481,12 @@ class PersistentAsyncCaller(AsyncCaller):
         self.io_priority = io_priority
         self.cpu_shm_mode = cpu_shm_mode
 
-    def _start_worker(self, rank: int) -> None:
+    def _start_worker(self, rank: int, world_size: int) -> None:
         """Start the background worker process.
 
         Args:
             rank (int): the rank of the current trainer process.
+            world_size (int): the total number of trainer processes.
         """
         ctx = mp.get_context('spawn')
         if rank == 0:
@@ -499,6 +502,7 @@ class PersistentAsyncCaller(AsyncCaller):
             target=async_loop_target,
             args=(
                 rank,
+                world_size,
                 self.queue,
                 self.preload_q,
                 self.comp_q,
@@ -532,12 +536,13 @@ class PersistentAsyncCaller(AsyncCaller):
 
         if self.rank is None:
             self.rank = torch.distributed.get_rank()
+            self.world_size = torch.distributed.get_world_size()
 
         start_sync = end_sync = None
 
         self.start_time = time()
         if self.process is None:
-            self._start_worker(self.rank)
+            self._start_worker(self.rank, self.world_size)
 
         if async_req.preload_fn:
             self.preload_q.put(async_req.call_idx)
@@ -680,6 +685,7 @@ class PersistentAsyncCaller(AsyncCaller):
     @staticmethod
     def async_process_target(
         rank: int,
+        world_size: int,
         queue: mp.JoinableQueue,
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
@@ -750,6 +756,7 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
+        _tel_handle = setup_telemetry(rank, world_size)
         # Start busy loop waiting for and executing checkpoint saves.
         try:
             while True:
@@ -758,20 +765,22 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    async_fn_args = list(item.async_fn_args)
-                    if item.preload_fn:
-                        call_idx = preload_q.get()
-                        # the 2nd arg is state dict
-                        async_fn_args[1] = item.preload_fn()
-                        logger.debug(f"{rank} has completed D2H of {call_idx}")
-                        preload_q.task_done()
-                    if item.async_fn is not None:
-                        async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                        item.async_fn(*async_fn_args, **async_fn_kwargs)
-                    logger.debug(f"{rank} has completed saving {item.call_idx}")
-                    comp_q.put(item.call_idx)
-                    queue.task_done()
-                    del async_fn_args
+                    with managed_span("nvrx.ckpt", "nvrx.ckpt.save.request"):
+                        async_fn_args = list(item.async_fn_args)
+                        if item.preload_fn:
+                            call_idx = preload_q.get()
+                            # the 2nd arg is state dict
+                            async_fn_args[1] = item.preload_fn()
+                            logger.debug(f"{rank} has completed D2H of {call_idx}")
+                            preload_q.task_done()
+                        if item.async_fn is not None:
+                            async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                            with managed_span("nvrx.ckpt", "nvrx.ckpt.save.write"):
+                                item.async_fn(*async_fn_args, **async_fn_kwargs)
+                        logger.debug(f"{rank} has completed saving {item.call_idx}")
+                        comp_q.put(item.call_idx)
+                        queue.task_done()
+                        del async_fn_args
                 del item
                 gc.collect()
         except RuntimeError as e:
@@ -787,6 +796,7 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
+            _tel_handle.shutdown()
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
         else:
@@ -796,6 +806,7 @@ class PersistentAsyncCaller(AsyncCaller):
     @_disable_gc()
     def async_loop(
         rank: int,
+        world_size: int,
         queue: mp.JoinableQueue,
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
@@ -809,12 +820,14 @@ class PersistentAsyncCaller(AsyncCaller):
         In this loop, child processes may be created (For example: to parallelize File IO)
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank, world_size, queue, preload_q, comp_q, log_level, cpu_priority, io_priority,
+            cpu_shm_mode,
         )
 
     @staticmethod
     def async_loop_for_daemon_worker(
         rank: int,
+        world_size: int,
         queue: mp.JoinableQueue,
         preload_q: mp.JoinableQueue,
         comp_q: mp.Queue,
@@ -827,7 +840,8 @@ class PersistentAsyncCaller(AsyncCaller):
         Main function for the persistent checkpoint worker called by a daemon async process
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank, world_size, queue, preload_q, comp_q, log_level, cpu_priority, io_priority,
+            cpu_shm_mode,
         )
 
 
@@ -922,6 +936,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
     def warmup_persistent_caller(
         cls,
         rank: int,
+        world_size: int,
         is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
@@ -932,6 +947,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
 
         Args:
             rank (int): the current distributed rank.
+            world_size (int): the total number of trainer processes.
             is_daemon (bool): whether to spawn the worker as a daemon process.
             cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).
             io_priority (int, Optional): ionice scheduling class (0-3). Use 3 (idle) to
@@ -948,8 +964,9 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 sigterm_timeout=sigterm_timeout,
                 cpu_shm_mode=cpu_shm_mode,
             )
-            caller._start_worker(rank)
+            caller._start_worker(rank, world_size)
             caller.rank = rank
+            caller.world_size = world_size
             cls._warmup_persistent_caller = caller
 
     def schedule_async_request(self, async_request: AsyncRequest) -> int:
