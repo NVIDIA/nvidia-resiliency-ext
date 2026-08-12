@@ -765,7 +765,11 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    with managed_span("nvrx.ckpt", "nvrx.ckpt.save.request"):
+                    with managed_span(
+                        "nvrx.ckpt", "nvrx.ckpt.save.request", is_goodput_span=False
+                    ) as req_span:
+                        if req_span is not None:
+                            req_span.set_attribute("nvrx.call_idx", item.call_idx)
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
                             call_idx = preload_q.get()
@@ -775,7 +779,9 @@ class PersistentAsyncCaller(AsyncCaller):
                             preload_q.task_done()
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                            with managed_span("nvrx.ckpt", "nvrx.ckpt.save.write"):
+                            with managed_span(
+                                "nvrx.ckpt", "nvrx.ckpt.save.write", is_goodput_span=False
+                            ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
                         comp_q.put(item.call_idx)
@@ -936,18 +942,18 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
     def warmup_persistent_caller(
         cls,
         rank: int,
-        world_size: int,
         is_daemon: bool = True,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
+        *,
+        world_size: Optional[int] = None,
     ):
         """Pre-start the persistent async worker to avoid startup latency on the first checkpoint.
 
         Args:
             rank (int): the current distributed rank.
-            world_size (int): the total number of trainer processes.
             is_daemon (bool): whether to spawn the worker as a daemon process.
             cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).
             io_priority (int, Optional): ionice scheduling class (0-3). Use 3 (idle) to
@@ -955,7 +961,20 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 NOT recommended for checkpoint workers).
             sigterm_timeout (float): seconds to wait after SIGTERM before escalating to SIGKILL.
             cpu_shm_mode (bool): if True, skip CUDA device init in the worker (no CUDA IPC needed).
+            world_size (int, Optional): the total number of trainer processes. Resolved in
+                order: explicit kwarg → torch.distributed.get_world_size() if initialized
+                → WORLD_SIZE env var → 1.
         """
+        if world_size is None:
+            try:
+                import torch.distributed as dist
+                if dist.is_available() and dist.is_initialized():
+                    world_size = dist.get_world_size()
+            except Exception:
+                pass
+        if world_size is None:
+            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+
         if cls._warmup_persistent_caller is None:
             caller = PersistentAsyncCaller(
                 is_daemon=is_daemon,

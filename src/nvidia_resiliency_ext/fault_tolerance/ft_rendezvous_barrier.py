@@ -67,7 +67,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
-from ..shared_utils.telemetry import managed_span
+from ..shared_utils.telemetry import record_event
 from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -1912,6 +1912,7 @@ class _RendezvousBarrierState:
                 ProfilingEvent.RENDEZVOUS_STARTED,
                 node_id=node_desc,
             )
+            record_event("rendezvous.started")
 
             if pre_join_hook is not None:
                 try:
@@ -2040,6 +2041,7 @@ class _RendezvousBarrierState:
                     f"[{node_desc}] Standby (rank={rank}) for round {self._round}; "
                     f"waiting for round {self._round + 1} to open"
                 )
+                record_event("standby.round", {"round": self._round})
             # Loop back to Step 0; _sync_from_per_round_state() will advance _round
             # from N to N+1 when it sees round_done_N=1 (closed).
 
@@ -2701,28 +2703,31 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
+            record_event("health_check.started")
             try:
-                with managed_span("nvrx.ft", "nvrx.ft.health_check"):
-                    self.ensure_node_is_healthy()
+                self.ensure_node_is_healthy()
+            except UnhealthyNodeException as exc:
+                record_event("excluded", {"reason": str(exc)})
+                raise
             finally:
                 health_check_elapsed = time.monotonic() - health_check_start
                 record_profiling_event(
                     ProfilingEvent.HEALTH_CHECK_COMPLETED,
                     node_id=self._this_node,
                 )
+                record_event("health_check.completed", {"elapsed_s": health_check_elapsed})
                 log.debug(
                     f"[{self._this_node}] Node health check completed in {health_check_elapsed:.3f}s"
                 )
             self.handle_control_requests_from_rank()
 
-        # Perform complete rendezvous process
-        with managed_span("nvrx.ft", "nvrx.ft.rdzv.await_round"):
-            group_rank, total_participants = self._barrier_state.perform_rendezvous(
-                self._this_node,
-                self._settings.min_nodes,
-                self._settings.max_nodes,
-                pre_join_hook=pre_join_hook,
-            )
+        # Perform complete rendezvous process (events attach to active cycle span via contextvars).
+        group_rank, total_participants = self._barrier_state.perform_rendezvous(
+            self._this_node,
+            self._settings.min_nodes,
+            self._settings.max_nodes,
+            pre_join_hook=pre_join_hook,
+        )
 
         # Store the assigned rank and world size
         self._assigned_rank = group_rank
@@ -2793,6 +2798,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             ProfilingEvent.RENDEZVOUS_COMPLETED,
             node_id=self._this_node,
         )
+        record_event("rendezvous.completed", {
+            "nvrx.rank": rank,
+            "nvrx.rdzv_run_id": self._settings.run_id,
+        })
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
         # Fall back to tuple format if RendezvousInfo is not supported
