@@ -134,15 +134,15 @@ sequenceDiagram
 
 Every path that ends a cycle must close spans explicitly in this order: run span → events → teardown span → outcome attribute → cycle span → `force_flush`. nemo-lens PR #37 is the fallback, not the intended mechanism.
 
-| Condition | `cycle_outcome` | Close sequence |
-|---|---|---|
-| `WorkerState.SUCCEEDED` | `succeeded` | close run → set outcome → close cycle → force_flush |
-| Local failure (UNHEALTHY/FAILED) | `failed` | close run → `fault` event → teardown → set outcome → close cycle → force_flush |
-| Healthy node joins peer restart | `peer_restart` | close run → `peer_restart` event → teardown → set outcome → close cycle → force_flush |
-| Health check exclusion | `excluded` | `excluded` event → set outcome → close cycle → force_flush |
-| Standby node: job ends (RendezvousClosedError) | `standby` | set outcome → close cycle → force_flush (in RendezvousClosedError handler) |
-| Signal / terminal exception | `terminated` | close run (if open) → set outcome → close cycle (if open) → force_flush (in exception handler) |
-| Restart budget exhausted | `failed` | same as local failure; `remaining_restarts=0` on span signals exhaustion |
+| Condition                                      | `cycle_outcome` | Close sequence                                                                                 |
+| ---------------------------------------------- | --------------- | ---------------------------------------------------------------------------------------------- |
+| `WorkerState.SUCCEEDED`                        | `succeeded`     | close run → set outcome → close cycle → force_flush                                            |
+| Local failure (UNHEALTHY/FAILED)               | `failed`        | close run → `fault` event → teardown → set outcome → close cycle → force_flush                 |
+| Healthy node joins peer restart                | `peer_restart`  | close run → `peer_restart` event → teardown → set outcome → close cycle → force_flush          |
+| Health check exclusion                         | `excluded`      | `excluded` event → set outcome → close cycle → force_flush                                     |
+| Standby node: job ends (RendezvousClosedError) | `standby`       | set outcome → close cycle → force_flush (in RendezvousClosedError handler)                     |
+| Signal / terminal exception                    | `terminated`    | close run (if open) → set outcome → close cycle (if open) → force_flush (in exception handler) |
+| Restart budget exhausted                       | `failed`        | same as local failure; `remaining_restarts=0` on span signals exhaustion                       |
 
 The exclusion and standby paths close the cycle **before** returning to the monitor loop, not after. The signal/terminal path must execute in a `try/finally` or exception handler that wraps `_invoke_run_with_any_failed_policy`.
 
@@ -175,33 +175,33 @@ Using the span reference directly (rather than OTel context attach/detach) avoid
 
 ## Span Attributes
 
-| Attribute | Type | Spans | Notes |
-|---|---|---|---|
-| `nvrx.cycle` | int | all FT spans | restart cycle counter |
-| `nvrx.node` | str | all FT spans | node hostname |
-| `nvrx.rank` | int | `cycle` | elastic group rank; set after rendezvous (initially absent) |
-| `nvrx.membership` | str | `cycle`, `run` | `"active"` or `"standby"` |
-| `nvrx.group_world_size` | int | `cycle` | number of active nodes; set after rendezvous |
-| `nvrx.max_restarts` | int | `cycle` | configured restart budget |
-| `nvrx.remaining_restarts` | int | `cycle` | set at close time |
-| `nvrx.failures` | int | `cycle` | set at close time |
-| `nvrx.active_nodes` | str | `cycle` | comma-separated active node addresses |
-| `nvrx.standby_nodes` | str | `cycle` | comma-separated standby node addresses |
-| `nvrx.cycle_outcome` | str | `cycle` | set before close; see outcomes below |
-| `nvrx.call_idx` | int | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join |
-| `is_goodput_span` | bool | all | see below |
+| Attribute                 | Type | Spans                    | Notes                                                       |
+| ------------------------- | ---- | ------------------------ | ----------------------------------------------------------- |
+| `nvrx.cycle`              | int  | all FT spans             | restart cycle counter                                       |
+| `nvrx.node`               | str  | all FT spans             | node hostname                                               |
+| `nvrx.rank`               | int  | `cycle`                  | elastic group rank; set after rendezvous (initially absent) |
+| `nvrx.membership`         | str  | `cycle`, `run`           | `"active"` or `"standby"`                                   |
+| `nvrx.group_world_size`   | int  | `cycle`                  | number of active nodes; set after rendezvous                |
+| `nvrx.max_restarts`       | int  | `cycle`                  | configured restart budget                                   |
+| `nvrx.remaining_restarts` | int  | `cycle`                  | set at close time                                           |
+| `nvrx.failures`           | int  | `cycle`                  | set at close time                                           |
+| `nvrx.active_nodes`       | str  | `cycle`                  | comma-separated active node addresses                       |
+| `nvrx.standby_nodes`      | str  | `cycle`                  | comma-separated standby node addresses                      |
+| `nvrx.cycle_outcome`      | str  | `cycle`                  | set before close; see outcomes below                        |
+| `nvrx.call_idx`           | int  | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join                   |
+| `is_goodput_span`         | bool | all                      | see below                                                   |
 
 ### Cycle outcomes
 
-| Value | Condition |
-|---|---|
-| `succeeded` | `WorkerState.SUCCEEDED` — clean exit |
-| `failed` | failure detected on this node |
-| `peer_restart` | healthy node joined a peer-triggered restart |
-| `excluded` | this node failed health check |
-| `standby` | job ended while this node was waiting as a hot spare |
-| `terminated` | job terminated by policy (attribution stop, no-progress, signal) |
-| `completed` | fallback for any other clean termination |
+| Value          | Condition                                                        |
+| -------------- | ---------------------------------------------------------------- |
+| `succeeded`    | `WorkerState.SUCCEEDED` — clean exit                             |
+| `failed`       | failure detected on this node                                    |
+| `peer_restart` | healthy node joined a peer-triggered restart                     |
+| `excluded`     | this node failed health check                                    |
+| `standby`      | job ended while this node was waiting as a hot spare             |
+| `terminated`   | job terminated by policy (attribution stop, no-progress, signal) |
+| `completed`    | fallback for any other clean termination                         |
 
 `remaining_restarts = 0` communicates budget exhaustion; there is no separate outcome for it.
 
@@ -209,28 +209,28 @@ Using the span reference directly (rather than OTel context attach/detach) avoid
 
 Emitted via `record_event()` at the existing `ProfilingEvent` instrumentation points.
 
-| Event name | Source | Attributes |
-|---|---|---|
-| `rendezvous.started` | `ft_rendezvous_barrier.py` | |
-| `health_check.started` | `ft_rendezvous_barrier.py` | |
-| `health_check.completed` | `ft_rendezvous_barrier.py` | elapsed_s |
-| `standby.round` | `ft_rendezvous_barrier.py` | round |
-| `excluded` | `ft_rendezvous_barrier.py` | reason |
-| `rendezvous.completed` | `ft_rendezvous_barrier.py` | nvrx.rank, nvrx.rdzv_run_id |
-| `fault` | `launcher.py` | nvrx.state, nvrx.failures |
-| `peer_restart` | `launcher.py` | |
-| `attribution.result` | attribution daemon (via captured span ref) | outcome, details |
+| Event name               | Source                                     | Attributes                  |
+| ------------------------ | ------------------------------------------ | --------------------------- |
+| `rendezvous.started`     | `ft_rendezvous_barrier.py`                 |                             |
+| `health_check.started`   | `ft_rendezvous_barrier.py`                 |                             |
+| `health_check.completed` | `ft_rendezvous_barrier.py`                 | elapsed_s                   |
+| `standby.round`          | `ft_rendezvous_barrier.py`                 | round                       |
+| `excluded`               | `ft_rendezvous_barrier.py`                 | reason                      |
+| `rendezvous.completed`   | `ft_rendezvous_barrier.py`                 | nvrx.rank, nvrx.rdzv_run_id |
+| `fault`                  | `launcher.py`                              | nvrx.state, nvrx.failures   |
+| `peer_restart`           | `launcher.py`                              |                             |
+| `attribution.result`     | attribution daemon (via captured span ref) | outcome, details            |
 
 ### `is_goodput_span`
 
-| Span | `is_goodput_span` | Rationale |
-|---|---|---|
-| `nvrx.ft.cycle` | `True` | restart/recovery overhead |
-| `nvrx.ft.worker_start` | `True` | training blocked |
-| `nvrx.ft.run` | `False` | training is executing |
-| `nvrx.ft.teardown` | `True` | cleanup overhead |
-| `nvrx.ckpt.save.request` | `False` | D2H occurs on training thread before async call; worker receives CPU tensors and writes in background |
-| `nvrx.ckpt.save.write` | `False` | write overlaps with training |
+| Span                     | `is_goodput_span` | Rationale                                                                                             |
+| ------------------------ | ----------------- | ----------------------------------------------------------------------------------------------------- |
+| `nvrx.ft.cycle`          | `True`            | restart/recovery overhead                                                                             |
+| `nvrx.ft.worker_start`   | `True`            | training blocked                                                                                      |
+| `nvrx.ft.run`            | `False`           | training is executing                                                                                 |
+| `nvrx.ft.teardown`       | `True`            | cleanup overhead                                                                                      |
+| `nvrx.ckpt.save.request` | `False`           | D2H occurs on training thread before async call; worker receives CPU tensors and writes in background |
+| `nvrx.ckpt.save.write`   | `False`           | write overlaps with training                                                                          |
 
 ## Async Checkpoint Worker: Spawn Boundary
 
@@ -258,26 +258,26 @@ sequenceDiagram
 
 ## Spans
 
-| Span | Group | Source | `is_goodput_span` |
-|---|---|---|---|
-| `nvrx.ft.cycle` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ft.worker_start` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ft.run` | `nvrx.ft` | `launcher.py` | `False` |
-| `nvrx.ft.teardown` | `nvrx.ft` | `launcher.py` | `True` |
-| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `False` |
-| `nvrx.ckpt.save.write` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `False` |
+| Span                     | Group       | Source                        | `is_goodput_span` |
+| ------------------------ | ----------- | ----------------------------- | ----------------- |
+| `nvrx.ft.cycle`          | `nvrx.ft`   | `launcher.py`                 | `True`            |
+| `nvrx.ft.worker_start`   | `nvrx.ft`   | `launcher.py`                 | `True`            |
+| `nvrx.ft.run`            | `nvrx.ft`   | `launcher.py`                 | `False`           |
+| `nvrx.ft.teardown`       | `nvrx.ft`   | `launcher.py`                 | `True`            |
+| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `False`           |
+| `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | `False`           |
 
 ## Worker Environment Variables
 
 The launcher injects these into each restarted worker cohort's environment:
 
-| Variable | Value | Purpose |
-|---|---|---|
-| `NVRX_CYCLE` | cycle counter (int) | correlates worker spans with launcher cycle |
-| `NVRX_MEMBERSHIP` | `"active"` or `"standby"` | identifies hot-spare nodes |
-| `NVRX_INFRA_RANK` | node infrastructure rank (int) | stable physical identity across rescheduling |
-| `NVRX_CYCLE_START_TIME` | epoch seconds (float) | shared time anchor for cross-process correlation |
-| `NVRX_LAUNCH_TIME` | epoch seconds (float) | cohort launch anchor |
+| Variable                | Value                          | Purpose                                          |
+| ----------------------- | ------------------------------ | ------------------------------------------------ |
+| `NVRX_CYCLE`            | cycle counter (int)            | correlates worker spans with launcher cycle      |
+| `NVRX_MEMBERSHIP`       | `"active"` or `"standby"`      | identifies hot-spare nodes                       |
+| `NVRX_INFRA_RANK`       | node infrastructure rank (int) | stable physical identity across rescheduling     |
+| `NVRX_CYCLE_START_TIME` | epoch seconds (float)          | shared time anchor for cross-process correlation |
+| `NVRX_LAUNCH_TIME`      | epoch seconds (float)          | cohort launch anchor                             |
 
 ## pyproject.toml
 
