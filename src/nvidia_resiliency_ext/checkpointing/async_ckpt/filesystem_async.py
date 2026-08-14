@@ -345,9 +345,12 @@ class FileSystemWriterAsync(FileSystemWriter):
             # Resolve every tensor before routing it for the selected transfer mode.
             resolved_tensors, dequantized_flags = resolve_data(tensor_items)
             (cacheable_items, cacheable_data), (uncached_items, uncached_data) = (
-                separate_for_gpu_ipc(tensor_items, resolved_tensors, dequantized_flags)
-                if not self.use_cpu_shm_for_gpu_tensors
-                else (tensor_items, resolved_tensors), ([], [])
+                (
+                    separate_for_gpu_ipc(tensor_items, resolved_tensors, dequantized_flags)
+                    if not self.use_cpu_shm_for_gpu_tensors
+                    else (tensor_items, resolved_tensors)
+                ),
+                ([], []),
             )
 
             if cacheable_items and self.use_cpu_shm_for_gpu_tensors:
