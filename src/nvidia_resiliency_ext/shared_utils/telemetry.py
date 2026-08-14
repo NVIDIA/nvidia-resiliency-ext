@@ -13,108 +13,164 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
-from contextlib import contextmanager
-from typing import ClassVar, Final
+"""Optional nemo-lens OTel instrumentation.
 
-from torch.distributed.elastic.multiprocessing.errors import SignalException
+The only file in NVRx that imports nemo-lens. When nemo-lens is absent every
+export here is a no-op, so callers never need to guard their instrumentation.
+
+nemo-lens gates on span groups that default to empty until ``setup_telemetry``
+runs, so ``managed_span`` / ``traced`` are also no-ops before (or without)
+initialization -- there is nothing for this module to re-implement.
+"""
+
+import logging
+import os
+from contextlib import ExitStack, contextmanager
+from typing import ClassVar, Optional
 
 logger = logging.getLogger(__name__)
+
+_NVRX_GROUPS = frozenset(["nvrx.ft", "nvrx.ckpt"])
 
 try:
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanGroup as _SpanGroup
-    from nemo.lens import managed_span as _real_managed_span
+    from nemo.lens import managed_span
+    from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
+    from nemo.lens import trace_fn as traced
 
     class _NVRxSpanGroup(_SpanGroup):
+        """Teaches nemo-lens about the NVRx groups.
+
+        The base ``SpanGroup.resolve()`` only knows its own groups, so without
+        this ``NEMO_LENS_SPAN_GROUPS=nvrx.ft`` raises ValueError and the stock
+        presets emit no NVRx spans. Every preset gains the NVRx groups so that
+        ``NEMO_LENS_ENABLED=1`` alone is sufficient; ``nvrx`` selects them alone.
+        """
+
         FT = "nvrx.ft"
         CKPT = "nvrx.ckpt"
-        ALL_GROUPS: Final[frozenset] = _SpanGroup.ALL_GROUPS | frozenset([FT, CKPT])
+        ALL_GROUPS = _SpanGroup.ALL_GROUPS | _NVRX_GROUPS
         _PRESETS: ClassVar[dict] = {
-            **_SpanGroup._PRESETS,
-            "default": _SpanGroup._PRESETS["default"] | frozenset([FT, CKPT]),
-            "nvrx": frozenset([FT, CKPT]),
-            "all": _SpanGroup.ALL_GROUPS | frozenset([FT, CKPT]),
+            **{name: groups | _NVRX_GROUPS for name, groups in _SpanGroup._PRESETS.items()},
+            "nvrx": _NVRX_GROUPS,
         }
 
-    _NEMO_LENS_AVAILABLE = True
+    _AVAILABLE = True
 
 except ModuleNotFoundError:
-    _NEMO_LENS_AVAILABLE = False
-    _real_managed_span = None
+    _AVAILABLE = False
 
 except Exception:
     logger.warning("nemo-lens import failed, continuing without telemetry", exc_info=True)
-    _NEMO_LENS_AVAILABLE = False
-    _real_managed_span = None
+    _AVAILABLE = False
 
 
-@contextmanager
-def managed_span(group, name, tracer=None, **attributes):
-    if _real_managed_span is None:
+if not _AVAILABLE:
+
+    @contextmanager
+    def managed_span(group, name, tracer=None, **attributes):
+        """No-op stand-in for ``nemo.lens.managed_span``."""
         yield None
-        return
-    try:
-        cm = _real_managed_span(group, name, tracer=tracer, **attributes)
-        span = cm.__enter__()
-    except Exception:
-        logger.debug("managed_span entry suppressed", exc_info=True)
-        yield None
-        return
-    try:
-        yield span
-    except BaseException as exc:
-        try:
-            cm.__exit__(type(exc), exc, exc.__traceback__)
-        except Exception:
-            logger.debug("managed_span exit suppressed", exc_info=True)
-        raise
-    else:
-        try:
-            cm.__exit__(None, None, None)
-        except Exception:
-            logger.debug("managed_span exit suppressed", exc_info=True)
+
+    def traced(group, name, tracer=None):
+        """No-op stand-in for ``nemo.lens.trace_fn``."""
+
+        def decorator(func):
+            return func
+
+        return decorator
 
 
 class _NoOpHandle:
-    def shutdown(self, timeout_ms: int = 5000):
+    """Stand-in for ``nemo.lens.TelemetryHandle`` when telemetry is unavailable."""
+
+    def shutdown(self, timeout_ms: int = 5000) -> None:
         pass
 
 
 def setup_telemetry(rank: int, world_size: int):
-    if not _NEMO_LENS_AVAILABLE:
+    """Initialize nemo-lens for this process. Call once, at process start.
+
+    ``rank`` and ``world_size`` identify this process in the OTel resource
+    (``dl.rank``, ``dl.world_size``, ``service.instance.id``), so they must be
+    distinct per emitter or backends cannot tell the processes apart.
+
+    NVRx defaults to exporting from every process: each node runs its own
+    collector and we want per-node visibility. An explicit
+    ``NEMO_LENS_EXPORT_STRATEGY`` still wins, so volume remains tunable.
+    """
+    if not _AVAILABLE:
         return _NoOpHandle()
     try:
-        return _setup_telemetry(
-            _NemoLensConfig.from_env(span_group_cls=_NVRxSpanGroup),
-            rank,
-            world_size,
-        )
+        config = _NemoLensConfig.from_env(span_group_cls=_NVRxSpanGroup)
+        if not os.environ.get("NEMO_LENS_EXPORT_STRATEGY"):
+            config.export_strategy = "all_ranks"
+        return _setup_telemetry(config, rank, world_size)
     except Exception:
         logger.warning("nemo-lens init failed, continuing without telemetry", exc_info=True)
         return _NoOpHandle()
 
 
-def force_flush(timeout_ms: int = 1500) -> None:
-    """Flush pending spans without shutting down providers. Safe to call mid-run."""
-    try:
-        from opentelemetry import trace
-
-        trace.get_tracer_provider().force_flush(timeout_millis=timeout_ms)
-    except (SignalException, KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        pass
-
-
 def record_event(name: str, attributes: dict | None = None) -> None:
-    """Add a timestamped event to the current active span."""
-    try:
-        from opentelemetry import trace
+    """Add a timestamped event to the currently active span.
 
-        trace.get_current_span().add_event(name, attributes or {})
-    except (SignalException, KeyboardInterrupt, SystemExit):
-        raise
-    except Exception:
-        pass
+    OTel propagates the active span through contextvars, so instrumentation
+    deep inside a call tree attaches to the enclosing span with no plumbing.
+    A no-op when no span is recording.
+    """
+    if not _AVAILABLE:
+        return
+    from opentelemetry import trace
+
+    trace.get_current_span().add_event(name, attributes or {})
+
+
+class ManualSpan:
+    """A span started and ended explicitly, for a lifetime that is not a block.
+
+    `managed_span` covers anything scoped to a `with`. This is for the rest: a
+    span opened in one call and closed in another, where the caller cannot hold
+    a context manager across the two. It owns the ExitStack bookkeeping, and
+    every method is a no-op while no span is open, so callers need no guards.
+    """
+
+    def __init__(self) -> None:
+        self._stack: Optional[ExitStack] = None
+        self._span = None
+
+    def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
+        """Start a span, closing any span this handle already had open."""
+        self.close()
+        self._stack = ExitStack()
+        self._span = self._stack.enter_context(managed_span(group, name))
+        self.set(attributes)
+
+    def set(self, attributes: Optional[dict] = None) -> None:
+        """Set attributes on the open span."""
+        if self._span is None or not attributes:
+            return
+        for key, value in attributes.items():
+            self._span.set_attribute(key, value)
+
+    def close(self, attributes: Optional[dict] = None) -> None:
+        """Set any final attributes and end the span. Idempotent."""
+        self.set(attributes)
+        if self._stack is not None:
+            self._stack.close()
+            self._stack = None
+        self._span = None
+
+
+def set_span_attributes(**attributes) -> None:
+    """Set attributes on the currently active span.
+
+    For use inside a ``@traced`` function, which owns its span but does not
+    hand it to the caller. A no-op when no span is recording.
+    """
+    if not _AVAILABLE:
+        return
+    from opentelemetry import trace
+
+    _safe_set_span_attributes(trace.get_current_span(), attributes)

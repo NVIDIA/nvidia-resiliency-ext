@@ -2798,10 +2798,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             ProfilingEvent.RENDEZVOUS_COMPLETED,
             node_id=self._this_node,
         )
-        record_event("rendezvous.completed", {
-            "nvrx.rank": rank,
-            "nvrx.rdzv_run_id": self._settings.run_id,
-        })
+        record_event(
+            "rendezvous.completed",
+            {"nvrx.rank": rank, "nvrx.rdzv_run_id": self._settings.run_id},
+        )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)
         # Fall back to tuple format if RendezvousInfo is not supported

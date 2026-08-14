@@ -12,8 +12,8 @@
 # - Changed shutdown logic
 # - security fix for watchdog_file_path
 
-import atexit
 import asyncio
+import atexit
 
 # fmt: off
 import contextlib
@@ -110,17 +110,12 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
+from nvidia_resiliency_ext.shared_utils import telemetry
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
-from nvidia_resiliency_ext.shared_utils.telemetry import (
-    force_flush,
-    managed_span,
-    record_event,
-    setup_telemetry,
-)
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -133,6 +128,7 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
+CYCLE_OUTCOME = "nvrx.cycle_outcome"  # telemetry: how a restart cycle ended
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -458,14 +454,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
-
-        # Telemetry span state (managed per cycle in _invoke_run_with_any_failed_policy)
-        self._tel_handle = None
-        self._cycle_exit_stack: Optional[contextlib.ExitStack] = None
-        self._cycle_span = None
-        self._cycle_start_time: Optional[float] = None
-        self._run_exit_stack: Optional[contextlib.ExitStack] = None
-        self._run_span = None
+        self._cycle = telemetry.ManualSpan()
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -659,38 +648,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             # No more restarts available
             return False
 
-    def _close_run_span(self) -> None:
-        if self._run_exit_stack is not None:
-            self._run_exit_stack.close()
-            self._run_exit_stack = None
-        self._run_span = None
-
-    def _open_run_span(self) -> None:
-        self._run_exit_stack = contextlib.ExitStack()
-        self._run_span = self._run_exit_stack.enter_context(
-            managed_span("nvrx.ft", "nvrx.ft.run", is_goodput_span=False)
-        )
-        if self._run_span is not None:
-            self._run_span.set_attribute("nvrx.cycle", self._get_global_cycle_number())
-            self._run_span.set_attribute("nvrx.node", self._node_id)
-            try:
-                self._run_span.set_attribute("nvrx.rank", self._worker_group.group_rank)
-            except Exception:
-                pass
-
-    def _set_cycle_outcome(self, outcome: str, **extra_attrs) -> None:
-        if self._cycle_span is not None:
-            self._cycle_span.set_attribute("nvrx.cycle_outcome", outcome)
-            self._cycle_span.set_attribute("nvrx.remaining_restarts", self._remaining_restarts)
-            for k, v in extra_attrs.items():
-                self._cycle_span.set_attribute(k, v)
-
-    def _close_cycle_span(self) -> None:
-        if self._cycle_exit_stack is not None:
-            self._cycle_exit_stack.close()
-            self._cycle_exit_stack = None
-        self._cycle_span = None
-
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         return self._invoke_run_with_any_failed_policy(role)
 
@@ -702,185 +659,140 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         logger.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
 
-        # Telemetry: initialize before first rendezvous. rank=0/world_size=1 are the
-        # pre-rendezvous identity; elastic rank/world_size go on span attributes.
-        self._tel_handle = setup_telemetry(0, 1)
+        # Every agent exports, so dl.rank / service.instance.id have to differ per node.
+        # Rendezvous has not assigned elastic ranks yet, hence the infrastructure rank.
+        self._tel_handle = telemetry.setup_telemetry(
+            max(get_infrastructure_rank(), 0), int(os.environ.get("SLURM_NNODES", "1"))
+        )
         atexit.register(self._tel_handle.shutdown)
 
-        # _initialize_workers calls _rendezvous (opens cycle span) then _start_workers.
         self._initialize_workers(self._worker_group)
-
-        # Open run span after workers are started for the first time.
-        self._open_run_span()
-
         monitor_interval = spec.monitor_interval
         rdzv_handler = spec.rdzv_handler
 
-        try:
-            while True:
-                assert self._worker_group.state != WorkerState.INIT
-                time.sleep(monitor_interval)
-                run_result = self._monitor_workers(self._worker_group)
-                state = run_result.state
-                self._worker_group.state = state
+        while True:
+            assert self._worker_group.state != WorkerState.INIT
+            time.sleep(monitor_interval)
+            run_result = self._monitor_workers(self._worker_group)
+            state = run_result.state
+            self._worker_group.state = state
 
-                put_metric(f"workers.{role}.remaining_restarts", self._remaining_restarts)
-                put_metric(f"workers.{role}.{state.name.lower()}", 1)
+            put_metric(f"workers.{role}.remaining_restarts", self._remaining_restarts)
+            put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
-                if state == WorkerState.SUCCEEDED:
-                    logger.info(
-                        "[%s] worker group successfully finished."
-                        " Waiting %s seconds for other agents to finish.",
-                        role,
-                        self._exit_barrier_timeout,
-                    )
-                    self._close_run_span()
-                    self._set_cycle_outcome("succeeded")
-                    self._close_cycle_span()
-                    force_flush()
-                    self._exit_barrier()
-                    return run_result
+            if state == WorkerState.SUCCEEDED:
+                logger.info(
+                    "[%s] worker group successfully finished."
+                    " Waiting %s seconds for other agents to finish.",
+                    role,
+                    self._exit_barrier_timeout,
+                )
+                self._cycle.close({CYCLE_OUTCOME: "succeeded"})
+                self._exit_barrier()
+                return run_result
 
-                # An attribution STOP preempts any restart decision, in both healthy and
-                # failed states. Only the node that owns the attribution client can latch a
-                # verdict -- the store-host launcher when attribution runs colocated, and no
-                # launcher at all when it runs under a standalone nvrx-control process. This
-                # is a local attribute read, so it costs nothing at the monitor interval, and
-                # it runs before the store poll below so the stopping node skips a TCPStore
-                # round trip it no longer needs.
-                #
-                # Deliberately placed below SUCCEEDED: a workload that finished is not killed
-                # because an earlier cycle was later attributed as fatal.
-                if rdzv_handler.attribution_stop_requested():
-                    logger.error(
-                        "[%s] Attribution recommended stopping the job; terminating workers "
-                        "and signalling the rest of the job.",
-                        role,
-                    )
-                    self._close_run_span()
-                    self._set_cycle_outcome("terminated")
-                    # Writes the shutdown reason and opens the next round, which is what peers
-                    # already poll for. No node needs a new steady-state check.
-                    rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
-                    with managed_span("nvrx.ft", "nvrx.ft.teardown", is_goodput_span=True):
+            # An attribution STOP preempts any restart decision, in both healthy and
+            # failed states. Only the node that owns the attribution client can latch a
+            # verdict -- the store-host launcher when attribution runs colocated, and no
+            # launcher at all when it runs under a standalone nvrx-control process. This
+            # is a local attribute read, so it costs nothing at the monitor interval, and
+            # it runs before the store poll below so the stopping node skips a TCPStore
+            # round trip it no longer needs.
+            #
+            # Deliberately placed below SUCCEEDED: a workload that finished is not killed
+            # because an earlier cycle was later attributed as fatal.
+            if rdzv_handler.attribution_stop_requested():
+                logger.error(
+                    "[%s] Attribution recommended stopping the job; terminating workers "
+                    "and signalling the rest of the job.",
+                    role,
+                )
+                # Writes the shutdown reason and opens the next round, which is what peers
+                # already poll for. No node needs a new steady-state check.
+                rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
+                self._stop_workers(self._worker_group)
+                self._cycle.close({CYCLE_OUTCOME: "terminated"})
+                self._worker_group.state = WorkerState.FAILED
+                raise NoRestartRequested(
+                    RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+                    "Attribution recommended stopping the job.",
+                )
+
+            if state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                # Record failure detection event
+                record_profiling_event(
+                    ProfilingEvent.FAILURE_DETECTED,
+                    node_id=self._rdzv_handler._this_node,
+                    rank=self._worker_group.group_rank,
+                )
+
+                # Set now, but the span stays open until the next rendezvous, so that
+                # _stop_workers records its teardown inside the cycle that failed.
+                self._cycle.set({CYCLE_OUTCOME: "failed",
+                                 "nvrx.failures": len(run_result.failures or {})})
+
+                log_msg = (
+                    f"[%s] Worker group {state.name}. "
+                    f"{self._remaining_restarts}/{spec.max_restarts} attempts left; "
+                    f"will restart worker group"
+                )
+                should_restart = self._handle_restart_decision(
+                    role, spec, log_msg, open_rendezvous=True,
+                )
+
+                if should_restart:
+                    continue  # Continue monitoring after restart
+
+                # No more restarts (either exhausted or early termination)
+                self._stop_workers(self._worker_group)
+                self._cycle.close()
+                self._worker_group.state = WorkerState.FAILED
+                return RunResult(state=WorkerState.FAILED, failures=run_result.failures)
+            elif state == WorkerState.HEALTHY:
+                # Check if any node in the cluster has opened the next rendezvous round,
+                # which signals that a peer detected a failure and triggered a restart.
+                # open_rendezvous() sets round_done_{N+1}=0; this is both the spare-node
+                # wake-up signal and the peer-failure signal for healthy nodes here.
+                if rdzv_handler.is_next_round_open():
+                    # The round may have been opened to broadcast a no-restart decision rather
+                    # than to restart. One extra store read, only once, at the moment the
+                    # job is ending.
+                    no_restart = rdzv_handler.no_restart_reason()
+                    if no_restart is not None:
+                        logger.error(
+                            "[%s] Another launcher reported a no-restart decision (%s); "
+                            "terminating workers.",
+                            role,
+                            no_restart,
+                        )
                         self._stop_workers(self._worker_group)
-                    self._close_cycle_span()
-                    force_flush()
-                    self._worker_group.state = WorkerState.FAILED
-                    raise NoRestartRequested(
-                        RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
-                        "Attribution recommended stopping the job.",
-                    )
+                        self._cycle.close({CYCLE_OUTCOME: "terminated"})
+                        self._worker_group.state = WorkerState.FAILED
+                        raise NoRestartRequested(no_restart)
 
-                if state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                    group_rank = self._worker_group.group_rank
                     # Record failure detection event
                     record_profiling_event(
                         ProfilingEvent.FAILURE_DETECTED,
                         node_id=self._rdzv_handler._this_node,
-                        rank=self._worker_group.group_rank,
+                        rank=group_rank,
                     )
 
-                    failures = run_result.failures or {}
-                    self._close_run_span()
-                    record_event("fault", {
-                        "nvrx.state": state.name,
-                        "nvrx.failures": len(failures),
-                    })
-                    self._set_cycle_outcome(
-                        "failed",
-                        **{"nvrx.failures": len(failures)},
-                    )
+                    self._cycle.set({CYCLE_OUTCOME: "peer_restart"})
 
-                    log_msg = (
-                        f"[%s] Worker group {state.name}. "
-                        f"{self._remaining_restarts}/{spec.max_restarts} attempts left; "
-                        f"will restart worker group"
-                    )
+                    log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
+                    # The node that triggered the failure already opened the rendezvous.
                     should_restart = self._handle_restart_decision(
-                        role, spec, log_msg, open_rendezvous=True,
+                        role, spec, log_msg, open_rendezvous=False,
                     )
 
-                    if should_restart:
-                        # _restart_workers (called inside _handle_restart_decision) closed
-                        # the previous cycle span and opened a new one via _rendezvous.
-                        self._open_run_span()
-                        continue
-
-                    # Budget exhausted — no _restart_workers was called, teardown manually.
-                    with managed_span("nvrx.ft", "nvrx.ft.teardown", is_goodput_span=True):
+                    if not should_restart:
                         self._stop_workers(self._worker_group)
-                    self._close_cycle_span()
-                    force_flush()
-                    self._worker_group.state = WorkerState.FAILED
-                    return RunResult(state=WorkerState.FAILED, failures=run_result.failures)
-
-                elif state == WorkerState.HEALTHY:
-                    # Check if any node in the cluster has opened the next rendezvous round,
-                    # which signals that a peer detected a failure and triggered a restart.
-                    # open_rendezvous() sets round_done_{N+1}=0; this is both the spare-node
-                    # wake-up signal and the peer-failure signal for healthy nodes here.
-                    if rdzv_handler.is_next_round_open():
-                        # The round may have been opened to broadcast a no-restart decision
-                        # rather than to restart. One extra store read, only once, at the
-                        # moment the job is ending.
-                        no_restart = rdzv_handler.no_restart_reason()
-                        if no_restart is not None:
-                            logger.error(
-                                "[%s] Another launcher reported a no-restart decision (%s); "
-                                "terminating workers.",
-                                role,
-                                no_restart,
-                            )
-                            self._close_run_span()
-                            self._set_cycle_outcome("terminated")
-                            with managed_span(
-                                "nvrx.ft", "nvrx.ft.teardown", is_goodput_span=True
-                            ):
-                                self._stop_workers(self._worker_group)
-                            self._close_cycle_span()
-                            force_flush()
-                            self._worker_group.state = WorkerState.FAILED
-                            raise NoRestartRequested(no_restart)
-
-                        group_rank = self._worker_group.group_rank
-                        # Record failure detection event
-                        record_profiling_event(
-                            ProfilingEvent.FAILURE_DETECTED,
-                            node_id=self._rdzv_handler._this_node,
-                            rank=group_rank,
-                        )
-
-                        self._close_run_span()
-                        record_event("peer_restart")
-                        self._set_cycle_outcome("peer_restart")
-
-                        log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
-                        # The node that triggered the failure already opened the rendezvous.
-                        should_restart = self._handle_restart_decision(
-                            role, spec, log_msg, open_rendezvous=False,
-                        )
-
-                        if not should_restart:
-                            with managed_span(
-                                "nvrx.ft", "nvrx.ft.teardown", is_goodput_span=True
-                            ):
-                                self._stop_workers(self._worker_group)
-                            self._close_cycle_span()
-                            force_flush()
-                            self._worker_group.state = WorkerState.FAILED
-                            return RunResult(state=WorkerState.FAILED)
-
-                        self._open_run_span()
-                else:
-                    raise Exception(f"[{role}] Worker group in {state.name} state")
-
-        finally:
-            # Safety net: close any spans left open by an unexpected exception path.
-            self._close_run_span()
-            if self._cycle_exit_stack is not None:
-                self._set_cycle_outcome("terminated")
-                self._close_cycle_span()
-                force_flush()
+                        self._cycle.close()
+                        self._worker_group.state = WorkerState.FAILED
+                        return RunResult(state=WorkerState.FAILED)
+            else:
+                raise Exception(f"[{role}] Worker group in {state.name} state")
 
     def get_rank_mon_socket_path(self, local_rank):
         return f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_rmon{local_rank}.socket"
@@ -1105,6 +1017,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
+    @telemetry.traced("nvrx.ft", "nvrx.ft.teardown")
     def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
@@ -1176,6 +1089,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
+    @telemetry.traced("nvrx.ft", "nvrx.ft.worker_start")
     def _start_workers(self, worker_group: WorkerGroup) -> Dict[int, Any]:
         spec = worker_group.spec
         store = worker_group.store
@@ -1188,154 +1102,141 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
+        telemetry.set_span_attributes(**{"nvrx.cycle": restart_count, "nvrx.node": self._node_id})
 
-        with managed_span("nvrx.ft", "nvrx.ft.worker_start", is_goodput_span=True) as ws_span:
-            if ws_span is not None:
-                ws_span.set_attribute("nvrx.cycle", restart_count)
-                ws_span.set_attribute("nvrx.node", self._node_id)
-            # Record worker start start event
-            record_profiling_event(
-                ProfilingEvent.WORKER_START_STARTED,
-                node_id=self._rdzv_handler._this_node,
-                rank=worker_group.group_rank,
-            )
+        # Record worker start start event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_STARTED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
 
-            use_agent_store = spec.rdzv_handler.use_agent_store
+        use_agent_store = spec.rdzv_handler.use_agent_store
 
-            args: Dict[int, Tuple] = {}
-            envs: Dict[int, Dict[str, str]] = {}
-            log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
+        args: Dict[int, Tuple] = {}
+        envs: Dict[int, Dict[str, str]] = {}
+        log_line_prefixes: Optional[Dict[int, str]] = {} if self._log_line_prefix_template else None
 
-            # Get master_addr and master_port, handling compatibility with older PyTorch versions
-            try:
-                master_addr = worker_group.master_addr
-                master_port = worker_group.master_port
-            except AttributeError:
-                # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
-                master_addr, master_port = super()._get_master_addr_port(store)
+        # Get master_addr and master_port, handling compatibility with older PyTorch versions
+        try:
+            master_addr = worker_group.master_addr
+            master_port = worker_group.master_port
+        except AttributeError:
+            # Fallback for older PyTorch versions where worker_group doesn't have master_addr/master_port
+            master_addr, master_port = super()._get_master_addr_port(store)
 
-            # Debug logging: Log worker start info once for all workers
-            logger.debug(
-                f"Starting {len(worker_group.workers)} worker(s) "
-                f"[group_rank={worker_group.group_rank}] with "
-                f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
-            )
+        # Debug logging: Log worker start info once for all workers
+        logger.debug(
+            f"Starting {len(worker_group.workers)} worker(s) "
+            f"[group_rank={worker_group.group_rank}] with "
+            f"MASTER_ADDR={master_addr}, MASTER_PORT={master_port}"
+        )
 
-            current_cycle_info_path = self._current_cycle_info_path()
+        current_cycle_info_path = self._current_cycle_info_path()
 
-            for worker in worker_group.workers:
-                local_rank = worker.local_rank
+        for worker in worker_group.workers:
+            local_rank = worker.local_rank
 
-                worker_env = {
-                    "LOCAL_RANK": str(local_rank),
-                    "RANK": str(worker.global_rank),
-                    "GROUP_RANK": str(worker_group.group_rank),
-                    "ROLE_RANK": str(worker.role_rank),
-                    "ROLE_NAME": spec.role,
-                    "LOCAL_WORLD_SIZE": str(spec.local_world_size),
-                    "WORLD_SIZE": str(worker.world_size),
-                    "GROUP_WORLD_SIZE": str(worker_group.group_world_size),
-                    "ROLE_WORLD_SIZE": str(worker.role_world_size),
-                    "MASTER_ADDR": master_addr,
-                    "MASTER_PORT": str(master_port),
-                    "TORCHELASTIC_RESTART_COUNT": str(restart_count),
-                    "TORCHELASTIC_MAX_RESTARTS": str(spec.max_restarts),
-                    "TORCHELASTIC_RUN_ID": spec.rdzv_handler.get_run_id(),
-                    "TORCHELASTIC_USE_AGENT_STORE": str(use_agent_store),
-                    "TORCH_NCCL_ASYNC_ERROR_HANDLING": os.getenv(
-                        "TORCH_NCCL_ASYNC_ERROR_HANDLING", str(1)
-                    ),
-                    FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
-                    FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
-                }
-                if current_cycle_info_path is not None:
-                    worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
-                if "OMP_NUM_THREADS" in os.environ:
-                    worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
+            worker_env = {
+                "LOCAL_RANK": str(local_rank),
+                "RANK": str(worker.global_rank),
+                "GROUP_RANK": str(worker_group.group_rank),
+                "ROLE_RANK": str(worker.role_rank),
+                "ROLE_NAME": spec.role,
+                "LOCAL_WORLD_SIZE": str(spec.local_world_size),
+                "WORLD_SIZE": str(worker.world_size),
+                "GROUP_WORLD_SIZE": str(worker_group.group_world_size),
+                "ROLE_WORLD_SIZE": str(worker.role_world_size),
+                "MASTER_ADDR": master_addr,
+                "MASTER_PORT": str(master_port),
+                "TORCHELASTIC_RESTART_COUNT": str(restart_count),
+                "TORCHELASTIC_MAX_RESTARTS": str(spec.max_restarts),
+                "TORCHELASTIC_RUN_ID": spec.rdzv_handler.get_run_id(),
+                "TORCHELASTIC_USE_AGENT_STORE": str(use_agent_store),
+                "TORCH_NCCL_ASYNC_ERROR_HANDLING": os.getenv(
+                    "TORCH_NCCL_ASYNC_ERROR_HANDLING", str(1)
+                ),
+                FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
+                FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
+            }
+            if current_cycle_info_path is not None:
+                worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
+            if "OMP_NUM_THREADS" in os.environ:
+                worker_env["OMP_NUM_THREADS"] = os.environ["OMP_NUM_THREADS"]
 
-                # NVRx telemetry correlation env vars for the worker cohort.
-                worker_env["NVRX_CYCLE"] = str(restart_count)
-                worker_env["NVRX_MEMBERSHIP"] = "active"
-                infra_rank = get_infrastructure_rank()
-                if infra_rank >= 0:
-                    worker_env["NVRX_INFRA_RANK"] = str(infra_rank)
-                if self._cycle_start_time is not None:
-                    worker_env["NVRX_CYCLE_START_TIME"] = str(self._cycle_start_time)
-                worker_env["NVRX_LAUNCH_TIME"] = str(time.time())
+            if self._log_line_prefix_template:
+                log_line_prefix = Template(self._log_line_prefix_template).safe_substitute(
+                    role_name=spec.role,
+                    rank=worker.global_rank,
+                    local_rank=local_rank,
+                )
+                log_line_prefixes[local_rank] = log_line_prefix
 
-                if self._log_line_prefix_template:
-                    log_line_prefix = Template(self._log_line_prefix_template).safe_substitute(
-                        role_name=spec.role,
-                        rank=worker.global_rank,
-                        local_rank=local_rank,
-                    )
-                    log_line_prefixes[local_rank] = log_line_prefix
+            envs[local_rank] = worker_env
+            worker_args = list(spec.args)
+            worker_args = macros.substitute(worker_args, str(local_rank))
+            args[local_rank] = tuple(worker_args)
 
-                envs[local_rank] = worker_env
-                worker_args = list(spec.args)
-                worker_args = macros.substitute(worker_args, str(local_rank))
-                args[local_rank] = tuple(worker_args)
+        self._setup_local_watchdog(envs=envs)
 
-            self._setup_local_watchdog(envs=envs)
+        # Rank monitors are already created early (before gRPC) and connections established
+        # in LocalElasticAgent.__init__(), so no need to call setup_rank_monitors here
 
-            # Rank monitors are already created early (before gRPC) and connections established
-            # in LocalElasticAgent.__init__(), so no need to call setup_rank_monitors here
+        # Standby nodes loop inside perform_rendezvous() until they become active or training ends.
+        # next_rendezvous() only returns with an active rank, so all nodes here start workers.
 
-            # Standby nodes loop inside perform_rendezvous() until they become active or training ends.
-            # next_rendezvous() only returns with an active rank, so all nodes here start workers.
+        assert spec.entrypoint is not None
+        assert self._logs_specs is not None
 
-            assert spec.entrypoint is not None
-            assert self._logs_specs is not None
+        # Wrap entrypoint with numactl if needed (for binary entrypoints only)
+        entrypoint_to_use = spec.entrypoint
+        args_to_use = args
 
-            # Wrap entrypoint with numactl if needed (for binary entrypoints only)
-            entrypoint_to_use = spec.entrypoint
-            args_to_use = args
+        # Only wrap if entrypoint is a string (binary), not a function
+        if isinstance(spec.entrypoint, str) and os.getenv("NVRX_GPUS_PER_NUMA") is not None:
+            # Wrap each worker's arguments with numactl
+            wrapped_args = {}
+            for local_rank, worker_args in args.items():
+                wrapped_args[local_rank] = _wrap_entrypoint_with_numactl(
+                    spec.entrypoint, worker_args, local_rank, self._ft_cfg.numa_bind_strict
+                )
+            entrypoint_to_use = "numactl"
+            args_to_use = wrapped_args
 
-            # Only wrap if entrypoint is a string (binary), not a function
-            if isinstance(spec.entrypoint, str) and os.getenv("NVRX_GPUS_PER_NUMA") is not None:
-                # Wrap each worker's arguments with numactl
-                wrapped_args = {}
-                for local_rank, worker_args in args.items():
-                    wrapped_args[local_rank] = _wrap_entrypoint_with_numactl(
-                        spec.entrypoint, worker_args, local_rank, self._ft_cfg.numa_bind_strict
-                    )
-                entrypoint_to_use = "numactl"
-                args_to_use = wrapped_args
+        self._pcontext = start_processes(
+            name=spec.role,
+            entrypoint=entrypoint_to_use,
+            args=args_to_use,
+            envs=envs,
+            logs_specs=self._logs_specs,
+            log_line_prefixes=log_line_prefixes,
+            start_method=self._start_method,
+        )
 
-            self._pcontext = start_processes(
-                name=spec.role,
-                entrypoint=entrypoint_to_use,
-                args=args_to_use,
-                envs=envs,
-                logs_specs=self._logs_specs,
-                log_line_prefixes=log_line_prefixes,
-                start_method=self._start_method,
-            )
+        self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
 
-            self._children_pgids = {os.getpgid(p) for p in self._pcontext.pids().values()}
+        # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
+        if isinstance(self._logs_specs, PipeBasedLogsSpecs):
+            # PipeBasedLogsSpecs requires SubprocessContext (binary entrypoints)
+            # MultiprocessContext (function entrypoints) is not supported
+            if not hasattr(self._pcontext, 'subprocess_handlers'):
+                raise RuntimeError(
+                    "PipeBasedLogsSpecs requires SubprocessContext but got "
+                    f"{type(self._pcontext).__name__}. This usually means the entrypoint "
+                    "is a Python function instead of a script path. PipeBasedLogsSpecs only "
+                    "works with script/binary entrypoints (e.g., 'python train.py')."
+                )
 
-            # Start reader thread for pipe-based logging if using PipeBasedLogsSpecs
-            if isinstance(self._logs_specs, PipeBasedLogsSpecs):
-                # PipeBasedLogsSpecs requires SubprocessContext (binary entrypoints)
-                # MultiprocessContext (function entrypoints) is not supported
-                if not hasattr(self._pcontext, 'subprocess_handlers'):
-                    raise RuntimeError(
-                        "PipeBasedLogsSpecs requires SubprocessContext but got "
-                        f"{type(self._pcontext).__name__}. This usually means the entrypoint "
-                        "is a Python function instead of a script path. PipeBasedLogsSpecs only "
-                        "works with script/binary entrypoints (e.g., 'python train.py')."
-                    )
+            self._logs_specs.update_reader_for_cycle(self._pcontext.subprocess_handlers)
 
-                self._logs_specs.update_reader_for_cycle(self._pcontext.subprocess_handlers)
+        # Record worker start completion event
+        record_profiling_event(
+            ProfilingEvent.WORKER_START_COMPLETED,
+            node_id=self._rdzv_handler._this_node,
+            rank=worker_group.group_rank,
+        )
 
-            # Record worker start completion event
-            record_profiling_event(
-                ProfilingEvent.WORKER_START_COMPLETED,
-                node_id=self._rdzv_handler._this_node,
-                rank=worker_group.group_rank,
-            )
-
-            return self._pcontext.pids()
+        return self._pcontext.pids()
 
     def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> None:
         """
@@ -1506,54 +1407,30 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
-    def _restart_workers(self, worker_group: WorkerGroup) -> None:
-        """Stop workers (with teardown span), close previous cycle span, then re-initialize."""
-        role = worker_group.spec.role
-        logger.info("[%s] Stopping worker group", role)
-        # Teardown span wraps the stop; cycle span is still open (as parent context).
-        with managed_span("nvrx.ft", "nvrx.ft.teardown", is_goodput_span=True):
-            self._stop_workers(worker_group)
-        worker_group.state = WorkerState.STOPPED
-        # Close the previous cycle span (outcome already set by caller) and flush.
-        self._close_cycle_span()
-        force_flush()
-        # _initialize_workers calls _rendezvous (opens new cycle span) + _start_workers.
-        self._initialize_workers(worker_group)
-
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
-        """Override _rendezvous to open cycle span and set worker group on the handler."""
+        """Override _rendezvous to set worker group reference in the handler."""
         spec = worker_group.spec
 
-        # Set worker group reference in the rendezvous handler.
+        # Set worker group reference in the rendezvous handler
         # Since we only support c10d backend and replace it with our custom handler,
         # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
-        # Open the cycle span that lives across the full restart cycle.
-        self._cycle_start_time = time.time()
-        self._cycle_exit_stack = contextlib.ExitStack()
-        self._cycle_span = self._cycle_exit_stack.enter_context(
-            managed_span("nvrx.ft", "nvrx.ft.cycle", is_goodput_span=True)
-        )
-        if self._cycle_span is not None:
-            self._cycle_span.set_attribute("nvrx.cycle", self._get_global_cycle_number())
-            self._cycle_span.set_attribute("nvrx.node", self._node_id)
-            self._cycle_span.set_attribute("nvrx.max_restarts", spec.max_restarts)
-
+        # Opening closes the previous cycle, which was held open so that _stop_workers
+        # could record its teardown span inside the cycle it belongs to.
+        cycle = {"nvrx.cycle": self._get_global_cycle_number(), "nvrx.node": self._node_id}
+        self._cycle.open("nvrx.ft", "nvrx.ft.cycle", cycle)
         try:
+            # Call the parent class _rendezvous method
             super()._rendezvous(worker_group)
-        except RendezvousClosedError:
-            # Standby node: job ended while blocked in next_rendezvous().
-            self._set_cycle_outcome("standby")
-            self._close_cycle_span()
-            force_flush()
+        except UnhealthyNodeException:
+            self._cycle.close({CYCLE_OUTCOME: "excluded"})  # failed the health check
             raise
-
-        # Rendezvous completed — set post-rendezvous attributes.
-        if self._cycle_span is not None:
-            self._cycle_span.set_attribute("nvrx.rank", worker_group.group_rank)
-            self._cycle_span.set_attribute("nvrx.group_world_size", worker_group.group_world_size)
-            self._cycle_span.set_attribute("nvrx.membership", "active")
+        except (RendezvousClosedError, RendezvousGracefulExitError):
+            self._cycle.close({CYCLE_OUTCOME: "standby"})  # job ended while it waited
+            raise
+        self._cycle.set({"nvrx.rank": worker_group.group_rank,
+                         "nvrx.group_world_size": worker_group.group_world_size})
 
 
 # Source
