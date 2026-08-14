@@ -293,15 +293,11 @@ class FileSystemWriterAsync(FileSystemWriter):
                     for quantized tensors, making dtype-based detection unreliable.
             """
             ten = ten.detach()
-            if ten.device.type != "cpu":
-                # We call ``dequantize`` if we detect a quantized tensor on GPU.
-                # This is a workaround to avoid the issue of quantized tensors not being supported by the async writer.
-                if ten.device.type == "cuda" and "dequantize" in type(ten).__dict__:
-                    ten = ten.dequantize()
-                    return ten, True
-                return ten, False
-            # No clone needed for use_cpu_shm_for_gpu_tensors=True. All tensors snapshotted to shm
-            return (ten if self.use_cpu_shm_for_gpu_tensors else ten.clone()), False
+            if ten.device.type == "cpu" and not self.use_cpu_shm_for_gpu_tensors:
+                return ten.clone(), False
+            if ten.device.type == "cuda" and "dequantize" in type(ten).__dict__:
+                return ten.dequantize(), True
+            return ten, False
 
         def resolve_data(items):
             resolved = []
@@ -331,10 +327,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             uncached_items, uncached_data = [], []
 
             for item, data, was_dequantized in zip(items, resolved_data, dequantized_flags):
-                if isinstance(data, torch.Tensor) and data.device.type == "cpu":
-                    uncached_items.append(item)
-                    uncached_data.append(data)
-                elif was_dequantized:
+                if isinstance(data, torch.Tensor) and data.device.type == "cpu" or was_dequantized:
                     uncached_items.append(item)
                     uncached_data.append(data)
                 else:
@@ -351,14 +344,11 @@ class FileSystemWriterAsync(FileSystemWriter):
 
             # Resolve every tensor before routing it for the selected transfer mode.
             resolved_tensors, dequantized_flags = resolve_data(tensor_items)
-            if self.use_cpu_shm_for_gpu_tensors:
-                # The shared-memory path snapshots all(cpu+gpu) tensors together
-                cacheable_items, cacheable_data = tensor_items, resolved_tensors
-                uncached_items, uncached_data = [], []
-            else:
-                (cacheable_items, cacheable_data), (uncached_items, uncached_data) = (
-                    separate_for_gpu_ipc(tensor_items, resolved_tensors, dequantized_flags)
-                )
+            (cacheable_items, cacheable_data), (uncached_items, uncached_data) = (
+                separate_for_gpu_ipc(tensor_items, resolved_tensors, dequantized_flags)
+                if not self.use_cpu_shm_for_gpu_tensors
+                else (tensor_items, resolved_tensors), ([], [])
+            )
 
             if cacheable_items and self.use_cpu_shm_for_gpu_tensors:
                 # --- CPU shared-memory path ---
