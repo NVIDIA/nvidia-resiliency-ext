@@ -91,7 +91,7 @@ Both emitting processes call `setup_telemetry` once at startup and `shutdown()` 
 
 Neither uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit.
 
-`shutdown()` flushes. Nothing flushes on the restart path, which would add latency to recovery for spans the batch processor exports on its own schedule anyway; the tradeoff is that spans still buffered when a process is `SIGKILL`ed are lost. nemo-lens's `_OpenSpanCloser` ends any span still open at shutdown and marks it `nemo.span.truncated`, which is how a cycle interrupted by a signal reaches the collector — without an `nvrx.cycle_outcome`.
+nemo-lens's `_OpenSpanCloser` ends any span still open at shutdown and marks it `nemo.span.truncated`, which is how a cycle interrupted by a signal reaches the collector — without an `nvrx.cycle_outcome`.
 
 ### Lifecycle per cycle
 
@@ -190,8 +190,6 @@ sequenceDiagram
 
 A hot spare produces one `round_wait` / `rendezvous` pair per round, so span volume tracks restart rounds rather than poll frequency. The `rendezvous` span for the round a node sits out is closed by the next round's, and `_perform_rendezvous` closes the last one in a `finally` so it can never outlive the enclosing `cycle` span.
 
-There is no separate span for the productive part of a cycle: it is the interval between the end of `worker_start` and the start of `teardown`, both of which are already recorded.
-
 ## pyproject.toml
 
 ```toml
@@ -201,8 +199,6 @@ otel = ["nemo-lens"]
 [tool.poetry.dependencies]
 nemo-lens = {version = ">=0.2.0", extras = ["sdk"], optional = true}
 ```
-
-`nemo-lens 0.2.0` is not yet published (0.1.0 is the current release, and it predates the `_OpenSpanCloser` support this integration relies on). Until 0.2.0 ships, the `otel` extra cannot be resolved — `poetry lock` and `pip install .[otel]` both fail, though `poetry build` and a plain `pip install .` are unaffected. Install nemo-lens from source in the meantime. The published package also requires Python ≥3.13 while NVRx supports ≥3.10; that has to be resolved upstream before the extra is generally usable.
 
 ## Out of Scope
 
