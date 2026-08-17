@@ -113,20 +113,6 @@ def setup_telemetry(rank: int, world_size: int):
         return _NoOpHandle()
 
 
-def record_event(name: str, attributes: dict | None = None) -> None:
-    """Add a timestamped event to the currently active span.
-
-    OTel propagates the active span through contextvars, so instrumentation
-    deep inside a call tree attaches to the enclosing span with no plumbing.
-    A no-op when no span is recording.
-    """
-    if not _AVAILABLE:
-        return
-    from opentelemetry import trace
-
-    trace.get_current_span().add_event(name, attributes or {})
-
-
 class ManualSpan:
     """A span started and ended explicitly, for a lifetime that is not a block.
 

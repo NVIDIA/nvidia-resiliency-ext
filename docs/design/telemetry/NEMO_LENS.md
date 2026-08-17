@@ -38,15 +38,15 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-Exports `managed_span`, `traced`, `ManualSpan`, `setup_telemetry`, `record_event`, and `set_span_attributes`.
+Exports `managed_span`, `traced`, `ManualSpan`, `setup_telemetry`, and `set_span_attributes`.
 
 ### What the shim does and does not do
 
 `managed_span` and `traced` are **re-exports** of `nemo.lens.managed_span` and `nemo.lens.trace_fn`. Upstream already gates on the span group, yields `None` when disabled, records exceptions, and ends the span in a `finally`. Span groups default to empty until `setup_telemetry` runs, so both are no-ops before (or without) initialization. There is nothing for the shim to re-implement, so it does not: the only fallbacks it defines are for the case where nemo-lens is not installed at all.
 
-`record_event` and `set_span_attributes` operate on the current span via `opentelemetry.trace.get_current_span()`, which returns a non-recording span when nothing is active. Both are no-ops in that case.
+`set_span_attributes` operates on the current span via `opentelemetry.trace.get_current_span()`, which returns a non-recording span when nothing is active, so it is a no-op in that case.
 
-`ManualSpan` is the one piece of real machinery: a span that is opened in one call and closed in another, for a lifetime that does not fit a `with` block. It owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. It knows nothing about fault tolerance — the caller supplies the group, name, and every attribute key.
+`ManualSpan` is the one piece of real machinery: a span that is opened in one call and closed in another, for a lifetime that does not fit a `with` block. It owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. `open()` closes whatever the handle already had open, which is how both users of it advance from one span to the next. It knows nothing about fault tolerance — the caller supplies the group, name, and every attribute key.
 
 ### NVRxSpanGroup
 
@@ -62,17 +62,29 @@ The launcher's identity is resolved before rendezvous, where no elastic rank exi
 
 ## Fault Tolerance Span Lifecycle
 
-### Spans vs events
+### Everything is a span
 
-`next_rendezvous()` is a single blocking call that internally mixes standby retries, health check, barrier join, and rank assignment. Producing child spans from that boundary would require invasive callbacks into the barrier internals. Instead, the rendezvous internals use OTel **events** — timestamped points attached to the current active span via `record_event()`. Events have timestamps, so durations between them (e.g. `health_check.started` → `health_check.completed`) are available in backends that support event-based analytics.
+There are no OTel events. Every phase that was once a start/end event pair is a span, so its duration is a first-class queryable value rather than something a backend has to reconstruct by subtracting two timestamps.
 
-OTel propagates the active span implicitly via `contextvars`. Because `next_rendezvous()` is called synchronously from the launcher's main thread, `record_event()` calls inside `ft_rendezvous_barrier.py` automatically attach to the open `cycle` span with no reference passing.
+OTel propagates the active span implicitly via `contextvars`. Because `next_rendezvous()` is called synchronously from the launcher's main thread, spans opened inside `ft_rendezvous_barrier.py` nest under the launcher's open `cycle` span with no reference passing.
 
-**Spans** are used only where there are clear, code-controlled start/end boundaries. `worker_start` and `teardown` map exactly to `_start_workers` and `_stop_workers`, so they are `@traced` decorators rather than `with` blocks — the instrumented bodies are untouched. The `cycle` span is the only one that does not fit a block, so it is the only one using `ManualSpan`.
+Each span uses the cheapest mechanism that fits its shape:
+
+| Shape | Mechanism | Spans |
+| ----- | --------- | ----- |
+| The span *is* a method | `@traced` decorator | `worker_start`, `teardown` |
+| The span is a block | `with managed_span(...)` | `round_wait`, `health_check`, both `ckpt` spans |
+| The span outlives its block | `ManualSpan` | `cycle`, `rendezvous` |
+
+Using `@traced` for the first group means the instrumented method bodies are untouched.
+
+`ManualSpan` is needed for exactly two spans. A `cycle` opens at rendezvous and ends only after teardown. A `rendezvous` round opens after the round has opened — deliberately excluding the hot-spare wait, which would otherwise dominate the measurement — and ends either when the node is assigned an active rank or when the next round begins.
+
+An exclusion needs no separate signal: the `UnhealthyNodeException` propagating out of the `health_check` span is recorded by nemo-lens as `StatusCode.ERROR` with the reason as the description, plus an `exception` event carrying the type and message.
 
 ### Initialization
 
-`setup_telemetry` is called once per launcher-agent process at the start of `_invoke_run_with_any_failed_policy`, before the first rendezvous. `atexit.register(self._tel_handle.shutdown)` registers the terminal flush.
+`setup_telemetry` is called once per launcher-agent process at the top of `run()`, before the first rendezvous, and `shutdown()` is called from that method's existing `finally`. Deliberately not `atexit`: that runs at interpreter finalization, after `sys.exit` has unwound, where a flush to an unreachable collector would stall `ft_launcher` exit.
 
 nemo-lens's `_OpenSpanCloser` closes any span still open at that point, marking it `nemo.span.truncated`. NVRx relies on it for exactly one case — a cycle interrupted by a signal — rather than wrapping the monitor loop in a `try/finally` purely to relabel that span. A truncated cycle with no `nvrx.cycle_outcome` is a faithful description of what happened.
 
@@ -80,7 +92,7 @@ There is no per-cycle `force_flush`. Spans are exported by the batch processor o
 
 ### Lifecycle per cycle
 
-The `cycle` span opens in the `_rendezvous` override and covers both the initial launch and every restart cycle. Standby-wait events attach to it naturally.
+The `cycle` span opens in the `_rendezvous` override and covers both the initial launch and every restart cycle. The rendezvous spans nest inside it.
 
 ```mermaid
 sequenceDiagram
@@ -92,11 +104,12 @@ sequenceDiagram
     loop each cycle (initial + restarts)
         L->>L: _rendezvous: close previous cycle span, open nvrx.ft.cycle
         L->>R: next_rendezvous() [sync]
-        R->>R: record_event("rendezvous.started")
-        R->>R: record_event("health_check.started")
-        R->>R: record_event("health_check.completed")
-        R->>R: record_event("standby.round", {round}) [repeats if standby]
-        R->>R: record_event("rendezvous.completed", {rank, rdzv_run_id})
+        loop each rendezvous round
+            R->>R: nvrx.ft.round_wait (hot spares block here)
+            R->>R: open nvrx.ft.rendezvous, closing the previous round's
+            R->>R: nvrx.ft.health_check
+        end
+        R->>R: close nvrx.ft.rendezvous {nvrx.rank, nvrx.membership: active}
         R-->>L: return
         L->>L: _start_workers -> nvrx.ft.worker_start (@traced)
         Note over L: workers executing
@@ -129,26 +142,13 @@ The exclusion and standby handlers live in `_rendezvous` itself, so they cover t
 | ------------------------- | ---- | ------------------------ | ----------------------------------------------------------- |
 | `nvrx.cycle`              | int  | `cycle`, `worker_start`  | restart cycle counter                                       |
 | `nvrx.node`               | str  | `cycle`, `worker_start`  | node hostname                                               |
-| `nvrx.rank`               | int  | `cycle`                  | elastic group rank; set after rendezvous (initially absent) |
+| `nvrx.rank`               | int  | `cycle`, `rendezvous`    | elastic group rank; set once rendezvous assigns it          |
 | `nvrx.group_world_size`   | int  | `cycle`                  | number of active nodes; set after rendezvous                |
 | `nvrx.failures`           | int  | `cycle`                  | set on the `failed` outcome                                 |
 | `nvrx.cycle_outcome`      | str  | `cycle`                  | see the close-path table above                              |
+| `nvrx.round`              | int  | `rendezvous`             | rendezvous round number                                     |
+| `nvrx.membership`         | str  | `rendezvous`             | `active`, `standby`, or `late_joiner`                       |
 | `nvrx.call_idx`           | int  | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join                   |
-
-### Events on the cycle span
-
-Emitted via `record_event()` at the existing `ProfilingEvent` instrumentation points.
-
-| Event name               | Source                     | Attributes                  |
-| ------------------------ | -------------------------- | --------------------------- |
-| `rendezvous.started`     | `ft_rendezvous_barrier.py` |                             |
-| `health_check.started`   | `ft_rendezvous_barrier.py` |                             |
-| `health_check.completed` | `ft_rendezvous_barrier.py` | elapsed_s                   |
-| `standby.round`          | `ft_rendezvous_barrier.py` | round                       |
-| `excluded`               | `ft_rendezvous_barrier.py` | reason                      |
-| `rendezvous.completed`   | `ft_rendezvous_barrier.py` | nvrx.rank, nvrx.rdzv_run_id |
-
-The launcher itself emits no events: every state it could report is already a `nvrx.cycle_outcome` value on the span it would have attached the event to.
 
 ## Async Checkpoint Worker: Spawn Boundary
 
@@ -174,13 +174,18 @@ sequenceDiagram
 
 ## Spans
 
-| Span                     | Group       | Source                        | Covers                              |
-| ------------------------ | ----------- | ----------------------------- | ----------------------------------- |
-| `nvrx.ft.cycle`          | `nvrx.ft`   | `launcher.py`                 | one full restart cycle              |
-| `nvrx.ft.worker_start`   | `nvrx.ft`   | `launcher.py`                 | `_start_workers`                    |
-| `nvrx.ft.teardown`       | `nvrx.ft`   | `launcher.py`                 | `_stop_workers`                     |
-| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | preload + write for one request     |
-| `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                    |
+| Span                     | Group       | Source                        | Covers                                  |
+| ------------------------ | ----------- | ----------------------------- | --------------------------------------- |
+| `nvrx.ft.cycle`          | `nvrx.ft`   | `launcher.py`                 | one full restart cycle                  |
+| `nvrx.ft.round_wait`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | waiting for a round to open             |
+| `nvrx.ft.rendezvous`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | one rendezvous round, after it opened   |
+| `nvrx.ft.health_check`   | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | `ensure_node_is_healthy`                |
+| `nvrx.ft.worker_start`   | `nvrx.ft`   | `launcher.py`                 | `_start_workers`                        |
+| `nvrx.ft.teardown`       | `nvrx.ft`   | `launcher.py`                 | `_stop_workers`                         |
+| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | preload + write for one request         |
+| `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                        |
+
+A hot spare produces one `round_wait` / `rendezvous` pair per round, so span volume tracks restart rounds rather than poll frequency. The `rendezvous` span for the round a node sits out is closed by the next round's, and `_perform_rendezvous` closes the last one in a `finally` so it can never outlive the enclosing `cycle` span.
 
 There is no separate span for the productive part of a cycle: it is the interval between the end of `worker_start` and the start of `teardown`, both of which are already recorded.
 

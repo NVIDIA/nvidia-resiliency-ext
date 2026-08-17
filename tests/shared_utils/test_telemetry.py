@@ -64,10 +64,6 @@ class TestTelemetryIsInert(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             boom()
 
-    def test_record_event_without_active_span(self):
-        telemetry.record_event("rendezvous.started")
-        telemetry.record_event("health_check.completed", {"elapsed_s": 1.5})
-
     def test_set_span_attributes_without_active_span(self):
         telemetry.set_span_attributes(**{"nvrx.cycle": 3, "nvrx.node": "node-0"})
 

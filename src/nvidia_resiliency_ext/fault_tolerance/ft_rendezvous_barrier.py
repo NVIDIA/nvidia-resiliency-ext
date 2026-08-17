@@ -67,7 +67,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
-from ..shared_utils.telemetry import record_event
+from ..shared_utils.telemetry import ManualSpan, managed_span
 from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -618,6 +618,8 @@ class _RendezvousBarrierState:
         self.replacement_group_size = replacement_group_size
         self.stale_check_interval = stale_check_interval
         self._rendezvous_start_time = None
+        # One span per rendezvous round; a standby node opens a new one each round.
+        self._rdzv_span = ManualSpan()
         self._last_stale_check_time = 0.0  # Track last stale round check time for rate limiting
 
         # Track rendezvous round number. Each round corresponds to one rendezvous barrier
@@ -1900,7 +1902,11 @@ class _RendezvousBarrierState:
             # Hot spares and late-arriving nodes wait here indefinitely until a failure
             # opens the next round. Also checks for permanent shutdown.
             # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
-            self._wait_for_rendezvous_open(node_desc)
+            # Closed before the wait, so a hot spare idling here does not sit inside the
+            # previous round's span.
+            self._rdzv_span.close()
+            with managed_span("nvrx.ft", "nvrx.ft.round_wait"):
+                self._wait_for_rendezvous_open(node_desc)
 
             # Record start time for timeout monitoring.
             # Start timing AFTER Step 0 completes, since nodes may wait indefinitely at Step 0.
@@ -1912,7 +1918,7 @@ class _RendezvousBarrierState:
                 ProfilingEvent.RENDEZVOUS_STARTED,
                 node_id=node_desc,
             )
-            record_event("rendezvous.started")
+            self._rdzv_span.open("nvrx.ft", "nvrx.ft.rendezvous", {"nvrx.round": self._round})
 
             if pre_join_hook is not None:
                 try:
@@ -2026,6 +2032,7 @@ class _RendezvousBarrierState:
 
             if rank != GroupRankStatus.UNASSIGNED.value and rank < min_nodes:
                 # Active rank: return to launcher to start training workers.
+                self._rdzv_span.close({"nvrx.rank": rank, "nvrx.membership": "active"})
                 return rank, total_participants
 
             # rank == UNASSIGNED: late comer that joined after the store host's snapshot.
@@ -2036,12 +2043,13 @@ class _RendezvousBarrierState:
                     f"[{node_desc}] Late joiner detected for round {self._round} "
                     f"(rank=UNASSIGNED); retrying in round {self._round + 1}"
                 )
+                self._rdzv_span.set({"nvrx.membership": "late_joiner"})
             else:
                 log.info(
                     f"[{node_desc}] Standby (rank={rank}) for round {self._round}; "
                     f"waiting for round {self._round + 1} to open"
                 )
-                record_event("standby.round", {"round": self._round})
+                self._rdzv_span.set({"nvrx.membership": "standby"})
             # Loop back to Step 0; _sync_from_per_round_state() will advance _round
             # from N to N+1 when it sees round_done_N=1 (closed).
 
@@ -2703,31 +2711,33 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
 
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
-            record_event("health_check.started")
             try:
-                self.ensure_node_is_healthy()
-            except UnhealthyNodeException as exc:
-                record_event("excluded", {"reason": str(exc)})
-                raise
+                # An UnhealthyNodeException raised here is recorded on the span by
+                # nemo-lens, so exclusion needs no separate signal.
+                with managed_span("nvrx.ft", "nvrx.ft.health_check"):
+                    self.ensure_node_is_healthy()
             finally:
                 health_check_elapsed = time.monotonic() - health_check_start
                 record_profiling_event(
                     ProfilingEvent.HEALTH_CHECK_COMPLETED,
                     node_id=self._this_node,
                 )
-                record_event("health_check.completed", {"elapsed_s": health_check_elapsed})
                 log.debug(
                     f"[{self._this_node}] Node health check completed in {health_check_elapsed:.3f}s"
                 )
             self.handle_control_requests_from_rank()
 
-        # Perform complete rendezvous process (events attach to active cycle span via contextvars).
-        group_rank, total_participants = self._barrier_state.perform_rendezvous(
-            self._this_node,
-            self._settings.min_nodes,
-            self._settings.max_nodes,
-            pre_join_hook=pre_join_hook,
-        )
+        # Spans below nest under the launcher's cycle span via contextvars. The finally
+        # closes the round span on the error paths, so it can never outlive that cycle span.
+        try:
+            group_rank, total_participants = self._barrier_state.perform_rendezvous(
+                self._this_node,
+                self._settings.min_nodes,
+                self._settings.max_nodes,
+                pre_join_hook=pre_join_hook,
+            )
+        finally:
+            self._barrier_state._rdzv_span.close()
 
         # Store the assigned rank and world size
         self._assigned_rank = group_rank
@@ -2797,10 +2807,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         rendezvous_completion_event_id = record_profiling_event(
             ProfilingEvent.RENDEZVOUS_COMPLETED,
             node_id=self._this_node,
-        )
-        record_event(
-            "rendezvous.completed",
-            {"nvrx.rank": rank, "nvrx.rdzv_run_id": self._settings.run_id},
         )
 
         # Use RendezvousInfo if available (newer PyTorch versions >= 2.4.0)

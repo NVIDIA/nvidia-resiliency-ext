@@ -13,7 +13,6 @@
 # - security fix for watchdog_file_path
 
 import asyncio
-import atexit
 
 # fmt: off
 import contextlib
@@ -544,6 +543,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._remaining_restarts = (
             self._worker_group.spec.max_restarts - self._get_global_cycle_number()
         )
+        # Every agent exports, so dl.rank / service.instance.id have to differ per node.
+        # Rendezvous has not assigned elastic ranks yet, hence the infrastructure rank.
+        self._tel_handle = telemetry.setup_telemetry(
+            max(get_infrastructure_rank(), 0), int(os.environ.get("SLURM_NNODES", "1"))
+        )
         start_time = time.monotonic()
         shutdown_called: bool = False
         try:
@@ -584,6 +588,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._shutdown()
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
+            self._tel_handle.shutdown()
 
     def _open_rendezvous_for_restart(self):
         """Open rendezvous for restart when using barrier-based rendezvous.
@@ -658,13 +663,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         role = spec.role
 
         logger.info("[%s] starting workers for entrypoint: %s", role, spec.get_entrypoint_name())
-
-        # Every agent exports, so dl.rank / service.instance.id have to differ per node.
-        # Rendezvous has not assigned elastic ranks yet, hence the infrastructure rank.
-        self._tel_handle = telemetry.setup_telemetry(
-            max(get_infrastructure_rank(), 0), int(os.environ.get("SLURM_NNODES", "1"))
-        )
-        atexit.register(self._tel_handle.shutdown)
 
         self._initialize_workers(self._worker_group)
         monitor_interval = spec.monitor_interval
