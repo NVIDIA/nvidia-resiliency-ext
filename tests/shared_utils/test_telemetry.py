@@ -135,6 +135,26 @@ class TestMarkAndFlush(unittest.TestCase):
         self.assertLess(elapsed, 5, "shutdown was not bounded")
 
 
+class TestBackdatedSpan(unittest.TestCase):
+    """Startup windows are reconstructed from timestamps, so guard the inputs."""
+
+    def test_inert_without_telemetry(self):
+        telemetry.backdated_span("job", "pre_startup", 1000.0, 1016.7)
+        telemetry.backdated_span("job", "nvrx.cold_start", 1016.7, 1020.9, {"nvrx.node": "n0"})
+
+    def test_absent_timestamps_are_dropped_not_raised(self):
+        # SLURM_JOB_START_TIME is absent off Slurm, so the caller passes None
+        # rather than pre-checking; `end > None` would be a TypeError.
+        telemetry.backdated_span("job", "pre_startup", None, 1016.7)
+        telemetry.backdated_span("job", "pre_startup", 1000.0, None)
+        telemetry.backdated_span("job", "pre_startup", None, None)
+
+    def test_non_positive_window_is_dropped(self):
+        # Clock skew between Slurm's stamp and the launch script's can invert these.
+        telemetry.backdated_span("job", "pre_startup", 1016.7, 1000.0)
+        telemetry.backdated_span("job", "pre_startup", 1000.0, 1000.0)
+
+
 class TestSetupTelemetry(unittest.TestCase):
 
     def test_returns_handle_with_idempotent_shutdown(self):

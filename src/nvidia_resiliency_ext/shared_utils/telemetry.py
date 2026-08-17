@@ -43,6 +43,8 @@ try:
     # _setup_telemetry would otherwise collide with the wrapper defined below.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanGroup as _SpanGroup
+    from nemo.lens import get_tracer as _get_tracer
+    from nemo.lens import is_span_group_enabled as _is_span_group_enabled
     from nemo.lens import managed_span as _managed_span
     from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
@@ -239,6 +241,40 @@ def span(group: str, name: str, attributes: Optional[dict] = None):
     dict that ``**`` unpacks -- about 200ns against 40us for an enabled span.
     """
     return _managed_span(group, name, **(attributes or {}))
+
+
+def backdated_span(
+    group: str,
+    name: str,
+    start: Optional[float],
+    end: Optional[float],
+    attributes: Optional[dict] = None,
+) -> None:
+    """Record a span for a window that elapsed before there was a tracer.
+
+    Startup phases are only measurable in hindsight: the job was queued and the
+    launch script ran before this process existed, so the span has to be created
+    with both timestamps rather than wrapped around live code. ``start`` and
+    ``end`` are wall-clock seconds.
+
+    Emitted with an empty context, so it roots its own trace rather than
+    attaching to whatever happens to be open. These describe the run before this
+    process, and are not part of any cycle.
+
+    A no-op if the window is not a positive interval, so callers can pass
+    whatever timestamps they found without pre-checking.
+    """
+    if start is None or end is None or end <= start:
+        return
+    if not _AVAILABLE or not _is_span_group_enabled(group):
+        return
+    from opentelemetry.context import Context
+
+    tracer = _get_tracer(__name__)
+    span = tracer.start_span(
+        name, context=Context(), start_time=int(start * 1e9), attributes=attributes or {}
+    )
+    span.end(end_time=int(end * 1e9))
 
 
 def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:

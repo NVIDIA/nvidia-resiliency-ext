@@ -38,7 +38,7 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-Exports `span`, `trace_fn`, `ManualSpan`, `mark`, `set_span_attributes`, `setup_telemetry`, `shutdown`, and `flush`.
+Exports `span`, `trace_fn`, `ManualSpan`, `mark`, `backdated_span`, `set_span_attributes`, `setup_telemetry`, `shutdown`, and `flush`.
 
 ### Exports
 
@@ -78,6 +78,7 @@ Each span uses the cheapest mechanism that fits its shape:
 | The span is a block                   | `with span(...)`         | `round_wait`, `health_check`, both `ckpt` spans |
 | Open and close cross block boundaries | `ManualSpan`             | `cycle`, `rendezvous`, `run`, `attribution`     |
 | An instant, with no duration          | `mark(...)`              | `fault`                                         |
+| Already elapsed, reconstructed        | `backdated_span(...)`    | `pre_startup`, `cold_start`                     |
 
 Using `@trace_fn` for the first group leaves the instrumented method bodies untouched.
 
@@ -240,6 +241,24 @@ sequenceDiagram
 | `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                      |
 
 A hot spare produces one `round_wait` / `rendezvous` pair per round, so span volume tracks restart rounds rather than poll frequency. The `rendezvous` span for the round a node sits out is closed by the next round's, and `_perform_rendezvous` closes the last one in a `finally` so it can never outlive the enclosing `cycle` span.
+
+## Startup Windows
+
+Two windows are over before the agent exists, so they are recorded from timestamps rather than measured:
+
+| Span | From | To | Group |
+| ---- | ---- | -- | ----- |
+| `pre_startup` | `SLURM_JOB_START_TIME` | `LENS_LAUNCH_SCRIPT_START_TIME` | `job` |
+| `nvrx.cold_start` | `LENS_LAUNCH_SCRIPT_START_TIME` | agent ready to rendezvous | `job` |
+
+They **tile**: `pre_startup` ends exactly where `cold_start` begins, so the interval from Slurm granting the allocation to this agent being ready is covered once, not twice. Both root their own trace rather than attaching to whatever is open, since they describe the run before this process and belong to no cycle.
+
+Two details are load-bearing for the consumer:
+
+- **`pre_startup` carries no `nvrx.` prefix.** A trainer emits a span of that exact name when there is no `ft_launcher`, and the goodput taxonomy classifies by name; prefixing ours would make the same window classify differently depending on whether NVRx was in the picture.
+- **The agent must emit these, or nobody does.** A trainer under NVRx suppresses its own `pre_startup` — and its `startup.launch_script` / `startup.container_load` — on seeing `NVRX_LAUNCH_TIME`, precisely so it does not double-count against these. Setting that variable without emitting these spans loses the windows silently.
+
+Both are gated on the `job` group, the same group a trainer gates its `pre_startup` on.
 
 ## Worker Environment Handoff
 
