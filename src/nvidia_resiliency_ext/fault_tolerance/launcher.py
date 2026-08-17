@@ -1456,6 +1456,40 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _joined_cycle_attrs(self, worker_group: WorkerGroup) -> dict:
+        """Telemetry attributes describing the round this node just joined.
+
+        The roster is what the round agreed on rather than what this node observed,
+        which makes it the only record naming a node that hung or was killed before
+        it exported anything. Every getter is a read of state the handler already
+        holds -- the same source the launcher uses for cycle info -- so this costs
+        no store traffic. Only the store host populates the rosters; elsewhere they
+        are None and simply absent from the span.
+        """
+        spec = worker_group.spec
+        attrs = {
+            "nvrx.rank": worker_group.group_rank,
+            "nvrx.group_world_size": worker_group.group_world_size,
+            "nvrx.membership": "active",
+            "nvrx.max_restarts": spec.max_restarts,
+            "nvrx.remaining_restarts": self._remaining_restarts,
+        }
+        for name, getter in (
+            ("nvrx.active_nodes", "get_active_node_addrs"),
+            ("nvrx.standby_nodes", "get_standby_node_addrs"),
+            ("nvrx.active_ranks", "get_active_ranks"),
+            ("nvrx.rdzv_run_id", "get_run_id"),
+        ):
+            try:
+                value = getattr(spec.rdzv_handler, getter)()
+            except Exception:
+                logger.debug("Rendezvous %s unavailable for telemetry", getter, exc_info=True)
+                continue
+            if value is None:
+                continue
+            attrs[name] = ",".join(str(e) for e in value) if isinstance(value, list) else value
+        return attrs
+
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:
         """Override to open the run span once the workers are actually running."""
         super()._initialize_workers(worker_group)
@@ -1483,37 +1517,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             super()._rendezvous(worker_group)
         except UnhealthyNodeException:
             self._cycle_span.close({CYCLE_OUTCOME: "excluded"})  # failed the health check
-            telemetry.flush()  # this node is leaving the job; export before it is torn down
             raise
         except (RendezvousClosedError, RendezvousGracefulExitError):
             self._cycle_span.close({CYCLE_OUTCOME: "standby"})  # job ended while it waited
             raise
-        # The roster is what the round agreed on, not what this node observed. It is the
-        # only record naming a node that hung or was killed before exporting anything.
-        joined = {
-            "nvrx.rank": worker_group.group_rank,
-            "nvrx.group_world_size": worker_group.group_world_size,
-            "nvrx.membership": "active",
-            "nvrx.max_restarts": spec.max_restarts,
-            "nvrx.remaining_restarts": self._remaining_restarts,
-        }
-        for attr, getter in (
-            ("nvrx.active_nodes", "get_active_node_addrs"),
-            ("nvrx.standby_nodes", "get_standby_node_addrs"),
-            ("nvrx.active_ranks", "get_active_ranks"),
-        ):
-            try:
-                roster = getattr(spec.rdzv_handler, getter)()
-            except Exception:
-                logger.debug("Rendezvous roster %s unavailable", getter, exc_info=True)
-                continue
-            if roster is not None:
-                joined[attr] = ",".join(str(entry) for entry in roster)
-        try:
-            joined["nvrx.rdzv_run_id"] = spec.rdzv_handler.get_run_id()
-        except Exception:
-            logger.debug("Rendezvous run id unavailable", exc_info=True)
-        self._cycle_span.set(joined)
+        self._cycle_span.set(self._joined_cycle_attrs(worker_group))
 
 
 # Source
