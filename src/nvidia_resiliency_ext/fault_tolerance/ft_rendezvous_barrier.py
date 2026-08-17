@@ -1905,8 +1905,12 @@ class _RendezvousBarrierState:
             # Closed before the wait, so a hot spare idling here does not sit inside the
             # previous round's span.
             self._rdzv_span.close()
-            with managed_span("nvrx.ft", "nvrx.ft.round_wait"):
-                self._wait_for_rendezvous_open(node_desc)
+            record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
+            try:
+                with managed_span("nvrx.ft", "nvrx.ft.round_wait", is_goodput_span=True):
+                    self._wait_for_rendezvous_open(node_desc)
+            finally:
+                record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
 
             # Record start time for timeout monitoring.
             # Start timing AFTER Step 0 completes, since nodes may wait indefinitely at Step 0.
@@ -1918,7 +1922,11 @@ class _RendezvousBarrierState:
                 ProfilingEvent.RENDEZVOUS_STARTED,
                 node_id=node_desc,
             )
-            self._rdzv_span.open("nvrx.ft", "nvrx.ft.rendezvous", {"nvrx.round": self._round})
+            self._rdzv_span.open(
+                "nvrx.ft",
+                "nvrx.ft.rendezvous",
+                {"nvrx.round": self._round, "is_goodput_span": True},
+            )
 
             if pre_join_hook is not None:
                 try:
@@ -2716,6 +2724,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 # nemo-lens, so exclusion needs no separate signal.
                 with managed_span("nvrx.ft", "nvrx.ft.health_check"):
                     self.ensure_node_is_healthy()
+            except UnhealthyNodeException:
+                record_profiling_event(ProfilingEvent.NODE_EXCLUDED, node_id=self._this_node)
+                raise
             finally:
                 health_check_elapsed = time.monotonic() - health_check_start
                 record_profiling_event(

@@ -38,7 +38,7 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-Exports `managed_span`, `trace_fn`, `ManualSpan`, `setup_telemetry`, and `set_span_attributes`.
+Exports `managed_span`, `trace_fn`, `ManualSpan`, `mark`, `setup_telemetry`, `shutdown`, `flush`, and `set_span_attributes`.
 
 ### Exports
 
@@ -72,11 +72,16 @@ Each span uses the cheapest mechanism that fits its shape:
 | ------------------------------------- | ------------------------ | ----------------------------------------------- |
 | The span _is_ a method                | `@trace_fn` decorator    | `worker_start`, `teardown`                      |
 | The span is a block                   | `with managed_span(...)` | `round_wait`, `health_check`, both `ckpt` spans |
-| Open and close cross block boundaries | `ManualSpan`             | `cycle`, `rendezvous`                           |
+| Open and close cross block boundaries | `ManualSpan`             | `cycle`, `rendezvous`, `run`, `attribution`     |
+| An instant, with no duration          | `mark(...)`              | `fault`                                         |
 
 Using `@trace_fn` for the first group leaves the instrumented method bodies untouched.
 
-A `cycle` opens at rendezvous and closes after teardown. A `rendezvous` round opens once the round is open — excluding the hot-spare wait, which would otherwise dominate the measurement — and closes when the node is assigned an active rank, or when the next round begins.
+A `cycle` opens at rendezvous and closes after teardown. A `rendezvous` round opens once the round is open — excluding the hot-spare wait, which would otherwise dominate the measurement — and closes when the node is assigned an active rank, or when the next round begins. `run` opens in the `_initialize_workers` override, which every cycle passes through, and closes on whichever path ends the run.
+
+`fault` is an instant rather than a duration. `teardown` only starts once the restart decision has been made, so without it the interval between detecting a failure and deciding what to do about it is unmeasured.
+
+`attribution` is the exception to the nesting rule. It is driven from the attribution poller's own thread, and OTel context is per-thread, so it cannot be a child of the cycle span; it is emitted as a root span correlated by `nvrx.node`.
 
 An exclusion needs no separate signal: the `UnhealthyNodeException` propagating out of the `health_check` span is recorded by nemo-lens as `StatusCode.ERROR` with the reason as the description, plus an `exception` event carrying the type and message.
 
@@ -89,7 +94,9 @@ Both emitting processes call `setup_telemetry` once at startup and `shutdown()` 
 | Launcher agent    | top of `LocalElasticAgent.run()`, before the first rendezvous | that method's `finally` |
 | Checkpoint worker | top of `async_process_target`, after the spawn                | that method's `finally` |
 
-Neither uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit.
+Neither uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit. `shutdown()` is itself bounded: it flushes synchronously and can otherwise block for the exporter's entire retry budget against a collector that is gone, longer than the SIGTERM-to-SIGKILL grace a launcher gets.
+
+Two points flush explicitly, because the process may be killed moments later and those spans would die in the batch processor's queue: a detected fault, and a health-check exclusion. Everywhere else the batch processor's own schedule is enough.
 
 nemo-lens's `_OpenSpanCloser` ends any span still open at shutdown and marks it `nemo.span.truncated`, which is how a cycle interrupted by a signal reaches the collector — without an `nvrx.cycle_outcome`.
 
@@ -122,6 +129,20 @@ sequenceDiagram
     end
 ```
 
+### Goodput
+
+`is_goodput_span` marks a span as resiliency overhead rather than training. Only spans that **partition** the cycle carry it, since a consumer summing marked durations would otherwise double-count:
+
+| Span                                                   | `is_goodput_span`                                            |
+| ------------------------------------------------------ | ------------------------------------------------------------ |
+| `round_wait`, `rendezvous`, `worker_start`, `teardown` | `True`                                                       |
+| `run`                                                  | `False` — the productive window                              |
+| `cycle`                                                | _unset_ — the container; its children carry the partition    |
+| `health_check`                                         | _unset_ — nested inside `rendezvous`                         |
+| `fault`                                                | _unset_ — an instant                                         |
+| `ckpt.save.request`                                    | `True`                                                       |
+| `ckpt.save.write`                                      | `False` — overlaps training, would double-count against save |
+
 ### Cycle close paths
 
 The outcome is always recorded before the span closes. Terminal paths call `close({CYCLE_OUTCOME: ...})` after teardown. On the restart path the outcome is set first and the span is left open, so that `_stop_workers` records its teardown _inside_ the cycle it belongs to; the next `open()` in `_rendezvous` closes it.
@@ -150,7 +171,14 @@ The exclusion and standby handlers live in `_rendezvous` itself, so they cover t
 | `nvrx.failures`         | int  | `cycle`                  | set on the `failed` outcome                        |
 | `nvrx.cycle_outcome`    | str  | `cycle`                  | see the close-path table above                     |
 | `nvrx.round`            | int  | `rendezvous`             | rendezvous round number                            |
-| `nvrx.membership`       | str  | `rendezvous`             | `active`, `standby`, or `late_joiner`              |
+| `nvrx.membership`       | str  | `cycle`, `rendezvous`    | `active`, `standby`, or `late_joiner`              |
+| `nvrx.max_restarts`     | int  | `cycle`                  | configured restart budget                          |
+| `nvrx.remaining_restarts` | int | `cycle`                 | budget left when the round was joined              |
+| `nvrx.rdzv_run_id`      | str  | `cycle`                  | rendezvous run id                                  |
+| `nvrx.active_nodes`     | str  | `cycle`                  | roster: comma-separated active node addresses      |
+| `nvrx.standby_nodes`    | str  | `cycle`                  | roster: comma-separated standby node addresses     |
+| `nvrx.active_ranks`     | str  | `cycle`                  | roster: comma-separated active group ranks         |
+| `is_goodput_span`       | bool | see the goodput table    | resiliency overhead rather than training           |
 | `nvrx.call_idx`         | int  | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join          |
 
 ## Async Checkpoint Worker: Spawn Boundary
@@ -184,11 +212,28 @@ sequenceDiagram
 | `nvrx.ft.rendezvous`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | one rendezvous round, after it opened |
 | `nvrx.ft.health_check`   | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | `ensure_node_is_healthy`              |
 | `nvrx.ft.worker_start`   | `nvrx.ft`   | `launcher.py`                 | `_start_workers`                      |
+| `nvrx.ft.run`            | `nvrx.ft`   | `launcher.py`                 | workers up until the run ends           |
+| `nvrx.ft.fault`          | `nvrx.ft`   | `launcher.py`                 | instant: a failure was detected         |
 | `nvrx.ft.teardown`       | `nvrx.ft`   | `launcher.py`                 | `_stop_workers`                       |
+| `nvrx.ft.attribution`    | `nvrx.ft`   | `health_check.py`             | an attribution lookup (root span)       |
 | `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | preload + write for one request       |
 | `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                      |
 
 A hot spare produces one `round_wait` / `rendezvous` pair per round, so span volume tracks restart rounds rather than poll frequency. The `rendezvous` span for the round a node sits out is closed by the next round's, and `_perform_rendezvous` closes the last one in a `finally` so it can never outlive the enclosing `cycle` span.
+
+## Worker Environment Handoff
+
+`_start_workers` stamps each worker cohort's environment so a lens-instrumented trainer can place its own spans in the right restart cycle. The batch script's launch stamp is set once outside the `srun` and is stale for every restart, so a restarted trainer needs this cohort's own anchors.
+
+| Variable                | Value                                             |
+| ----------------------- | ------------------------------------------------- |
+| `NVRX_CYCLE`            | restart cycle number                              |
+| `NVRX_MEMBERSHIP`       | `active` — a launched worker is active this cycle |
+| `NVRX_INFRA_RANK`       | this node's infrastructure rank                   |
+| `NVRX_CYCLE_START_TIME` | when this cycle's rendezvous began                |
+| `NVRX_LAUNCH_TIME`      | when this cohort was launched                     |
+
+Nothing in NVRx reads these; they are a contract with the trainer.
 
 ## Out of Scope
 

@@ -128,6 +128,7 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nvrx.cycle_outcome"  # telemetry: how a restart cycle ended
+GOODPUT = "is_goodput_span"  # telemetry: span is resiliency overhead, not training
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -454,6 +455,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
         self._cycle = telemetry.ManualSpan()
+        self._run = telemetry.ManualSpan()
+        self._cycle_start_time: Optional[float] = None
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -544,9 +547,24 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._worker_group.spec.max_restarts - self._get_global_cycle_number()
         )
         # Every agent exports, so dl.rank / service.instance.id have to differ per node.
-        # Rendezvous has not assigned elastic ranks yet, hence the infrastructure rank.
+        # Rendezvous has not assigned elastic ranks yet, hence the infrastructure rank --
+        # skipping the nodename/topology encodings, which are not small ordinals. This
+        # resolves telemetry identity, so it must not be able to take the agent down.
+        try:
+            node_rank = max(get_infrastructure_rank(skip_nodename_logic=True), 0)
+        except Exception:
+            logger.debug("Infrastructure rank unavailable for telemetry", exc_info=True)
+            node_rank = 0
+        # An agent's rank is a node ordinal, not a trainer rank, so under the default
+        # service.instance.id it would collide with the checkpoint worker of that rank.
         self._tel_handle = telemetry.setup_telemetry(
-            max(get_infrastructure_rank(), 0), int(os.environ.get("SLURM_NNODES", "1"))
+            node_rank,
+            int(os.environ.get("SLURM_NNODES", "1")),
+            resource_attributes={
+                "nvrx.role": "ft_launcher_agent",
+                "nvrx.node": self._node_id,
+                "service.instance.id": f"{job_id_from_env() or 'nvrx'}-agent{node_rank}",
+            },
         )
         start_time = time.monotonic()
         shutdown_called: bool = False
@@ -588,7 +606,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._shutdown()
             # record the execution time in case there were any exceptions during run.
             self._total_execution_time = int(time.monotonic() - start_time)
-            self._tel_handle.shutdown()
+            telemetry.shutdown(self._tel_handle)
 
     def _open_rendezvous_for_restart(self):
         """Open rendezvous for restart when using barrier-based rendezvous.
@@ -685,6 +703,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                     self._exit_barrier_timeout,
                 )
+                self._run.close()
                 self._cycle.close({CYCLE_OUTCOME: "succeeded"})
                 self._exit_barrier()
                 return run_result
@@ -707,6 +726,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
+                self._run.close()
                 rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
                 self._stop_workers(self._worker_group)
                 self._cycle.close({CYCLE_OUTCOME: "terminated"})
@@ -724,10 +744,20 @@ class LocalElasticAgent(SimpleElasticAgent):
                     rank=self._worker_group.group_rank,
                 )
 
+                # The teardown span only starts once the restart decision has been made,
+                # so without this instant the detect-to-decide gap is unmeasured.
+                failures = len(run_result.failures or {})
+                self._run.close()
+                telemetry.mark(
+                    "nvrx.ft",
+                    "nvrx.ft.fault",
+                    {"nvrx.state": state.name, "nvrx.failures": failures,
+                     "nvrx.node": self._node_id},
+                )
                 # Set now, but the span stays open until the next rendezvous, so that
                 # _stop_workers records its teardown inside the cycle that failed.
-                self._cycle.set({CYCLE_OUTCOME: "failed",
-                                 "nvrx.failures": len(run_result.failures or {})})
+                self._cycle.set({CYCLE_OUTCOME: "failed", "nvrx.failures": failures})
+                telemetry.flush()  # this node may be killed moments from here
 
                 log_msg = (
                     f"[%s] Worker group {state.name}. "
@@ -763,6 +793,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                             role,
                             no_restart,
                         )
+                        self._run.close()
                         self._stop_workers(self._worker_group)
                         self._cycle.close({CYCLE_OUTCOME: "terminated"})
                         self._worker_group.state = WorkerState.FAILED
@@ -776,6 +807,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                         rank=group_rank,
                     )
 
+                    self._run.close()
                     self._cycle.set({CYCLE_OUTCOME: "peer_restart"})
 
                     log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
@@ -1022,6 +1054,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
+        telemetry.set_span_attributes(**{GOODPUT: True, "nvrx.node": self._node_id})
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -1100,7 +1133,24 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
-        telemetry.set_span_attributes(**{"nvrx.cycle": restart_count, "nvrx.node": self._node_id})
+        telemetry.set_span_attributes(
+            **{"nvrx.cycle": restart_count, "nvrx.node": self._node_id, GOODPUT: True}
+        )
+
+        # Telemetry handoff to the worker cohort. The batch script's launch stamp is set
+        # once outside the srun and is stale for every restart, so a restarted trainer
+        # needs this cohort's own anchors to place its startup span in the right cycle.
+        cohort_env = {
+            "NVRX_CYCLE": str(restart_count),
+            "NVRX_MEMBERSHIP": "active",  # a launched worker is active this cycle
+            "NVRX_LAUNCH_TIME": repr(time.time()),
+        }
+        if self._cycle_start_time is not None:
+            cohort_env["NVRX_CYCLE_START_TIME"] = repr(self._cycle_start_time)
+        try:
+            cohort_env["NVRX_INFRA_RANK"] = str(get_infrastructure_rank(skip_nodename_logic=True))
+        except Exception:
+            logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
 
         # Record worker start start event
         record_profiling_event(
@@ -1157,6 +1207,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
                 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
             }
+            worker_env.update(cohort_env)
             if current_cycle_info_path is not None:
                 worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
@@ -1405,6 +1456,14 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _initialize_workers(self, worker_group: WorkerGroup) -> None:
+        """Override to open the run span once the workers are actually running."""
+        super()._initialize_workers(worker_group)
+        # Every cycle passes through here, initial and restart alike, so this is the one
+        # place the run span has to open. It opens after _start_workers has returned:
+        # that method's own span must close before this one opens (see ManualSpan).
+        self._run.open("nvrx.ft", "nvrx.ft.run", {GOODPUT: False})
+
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
         spec = worker_group.spec
@@ -1416,6 +1475,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Opening closes the previous cycle, which was held open so that _stop_workers
         # could record its teardown span inside the cycle it belongs to.
+        self._cycle_start_time = time.time()
         cycle = {"nvrx.cycle": self._get_global_cycle_number(), "nvrx.node": self._node_id}
         self._cycle.open("nvrx.ft", "nvrx.ft.cycle", cycle)
         try:
@@ -1423,12 +1483,37 @@ class LocalElasticAgent(SimpleElasticAgent):
             super()._rendezvous(worker_group)
         except UnhealthyNodeException:
             self._cycle.close({CYCLE_OUTCOME: "excluded"})  # failed the health check
+            telemetry.flush()  # this node is leaving the job; export before it is torn down
             raise
         except (RendezvousClosedError, RendezvousGracefulExitError):
             self._cycle.close({CYCLE_OUTCOME: "standby"})  # job ended while it waited
             raise
-        self._cycle.set({"nvrx.rank": worker_group.group_rank,
-                         "nvrx.group_world_size": worker_group.group_world_size})
+        # The roster is what the round agreed on, not what this node observed. It is the
+        # only record naming a node that hung or was killed before exporting anything.
+        joined = {
+            "nvrx.rank": worker_group.group_rank,
+            "nvrx.group_world_size": worker_group.group_world_size,
+            "nvrx.membership": "active",
+            "nvrx.max_restarts": spec.max_restarts,
+            "nvrx.remaining_restarts": self._remaining_restarts,
+        }
+        for attr, getter in (
+            ("nvrx.active_nodes", "get_active_node_addrs"),
+            ("nvrx.standby_nodes", "get_standby_node_addrs"),
+            ("nvrx.active_ranks", "get_active_ranks"),
+        ):
+            try:
+                roster = getattr(spec.rdzv_handler, getter)()
+            except Exception:
+                logger.debug("Rendezvous roster %s unavailable", getter, exc_info=True)
+                continue
+            if roster is not None:
+                joined[attr] = ",".join(str(entry) for entry in roster)
+        try:
+            joined["nvrx.rdzv_run_id"] = spec.rdzv_handler.get_run_id()
+        except Exception:
+            logger.debug("Rendezvous run id unavailable", exc_info=True)
+        self._cycle.set(joined)
 
 
 # Source

@@ -25,6 +25,7 @@ initialization -- there is nothing for this module to re-implement.
 
 import logging
 import os
+import threading
 from contextlib import ExitStack, contextmanager
 from typing import ClassVar, Optional
 
@@ -94,12 +95,15 @@ class _NoOpHandle:
         pass
 
 
-def setup_telemetry(rank: int, world_size: int):
+def setup_telemetry(rank: int, world_size: int, resource_attributes: Optional[dict] = None):
     """Initialize nemo-lens for this process. Call once, at process start.
 
     ``rank`` and ``world_size`` identify this process in the OTel resource
     (``dl.rank``, ``dl.world_size``, ``service.instance.id``), so they must be
     distinct per emitter or backends cannot tell the processes apart.
+    ``resource_attributes`` is merged over those defaults, which is how a
+    process whose rank is not a trainer rank overrides ``service.instance.id``
+    rather than colliding with the trainer that happens to share its number.
 
     NVRx defaults to exporting from every process: each node runs its own
     collector and we want per-node visibility. An explicit
@@ -111,10 +115,41 @@ def setup_telemetry(rank: int, world_size: int):
         config = _NemoLensConfig.from_env(span_group_cls=_NVRxSpanGroup)
         if not os.environ.get("NEMO_LENS_EXPORT_STRATEGY"):
             config.export_strategy = "all_ranks"
-        return _setup_telemetry(config, rank, world_size)
+        return _setup_telemetry(config, rank, world_size, resource_attributes=resource_attributes)
     except Exception:
         logger.warning("nemo-lens init failed, continuing without telemetry", exc_info=True)
         return _NoOpHandle()
+
+
+def shutdown(handle, timeout_s: float = 2.0) -> None:
+    """Flush and shut down, bounded.
+
+    ``TelemetryHandle.shutdown()`` flushes synchronously and can block for as
+    long as the exporter's own retry budget against a collector that is gone --
+    longer than the SIGTERM-to-SIGKILL grace a launcher gets. Run it on a daemon
+    thread and stop waiting after ``timeout_s``; a missed flush is preferable to
+    being killed mid-teardown.
+    """
+    worker = threading.Thread(target=handle.shutdown, daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+
+
+def flush(timeout_ms: int = 1500) -> None:
+    """Export what is buffered, without shutting the providers down.
+
+    For the handful of points where this process may be killed moments later --
+    a detected fault, a health-check exclusion -- so those spans reach the
+    collector rather than dying in the batch processor's queue. Everywhere else
+    the batch processor's own schedule is enough.
+    """
+    if not _AVAILABLE:
+        return
+    from opentelemetry import trace
+
+    provider = trace.get_tracer_provider()
+    if hasattr(provider, "force_flush"):
+        provider.force_flush(timeout_millis=timeout_ms)
 
 
 class ManualSpan:
@@ -124,6 +159,17 @@ class ManualSpan:
     span opened in one call and closed in another, where the caller cannot hold
     a context manager across the two. It owns the ExitStack bookkeeping, and
     every method is a no-op while no span is open, so callers need no guards.
+
+    ORDERING CONTRACT. `managed_span` attaches an OTel context token on entry
+    and detaches it on exit, and contextvar tokens must be reset in the reverse
+    order they were set, on the thread that set them. So:
+
+    * open() and close() must run on the same thread.
+    * Any span opened after this one -- including a `with managed_span(...)` or
+      a `@trace_fn` method -- must finish before close() is called.
+
+    Violating either does not raise. It silently restores a stale OTel context,
+    so later spans are parented to a span that has already ended.
     """
 
     def __init__(self) -> None:
@@ -151,6 +197,17 @@ class ManualSpan:
             self._stack.close()
             self._stack = None
         self._span = None
+
+
+def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:
+    """Record an instant: a zero-duration span pinning a moment in time.
+
+    For a boundary worth a timestamp but with no duration of its own, where the
+    surrounding spans start too late to pin it -- a detected fault sits between
+    the run span ending and the teardown span starting.
+    """
+    with managed_span(group, name, **(attributes or {})):
+        pass
 
 
 def set_span_attributes(**attributes) -> None:

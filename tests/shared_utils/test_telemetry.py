@@ -21,6 +21,8 @@ nemo-lens is missing or uninitialized, and never propagates a telemetry
 failure into the workload. They run with or without nemo-lens installed.
 """
 
+import threading
+import time
 import unittest
 import unittest.mock
 
@@ -102,6 +104,35 @@ class TestManualSpan(unittest.TestCase):
         span.set(None)
         span.set({})
         span.close()
+
+
+class TestMarkAndFlush(unittest.TestCase):
+
+    def test_mark_is_inert(self):
+        telemetry.mark("nvrx.ft", "nvrx.ft.fault")
+        telemetry.mark("nvrx.ft", "nvrx.ft.fault", {"nvrx.state": "FAILED", "nvrx.failures": 2})
+
+    def test_flush_is_inert(self):
+        # Must tolerate a provider with no force_flush (the no-op one) and a
+        # provider that was never configured at all.
+        telemetry.flush()
+        telemetry.flush(timeout_ms=1)
+
+    def test_shutdown_is_bounded_and_never_raises(self):
+        class SlowHandle:
+            def __init__(self):
+                self.entered = threading.Event()
+
+            def shutdown(self, timeout_ms: int = 5000):
+                self.entered.set()
+                time.sleep(30)  # a collector that is gone
+
+        handle = SlowHandle()
+        started = time.monotonic()
+        telemetry.shutdown(handle, timeout_s=0.2)
+        elapsed = time.monotonic() - started
+        self.assertTrue(handle.entered.wait(1), "shutdown() was never called")
+        self.assertLess(elapsed, 5, "shutdown was not bounded")
 
 
 class TestSetupTelemetry(unittest.TestCase):
