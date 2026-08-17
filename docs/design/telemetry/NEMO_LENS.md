@@ -94,7 +94,9 @@ Both emitting processes call `setup_telemetry` once at startup and `shutdown()` 
 | Launcher agent    | top of `LocalElasticAgent.run()`, before the first rendezvous | that method's `finally` |
 | Checkpoint worker | top of `async_process_target`, after the spawn                | that method's `finally` |
 
-Neither uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit. `shutdown()` is itself bounded: it flushes synchronously and can otherwise block for the exporter's entire retry budget against a collector that is gone, longer than the SIGTERM-to-SIGKILL grace a launcher gets.
+The checkpoint worker only reaches its `finally` because `_handle_sigterm` turns the parent's SIGTERM into a `SystemExit` rather than letting the default handler kill the process outright — the same mechanism that lets it release its CUDA IPC handles.
+
+Neither process uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit. `shutdown()` is bounded in both: it flushes synchronously and can otherwise block for the exporter's entire retry budget against a collector that is gone, which is longer than the SIGTERM-to-SIGKILL grace either process gets.
 
 Two points flush explicitly, because the process may be killed moments later and those spans would die in the batch processor's queue: a detected fault, and a health-check exclusion. Everywhere else the batch processor's own schedule is enough.
 

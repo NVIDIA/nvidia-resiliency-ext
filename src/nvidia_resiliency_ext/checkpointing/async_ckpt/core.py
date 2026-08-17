@@ -33,7 +33,7 @@ from typing import Callable, ClassVar, Dict, List, NamedTuple, Optional, Tuple
 import torch
 from torch import multiprocessing as mp
 
-from ...shared_utils.telemetry import managed_span, setup_telemetry
+from ...shared_utils import telemetry
 from ..utils import _disable_gc, debug_time
 
 logger = logging.getLogger(__name__)
@@ -755,7 +755,7 @@ class PersistentAsyncCaller(AsyncCaller):
         # again here. The environment is inherited, so nemo-lens reads the same
         # config the trainer saw. Spans are independent of the launcher's trace and
         # join across ranks on nvrx.call_idx.
-        tel_handle = setup_telemetry(rank, int(os.environ.get("WORLD_SIZE", "1")))
+        tel_handle = telemetry.setup_telemetry(rank, int(os.environ.get("WORLD_SIZE", "1")))
 
         # Start busy loop waiting for and executing checkpoint saves.
         try:
@@ -765,7 +765,7 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    with managed_span(
+                    with telemetry.managed_span(
                         "nvrx.ckpt",
                         "nvrx.ckpt.save.request",
                         is_goodput_span=True,
@@ -782,7 +782,7 @@ class PersistentAsyncCaller(AsyncCaller):
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
                             # The write overlaps training, so it costs no goodput; marking
                             # it True would double-count against the exposed save.
-                            with managed_span(
+                            with telemetry.managed_span(
                                 "nvrx.ckpt", "nvrx.ckpt.save.write", is_goodput_span=False
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
@@ -805,7 +805,10 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
-            tel_handle.shutdown()
+            # Bounded: _handle_sigterm turns the parent's SIGTERM into a SystemExit so
+            # this finally runs at all, and an unbounded flush against a collector that
+            # is already gone would spend that window instead of exiting.
+            telemetry.shutdown(tel_handle)
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
         else:
