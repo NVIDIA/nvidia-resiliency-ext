@@ -131,19 +131,33 @@ sequenceDiagram
     end
 ```
 
-### Goodput
+### Labels
 
-`is_goodput_span` marks a span as resiliency overhead rather than training. Only spans that **partition** the cycle carry it, since a consumer summing marked durations would otherwise double-count:
+Spans carry labels so a collector config can filter and route on them, rather than the collector having to know NVRx span names. Any attribute works; `is_goodput_span` is the one NVRx sets everywhere.
 
-| Span                                                   | `is_goodput_span`                                            |
-| ------------------------------------------------------ | ------------------------------------------------------------ |
-| `round_wait`, `rendezvous`, `worker_start`, `teardown` | `True`                                                       |
-| `run`                                                  | `False` — the productive window                              |
-| `cycle`                                                | _unset_ — the container; its children carry the partition    |
-| `health_check`                                         | _unset_ — nested inside `rendezvous`                         |
-| `fault`                                                | _unset_ — an instant                                         |
-| `ckpt.save.request`                                    | `True`                                                       |
-| `ckpt.save.write`                                      | `False` — overlaps training, would double-count against save |
+It marks a span as resiliency overhead rather than productive training. It is set wherever the answer is **locally true of that span**, never inferred from what the span nests inside — NVRx is a library, so its spans can sit under a caller's spans, and any rule of the form "only the outermost span carries this" is unenforceable here.
+
+| Span | `is_goodput_span` |
+| ---- | ----------------- |
+| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True` |
+| `run` | `False` — training is executing |
+| `ckpt.save.request` | `True` |
+| `ckpt.save.write` | `False` — overlaps training |
+| `cycle` | *unset* — a cycle brackets both the restart machinery and the training between, so neither value is true of it |
+
+### Ad-hoc span groups
+
+A group name in `NEMO_LENS_SPAN_GROUPS` that NVRx does not declare becomes its own group rather than an error. So instrumenting a one-off investigation is a change to the code under test and an env var, with nothing to add here:
+
+```python
+with managed_span("debug_issue12345", "suspect_path"):
+    ...
+```
+```
+NEMO_LENS_ENABLED=1 NEMO_LENS_SPAN_GROUPS=nvrx,debug_issue12345
+```
+
+Upstream raises `ValueError` on an unrecognised name. NVRx catches that and degrades to a no-op handle, so without this one undeclared name would silently take *all* telemetry down — every group, not just that one. A typo now costs the group it names, and is logged.
 
 ### Cycle close paths
 

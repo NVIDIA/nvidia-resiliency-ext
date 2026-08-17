@@ -768,7 +768,7 @@ class PersistentAsyncCaller(AsyncCaller):
                     with telemetry.managed_span(
                         "nvrx.ckpt",
                         "nvrx.ckpt.save.request",
-                        is_goodput_span=True,
+                        **{telemetry.GOODPUT: True},
                         **{"nvrx.call_idx": item.call_idx},
                     ):
                         async_fn_args = list(item.async_fn_args)
@@ -783,7 +783,7 @@ class PersistentAsyncCaller(AsyncCaller):
                             # The write overlaps training, so it costs no goodput; marking
                             # it True would double-count against the exposed save.
                             with telemetry.managed_span(
-                                "nvrx.ckpt", "nvrx.ckpt.save.write", is_goodput_span=False
+                                "nvrx.ckpt", "nvrx.ckpt.save.write", **{telemetry.GOODPUT: False}
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")

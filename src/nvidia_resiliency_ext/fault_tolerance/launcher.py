@@ -128,7 +128,6 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nvrx.cycle_outcome"  # telemetry: how a restart cycle ended
-GOODPUT = "is_goodput_span"  # telemetry: span is resiliency overhead, not training
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -751,8 +750,12 @@ class LocalElasticAgent(SimpleElasticAgent):
                 telemetry.mark(
                     "nvrx.ft",
                     "nvrx.ft.fault",
-                    {"nvrx.state": state.name, "nvrx.failures": failures,
-                     "nvrx.node": self._node_id},
+                    {
+                        telemetry.GOODPUT: True,
+                        "nvrx.state": state.name,
+                        "nvrx.failures": failures,
+                        "nvrx.node": self._node_id,
+                    },
                 )
                 # Set now, but the span stays open until the next rendezvous, so that
                 # _stop_workers records its teardown inside the cycle that failed.
@@ -1054,7 +1057,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-        telemetry.set_span_attributes(**{GOODPUT: True, "nvrx.node": self._node_id})
+        telemetry.set_span_attributes(**{telemetry.GOODPUT: True, "nvrx.node": self._node_id})
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -1134,7 +1137,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
         telemetry.set_span_attributes(
-            **{"nvrx.cycle": restart_count, "nvrx.node": self._node_id, GOODPUT: True}
+            **{"nvrx.cycle": restart_count, "nvrx.node": self._node_id, telemetry.GOODPUT: True}
         )
 
         # Telemetry handoff to the worker cohort. The batch script's launch stamp is set
@@ -1496,7 +1499,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Every cycle passes through here, initial and restart alike, so this is the one
         # place the run span has to open. It opens after _start_workers has returned:
         # that method's own span must close before this one opens (see ManualSpan).
-        self._run_span.open("nvrx.ft", "nvrx.ft.run", {GOODPUT: False})
+        self._run_span.open("nvrx.ft", "nvrx.ft.run", {telemetry.GOODPUT: False})
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""

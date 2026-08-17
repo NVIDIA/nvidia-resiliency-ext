@@ -165,6 +165,28 @@ class TestSetupTelemetry(unittest.TestCase):
 
 
 @unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
+class TestAdHocSpanGroups(unittest.TestCase):
+    """A group nobody declared must cost that group, not the whole signal."""
+
+    def test_unknown_group_resolves_to_itself(self):
+        resolved = telemetry._NVRxSpanGroup.resolve("nvrx,debug_issue12345")
+        self.assertIn("debug_issue12345", resolved)
+        self.assertIn("nvrx.ft", resolved, "declared groups must survive alongside it")
+
+    def test_unknown_group_alone_still_resolves(self):
+        self.assertEqual(
+            telemetry._NVRxSpanGroup.resolve("debug_issue12345"),
+            frozenset(["debug_issue12345"]),
+        )
+
+    def test_declared_groups_are_unaffected(self):
+        self.assertEqual(
+            telemetry._NVRxSpanGroup.resolve("nvrx"),
+            frozenset(["nvrx.ft", "nvrx.ckpt"]),
+        )
+
+
+@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
 class TestSpanGroups(unittest.TestCase):
     """NVRx groups must resolve, and must be on by default."""
 

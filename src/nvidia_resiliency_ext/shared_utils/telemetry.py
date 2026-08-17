@@ -46,7 +46,7 @@ try:
     from nemo.lens import trace_fn
 
     class _NVRxSpanGroup(_SpanGroup):
-        """Teaches nemo-lens about the NVRx groups.
+        """Teaches nemo-lens about the NVRx groups, and about groups nobody declared.
 
         The base ``SpanGroup.resolve()`` only knows its own groups, so without
         this ``NEMO_LENS_SPAN_GROUPS=nvrx.ft`` raises ValueError and the stock
@@ -61,6 +61,28 @@ try:
             **{name: groups | _NVRX_GROUPS for name, groups in _SpanGroup._PRESETS.items()},
             "nvrx": _NVRX_GROUPS,
         }
+
+        @classmethod
+        def resolve(cls, spec: str) -> frozenset:
+            """Resolve a span-group spec, passing unknown names through as groups.
+
+            Upstream raises on any name it does not recognise. Since NVRx catches
+            that and degrades to a no-op handle, one undeclared name would take
+            *all* telemetry down rather than just enabling that group -- and the
+            failure is silent. It also means adding a span under a new group, for
+            a one-off investigation you intend to filter on in the collector,
+            could not be done without editing this file.
+
+            So an unrecognised name is its own group. A typo then costs that one
+            group rather than the entire signal, and the log line says which.
+            """
+            known = cls.ALL_GROUPS | set(cls._PRESETS)
+            parts = [p.strip().lower() for p in spec.split(",") if p.strip()]
+            declared = ",".join(p for p in parts if p in known)
+            adhoc = frozenset(p for p in parts if p not in known)
+            if adhoc:
+                logger.info("Enabling span groups not declared by NVRx: %s", sorted(adhoc))
+            return (super().resolve(declared) if declared else frozenset()) | adhoc
 
     _AVAILABLE = True
 
@@ -197,6 +219,21 @@ class ManualSpan:
             self._stack.close()
             self._stack = None
         self._span = None
+
+
+GOODPUT = "is_goodput_span"
+"""Marks a span as resiliency overhead rather than productive training.
+
+A label to filter and route on, not a term in a sum, so it is set wherever the
+answer is locally true of that span -- never inferred from what a span happens
+to nest inside. NVRx is a library: its spans can sit under a caller's spans, so
+any rule of the form "only the outermost span carries this" is unenforceable
+here.
+
+Left unset only where neither value is true of the span, which today is
+``nvrx.ft.cycle``: a cycle covers the restart machinery *and* the training it
+brackets.
+"""
 
 
 def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:
