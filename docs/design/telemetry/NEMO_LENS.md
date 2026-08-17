@@ -38,11 +38,15 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-Exports `managed_span`, `trace_fn`, `ManualSpan`, `mark`, `setup_telemetry`, `shutdown`, `flush`, and `set_span_attributes`.
+Exports `span`, `trace_fn`, `ManualSpan`, `mark`, `set_span_attributes`, `setup_telemetry`, `shutdown`, and `flush`.
 
 ### Exports
 
-`managed_span` and `trace_fn` are re-exports of the nemo-lens functions of the same name, deliberately not renamed so that a search for either finds every use across nemo-lens and its consumers. Both are gated on their span group and no-op when it is off — which includes before `setup_telemetry` runs, since span groups default to empty. The shim defines fallbacks for them only for the case where nemo-lens is not installed.
+`trace_fn` is a re-export of the nemo-lens function of the same name, deliberately not renamed so that a search for it finds every use across nemo-lens and its consumers.
+
+`span` is a thin adapter over `nemo.lens.managed_span`, which takes attributes as keyword arguments. Every attribute NVRx sets is dotted — `nvrx.cycle`, `nvrx.call_idx` — and a dotted name cannot be a Python keyword, so that signature would force every call site to build a dict and unpack it. **Attributes are a dict at every entry point here** (`span`, `mark`, `set_span_attributes`, `ManualSpan.open/set/close`), so they are written one way everywhere.
+
+Everything is gated on its span group and no-ops when the group is off — which includes before `setup_telemetry` runs, since span groups default to empty. The shim defines fallbacks only for the case where nemo-lens is not installed.
 
 `set_span_attributes` writes to the current span, for use inside a `@trace_fn` function, which owns its span but does not hand it to the caller.
 
@@ -71,7 +75,7 @@ Each span uses the cheapest mechanism that fits its shape:
 | Shape                                 | Mechanism                | Spans                                           |
 | ------------------------------------- | ------------------------ | ----------------------------------------------- |
 | The span _is_ a method                | `@trace_fn` decorator    | `worker_start`, `teardown`                      |
-| The span is a block                   | `with managed_span(...)` | `round_wait`, `health_check`, both `ckpt` spans |
+| The span is a block                   | `with span(...)`         | `round_wait`, `health_check`, both `ckpt` spans |
 | Open and close cross block boundaries | `ManualSpan`             | `cycle`, `rendezvous`, `run`, `attribution`     |
 | An instant, with no duration          | `mark(...)`              | `fault`                                         |
 
@@ -150,7 +154,7 @@ It marks a span as resiliency overhead rather than productive training. It is se
 A group name in `NEMO_LENS_SPAN_GROUPS` that NVRx does not declare becomes its own group rather than an error. So instrumenting a one-off investigation is a change to the code under test and an env var, with nothing to add here:
 
 ```python
-with managed_span("debug_issue12345", "suspect_path"):
+with span("debug_issue12345", "suspect_path"):
     ...
 ```
 ```
@@ -213,8 +217,8 @@ sequenceDiagram
     C->>W: spawn(async_loop, args=(rank, ...))
     W->>W: tel_handle = setup_telemetry(rank, WORLD_SIZE)
     loop each checkpoint request
-        W->>W: with managed_span("nvrx.ckpt", "nvrx.ckpt.save.request", nvrx.call_idx=...)
-        W->>W: with managed_span("nvrx.ckpt", "nvrx.ckpt.save.write")
+        W->>W: with span("nvrx.ckpt", "nvrx.ckpt.save.request", {nvrx.call_idx: ...})
+        W->>W: with span("nvrx.ckpt", "nvrx.ckpt.save.write")
     end
     W->>W: tel_handle.shutdown()
 ```

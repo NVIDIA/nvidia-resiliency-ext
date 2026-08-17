@@ -34,20 +34,20 @@ class TestTelemetryIsInert(unittest.TestCase):
 
     def test_managed_span_yields_and_runs_body(self):
         ran = False
-        with telemetry.managed_span("nvrx.ft", "nvrx.ft.cycle") as span:
+        with telemetry.span("nvrx.ft", "nvrx.ft.cycle") as active:
             ran = True
-            self.assertIsNone(span)
+            self.assertIsNone(active)
         self.assertTrue(ran)
 
     def test_managed_span_propagates_body_exceptions(self):
         # Telemetry must never swallow a workload error -- notably SignalException,
         # which torch elastic raises out of the launcher's monitor loop.
         with self.assertRaises(ValueError):
-            with telemetry.managed_span("nvrx.ft", "nvrx.ft.cycle"):
+            with telemetry.span("nvrx.ft", "nvrx.ft.cycle"):
                 raise ValueError("from the instrumented body")
 
     def test_managed_span_accepts_attributes(self):
-        with telemetry.managed_span("nvrx.ckpt", "nvrx.ckpt.save.request", **{"nvrx.call_idx": 7}):
+        with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.request", {"nvrx.call_idx": 7}):
             pass
 
     def test_trace_fn_returns_a_working_decorator(self):

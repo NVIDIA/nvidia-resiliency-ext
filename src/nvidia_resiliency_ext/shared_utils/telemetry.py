@@ -19,8 +19,11 @@ The only file in NVRx that imports nemo-lens. When nemo-lens is absent every
 export here is a no-op, so callers never need to guard their instrumentation.
 
 nemo-lens gates on span groups that default to empty until ``setup_telemetry``
-runs, so ``managed_span`` / ``trace_fn`` are also no-ops before (or without)
-initialization -- there is nothing for this module to re-implement.
+runs, so every span here is a no-op before (or without) initialization -- there
+is nothing for this module to re-implement.
+
+Attributes are passed as a dict to every entry point, because NVRx attribute
+names are dotted and so cannot be Python keywords.
 """
 
 import logging
@@ -40,7 +43,7 @@ try:
     # _setup_telemetry would otherwise collide with the wrapper defined below.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanGroup as _SpanGroup
-    from nemo.lens import managed_span
+    from nemo.lens import managed_span as _managed_span
     from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
     from nemo.lens import trace_fn
@@ -97,7 +100,7 @@ except Exception:
 if not _AVAILABLE:
 
     @contextmanager
-    def managed_span(group, name, tracer=None, **attributes):
+    def _managed_span(group, name, tracer=None, **attributes):
         """No-op stand-in for ``nemo.lens.managed_span``."""
         yield None
 
@@ -202,8 +205,7 @@ class ManualSpan:
         """Start a span, closing any span this handle already had open."""
         self.close()
         self._stack = ExitStack()
-        self._span = self._stack.enter_context(managed_span(group, name))
-        self.set(attributes)
+        self._span = self._stack.enter_context(span(group, name, attributes))
 
     def set(self, attributes: Optional[dict] = None) -> None:
         """Set attributes on the open span."""
@@ -221,6 +223,21 @@ class ManualSpan:
         self._span = None
 
 
+@contextmanager
+def span(group: str, name: str, attributes: Optional[dict] = None):
+    """A span around a block, yielding it (or None when the group is off).
+
+    Thin adapter over ``nemo.lens.managed_span``, which takes attributes as
+    keyword arguments. Every attribute NVRx sets is dotted -- ``nvrx.cycle``,
+    ``nvrx.call_idx`` -- and a dotted name cannot be a Python keyword, so that
+    signature forces callers to build a dict and unpack it. Taking the dict is
+    the same shape as ``mark``, ``set_span_attributes`` and ``ManualSpan``, so
+    attributes are written one way everywhere.
+    """
+    with _managed_span(group, name, **(attributes or {})) as active:
+        yield active
+
+
 def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:
     """Record an instant: a zero-duration span pinning a moment in time.
 
@@ -228,7 +245,7 @@ def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:
     surrounding spans start too late to pin it -- a detected fault sits between
     the run span ending and the teardown span starting.
     """
-    with managed_span(group, name, **(attributes or {})):
+    with span(group, name, attributes):
         pass
 
 
