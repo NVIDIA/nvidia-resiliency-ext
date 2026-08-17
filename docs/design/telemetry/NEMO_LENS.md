@@ -13,7 +13,7 @@ When nemo-lens is absent or disabled, all instrumentation is a silent no-op with
 
 ```mermaid
 graph TD
-    pyproject["pyproject.toml<br/><code>otel</code> extra: nemo-lens&gt;=0.2.0"]
+    pyproject["pyproject.toml<br/><code>otel</code> extra"]
 
     subgraph shared_utils
         shim["shared_utils/telemetry.py<br/>sole owner of the nemo-lens import"]
@@ -189,16 +189,6 @@ sequenceDiagram
 | `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                        |
 
 A hot spare produces one `round_wait` / `rendezvous` pair per round, so span volume tracks restart rounds rather than poll frequency. The `rendezvous` span for the round a node sits out is closed by the next round's, and `_perform_rendezvous` closes the last one in a `finally` so it can never outlive the enclosing `cycle` span.
-
-## pyproject.toml
-
-```toml
-[tool.poetry.extras]
-otel = ["nemo-lens"]
-
-[tool.poetry.dependencies]
-nemo-lens = {version = ">=0.2.0", extras = ["sdk"], optional = true}
-```
 
 ## Out of Scope
 
