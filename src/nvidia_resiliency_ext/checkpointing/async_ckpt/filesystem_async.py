@@ -154,6 +154,13 @@ def _compute_tensor_data_ptrs(items: List[WriteItem], tensors: List[Any]) -> Tup
     return tuple(ptrs)
 
 
+def _synchronize_current_cuda_stream() -> None:
+    """Wait for work queued on the current CUDA stream without synchronizing the device."""
+    event = torch.cuda.Event()
+    event.record(torch.cuda.current_stream())
+    event.synchronize()
+
+
 @_disable_gc()
 def get_write_results_queue(mp_mode: str = 'spawn') -> mp.Queue:
     """Get or create a multiprocessing queue for write results.
@@ -371,10 +378,10 @@ class FileSystemWriterAsync(FileSystemWriter):
                         # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
                         pending_cuda_copies += int(source_t.device.type == "cuda")
                         if pending_cuda_copies == 8:
-                            torch.cuda.synchronize()
+                            _synchronize_current_cuda_stream()
                             pending_cuda_copies = 0
                     if pending_cuda_copies:
-                        torch.cuda.synchronize()
+                        _synchronize_current_cuda_stream()
                     logger.debug(
                         f"Copied {len(shm_tensors)} tensors into reused shm allocations "
                         f"(key={key})"
@@ -385,21 +392,18 @@ class FileSystemWriterAsync(FileSystemWriter):
                     shm_tensors = []
                     total_bytes = 0
                     pending_cuda_copies = 0
-                    for tensor in cacheable_data:
-                        contiguous_tensor = tensor.contiguous()
-                        shm_t = torch.empty(
-                            contiguous_tensor.shape, dtype=contiguous_tensor.dtype
-                        ).share_memory_()
-                        shm_t.copy_(contiguous_tensor, non_blocking=True)
+                    for source_t in cacheable_data:
+                        shm_t = torch.empty(source_t.shape, dtype=source_t.dtype).share_memory_()
+                        shm_t.copy_(source_t, non_blocking=True)
                         shm_tensors.append(shm_t)
                         total_bytes += shm_t.nbytes
                         # Periodically sync to avoid exhausting CUDA's pageable staging pages
-                        pending_cuda_copies += int(contiguous_tensor.device.type == "cuda")
+                        pending_cuda_copies += int(source_t.device.type == "cuda")
                         if pending_cuda_copies == 8:
-                            torch.cuda.synchronize()
+                            _synchronize_current_cuda_stream()
                             pending_cuda_copies = 0
                     if pending_cuda_copies:
-                        torch.cuda.synchronize()
+                        _synchronize_current_cuda_stream()
                     if self.use_cached_data_structure:
                         FileSystemWriterAsync._shm_tensor_cache[key] = (
                             cacheable_items,
