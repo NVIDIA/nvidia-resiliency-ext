@@ -1981,7 +1981,7 @@ class AttributionService:
         self._attribution_span.open(
             "nvrx.ft",
             "nvrx.ft.attribution",
-            {telemetry.GOODPUT: True, "nvrx.node": str(node_id)},
+            {"is_goodput_span": True, "nvrx.node": str(node_id)},
         )
 
     def _submit_log(self, log_path: str) -> None:

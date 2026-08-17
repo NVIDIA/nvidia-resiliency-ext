@@ -221,21 +221,6 @@ class ManualSpan:
         self._span = None
 
 
-GOODPUT = "is_goodput_span"
-"""Marks a span as resiliency overhead rather than productive training.
-
-A label to filter and route on, not a term in a sum, so it is set wherever the
-answer is locally true of that span -- never inferred from what a span happens
-to nest inside. NVRx is a library: its spans can sit under a caller's spans, so
-any rule of the form "only the outermost span carries this" is unenforceable
-here.
-
-Left unset only where neither value is true of the span, which today is
-``nvrx.ft.cycle``: a cycle covers the restart machinery *and* the training it
-brackets.
-"""
-
-
 def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:
     """Record an instant: a zero-duration span pinning a moment in time.
 
@@ -247,7 +232,7 @@ def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:
         pass
 
 
-def set_span_attributes(**attributes) -> None:
+def set_span_attributes(attributes: dict) -> None:
     """Set attributes on the currently active span.
 
     For use inside a ``@trace_fn`` function, which owns its span but does not

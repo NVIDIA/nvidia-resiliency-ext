@@ -67,7 +67,7 @@ class TestTelemetryIsInert(unittest.TestCase):
             boom()
 
     def test_set_span_attributes_without_active_span(self):
-        telemetry.set_span_attributes(**{"nvrx.cycle": 3, "nvrx.node": "node-0"})
+        telemetry.set_span_attributes({"nvrx.cycle": 3, "nvrx.node": "node-0"})
 
 
 class TestManualSpan(unittest.TestCase):
