@@ -1015,7 +1015,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    @telemetry.traced("nvrx.ft", "nvrx.ft.teardown")
+    @telemetry.trace_fn("nvrx.ft", "nvrx.ft.teardown")
     def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
@@ -1087,7 +1087,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    @telemetry.traced("nvrx.ft", "nvrx.ft.worker_start")
+    @telemetry.trace_fn("nvrx.ft", "nvrx.ft.worker_start")
     def _start_workers(self, worker_group: WorkerGroup) -> Dict[int, Any]:
         spec = worker_group.spec
         store = worker_group.store

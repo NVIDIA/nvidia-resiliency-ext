@@ -38,15 +38,15 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-Exports `managed_span`, `traced`, `ManualSpan`, `setup_telemetry`, and `set_span_attributes`.
+Exports `managed_span`, `trace_fn`, `ManualSpan`, `setup_telemetry`, and `set_span_attributes`.
 
-### What the shim does and does not do
+### Exports
 
-`managed_span` and `traced` are **re-exports** of `nemo.lens.managed_span` and `nemo.lens.trace_fn`. Upstream already gates on the span group, yields `None` when disabled, records exceptions, and ends the span in a `finally`. Span groups default to empty until `setup_telemetry` runs, so both are no-ops before (or without) initialization. There is nothing for the shim to re-implement, so it does not: the only fallbacks it defines are for the case where nemo-lens is not installed at all.
+`managed_span` and `trace_fn` are re-exports of the nemo-lens functions of the same name, deliberately not renamed so that a search for either finds every use across nemo-lens and its consumers. Both are gated on their span group and no-op when it is off — which includes before `setup_telemetry` runs, since span groups default to empty. The shim defines fallbacks for them only for the case where nemo-lens is not installed.
 
-`set_span_attributes` operates on the current span via `opentelemetry.trace.get_current_span()`, which returns a non-recording span when nothing is active, so it is a no-op in that case.
+`set_span_attributes` writes to the current span, for use inside a `@trace_fn` function, which owns its span but does not hand it to the caller.
 
-`ManualSpan` is the one piece of real machinery: a span that is opened in one call and closed in another, for a lifetime that does not fit a `with` block. It owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. `open()` closes whatever the handle already had open, which is how both users of it advance from one span to the next. It knows nothing about fault tolerance — the caller supplies the group, name, and every attribute key.
+`ManualSpan` covers the case where a span's open and close cross code block boundaries. It owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards; `open()` closes whatever the handle already had open. It knows nothing about fault tolerance — the caller supplies the group, name, and every attribute key.
 
 ### NVRxSpanGroup
 
@@ -62,9 +62,7 @@ The launcher's identity is resolved before rendezvous, where no elastic rank exi
 
 ## Fault Tolerance Span Lifecycle
 
-### Everything is a span
-
-There are no OTel events. Every phase that was once a start/end event pair is a span, so its duration is a first-class queryable value rather than something a backend has to reconstruct by subtracting two timestamps.
+### Span mechanisms
 
 OTel propagates the active span implicitly via `contextvars`. Because `next_rendezvous()` is called synchronously from the launcher's main thread, spans opened inside `ft_rendezvous_barrier.py` nest under the launcher's open `cycle` span with no reference passing.
 
@@ -72,23 +70,28 @@ Each span uses the cheapest mechanism that fits its shape:
 
 | Shape | Mechanism | Spans |
 | ----- | --------- | ----- |
-| The span *is* a method | `@traced` decorator | `worker_start`, `teardown` |
+| The span *is* a method | `@trace_fn` decorator | `worker_start`, `teardown` |
 | The span is a block | `with managed_span(...)` | `round_wait`, `health_check`, both `ckpt` spans |
-| The span outlives its block | `ManualSpan` | `cycle`, `rendezvous` |
+| Open and close cross block boundaries | `ManualSpan` | `cycle`, `rendezvous` |
 
-Using `@traced` for the first group means the instrumented method bodies are untouched.
+Using `@trace_fn` for the first group leaves the instrumented method bodies untouched.
 
-`ManualSpan` is needed for exactly two spans. A `cycle` opens at rendezvous and ends only after teardown. A `rendezvous` round opens after the round has opened — deliberately excluding the hot-spare wait, which would otherwise dominate the measurement — and ends either when the node is assigned an active rank or when the next round begins.
+A `cycle` opens at rendezvous and closes after teardown. A `rendezvous` round opens once the round is open — excluding the hot-spare wait, which would otherwise dominate the measurement — and closes when the node is assigned an active rank, or when the next round begins.
 
 An exclusion needs no separate signal: the `UnhealthyNodeException` propagating out of the `health_check` span is recorded by nemo-lens as `StatusCode.ERROR` with the reason as the description, plus an `exception` event carrying the type and message.
 
 ### Initialization
 
-`setup_telemetry` is called once per launcher-agent process at the top of `run()`, before the first rendezvous, and `shutdown()` is called from that method's existing `finally`. Deliberately not `atexit`: that runs at interpreter finalization, after `sys.exit` has unwound, where a flush to an unreachable collector would stall `ft_launcher` exit.
+Both emitting processes call `setup_telemetry` once at startup and `shutdown()` from the `finally` that already owns their teardown:
 
-nemo-lens's `_OpenSpanCloser` closes any span still open at that point, marking it `nemo.span.truncated`. NVRx relies on it for exactly one case — a cycle interrupted by a signal — rather than wrapping the monitor loop in a `try/finally` purely to relabel that span. A truncated cycle with no `nvrx.cycle_outcome` is a faithful description of what happened.
+| Process | Setup | Shutdown |
+| ------- | ----- | -------- |
+| Launcher agent | top of `LocalElasticAgent.run()`, before the first rendezvous | that method's `finally` |
+| Checkpoint worker | top of `async_process_target`, after the spawn | that method's `finally` |
 
-There is no per-cycle `force_flush`. Spans are exported by the batch processor on its own schedule while the agent keeps running, and flushed by `shutdown()` on exit; flushing synchronously on the restart path would only add latency to recovery.
+Neither uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit.
+
+`shutdown()` flushes. Nothing flushes on the restart path, which would add latency to recovery for spans the batch processor exports on its own schedule anyway; the tradeoff is that spans still buffered when a process is `SIGKILL`ed are lost. nemo-lens's `_OpenSpanCloser` ends any span still open at shutdown and marks it `nemo.span.truncated`, which is how a cycle interrupted by a signal reaches the collector — without an `nvrx.cycle_outcome`.
 
 ### Lifecycle per cycle
 
@@ -111,10 +114,10 @@ sequenceDiagram
         end
         R->>R: close nvrx.ft.rendezvous {nvrx.rank, nvrx.membership: active}
         R-->>L: return
-        L->>L: _start_workers -> nvrx.ft.worker_start (@traced)
+        L->>L: _start_workers -> nvrx.ft.worker_start (@trace_fn)
         Note over L: workers executing
         L->>L: set nvrx.cycle_outcome
-        L->>L: _stop_workers -> nvrx.ft.teardown (@traced)
+        L->>L: _stop_workers -> nvrx.ft.teardown (@trace_fn)
         L->>L: close cycle span (or let the next open() close it)
     end
 ```

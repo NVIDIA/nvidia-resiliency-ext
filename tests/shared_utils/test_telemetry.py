@@ -48,16 +48,16 @@ class TestTelemetryIsInert(unittest.TestCase):
         with telemetry.managed_span("nvrx.ckpt", "nvrx.ckpt.save.request", **{"nvrx.call_idx": 7}):
             pass
 
-    def test_traced_returns_a_working_decorator(self):
-        @telemetry.traced("nvrx.ft", "nvrx.ft.worker_start")
+    def test_trace_fn_returns_a_working_decorator(self):
+        @telemetry.trace_fn("nvrx.ft", "nvrx.ft.worker_start")
         def start(a, b=2):
             return a + b
 
         self.assertEqual(start(1), 3)
         self.assertEqual(start(1, b=10), 11)
 
-    def test_traced_propagates_exceptions(self):
-        @telemetry.traced("nvrx.ft", "nvrx.ft.teardown")
+    def test_trace_fn_propagates_exceptions(self):
+        @telemetry.trace_fn("nvrx.ft", "nvrx.ft.teardown")
         def boom():
             raise RuntimeError("worker teardown failed")
 

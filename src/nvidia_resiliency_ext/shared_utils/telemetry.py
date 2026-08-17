@@ -19,7 +19,7 @@ The only file in NVRx that imports nemo-lens. When nemo-lens is absent every
 export here is a no-op, so callers never need to guard their instrumentation.
 
 nemo-lens gates on span groups that default to empty until ``setup_telemetry``
-runs, so ``managed_span`` / ``traced`` are also no-ops before (or without)
+runs, so ``managed_span`` / ``trace_fn`` are also no-ops before (or without)
 initialization -- there is nothing for this module to re-implement.
 """
 
@@ -33,12 +33,16 @@ logger = logging.getLogger(__name__)
 _NVRX_GROUPS = frozenset(["nvrx.ft", "nvrx.ckpt"])
 
 try:
+    # Names NVRx re-exports keep their nemo-lens spelling, so that searching for
+    # one finds every use across nemo-lens and its consumers. The underscored
+    # ones are internal: they only exist when nemo-lens is installed, and
+    # _setup_telemetry would otherwise collide with the wrapper defined below.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanGroup as _SpanGroup
     from nemo.lens import managed_span
     from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
-    from nemo.lens import trace_fn as traced
+    from nemo.lens import trace_fn
 
     class _NVRxSpanGroup(_SpanGroup):
         """Teaches nemo-lens about the NVRx groups.
@@ -74,7 +78,7 @@ if not _AVAILABLE:
         """No-op stand-in for ``nemo.lens.managed_span``."""
         yield None
 
-    def traced(group, name, tracer=None):
+    def trace_fn(group, name, tracer=None):
         """No-op stand-in for ``nemo.lens.trace_fn``."""
 
         def decorator(func):
@@ -152,7 +156,7 @@ class ManualSpan:
 def set_span_attributes(**attributes) -> None:
     """Set attributes on the currently active span.
 
-    For use inside a ``@traced`` function, which owns its span but does not
+    For use inside a ``@trace_fn`` function, which owns its span but does not
     hand it to the caller. A no-op when no span is recording.
     """
     if not _AVAILABLE:
