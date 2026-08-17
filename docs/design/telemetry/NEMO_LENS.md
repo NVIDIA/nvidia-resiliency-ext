@@ -68,11 +68,11 @@ OTel propagates the active span implicitly via `contextvars`. Because `next_rend
 
 Each span uses the cheapest mechanism that fits its shape:
 
-| Shape | Mechanism | Spans |
-| ----- | --------- | ----- |
-| The span *is* a method | `@trace_fn` decorator | `worker_start`, `teardown` |
-| The span is a block | `with managed_span(...)` | `round_wait`, `health_check`, both `ckpt` spans |
-| Open and close cross block boundaries | `ManualSpan` | `cycle`, `rendezvous` |
+| Shape                                 | Mechanism                | Spans                                           |
+| ------------------------------------- | ------------------------ | ----------------------------------------------- |
+| The span _is_ a method                | `@trace_fn` decorator    | `worker_start`, `teardown`                      |
+| The span is a block                   | `with managed_span(...)` | `round_wait`, `health_check`, both `ckpt` spans |
+| Open and close cross block boundaries | `ManualSpan`             | `cycle`, `rendezvous`                           |
 
 Using `@trace_fn` for the first group leaves the instrumented method bodies untouched.
 
@@ -84,10 +84,10 @@ An exclusion needs no separate signal: the `UnhealthyNodeException` propagating 
 
 Both emitting processes call `setup_telemetry` once at startup and `shutdown()` from the `finally` that already owns their teardown:
 
-| Process | Setup | Shutdown |
-| ------- | ----- | -------- |
-| Launcher agent | top of `LocalElasticAgent.run()`, before the first rendezvous | that method's `finally` |
-| Checkpoint worker | top of `async_process_target`, after the spawn | that method's `finally` |
+| Process           | Setup                                                         | Shutdown                |
+| ----------------- | ------------------------------------------------------------- | ----------------------- |
+| Launcher agent    | top of `LocalElasticAgent.run()`, before the first rendezvous | that method's `finally` |
+| Checkpoint worker | top of `async_process_target`, after the spawn                | that method's `finally` |
 
 Neither uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit.
 
@@ -124,7 +124,7 @@ sequenceDiagram
 
 ### Cycle close paths
 
-The outcome is always recorded before the span closes. Terminal paths call `close({CYCLE_OUTCOME: ...})` after teardown. On the restart path the outcome is set first and the span is left open, so that `_stop_workers` records its teardown *inside* the cycle it belongs to; the next `open()` in `_rendezvous` closes it.
+The outcome is always recorded before the span closes. Terminal paths call `close({CYCLE_OUTCOME: ...})` after teardown. On the restart path the outcome is set first and the span is left open, so that `_stop_workers` records its teardown _inside_ the cycle it belongs to; the next `open()` in `_rendezvous` closes it.
 
 | Condition                                         | `cycle_outcome` | Closed by                                |
 | ------------------------------------------------- | --------------- | ---------------------------------------- |
@@ -135,23 +135,23 @@ The outcome is always recorded before the span closes. Terminal paths call `clos
 | Health check exclusion (`UnhealthyNodeException`) | `excluded`      | `_rendezvous` exception handler          |
 | Standby node: job ends                            | `standby`       | `_rendezvous` exception handler          |
 | Attribution stop / peer no-restart                | `terminated`    | monitor loop, after teardown             |
-| Signal                                            | *(none)*        | `_OpenSpanCloser` at shutdown            |
+| Signal                                            | _(none)_        | `_OpenSpanCloser` at shutdown            |
 
 The exclusion and standby handlers live in `_rendezvous` itself, so they cover the first rendezvous as well as every restart.
 
 ## Span Attributes
 
-| Attribute                 | Type | Spans                    | Notes                                                       |
-| ------------------------- | ---- | ------------------------ | ----------------------------------------------------------- |
-| `nvrx.cycle`              | int  | `cycle`, `worker_start`  | restart cycle counter                                       |
-| `nvrx.node`               | str  | `cycle`, `worker_start`  | node hostname                                               |
-| `nvrx.rank`               | int  | `cycle`, `rendezvous`    | elastic group rank; set once rendezvous assigns it          |
-| `nvrx.group_world_size`   | int  | `cycle`                  | number of active nodes; set after rendezvous                |
-| `nvrx.failures`           | int  | `cycle`                  | set on the `failed` outcome                                 |
-| `nvrx.cycle_outcome`      | str  | `cycle`                  | see the close-path table above                              |
-| `nvrx.round`              | int  | `rendezvous`             | rendezvous round number                                     |
-| `nvrx.membership`         | str  | `rendezvous`             | `active`, `standby`, or `late_joiner`                       |
-| `nvrx.call_idx`           | int  | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join                   |
+| Attribute               | Type | Spans                    | Notes                                              |
+| ----------------------- | ---- | ------------------------ | -------------------------------------------------- |
+| `nvrx.cycle`            | int  | `cycle`, `worker_start`  | restart cycle counter                              |
+| `nvrx.node`             | str  | `cycle`, `worker_start`  | node hostname                                      |
+| `nvrx.rank`             | int  | `cycle`, `rendezvous`    | elastic group rank; set once rendezvous assigns it |
+| `nvrx.group_world_size` | int  | `cycle`                  | number of active nodes; set after rendezvous       |
+| `nvrx.failures`         | int  | `cycle`                  | set on the `failed` outcome                        |
+| `nvrx.cycle_outcome`    | str  | `cycle`                  | see the close-path table above                     |
+| `nvrx.round`            | int  | `rendezvous`             | rendezvous round number                            |
+| `nvrx.membership`       | str  | `rendezvous`             | `active`, `standby`, or `late_joiner`              |
+| `nvrx.call_idx`         | int  | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join          |
 
 ## Async Checkpoint Worker: Spawn Boundary
 
@@ -177,16 +177,16 @@ sequenceDiagram
 
 ## Spans
 
-| Span                     | Group       | Source                        | Covers                                  |
-| ------------------------ | ----------- | ----------------------------- | --------------------------------------- |
-| `nvrx.ft.cycle`          | `nvrx.ft`   | `launcher.py`                 | one full restart cycle                  |
-| `nvrx.ft.round_wait`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | waiting for a round to open             |
-| `nvrx.ft.rendezvous`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | one rendezvous round, after it opened   |
-| `nvrx.ft.health_check`   | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | `ensure_node_is_healthy`                |
-| `nvrx.ft.worker_start`   | `nvrx.ft`   | `launcher.py`                 | `_start_workers`                        |
-| `nvrx.ft.teardown`       | `nvrx.ft`   | `launcher.py`                 | `_stop_workers`                         |
-| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | preload + write for one request         |
-| `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                        |
+| Span                     | Group       | Source                        | Covers                                |
+| ------------------------ | ----------- | ----------------------------- | ------------------------------------- |
+| `nvrx.ft.cycle`          | `nvrx.ft`   | `launcher.py`                 | one full restart cycle                |
+| `nvrx.ft.round_wait`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | waiting for a round to open           |
+| `nvrx.ft.rendezvous`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | one rendezvous round, after it opened |
+| `nvrx.ft.health_check`   | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | `ensure_node_is_healthy`              |
+| `nvrx.ft.worker_start`   | `nvrx.ft`   | `launcher.py`                 | `_start_workers`                      |
+| `nvrx.ft.teardown`       | `nvrx.ft`   | `launcher.py`                 | `_stop_workers`                       |
+| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | preload + write for one request       |
+| `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                      |
 
 A hot spare produces one `round_wait` / `rendezvous` pair per round, so span volume tracks restart rounds rather than poll frequency. The `rendezvous` span for the round a node sits out is closed by the next round's, and `_perform_rendezvous` closes the last one in a `finally` so it can never outlive the enclosing `cycle` span.
 
