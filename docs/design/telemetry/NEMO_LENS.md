@@ -266,9 +266,9 @@ It is set wherever the answer is **locally true of that span**, never inferred f
 | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True`                                                         |
 | `run`                                                                                          | `False` — training is executing                                |
-| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`                            | `True` — training is stopped                                   |
+| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`         | `True` — training is stopped                                   |
 | `ckpt.save.request`, `ckpt.save.write`                                                         | `False` — worker side, overlaps training                       |
-| `ckpt.save.preload`                                                                            | `False` in IPC mode (worker), `True` in CPU SHM mode (trainer) |
+| `ckpt.save.preload`                                                                            | `False` — always worker side                                   |
 
 ## Checkpointing
 
@@ -296,17 +296,23 @@ The worker skips CUDA initialization entirely and needs no IPC handles. Staging 
 
 Reusing those shm tensors introduces a second exposed wait that has no counterpart in IPC mode. Before the first `copy_()` into a reused tensor, `prepare_write_data` fires the drain that `AsyncCallsQueue` registers — `maybe_finalize_async_calls(blocking=True, no_dist=True)` — so any prior write still reading those tensors completes first. **This blocks the current checkpoint on the previous one's write**, which is the mode's characteristic stall and needs its own span to be visible at all.
 
-| Span                       | Process | Covers                                     | `is_goodput_span`                             |
-| -------------------------- | ------- | ------------------------------------------ | --------------------------------------------- |
-| `nvrx.ckpt.save.shm_drain` | trainer | the blocking drain in `prepare_write_data` | `True` — blocked on the _previous_ checkpoint |
-| `nvrx.ckpt.save.preload`   | trainer | GPU to shared memory copy                  | `True`                                        |
-| `nvrx.ckpt.save.schedule`  | trainer | `schedule_async_call`                      | `True`                                        |
-| `nvrx.ckpt.save.request`   | worker  | one request, end to end                    | `False`                                       |
-| `nvrx.ckpt.save.write`     | worker  | the write itself                           | `False`                                       |
+| Span                        | Process | Covers                                     | `is_goodput_span`                             |
+| --------------------------- | ------- | ------------------------------------------ | --------------------------------------------- |
+| `nvrx.ckpt.save.shm_drain`  | trainer | the blocking drain in `prepare_write_data` | `True` — blocked on the _previous_ checkpoint |
+| `nvrx.ckpt.save.stage`      | trainer | GPU to shared memory copy                  | `True`                                        |
+| `nvrx.ckpt.save.schedule`   | trainer | `schedule_async_call`                      | `True`                                        |
+| `nvrx.ckpt.save.stage_wait` | trainer | the `preload_q.join()` block               | `True` — short here, but not zero             |
+| `nvrx.ckpt.save.request`    | worker  | one request, end to end                    | `False`                                       |
+| `nvrx.ckpt.save.preload`    | worker  | bucket assembly over host memory           | `False`                                       |
+| `nvrx.ckpt.save.write`      | worker  | the write itself                           | `False`                                       |
 
-`preload` keeps its name across both modes so one query answers "how long does staging take," with the process it ran in distinguished by `service.name`. `shm_drain` and `stage_wait` are deliberately different names: they are different phenomena, and conflating them would hide that a slow checkpoint in SHM mode is usually caused by the _preceding_ one.
+`schedule` and `stage_wait` are the same spans as in IPC mode, because the code path is the same: a request always carries a `preload_fn`, and the trainer always waits on it. What differs is only what that work costs. In IPC mode the worker's `preload` is the D2H itself and the trainer's `stage_wait` covers all of it; in CPU SHM mode the D2H already happened on the trainer, so `preload` is bucket assembly over host memory and `stage_wait` is short. The mode is legible from the durations rather than from which spans exist.
 
-`prepare_write_data` runs before `schedule_async_call`, so `shm_drain` and the trainer-side `preload` are siblings of `schedule`, not children.
+`preload` therefore always names work in the worker, and always overlaps training. The trainer-side GPU-to-shm copy is `stage`, a different name for a different thing: it is exposed, it happens before the request is enqueued, and giving it `preload`'s name would put an exposed cost and an overlapped one in the same bucket.
+
+`shm_drain` and `stage_wait` are likewise deliberately different names. Both are the trainer blocked, but `shm_drain` is blocked on the _previous_ checkpoint's write and `stage_wait` on this one's staging; conflating them would hide that a slow checkpoint in SHM mode is usually caused by the one before it.
+
+`prepare_write_data` runs before `schedule_async_call`, so `shm_drain` and `stage` are siblings of `schedule`, not children.
 
 ### Trainer side
 

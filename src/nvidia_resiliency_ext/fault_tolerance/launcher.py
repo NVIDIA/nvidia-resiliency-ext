@@ -567,13 +567,15 @@ class LocalElasticAgent(SimpleElasticAgent):
             node_rank = 0
         # An agent's rank is a node ordinal, not a trainer rank, so under the default
         # service.instance.id it would collide with the checkpoint worker of that rank.
+        # Role and rank only: which job this is comes from OTEL_RESOURCE_ATTRIBUTES,
+        # set by whatever launched it, so NVRx need not name a scheduler variable.
         self._tel_handle = telemetry.setup_telemetry(
             node_rank,
             int(os.environ.get("SLURM_NNODES", "1")),
             resource_attributes={
                 "nvrx.role": "ft_launcher_agent",
                 "nvrx.node": self._node_id,
-                "service.instance.id": f"{job_id_from_env() or 'nvrx'}-agent{node_rank}",
+                "service.instance.id": f"nvrx-agent{node_rank}",
             },
         )
         # Backdated as soon as there is a tracer: both windows closed long before

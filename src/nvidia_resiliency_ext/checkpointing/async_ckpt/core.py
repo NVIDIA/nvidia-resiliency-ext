@@ -515,6 +515,7 @@ class PersistentAsyncCaller(AsyncCaller):
         for cb in PersistentAsyncCaller._worker_restart_callbacks:
             cb()
 
+    @telemetry.trace_fn("nvrx.ckpt", "nvrx.ckpt.save.schedule")
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
         """Put `AsyncRequest` to the Persistent Async Caller
 
@@ -530,6 +531,14 @@ class PersistentAsyncCaller(AsyncCaller):
         """
         if async_req.async_fn is None:
             return  # nothing to do
+
+        # Set on the span trace_fn opened. Training is stopped for the whole of this
+        # method, whichever staging mode is in use, so this is the span that says
+        # what a checkpoint costs. nvrx.call_idx joins it to the worker's spans for
+        # any consumer that does not follow links.
+        telemetry.set_span_attributes(
+            {"is_goodput_span": True, "nvrx.call_idx": async_req.call_idx}
+        )
 
         if self.rank is None:
             self.rank = torch.distributed.get_rank()
@@ -547,8 +556,17 @@ class PersistentAsyncCaller(AsyncCaller):
 
         if async_req.preload_fn:
             start_sync = time()
-            # Synchronize for pre-staging tensors
-            self.preload_q.join()
+            # Synchronize for pre-staging tensors. Training is stopped for exactly
+            # this window, and nothing here proceeds until the worker signals done.
+            # In CUDA IPC mode that is the whole D2H out of this process's GPU
+            # memory, and the only part of such a save that is not overlapped; in
+            # CPU SHM mode the copy already happened above and this is short. Either
+            # way it is a real stall, and its own span rather than a subtraction out
+            # of save.schedule.
+            with telemetry.span(
+                "nvrx.ckpt", "nvrx.ckpt.save.stage_wait", {"is_goodput_span": True}
+            ):
+                self.preload_q.join()
             end_sync = time()
 
             logger.debug(f"rank: {self.rank}, takes {end_sync - start_sync} to finish D2H ")
@@ -751,11 +769,31 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
-        # Spawned worker: no in-memory state is inherited, so telemetry is set up
-        # again here. The environment is inherited, so nemo-lens reads the same
-        # config the trainer saw. Spans are independent of the launcher's trace and
-        # join across ranks on nvrx.call_idx.
-        tel_handle = telemetry.setup_telemetry(rank, int(os.environ.get("WORLD_SIZE", "1")))
+        # Spawned worker: the environment is inherited but no in-memory state is, so
+        # telemetry is set up again here. nemo-lens therefore reads the same config
+        # the trainer saw, and OTEL_RESOURCE_ATTRIBUTES carries job and cycle context
+        # across the spawn with no code at all.
+        #
+        # Identity is the one thing that must not be inherited. The worker shares a
+        # rank number with the trainer it serves, so under the default
+        # service.instance.id the two processes claim the same identity and a backend
+        # cannot tell their spans apart. Both fields are overridden.
+        #
+        # Role and rank, and deliberately not the job id: the id only has to separate
+        # processes reporting to one collector, and which job they belong to is already
+        # in OTEL_RESOURCE_ATTRIBUTES, put there by whatever launched the job. Naming a
+        # scheduler variable here would duplicate that and tie the worker to Slurm.
+        #
+        # Spans here are independent of the launcher's trace and join to the trainer's
+        # across ranks on nvrx.call_idx.
+        tel_handle = telemetry.setup_telemetry(
+            rank,
+            int(os.environ.get("WORLD_SIZE", "1")),
+            resource_attributes={
+                "service.name": "nvrx.ckpt_worker",
+                "service.instance.id": f"nvrx-ckpt{rank}",
+            },
+        )
 
         # Start busy loop waiting for and executing checkpoint saves.
         try:
@@ -765,16 +803,35 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
+                    # Everything this process does overlaps training, so none of it
+                    # costs goodput. The trainer's own spans measure what training
+                    # actually stopped for; marking these True would double-count.
                     with telemetry.span(
                         "nvrx.ckpt",
                         "nvrx.ckpt.save.request",
-                        {"is_goodput_span": True, "nvrx.call_idx": item.call_idx},
+                        {"is_goodput_span": False, "nvrx.call_idx": item.call_idx},
                     ):
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
                             call_idx = preload_q.get()
-                            # the 2nd arg is state dict
-                            async_fn_args[1] = item.preload_fn()
+                            # Staging, in both modes, which is why it keeps one name.
+                            # In CUDA IPC mode this is the D2H itself, out of the
+                            # trainer's GPU memory over an IPC handle. In CPU SHM mode
+                            # the trainer has already copied to shared memory, so what
+                            # is left here is bucket assembly over host memory and this
+                            # span is short. Which mode ran is service.name plus the
+                            # duration, not two different span names.
+                            #
+                            # The trainer is blocked on preload_q.join() for exactly
+                            # this window and measures it as save.stage_wait; the
+                            # difference between the two is queue and IPC overhead.
+                            with telemetry.span(
+                                "nvrx.ckpt",
+                                "nvrx.ckpt.save.preload",
+                                {"is_goodput_span": False},
+                            ):
+                                # the 2nd arg is state dict
+                                async_fn_args[1] = item.preload_fn()
                             logger.debug(f"{rank} has completed D2H of {call_idx}")
                             preload_q.task_done()
                         if item.async_fn is not None:

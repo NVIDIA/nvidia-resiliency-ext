@@ -57,6 +57,7 @@ try:
 except ImportError:
     HAVE_PSUTIL = False
 
+from ...shared_utils import telemetry
 from ..utils import _disable_gc
 from .core import PersistentAsyncCaller
 
@@ -381,15 +382,27 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # the worker for checkpoint N may still be reading these buffers
                     # while we are about to overwrite them with checkpoint N+1 values.
                     if FileSystemWriterAsync._shm_drain_callback is not None:
-                        FileSystemWriterAsync._shm_drain_callback()
+                        # This blocks checkpoint N+1 on checkpoint N's write, which is
+                        # this mode's characteristic stall and is invisible without its
+                        # own span -- the time lands in the wrong checkpoint otherwise.
+                        # Deliberately not named stage_wait: that is a wait on this
+                        # checkpoint's own staging, and conflating the two would hide
+                        # that a slow save here is usually caused by the preceding one.
+                        with telemetry.span(
+                            "nvrx.ckpt", "nvrx.ckpt.save.shm_drain", {"is_goodput_span": True}
+                        ):
+                            FileSystemWriterAsync._shm_drain_callback()
                     _, shm_tensors = FileSystemWriterAsync._shm_tensor_cache[key]
-                    for i, (shm_t, gpu_t) in enumerate(zip(shm_tensors, gpu_data)):
-                        shm_t.copy_(gpu_t, non_blocking=True)
-                        # Periodically sync to avoid exhausting CUDA's pageable staging
-                        # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
-                        if (i + 1) % 8 == 0:
-                            torch.cuda.synchronize()
-                    torch.cuda.synchronize()
+                    with telemetry.span(
+                        "nvrx.ckpt", "nvrx.ckpt.save.stage", {"is_goodput_span": True}
+                    ):
+                        for i, (shm_t, gpu_t) in enumerate(zip(shm_tensors, gpu_data)):
+                            shm_t.copy_(gpu_t, non_blocking=True)
+                            # Periodically sync to avoid exhausting CUDA's pageable staging
+                            # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
+                            if (i + 1) % 8 == 0:
+                                torch.cuda.synchronize()
+                        torch.cuda.synchronize()
                     logger.debug(
                         f"D2H'd {len(shm_tensors)} shm tensors into reused allocations "
                         f"(key={key})"
@@ -402,16 +415,23 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # time and the worker receives them directly without caching.
                     shm_tensors = []
                     total_bytes = 0
-                    for i, t in enumerate(gpu_data):
-                        tc = t.contiguous()
-                        shm_t = torch.empty(tc.shape, dtype=tc.dtype).share_memory_()
-                        shm_t.copy_(tc, non_blocking=True)
-                        shm_tensors.append(shm_t)
-                        total_bytes += shm_t.nbytes
-                        # Periodically sync to avoid exhausting CUDA's pageable staging pages
-                        if (i + 1) % 8 == 0:
-                            torch.cuda.synchronize()
-                    torch.cuda.synchronize()
+                    # save.stage, not save.preload: this is the trainer stopped, before
+                    # the request is even enqueued, whereas preload names the worker's
+                    # overlapped staging. One name for both would put an exposed cost
+                    # and an overlapped one in the same bucket.
+                    with telemetry.span(
+                        "nvrx.ckpt", "nvrx.ckpt.save.stage", {"is_goodput_span": True}
+                    ):
+                        for i, t in enumerate(gpu_data):
+                            tc = t.contiguous()
+                            shm_t = torch.empty(tc.shape, dtype=tc.dtype).share_memory_()
+                            shm_t.copy_(tc, non_blocking=True)
+                            shm_tensors.append(shm_t)
+                            total_bytes += shm_t.nbytes
+                            # Periodically sync to avoid exhausting CUDA's pageable staging pages
+                            if (i + 1) % 8 == 0:
+                                torch.cuda.synchronize()
+                        torch.cuda.synchronize()
                     if self.use_cached_data_structure:
                         FileSystemWriterAsync._shm_tensor_cache[key] = (gpu_items, shm_tensors)
                     logger.debug(
