@@ -1,115 +1,162 @@
-# nemo-lens Telemetry Integration
+# NVRx Telemetry Contract
 
-Optional [nemo-lens](https://github.com/nvidia-nemo/lens) OTel instrumentation for NVRx fault tolerance and async checkpointing. Telemetry is enabled and configured entirely through nemo-lens env vars (`NEMO_LENS_ENABLED`, `NEMO_LENS_SPAN_GROUPS`, etc.); NVRx adds no additional gates.
+Optional [nemo-lens](https://github.com/nvidia-nemo/lens) OTel instrumentation for NVRx fault tolerance and async checkpointing. Enabled and configured entirely through nemo-lens env vars (`NEMO_LENS_ENABLED`, `NEMO_LENS_SPAN_GROUPS`, `NEMO_LENS_EXPORT_STRATEGY`); NVRx adds no gates of its own. With nemo-lens absent or disabled, every call site is a silent no-op.
+
+## Rules
+
+Three rules generate everything below.
+
+1. **A span's meaning is complete within the emitting process.** `python.startup` means the same thing under Slurm, Kubernetes, or a bare `torchrun`. NVRx emits no span whose interpretation depends on a record kept somewhere else.
+2. **A span ends promptly.** A span exports only when it ends, so nothing is held open across a window longer than the analysis that needs it. Anything longer is a start marker plus a backdated span at close.
+3. **Correlation is by attribute, not by trace membership.** Every consumer query is a filter or a group-by over span records. Relationships a query needs are stamped at emit time.
 
 ## Scope
 
-1. **Fault tolerance restart cycle** — `fault_tolerance/launcher.py` and `fault_tolerance/ft_rendezvous_barrier.py`
-2. **Async checkpoint worker** — `checkpointing/async_ckpt/core.py`
-
-When nemo-lens is absent or disabled, all instrumentation is a silent no-op with no behavioral change.
-
-## Module Structure
+| Area                          | Files                                                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Fault tolerance restart cycle | `fault_tolerance/launcher.py`, `fault_tolerance/ft_rendezvous_barrier.py`, `shared_utils/health_check.py` |
+| Async checkpointing           | `checkpointing/async_ckpt/core.py`                                                                        |
 
 ```mermaid
 graph TD
     pyproject["pyproject.toml<br/><code>otel</code> extra"]
-
     subgraph shared_utils
         shim["shared_utils/telemetry.py<br/>sole owner of the nemo-lens import"]
     end
-
     subgraph fault_tolerance
-        launcher["fault_tolerance/launcher.py"]
-        rdzv["fault_tolerance/ft_rendezvous_barrier.py"]
+        launcher["launcher.py"]
+        rdzv["ft_rendezvous_barrier.py"]
+        hc["health_check.py"]
     end
-
     subgraph checkpointing
-        core["checkpointing/async_ckpt/core.py"]
+        core["async_ckpt/core.py"]
     end
-
     pyproject -->|optional dep| shim
     shim --> launcher
     shim --> rdzv
+    shim --> hc
     shim --> core
 ```
 
-`fault_tolerance` and `checkpointing` have no knowledge of nemo-lens. The shim is the only file with a nemo-lens import.
+`shared_utils/telemetry.py` imports nemo-lens optionally: if the package is present it delegates to it, and if it is absent every export becomes a no-op. It is the only file in NVRx that imports nemo-lens, and the decision about whether telemetry exists at all is made once, there.
+
+`fault_tolerance` and `checkpointing` call only `shared_utils.telemetry` APIs — never nemo-lens APIs directly, and never conditionally. Call sites carry no import guard, no availability check, and no fallback branch, because the shim already guarantees every export is safe to call whether or not nemo-lens is installed and whether or not `setup_telemetry` has run.
 
 ## `shared_utils/telemetry.py`
 
-Exports `span`, `trace_fn`, `ManualSpan`, `mark`, `backdated_span`, `set_span_attributes`, `setup_telemetry`, `shutdown`, and `flush`.
+Exports `span`, `trace_fn`, `ManualSpan`, `mark`, `backdated_span`, `set_span_attributes`, `setup_telemetry`, `shutdown`, `flush`.
 
-### Exports
+### Where NVRx data lives in OTel
 
-`trace_fn` is a re-export of the nemo-lens function of the same name, deliberately not renamed so that a search for it finds every use across nemo-lens and its consumers.
+NVRx uses three of OTel's carriers, and which one a value belongs in follows from its lifetime and its cost.
 
-`span` is a thin adapter over `nemo.lens.managed_span`, which takes attributes as keyword arguments. Every attribute NVRx sets is dotted — `nvrx.cycle`, `nvrx.call_idx` — and a dotted name cannot be a Python keyword, so that signature would force every call site to build a dict and unpack it. **Attributes are a dict at every entry point here** (`span`, `mark`, `set_span_attributes`, `ManualSpan.open/set/close`), so they are written one way everywhere.
+| OTel carrier            | Describes                                | Set through                                                                                               | Serialized            |
+| ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------- |
+| **Resource attributes** | the emitting process, for its whole life | `OTEL_RESOURCE_ATTRIBUTES`, plus `setup_telemetry(resource_attributes=)` for what NVRx knows about itself | once per export batch |
+| **Span attributes**     | one span                                 | the dict passed to `span`, `mark`, `backdated_span`, `ManualSpan.open/set/close`, `set_span_attributes`   | once per span         |
+| **Span links**          | a related span in another trace          | `TRACEPARENT` on worker launch; the captured context on an `AsyncRequest`                                 | once per span         |
 
-Everything is gated on its span group and no-ops when the group is off — which includes before `setup_telemetry` runs, since span groups default to empty. The shim defines fallbacks only for the case where nemo-lens is not installed.
+Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. It is ambient context, not telemetry, and reaches spans by two explicit routes: a `BaggageSpanProcessor` in the trainer copies it onto trainer-side spans as they start, and NVRx reads it with `get_baggage` at enqueue and carries it to the checkpoint worker on the `AsyncRequest`, where the worker sets it as a span attribute.
 
-`set_span_attributes` writes to the current span, for use inside a `@trace_fn` function, which owns its span but does not hand it to the caller.
+### Which carrier for which value
 
-`ManualSpan` covers the case where a span's open and close cross code block boundaries. It owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards; `open()` closes whatever the handle already had open. It knows nothing about fault tolerance — the caller supplies the group, name, and every attribute key.
+A value's carrier follows from whether it is constant for the _emitting process's_ lifetime. OTel's Resource is built once when the TracerProvider is constructed and is immutable after, so anything that changes during a process cannot live there.
 
-### NVRxSpanGroup
+| Process           | Constant for its life → Resource                                           | Varies during its life → span attribute |
+| ----------------- | -------------------------------------------------------------------------- | --------------------------------------- |
+| ft-launcher agent | `service.name`, `service.instance.id`, `nvrx.node`, infrastructure rank    | `nvrx.cycle`, and every per-span value  |
+| Trainer worker    | `nvrx.cycle`, `nvrx.membership`, `nvrx.infra_rank`, elastic rank           | `nvrx.iteration`                        |
+| Checkpoint worker | same as the trainer, plus its own `service.name` and `service.instance.id` | `nvrx.call_idx`, `nvrx.iteration`       |
 
-nemo-lens's base `SpanGroup.resolve()` only recognises its built-in groups. Without a subclass, `"nvrx.ft"` or `"nvrx.ckpt"` in `NEMO_LENS_SPAN_GROUPS` raises `ValueError`, and the stock presets emit no NVRx spans even with `NEMO_LENS_ENABLED=1`. `_NVRxSpanGroup` adds the NVRx groups to **every** preset, so `NEMO_LENS_ENABLED=1` alone is sufficient; the extra `nvrx` preset selects them alone.
+`nvrx.cycle` appears on both sides of that table, which is the clearest case. The agent outlives cycles, so its Resource cannot carry a cycle number and the value is a span attribute. A worker process is created fresh for each cycle, so the cycle is constant for its entire life and belongs in its Resource — which is why the agent appends it to `OTEL_RESOURCE_ATTRIBUTES` at launch rather than passing it some other way. Same value, different carrier, decided by process lifetime.
 
-### Export identity
+**Span attributes are a dict at every entry point.** nemo-lens's `managed_span` takes keyword arguments, and every NVRx attribute name is dotted — `nvrx.cycle`, `nvrx.call_idx` — which cannot be a Python keyword. A dict is the only shape that carries these names, so it is the shape everywhere.
 
-`setup_telemetry(rank, world_size)` sets `dl.rank`, `dl.world_size`, and `service.instance.id` on the OTel resource, so these must differ per emitter or a backend cannot tell the processes apart.
+NVRx names live under the `nvrx.` prefix. `service.name` does not make the prefix redundant, because `service.name` identifies the _process_, not the attribute namespace: NVRx checkpoint spans emitted inside the trainer share the trainer's Resource, so their `service.name` is the trainer's. The prefix is the only thing separating NVRx's keys from the trainer's in the same span stream. It also keeps NVRx clear of names the OTel semantic conventions may define later; NVRx redefines no semconv name, and `service.name`, `service.instance.id`, and the rest keep their standard meanings.
 
-Every launcher agent exports. Each node runs its own collector and we want per-node visibility, so the shim defaults `export_strategy` to `all_ranks` rather than relying on nemo-lens's `single_rank` default. An explicit `NEMO_LENS_EXPORT_STRATEGY` still wins, so volume stays tunable.
+Values are restricted to OTel's attribute types — string, bool, int, double, or a homogeneous array of those — so nothing nested is passed.
 
-The launcher's identity is resolved before rendezvous, where no elastic rank exists yet: `get_infrastructure_rank()` (NVRx's stable node identity) and `SLURM_NNODES`, each falling back to `0` / `1`. The elastic `group_rank` is set on the cycle span once rendezvous assigns it.
+Everything is gated on its span group and no-ops when the group is off, which includes before `setup_telemetry` runs, since groups default to empty.
 
-## Fault Tolerance Span Lifecycle
+| Mechanism             | Shape                                                                                  | Used by                                            |
+| --------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `@trace_fn`           | the span _is_ a method                                                                 | `worker_start`, `teardown`                         |
+| `with span(...)`      | the span is a block                                                                    | `round_wait`, `health_check`, all `ckpt` spans     |
+| `ManualSpan`          | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                        |
+| `mark(...)`           | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`                |
+| `backdated_span(...)` | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `python.startup`, `python.imports`, `cycle`, `run` |
 
-### Span mechanisms
+`ManualSpan` owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. It knows nothing about fault tolerance — the caller supplies group, name, and every attribute key.
 
-OTel propagates the active span implicitly via `contextvars`. Because `next_rendezvous()` is called synchronously from the launcher's main thread, spans opened inside `ft_rendezvous_barrier.py` nest under the launcher's open `cycle` span with no reference passing.
+### Span groups
 
-Each span uses the cheapest mechanism that fits its shape:
+A **span group** is a nemo-lens concept, not an OTel one. Every call site names a group; the set of enabled groups is fixed once at `setup_telemetry` from `NEMO_LENS_SPAN_GROUPS`, and a span whose group is not enabled is never created. It is a static on/off switch for a family of instrumentation, distinct from OTel sampling, which decides per span at runtime after the span exists, and from attributes, which filter after export.
 
-| Shape                                 | Mechanism                | Spans                                           |
-| ------------------------------------- | ------------------------ | ----------------------------------------------- |
-| The span _is_ a method                | `@trace_fn` decorator    | `worker_start`, `teardown`                      |
-| The span is a block                   | `with span(...)`         | `round_wait`, `health_check`, both `ckpt` spans |
-| Open and close cross block boundaries | `ManualSpan`             | `cycle`, `rendezvous`, `run`, `attribution`     |
-| An instant, with no duration          | `mark(...)`              | `fault`                                         |
-| Already elapsed, reconstructed        | `backdated_span(...)`    | `pre_startup`, `cold_start`                     |
+`_NVRxSpanGroup` adds `nvrx.ft` and `nvrx.ckpt` to **every** nemo-lens preset, so `NEMO_LENS_ENABLED=1` alone emits NVRx spans; the extra `nvrx` preset selects them alone.
 
-Using `@trace_fn` for the first group leaves the instrumented method bodies untouched.
+A group name in `NEMO_LENS_SPAN_GROUPS` that NVRx does not declare becomes its own group. Instrumenting a one-off investigation is a change to the code under test plus an env var, with nothing to add here:
 
-A `cycle` opens at rendezvous and closes after teardown. A `rendezvous` round opens once the round is open — excluding the hot-spare wait, which would otherwise dominate the measurement — and closes when the node is assigned an active rank, or when the next round begins. `run` opens in the `_initialize_workers` override, which every cycle passes through, and closes on whichever path ends the run.
+```python
+with span("debug_issue12345", "suspect_path"):
+    ...
+```
 
-`fault` is an instant rather than a duration. `teardown` only starts once the restart decision has been made, so without it the interval between detecting a failure and deciding what to do about it is unmeasured.
+```
+NEMO_LENS_ENABLED=1 NEMO_LENS_SPAN_GROUPS=nvrx,debug_issue12345
+```
 
-`attribution` is the exception to the nesting rule. It is driven from the attribution poller's own thread, and OTel context is per-thread, so it cannot be a child of the cycle span; it is emitted as a root span correlated by `nvrx.node`.
+## Identity
 
-An exclusion needs no separate signal: the `UnhealthyNodeException` propagating out of the `health_check` span is recorded by nemo-lens as `StatusCode.ERROR` with the reason as the description, plus an `exception` event carrying the type and message.
+### Resource attributes
 
-### Initialization
+`OTEL_RESOURCE_ATTRIBUTES` carries job context as comma-separated `key=value` pairs, with values percent-encoded. The SDK reads it into the Resource with no code, it is inherited across every process spawn, and it costs nothing per span — OTLP serializes a Resource once per export batch.
 
-Both emitting processes call `setup_telemetry` once at startup and `shutdown()` from the `finally` that already owns their teardown:
+**NVRx reads the variable, but never parses it.** It is an opaque string that NVRx appends to and passes on. NVRx looks up no key in it and contains no code naming `slurm.job_id`, `job.uid`, `cluster`, or anything else a launching environment might put there. Whatever is in it rides through untouched, and NVRx behaves identically whether it holds nothing or twenty keys from a Kubernetes operator.
 
-| Process           | Setup                                                         | Shutdown                |
-| ----------------- | ------------------------------------------------------------- | ----------------------- |
-| Launcher agent    | top of `LocalElasticAgent.run()`, before the first rendezvous | that method's `finally` |
-| Checkpoint worker | top of `async_process_target`, after the spawn                | that method's `finally` |
+That is the distinction that keeps NVRx portable: reading a string to extend it creates no coupling, while branching on a key in it would.
 
-The checkpoint worker only reaches its `finally` because `_handle_sigterm` turns the parent's SIGTERM into a `SystemExit` rather than letting the default handler kill the process outright — the same mechanism that lets it release its CUDA IPC handles.
+Three rules for extending it:
 
-Neither process uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound, where a flush to an unreachable collector could stall exit. `shutdown()` is bounded in both: it flushes synchronously and can otherwise block for the exporter's entire retry budget against a collector that is gone, which is longer than the SIGTERM-to-SIGKILL grace either process gets.
+- **Append to the value inherited at agent start, not to the last extended value.** Otherwise each restart appends another `nvrx.cycle=N` and the string grows without bound across cycles.
+- **Percent-encode values.** NVRx's own values are integers and a fixed enum, so they are safe as-is, but the encoding is what makes that a property rather than luck.
+- **Emit no duplicate keys.** Which occurrence wins is not something to depend on.
 
-Two points flush explicitly, because the process may be killed moments later and those spans would die in the batch processor's queue: a detected fault, and a health-check exclusion. Everywhere else the batch processor's own schedule is enough.
+nemo-lens merges `setup_telemetry(resource_attributes=)` over the env-derived Resource, so what NVRx sets in code wins over the same key in the environment.
 
-nemo-lens's `_OpenSpanCloser` ends any span still open at shutdown and marks it `nemo.span.truncated`, which is how a cycle interrupted by a signal reaches the collector — without an `nvrx.cycle_outcome`.
+The agent appends cycle information to the _worker's_ copy of the variable, not its own. The purpose is that a lens-instrumented trainer picks it up into its own Resource with no code and no knowledge of NVRx, so every span the trainer emits — including ones NVRx never sees — carries the restart cycle it belongs to.
 
-### Lifecycle per cycle
+NVRx sets only what describes itself:
 
-The `cycle` span opens in the `_rendezvous` override and covers both the initial launch and every restart cycle. The rendezvous spans nest inside it.
+| Attribute             | Value                                                                                              |
+| --------------------- | -------------------------------------------------------------------------------------------------- |
+| `service.name`        | `nvrx.ft_launcher`, or `nvrx.ckpt_worker` in the checkpoint worker                                 |
+| `service.instance.id` | unique per emitting process — the agent, the trainer, and the checkpoint worker must never collide |
+| `nvrx.node`           | this node's identity                                                                               |
+
+The agent's identity resolves before rendezvous, where no elastic rank exists: `get_infrastructure_rank()` and `SLURM_NNODES`, falling back to `0` / `1`. The elastic `group_rank` is a span attribute, set once rendezvous assigns it.
+
+Export strategy is nemo-lens's default, set through `NEMO_LENS_EXPORT_STRATEGY`. NVRx overrides nothing: whether every node exports or only one depends on the collector topology the launching environment provides, which NVRx cannot know. A deployment running a collector per node sets `all_ranks` to get per-node visibility.
+
+### Published to workers
+
+`_start_workers` extends the worker cohort's environment. Two variables, both additive:
+
+| Variable                   | Contents                                                         |
+| -------------------------- | ---------------------------------------------------------------- |
+| `OTEL_RESOURCE_ATTRIBUTES` | appended with `nvrx.cycle`, `nvrx.membership`, `nvrx.infra_rank` |
+| `TRACEPARENT`              | the cycle start marker's `SpanContext`                           |
+
+Cycle number is a **resource** attribute for a worker because a worker process is new each cycle, and a **span** attribute for the agent because the agent outlives cycles.
+
+A trainer extracts `TRACEPARENT` explicitly — no SDK reads it automatically — and attaches it as a **link**, not a parent, so per-rank traces stay per-rank.
+
+## Fault tolerance
+
+### Cycle lifecycle
+
+A cycle opens with a `nvrx.ft.cycle_start` marker, which exports immediately and whose `SpanContext` is retained. Every span in the cycle is emitted with that context as its explicit parent, so the cycle shares one trace per node without anything being held open. At cycle end, a backdated `nvrx.ft.cycle` span carries the duration and outcome into the same trace. `nvrx.ft.run` follows the same pattern.
+
+A cycle that never closes leaves its marker and every completed child. Absence of the backdated span is the signal.
 
 ```mermaid
 sequenceDiagram
@@ -117,164 +164,173 @@ sequenceDiagram
     participant R as ft_rendezvous_barrier.py
 
     Note over L: setup_telemetry(node_rank, num_nodes) once at agent start
+    Note over L: python.startup, python.imports (backdated)
 
-    loop each cycle (initial + restarts)
-        L->>L: _rendezvous: close previous cycle span, open nvrx.ft.cycle
+    loop each cycle
+        L->>L: mark nvrx.ft.cycle_start, retain its SpanContext
         L->>R: next_rendezvous() [sync]
         loop each rendezvous round
-            R->>R: nvrx.ft.round_wait (hot spares block here)
+            R->>R: nvrx.ft.round_wait
             R->>R: open nvrx.ft.rendezvous, closing the previous round's
             R->>R: nvrx.ft.health_check
         end
-        R->>R: close nvrx.ft.rendezvous {nvrx.rank, nvrx.membership: active}
+        R->>R: close nvrx.ft.rendezvous {nvrx.rank, nvrx.membership}
         R-->>L: return
-        L->>L: _start_workers -> nvrx.ft.worker_start (@trace_fn)
+        L->>L: nvrx.ft.worker_start, then mark nvrx.ft.run_start
         Note over L: workers executing
-        L->>L: set nvrx.cycle_outcome
-        L->>L: _stop_workers -> nvrx.ft.teardown (@trace_fn)
-        L->>L: close cycle span (or let the next open() close it)
+        L->>L: mark nvrx.ft.fault (on failure)
+        L->>L: backdated nvrx.ft.run
+        L->>L: nvrx.ft.teardown
+        L->>L: backdated nvrx.ft.cycle {nvrx.cycle_outcome}
     end
 ```
+
+Spans opened inside `ft_rendezvous_barrier.py` nest under the cycle context without reference passing, since `next_rendezvous()` is called synchronously from the launcher's main thread.
+
+`nvrx.ft.attribution` is the exception. It runs on the attribution poller's own daemon thread, and OTel context is per-thread, so no ambient context reaches it and it is emitted as a root span.
+
+What identifies it comes from two places. Resource attributes are free — the poller is in the agent process, so it shares the agent's Resource and every span carries `service.instance.id`, `nvrx.node`, and whatever the environment supplied. Anything that is a _span_ attribute on the agent has to be passed explicitly across the thread boundary: `node_id` is handed to `_start_get_profiling` when the span opens and retained as `_poll_node_id` for the close, and the cycle number must travel the same way, since a verdict can arrive cycles after the failure it describes. Only `_poll_once` drives the span, so the `ManualSpan` same-thread ordering contract holds without extra locking.
+
+An exclusion needs no separate signal: `UnhealthyNodeException` propagating out of the `health_check` span is recorded as `StatusCode.ERROR` with the reason as description, plus an `exception` event.
+
+### Spans
+
+| Span                   | Group     | Source                     | Covers                                                   |
+| ---------------------- | --------- | -------------------------- | -------------------------------------------------------- |
+| `python.startup`       | `job`     | `launcher.py`              | process create time to the entry point's first statement |
+| `python.imports`       | `job`     | `launcher.py`              | the entry point's top-level imports                      |
+| `nvrx.ft.cycle_start`  | `nvrx.ft` | `launcher.py`              | instant: a cycle began                                   |
+| `nvrx.ft.cycle`        | `nvrx.ft` | `launcher.py`              | one full restart cycle, backdated at close               |
+| `nvrx.ft.round_wait`   | `nvrx.ft` | `ft_rendezvous_barrier.py` | waiting for a round to open                              |
+| `nvrx.ft.rendezvous`   | `nvrx.ft` | `ft_rendezvous_barrier.py` | one rendezvous round, after it opened                    |
+| `nvrx.ft.health_check` | `nvrx.ft` | `ft_rendezvous_barrier.py` | `ensure_node_is_healthy`                                 |
+| `nvrx.ft.worker_start` | `nvrx.ft` | `launcher.py`              | `_start_workers`                                         |
+| `nvrx.ft.run_start`    | `nvrx.ft` | `launcher.py`              | instant: workers are up                                  |
+| `nvrx.ft.run`          | `nvrx.ft` | `launcher.py`              | workers executing, backdated at close                    |
+| `nvrx.ft.fault`        | `nvrx.ft` | `launcher.py`              | instant: a failure was detected                          |
+| `nvrx.ft.teardown`     | `nvrx.ft` | `launcher.py`              | `_stop_workers`                                          |
+| `nvrx.ft.attribution`  | `nvrx.ft` | `health_check.py`          | an attribution lookup (root span)                        |
+
+`python.startup` and `python.imports` carry no `nvrx.` prefix and are distinguished by `service.name`, so one query answers "how long did imports take" across every service that emits them. Both are measured entirely within this process — `psutil.Process().create_time()` and two `time.time()` stamps — and backdated once telemetry is up.
+
+`fault` is an instant because `teardown` only starts once the restart decision is made; without it the interval between detecting a failure and deciding what to do is unmeasured.
+
+A hot spare produces one `round_wait` / `rendezvous` pair per round, so volume tracks restart rounds rather than poll frequency.
+
+### Cycle outcomes
+
+`nvrx.cycle_outcome` is set on the backdated `nvrx.ft.cycle` span.
+
+| Condition                                          | `cycle_outcome`                                    |
+| -------------------------------------------------- | -------------------------------------------------- |
+| `WorkerState.SUCCEEDED`                            | `succeeded`                                        |
+| Local failure, restart granted or budget exhausted | `failed`                                           |
+| Healthy node joins a peer restart                  | `peer_restart`                                     |
+| Health check exclusion (`UnhealthyNodeException`)  | `excluded`                                         |
+| Standby node, job ends                             | `standby`                                          |
+| Attribution stop / peer no-restart                 | `terminated`                                       |
+| Signal                                             | _(no cycle span emitted; the marker stands alone)_ |
+
+The exclusion and standby handlers live in `_rendezvous`, so they cover the first rendezvous as well as every restart.
+
+### Span attributes
+
+Resource attributes are covered under Identity; everything here is per-span.
+
+| Attribute                 | Type | Spans                 | Notes                                     |
+| ------------------------- | ---- | --------------------- | ----------------------------------------- |
+| `nvrx.cycle`              | int  | all agent spans       | restart cycle counter                     |
+| `nvrx.node`               | str  | resource              | node identity                             |
+| `nvrx.rank`               | int  | `cycle`, `rendezvous` | elastic group rank, once assigned         |
+| `nvrx.group_world_size`   | int  | `cycle`               | active node count                         |
+| `nvrx.failures`           | int  | `cycle`               | on the `failed` outcome                   |
+| `nvrx.cycle_outcome`      | str  | `cycle`               | see above                                 |
+| `nvrx.round`              | int  | `rendezvous`          | rendezvous round number                   |
+| `nvrx.membership`         | str  | `cycle`, `rendezvous` | `active`, `standby`, `late_joiner`        |
+| `nvrx.max_restarts`       | int  | `cycle`               | configured budget                         |
+| `nvrx.remaining_restarts` | int  | `cycle`               | budget left when the round was joined     |
+| `nvrx.rdzv_run_id`        | str  | `cycle`               | rendezvous run id                         |
+| `nvrx.call_idx`           | int  | `ckpt.*`              | checkpoint call index; joins across ranks |
+| `nvrx.iteration`          | int  | `ckpt.*`              | training iteration; joins across ranks    |
+| `is_goodput_span`         | bool | see below             | label                                     |
+
+No span carries a roster of the job's other nodes. Every node already emits its own `nvrx.membership` and `nvrx.rank` each cycle, so the membership of a cycle is a group-by over `job.uid` and `nvrx.cycle` — rule 3, applied. Emitting the full list from every node would write O(N²) bytes to say what N spans already say, and at large node counts each copy is a multi-kilobyte attribute that `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` may silently truncate.
 
 ### Labels
 
-Spans carry labels so a collector config can filter and route on them, rather than the collector having to know NVRx span names. Any attribute works; `is_goodput_span` is the one NVRx sets everywhere.
+Spans carry labels so a collector config can filter and route on them without knowing NVRx span names. Any attribute works; `is_goodput_span` is the one NVRx sets everywhere, marking resiliency overhead rather than productive training.
 
-It marks a span as resiliency overhead rather than productive training. It is set wherever the answer is **locally true of that span**, never inferred from what the span nests inside — NVRx is a library, so its spans can sit under a caller's spans, and any rule of the form "only the outermost span carries this" is unenforceable here.
+It is set wherever the answer is **locally true of that span**, never inferred from what the span nests inside — NVRx is a library and its spans sit under callers' spans.
 
-| Span | `is_goodput_span` |
-| ---- | ----------------- |
-| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True` |
-| `run` | `False` — training is executing |
-| `ckpt.save.request` | `True` |
-| `ckpt.save.write` | `False` — overlaps training |
-| `cycle` | *unset* — a cycle brackets both the restart machinery and the training between, so neither value is true of it |
+| Span                                                                                           | `is_goodput_span`                                              |
+| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True`                                                         |
+| `run`                                                                                          | `False` — training is executing                                |
+| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`                            | `True` — training is stopped                                   |
+| `ckpt.save.request`, `ckpt.save.write`                                                         | `False` — worker side, overlaps training                       |
+| `ckpt.save.preload`                                                                            | `False` in IPC mode (worker), `True` in CPU SHM mode (trainer) |
 
-### Ad-hoc span groups
+## Checkpointing
 
-A group name in `NEMO_LENS_SPAN_GROUPS` that NVRx does not declare becomes its own group rather than an error. So instrumenting a one-off investigation is a change to the code under test and an env var, with nothing to add here:
+Instrumentation covers `PersistentAsyncCaller` only. `TemporalAsyncCaller` is deprecated and warns on use, so it is left uninstrumented rather than given spans that would have to be maintained until it is removed.
 
-```python
-with span("debug_issue12345", "suspect_path"):
-    ...
-```
-```
-NEMO_LENS_ENABLED=1 NEMO_LENS_SPAN_GROUPS=nvrx,debug_issue12345
-```
+**Which process performs the device-to-host copy depends on `cpu_shm_mode`, and the two modes expose different work to training.** Spans are placed by process and by mode, not by name. In both, the trainer's blocking wait is its own span, because it is the only part that stops training.
 
-Upstream raises `ValueError` on an unrecognised name. NVRx catches that and degrades to a no-op handle, so without this one undeclared name would silently take *all* telemetry down — every group, not just that one. A typo now costs the group it names, and is logged.
+### IPC mode (`cpu_shm_mode=False`, default)
 
-### Cycle close paths
+The worker sets its CUDA device and initializes a CUDA context so it can receive IPC handles into the trainer's GPU memory. Staging therefore runs **in the worker**. The trainer enqueues, then blocks on `preload_q.join()` until the worker signals staging complete, and the write overlaps training from there.
 
-The outcome is always recorded before the span closes. Terminal paths call `close({CYCLE_OUTCOME: ...})` after teardown. On the restart path the outcome is set first and the span is left open, so that `_stop_workers` records its teardown _inside_ the cycle it belongs to; the next `open()` in `_rendezvous` closes it.
+| Span                        | Process | Covers                           | `is_goodput_span`                             |
+| --------------------------- | ------- | -------------------------------- | --------------------------------------------- |
+| `nvrx.ckpt.save.schedule`   | trainer | `schedule_async_call` end to end | `True`                                        |
+| `nvrx.ckpt.save.stage_wait` | trainer | the `preload_q.join()` block     | `True` — training is stopped for exactly this |
+| `nvrx.ckpt.save.request`    | worker  | one request, end to end          | `False`                                       |
+| `nvrx.ckpt.save.preload`    | worker  | D2H staging into host memory     | `False`                                       |
+| `nvrx.ckpt.save.write`      | worker  | the write itself                 | `False`                                       |
 
-| Condition                                         | `cycle_outcome` | Closed by                                |
-| ------------------------------------------------- | --------------- | ---------------------------------------- |
-| `WorkerState.SUCCEEDED`                           | `succeeded`     | monitor loop                             |
-| Local failure, restart granted                    | `failed`        | `_rendezvous`, when the next cycle opens |
-| Local failure, restart budget exhausted           | `failed`        | monitor loop, after teardown             |
-| Healthy node joins peer restart                   | `peer_restart`  | `_rendezvous`, when the next cycle opens |
-| Health check exclusion (`UnhealthyNodeException`) | `excluded`      | `_rendezvous` exception handler          |
-| Standby node: job ends                            | `standby`       | `_rendezvous` exception handler          |
-| Attribution stop / peer no-restart                | `terminated`    | monitor loop, after teardown             |
-| Signal                                            | _(none)_        | `_OpenSpanCloser` at shutdown            |
+`stage_wait` nests inside `schedule`. The worker's `preload` measures the same physical work from the other side, so the difference between them is queue and IPC overhead.
 
-The exclusion and standby handlers live in `_rendezvous` itself, so they cover the first rendezvous as well as every restart.
+### CPU SHM mode (`cpu_shm_mode=True`)
 
-## Span Attributes
+The worker skips CUDA initialization entirely and needs no IPC handles. Staging runs **in the trainer**: `FileSystemWriterAsync.prepare_write_data` copies GPU tensors into a training-side shared-memory cache, and the worker writes from that memory.
 
-| Attribute               | Type | Spans                    | Notes                                              |
-| ----------------------- | ---- | ------------------------ | -------------------------------------------------- |
-| `nvrx.cycle`            | int  | `cycle`, `worker_start`  | restart cycle counter                              |
-| `nvrx.node`             | str  | `cycle`, `worker_start`  | node hostname                                      |
-| `nvrx.rank`             | int  | `cycle`, `rendezvous`    | elastic group rank; set once rendezvous assigns it |
-| `nvrx.group_world_size` | int  | `cycle`                  | number of active nodes; set after rendezvous       |
-| `nvrx.failures`         | int  | `cycle`                  | set on the `failed` outcome                        |
-| `nvrx.cycle_outcome`    | str  | `cycle`                  | see the close-path table above                     |
-| `nvrx.round`            | int  | `rendezvous`             | rendezvous round number                            |
-| `nvrx.membership`       | str  | `cycle`, `rendezvous`    | `active`, `standby`, or `late_joiner`              |
-| `nvrx.max_restarts`     | int  | `cycle`                  | configured restart budget                          |
-| `nvrx.remaining_restarts` | int | `cycle`                 | budget left when the round was joined              |
-| `nvrx.rdzv_run_id`      | str  | `cycle`                  | rendezvous run id                                  |
-| `nvrx.active_nodes`     | str  | `cycle`                  | roster: comma-separated active node addresses      |
-| `nvrx.standby_nodes`    | str  | `cycle`                  | roster: comma-separated standby node addresses     |
-| `nvrx.active_ranks`     | str  | `cycle`                  | roster: comma-separated active group ranks         |
-| `is_goodput_span`       | bool | see the goodput table    | resiliency overhead rather than training           |
-| `nvrx.call_idx`         | int  | `nvrx.ckpt.save.request` | checkpoint call index for cross-rank join          |
+Reusing those shm tensors introduces a second exposed wait that has no counterpart in IPC mode. Before the first `copy_()` into a reused tensor, `prepare_write_data` fires the drain that `AsyncCallsQueue` registers — `maybe_finalize_async_calls(blocking=True, no_dist=True)` — so any prior write still reading those tensors completes first. **This blocks the current checkpoint on the previous one's write**, which is the mode's characteristic stall and needs its own span to be visible at all.
 
-## Async Checkpoint Worker: Spawn Boundary
+| Span                       | Process | Covers                                     | `is_goodput_span`                             |
+| -------------------------- | ------- | ------------------------------------------ | --------------------------------------------- |
+| `nvrx.ckpt.save.shm_drain` | trainer | the blocking drain in `prepare_write_data` | `True` — blocked on the _previous_ checkpoint |
+| `nvrx.ckpt.save.preload`   | trainer | GPU to shared memory copy                  | `True`                                        |
+| `nvrx.ckpt.save.schedule`  | trainer | `schedule_async_call`                      | `True`                                        |
+| `nvrx.ckpt.save.request`   | worker  | one request, end to end                    | `False`                                       |
+| `nvrx.ckpt.save.write`     | worker  | the write itself                           | `False`                                       |
 
-The persistent checkpoint worker is launched with `start_method="spawn"`. It inherits environment variables but no in-memory state, so it re-initializes telemetry at the top of `async_process_target` and calls `handle.shutdown()` in the `finally` block.
+`preload` keeps its name across both modes so one query answers "how long does staging take," with the process it ran in distinguished by `service.name`. `shm_drain` and `stage_wait` are deliberately different names: they are different phenomena, and conflating them would hide that a slow checkpoint in SHM mode is usually caused by the _preceding_ one.
 
-The worker's `rank` is already a parameter; `world_size` is read from the inherited `WORLD_SIZE` environment variable rather than threaded through the call chain. Environment inheritance is also what carries the nemo-lens configuration across the spawn, so `NemoLensConfig.from_env()` reads the same values in the worker as in the trainer.
+`prepare_write_data` runs before `schedule_async_call`, so `shm_drain` and the trainer-side `preload` are siblings of `schedule`, not children.
 
-The worker does not correlate with the launcher's OTel trace — it emits independent `nvrx.ckpt.*` spans identified by `nvrx.call_idx`.
+### Trainer side
 
-```mermaid
-sequenceDiagram
-    participant C as async_ckpt/core.py (caller)
-    participant W as Worker process (spawned)
+Checkpoint code called from the trainer runs on the trainer's thread and inherits its context, so trainer-side `nvrx.ckpt` spans nest under the trainer's active span with no reference passing, and a `BaggageSpanProcessor` stamps `nvrx.iteration` on them.
 
-    C->>W: spawn(async_loop, args=(rank, ...))
-    W->>W: tel_handle = setup_telemetry(rank, WORLD_SIZE)
-    loop each checkpoint request
-        W->>W: with span("nvrx.ckpt", "nvrx.ckpt.save.request", {nvrx.call_idx: ...})
-        W->>W: with span("nvrx.ckpt", "nvrx.ckpt.save.write")
-    end
-    W->>W: tel_handle.shutdown()
-```
+At enqueue NVRx captures its own current context — it is already inside the caller's active span — and reads `nvrx.iteration` from Baggage. Both travel to the worker in a defaulted field on the `AsyncRequest` `NamedTuple`, which leaves every existing call site unchanged.
 
-## Spans
+### Worker side
 
-| Span                     | Group       | Source                        | Covers                                |
-| ------------------------ | ----------- | ----------------------------- | ------------------------------------- |
-| `nvrx.ft.cycle`          | `nvrx.ft`   | `launcher.py`                 | one full restart cycle                |
-| `nvrx.ft.round_wait`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | waiting for a round to open           |
-| `nvrx.ft.rendezvous`     | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | one rendezvous round, after it opened |
-| `nvrx.ft.health_check`   | `nvrx.ft`   | `ft_rendezvous_barrier.py`    | `ensure_node_is_healthy`              |
-| `nvrx.ft.worker_start`   | `nvrx.ft`   | `launcher.py`                 | `_start_workers`                      |
-| `nvrx.ft.run`            | `nvrx.ft`   | `launcher.py`                 | workers up until the run ends           |
-| `nvrx.ft.fault`          | `nvrx.ft`   | `launcher.py`                 | instant: a failure was detected         |
-| `nvrx.ft.teardown`       | `nvrx.ft`   | `launcher.py`                 | `_stop_workers`                       |
-| `nvrx.ft.attribution`    | `nvrx.ft`   | `health_check.py`             | an attribution lookup (root span)       |
-| `nvrx.ckpt.save.request` | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | preload + write for one request       |
-| `nvrx.ckpt.save.write`   | `nvrx.ckpt` | `async_ckpt/core.py` (worker) | the write itself                      |
+The persistent worker is spawned with `start_method="spawn"`. It inherits the environment but no in-memory state, so it calls `setup_telemetry` at the top of `async_process_target` with its own `service.name` and `service.instance.id` — the trainer and the worker must not claim the same instance identity. `OTEL_RESOURCE_ATTRIBUTES` carries job and cycle context across the spawn with no code.
 
-A hot spare produces one `round_wait` / `rendezvous` pair per round, so span volume tracks restart rounds rather than poll frequency. The `rendezvous` span for the round a node sits out is closed by the next round's, and `_perform_rendezvous` closes the last one in a `finally` so it can never outlive the enclosing `cycle` span.
+Each request's span **links** to the trainer's `save.schedule` span via the captured context, so cause is navigable without the worker joining the trainer's trace. `nvrx.call_idx` and `nvrx.iteration` join the two sides for any consumer that cannot follow links.
 
-## Startup Windows
+Each phase is its own span so a breakdown is a group-by rather than a subtraction.
 
-Two windows are over before the agent exists, so they are recorded from timestamps rather than measured:
+## Initialization and shutdown
 
-| Span | From | To | Group |
-| ---- | ---- | -- | ----- |
-| `pre_startup` | `SLURM_JOB_START_TIME` | `LENS_LAUNCH_SCRIPT_START_TIME` | `job` |
-| `nvrx.cold_start` | `LENS_LAUNCH_SCRIPT_START_TIME` | agent ready to rendezvous | `job` |
+| Process           | Setup                                                         | Shutdown                |
+| ----------------- | ------------------------------------------------------------- | ----------------------- |
+| Launcher agent    | top of `LocalElasticAgent.run()`, before the first rendezvous | that method's `finally` |
+| Checkpoint worker | top of `async_process_target`, after the spawn                | that method's `finally` |
 
-They **tile**: `pre_startup` ends exactly where `cold_start` begins, so the interval from Slurm granting the allocation to this agent being ready is covered once, not twice. Both root their own trace rather than attaching to whatever is open, since they describe the run before this process and belong to no cycle.
+The checkpoint worker reaches its `finally` because `_handle_sigterm` turns the parent's SIGTERM into a `SystemExit` — the same mechanism that releases its CUDA IPC handles.
 
-Two details are load-bearing for the consumer:
+`shutdown()` is bounded in both. It flushes synchronously and can otherwise block for the exporter's entire retry budget against a collector that is gone, which is longer than the SIGTERM-to-SIGKILL grace either process gets. Neither uses `atexit`, which runs at interpreter finalization after `sys.exit` has unwound.
 
-- **`pre_startup` carries no `nvrx.` prefix.** A trainer emits a span of that exact name when there is no `ft_launcher`, and the goodput taxonomy classifies by name; prefixing ours would make the same window classify differently depending on whether NVRx was in the picture.
-- **The agent must emit these, or nobody does.** A trainer under NVRx suppresses its own `pre_startup` — and its `startup.launch_script` / `startup.container_load` — on seeing `NVRX_LAUNCH_TIME`, precisely so it does not double-count against these. Setting that variable without emitting these spans loses the windows silently.
-
-Both are gated on the `job` group, the same group a trainer gates its `pre_startup` on.
-
-## Worker Environment Handoff
-
-`_start_workers` stamps each worker cohort's environment so a lens-instrumented trainer can place its own spans in the right restart cycle. The batch script's launch stamp is set once outside the `srun` and is stale for every restart, so a restarted trainer needs this cohort's own anchors.
-
-| Variable                | Value                                             |
-| ----------------------- | ------------------------------------------------- |
-| `NVRX_CYCLE`            | restart cycle number                              |
-| `NVRX_MEMBERSHIP`       | `active` — a launched worker is active this cycle |
-| `NVRX_INFRA_RANK`       | this node's infrastructure rank                   |
-| `NVRX_CYCLE_START_TIME` | when this cycle's rendezvous began                |
-| `NVRX_LAUNCH_TIME`      | when this cohort was launched                     |
-
-Nothing in NVRx reads these; they are a contract with the trainer.
-
-## Out of Scope
-
-- **`pre_startup` / `nvrx.cold_start`** — SLURM queue and prolog timing. NVRx does not own this; the batch script or a separate launcher wrapper should emit these spans.
-- **Attribution result correlation** — the attribution client runs on a long-lived daemon thread and results can arrive cycles after the failure they describe, so correlating them needs a span reference captured at submission time. Not implemented.
+Two points flush explicitly, because the process may be killed moments later and those spans would die in the batch processor's queue: a detected fault, and a health-check exclusion.
