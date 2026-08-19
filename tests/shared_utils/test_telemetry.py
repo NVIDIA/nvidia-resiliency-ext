@@ -139,8 +139,8 @@ class TestBackdatedSpan(unittest.TestCase):
     """Startup windows are reconstructed from timestamps, so guard the inputs."""
 
     def test_inert_without_telemetry(self):
-        telemetry.backdated_span("job", "pre_startup", 1000.0, 1016.7)
-        telemetry.backdated_span("job", "nvrx.cold_start", 1016.7, 1020.9, {"nvrx.node": "n0"})
+        telemetry.backdated_span("job", "python.startup", 1000.0, 1016.7)
+        telemetry.backdated_span("job", "python.imports", 1016.7, 1020.9, {"nvrx.node": "n0"})
 
     def test_absent_timestamps_are_dropped_not_raised(self):
         # SLURM_JOB_START_TIME is absent off Slurm, so the caller passes None
@@ -150,9 +150,9 @@ class TestBackdatedSpan(unittest.TestCase):
         telemetry.backdated_span("job", "pre_startup", None, None)
 
     def test_non_positive_window_is_dropped(self):
-        # Clock skew between Slurm's stamp and the launch script's can invert these.
-        telemetry.backdated_span("job", "pre_startup", 1016.7, 1000.0)
-        telemetry.backdated_span("job", "pre_startup", 1000.0, 1000.0)
+        # A coarse clock can make a fast window measure as zero-length or inverted.
+        telemetry.backdated_span("job", "python.imports", 1016.7, 1000.0)
+        telemetry.backdated_span("job", "python.imports", 1000.0, 1000.0)
 
 
 class TestPhase(unittest.TestCase):

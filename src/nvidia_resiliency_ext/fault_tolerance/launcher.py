@@ -12,6 +12,15 @@
 # - Changed shutdown logic
 # - security fix for watchdog_file_path
 
+import time
+
+# Stamped around this module's import block so the agent can report what its own
+# startup cost. Importing torch alone is seconds, and on a cold page cache across
+# a whole job it is a large share of the time before any work happens. Nothing
+# else may be imported above this line, or it is measured as startup rather than
+# as an import.
+_IMPORTS_STARTED = time.time()  # isort: split
+
 import asyncio
 
 # fmt: off
@@ -29,7 +38,6 @@ import subprocess  # nosec B404
 import sys
 import tempfile
 import threading
-import time
 import uuid
 import warnings
 from argparse import REMAINDER, ArgumentParser
@@ -115,6 +123,8 @@ from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
+
+_IMPORTS_FINISHED = time.time()
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -565,6 +575,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                 "nvrx.node": self._node_id,
                 "service.instance.id": f"{job_id_from_env() or 'nvrx'}-agent{node_rank}",
             },
+        )
+        # Backdated as soon as there is a tracer: both windows closed long before
+        # this line, and neither belongs to a cycle.
+        telemetry.record_process_startup(
+            "job", _IMPORTS_STARTED, _IMPORTS_FINISHED, {"nvrx.node": self._node_id}
         )
         start_time = time.monotonic()
         shutdown_called: bool = False

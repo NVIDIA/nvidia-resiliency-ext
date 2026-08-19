@@ -318,6 +318,45 @@ def set_span_attributes(attributes: dict) -> None:
     _safe_set_span_attributes(trace.get_current_span(), attributes)
 
 
+def record_process_startup(
+    group: str,
+    imports_started: float,
+    imports_finished: float,
+    attributes: Optional[dict] = None,
+) -> None:
+    """Record how long this process took to become able to run.
+
+    Two windows, both over before there was a tracer to measure them, so both
+    are backdated:
+
+    * ``python.startup`` -- the process being created to its entry module's
+      first statement. Interpreter start, and on a shared filesystem the cost of
+      finding and reading the interpreter and the standard library at all.
+    * ``python.imports`` -- the entry module's top-level imports. Importing
+      torch alone is seconds, and on a cold page cache across thousands of nodes
+      it is a large share of the time before a job does any work.
+
+    ``imports_started`` and ``imports_finished`` are wall-clock seconds stamped
+    around the entry module's import block; the process create time comes from
+    the OS. Neither span carries an ``nvrx.`` prefix -- they describe Python, not
+    NVRx, and ``service.name`` already says which process emitted them, so one
+    query answers "how long did imports take" across every service that records
+    them.
+
+    Both root their own trace. They precede every cycle, so there is nothing for
+    them to belong to.
+    """
+    try:
+        import psutil
+
+        created = psutil.Process().create_time()
+    except Exception:
+        logger.debug("Process create time unavailable", exc_info=True)
+        created = None
+    backdated_span(group, "python.startup", created, imports_started, attributes)
+    backdated_span(group, "python.imports", imports_started, imports_finished, attributes)
+
+
 class Phase:
     """A long window, recorded as a start marker now and a backdated span later.
 
