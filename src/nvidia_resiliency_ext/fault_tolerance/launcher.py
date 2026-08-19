@@ -1140,16 +1140,14 @@ class LocalElasticAgent(SimpleElasticAgent):
             {"nvrx.cycle": restart_count, "nvrx.node": self._node_id, "is_goodput_span": True}
         )
 
-        # Telemetry handoff to the worker cohort. The batch script's launch stamp is set
-        # once outside the srun and is stale for every restart, so a restarted trainer
-        # needs this cohort's own anchors to place its startup span in the right cycle.
+        # Telemetry handoff to the worker cohort: which cycle this process belongs to,
+        # and what role it plays in it. Both are facts about NVRx that the worker cannot
+        # observe for itself. No timestamps cross this boundary -- a worker measures its
+        # own windows, and NVRx measures its own.
         cohort_env = {
             "NVRX_CYCLE": str(restart_count),
             "NVRX_MEMBERSHIP": "active",  # a launched worker is active this cycle
-            "NVRX_LAUNCH_TIME": repr(time.time()),
         }
-        if self._cycle_start_time is not None:
-            cohort_env["NVRX_CYCLE_START_TIME"] = repr(self._cycle_start_time)
         try:
             cohort_env["NVRX_INFRA_RANK"] = str(get_infrastructure_rank(skip_nodename_logic=True))
         except Exception:
@@ -1458,39 +1456,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         if self._pcontext is not None:
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
-
-    def _record_startup_spans(self) -> None:
-        """Record the scheduling and cold-start windows that precede this agent.
-
-        Both are backdated: they were over before this process could measure
-        them. Only the agent emits them -- a worker under NVRx suppresses its
-        own on seeing NVRX_LAUNCH_TIME, on the expectation that these exist, so
-        not emitting them loses the windows entirely rather than falling back to
-        the worker's version.
-
-        The two TILE: pre_startup ends exactly where cold_start begins, so the
-        span from Slurm granting the allocation to this agent being ready is
-        covered once rather than twice. pre_startup deliberately carries no nvrx
-        prefix, so it classifies identically to the span a worker emits when
-        there is no ft_launcher.
-        """
-
-        def _env_seconds(name: str) -> Optional[float]:
-            try:
-                return float(os.environ[name])
-            except (KeyError, ValueError):
-                return None
-
-        launch_start = _env_seconds("LENS_LAUNCH_SCRIPT_START_TIME")
-        if launch_start is None:
-            return  # nothing anchors these windows
-        attrs = {"is_goodput_span": True, "nvrx.node": self._node_id}
-        # Queue tail, prolog and node setup, before the launch script's first line.
-        telemetry.backdated_span(
-            "job", "pre_startup", _env_seconds("SLURM_JOB_START_TIME"), launch_start, attrs
-        )
-        # Launch script's first line up to this agent being ready to rendezvous.
-        telemetry.backdated_span("job", "nvrx.cold_start", launch_start, time.time(), attrs)
 
     def _joined_cycle_attrs(self, worker_group: WorkerGroup) -> dict:
         """Telemetry attributes describing the round this node just joined.
