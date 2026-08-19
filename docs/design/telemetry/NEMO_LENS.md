@@ -60,7 +60,7 @@ NVRx uses three of OTel's carriers, and which one a value belongs in follows fro
 | **Span attributes**     | one span                                 | the dict passed to `span`, `linked_span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes` | once per span   |
 | **Span links**          | a related span in another trace          | `AsyncRequest.telemetry_carrier` on enqueue — the only one                                                | once per span         |
 
-Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. It is ambient context, not telemetry: it reaches no span by itself, and NVRx installs nothing that would make it. NVRx reads it explicitly at enqueue and sets it on `save.schedule`, then carries it to the checkpoint worker on the `AsyncRequest`, where the worker reads it back and sets it on `save.request`. A deployment that configures a `BaggageSpanProcessor` gets it on every other trainer-side span too, at no cost to this design and with no code here.
+Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. It is ambient context, not telemetry: it reaches no span by itself, and NVRx installs no span processor to make it. NVRx reads it out explicitly at enqueue and sets it on exactly two spans, `save.schedule` in the trainer and `save.request` in the worker — the two that have to join. It travels between them in the carrier NVRx already captures, so it costs one entry in an existing dict, once per checkpoint, and nothing per span.
 
 ### Which carrier for which value
 
