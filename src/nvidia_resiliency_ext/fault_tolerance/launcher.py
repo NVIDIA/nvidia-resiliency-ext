@@ -573,7 +573,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             node_rank,
             int(os.environ.get("SLURM_NNODES", "1")),
             resource_attributes={
-                "nvrx.role": "ft_launcher_agent",
+                "service.name": "nvrx.ft_launcher",
                 "nvrx.node": self._node_id,
                 "service.instance.id": f"nvrx-agent{node_rank}",
             },
@@ -1496,12 +1496,11 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _joined_cycle_attrs(self, worker_group: WorkerGroup) -> dict:
         """Telemetry attributes describing the round this node just joined.
 
-        The roster is what the round agreed on rather than what this node observed,
-        which makes it the only record naming a node that hung or was killed before
-        it exported anything. Every getter is a read of state the handler already
-        holds -- the same source the launcher uses for cycle info -- so this costs
-        no store traffic. Only the store host populates the rosters; elsewhere they
-        are None and simply absent from the span.
+        Every value describes this node's own place in the round. The round's
+        rosters are deliberately not among them: each node recording every other
+        node's address costs bytes quadratic in job size, on every cycle span of
+        every node, to say something each node already reports about itself.
+        Who was active in a cycle is a GROUP BY over nvrx.cycle, not a list.
         """
         spec = worker_group.spec
         attrs = {
@@ -1511,20 +1510,13 @@ class LocalElasticAgent(SimpleElasticAgent):
             "nvrx.max_restarts": spec.max_restarts,
             "nvrx.remaining_restarts": self._remaining_restarts,
         }
-        for name, getter in (
-            ("nvrx.active_nodes", "get_active_node_addrs"),
-            ("nvrx.standby_nodes", "get_standby_node_addrs"),
-            ("nvrx.active_ranks", "get_active_ranks"),
-            ("nvrx.rdzv_run_id", "get_run_id"),
-        ):
-            try:
-                value = getattr(spec.rdzv_handler, getter)()
-            except Exception:
-                logger.debug("Rendezvous %s unavailable for telemetry", getter, exc_info=True)
-                continue
-            if value is None:
-                continue
-            attrs[name] = ",".join(str(e) for e in value) if isinstance(value, list) else value
+        try:
+            run_id = spec.rdzv_handler.get_run_id()
+        except Exception:
+            logger.debug("Rendezvous run id unavailable for telemetry", exc_info=True)
+        else:
+            if run_id is not None:
+                attrs["nvrx.rdzv_run_id"] = run_id
         return attrs
 
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:

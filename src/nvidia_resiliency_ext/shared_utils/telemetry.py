@@ -140,16 +140,17 @@ def setup_telemetry(rank: int, world_size: int, resource_attributes: Optional[di
     process whose rank is not a trainer rank overrides ``service.instance.id``
     rather than colliding with the trainer that happens to share its number.
 
-    NVRx defaults to exporting from every process: each node runs its own
-    collector and we want per-node visibility. An explicit
-    ``NEMO_LENS_EXPORT_STRATEGY`` still wins, so volume remains tunable.
+    Export strategy is left entirely to nemo-lens's default and
+    ``NEMO_LENS_EXPORT_STRATEGY``. NVRx does not override it: whether every node
+    should export or only one depends on how many collectors the deployment runs
+    and where, which is a property of the launching environment rather than of
+    NVRx. A deployment with a collector per node sets ``all_ranks`` to get
+    per-node visibility; one with a single gateway does not.
     """
     if not _AVAILABLE:
         return _NoOpHandle()
     try:
         config = _NemoLensConfig.from_env(span_group_cls=_NVRxSpanGroup)
-        if not os.environ.get("NEMO_LENS_EXPORT_STRATEGY"):
-            config.export_strategy = "all_ranks"
         return _setup_telemetry(config, rank, world_size, resource_attributes=resource_attributes)
     except Exception:
         logger.warning("nemo-lens init failed, continuing without telemetry", exc_info=True)

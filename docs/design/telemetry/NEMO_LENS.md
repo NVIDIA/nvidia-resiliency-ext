@@ -251,7 +251,8 @@ Resource attributes are covered under Identity; everything here is per-span.
 | `nvrx.node`               | str  | resource              | node identity                             |
 | `nvrx.rank`               | int  | `cycle`, `rendezvous` | elastic group rank, once assigned         |
 | `nvrx.group_world_size`   | int  | `cycle`               | active node count                         |
-| `nvrx.failures`           | int  | `cycle`               | on the `failed` outcome                   |
+| `nvrx.failures`           | int  | `cycle`, `fault`      | failed worker count                       |
+| `nvrx.state`              | str  | `fault`               | `WorkerState` at detection                |
 | `nvrx.cycle_outcome`      | str  | `cycle`               | see above                                 |
 | `nvrx.round`              | int  | `rendezvous`          | rendezvous round number                   |
 | `nvrx.membership`         | str  | `cycle`, `rendezvous` | `active`, `standby`, `late_joiner`        |
