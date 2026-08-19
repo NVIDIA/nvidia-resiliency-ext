@@ -155,6 +155,98 @@ class TestBackdatedSpan(unittest.TestCase):
         telemetry.backdated_span("job", "pre_startup", 1000.0, 1000.0)
 
 
+class TestPhase(unittest.TestCase):
+    """A phase is a mark now and a backdated span later; check the two line up.
+
+    nemo-lens and the OTel SDK are optional and usually absent here, so the two
+    primitives a phase is built from are replaced and the phase's own logic --
+    span naming, the backdated window, where attributes land -- is what is under
+    test.
+    """
+
+    def setUp(self):
+        self.marks = []
+        self.spans = []
+
+        def fake_mark(group, name, attributes=None):
+            self.marks.append((group, name, attributes))
+            return f"ctx-of-{name}"
+
+        def fake_backdated(group, name, start, end, attributes=None, parent=None):
+            self.spans.append((group, name, start, end, attributes, parent))
+
+        for target, replacement in (("mark", fake_mark), ("backdated_span", fake_backdated)):
+            patcher = unittest.mock.patch.object(telemetry, target, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_marks_the_start_and_backdates_the_span_to_it(self):
+        phase = telemetry.Phase()
+        before = time.time()
+        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 2})
+        phase.close({"nvrx.cycle_outcome": "succeeded"})
+        after = time.time()
+
+        self.assertEqual(self.marks, [("nvrx.ft", "nvrx.ft.cycle_start", {"nvrx.cycle": 2})])
+        (group, name, start, end, attributes, parent) = self.spans[0]
+        self.assertEqual((group, name), ("nvrx.ft", "nvrx.ft.cycle"))
+        # The span covers the window, rather than being an instant at close.
+        self.assertLessEqual(before, start)
+        self.assertLessEqual(start, end)
+        self.assertLessEqual(end, after)
+        # Same trace as the mark, so the spans that ran inside the phase join it.
+        self.assertEqual(parent, "ctx-of-nvrx.ft.cycle_start")
+        self.assertEqual(attributes, {"nvrx.cycle_outcome": "succeeded"})
+
+    def test_open_attributes_go_on_the_mark_not_the_span(self):
+        # The mark is the only thing that exists while the phase runs, so what
+        # identifies the phase has to be on it -- the backdated span may never
+        # be emitted at all.
+        phase = telemetry.Phase()
+        phase.open("nvrx.ft", "nvrx.ft.run", {"is_goodput_span": False})
+        phase.close()
+        self.assertEqual(self.marks[0][2], {"is_goodput_span": False})
+        self.assertEqual(self.spans[0][4], {})
+
+    def test_set_accumulates_until_close(self):
+        phase = telemetry.Phase()
+        phase.open("nvrx.ft", "nvrx.ft.cycle")
+        phase.set({"nvrx.rank": 3})
+        phase.set({"nvrx.membership": "active"})
+        phase.close({"nvrx.cycle_outcome": "failed"})
+        self.assertEqual(
+            self.spans[0][4],
+            {"nvrx.rank": 3, "nvrx.membership": "active", "nvrx.cycle_outcome": "failed"},
+        )
+
+    def test_close_is_idempotent(self):
+        phase = telemetry.Phase()
+        phase.open("nvrx.ft", "nvrx.ft.cycle")
+        phase.close()
+        phase.close({"nvrx.cycle_outcome": "succeeded"})
+        self.assertEqual(len(self.spans), 1)
+
+    def test_close_without_open_is_a_no_op(self):
+        telemetry.Phase().close({"nvrx.cycle_outcome": "succeeded"})
+        self.assertEqual(self.spans, [])
+
+    def test_open_closes_the_previous_phase(self):
+        # The launcher reuses one handle across cycles and relies on this.
+        phase = telemetry.Phase()
+        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 0})
+        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 1})
+        self.assertEqual(len(self.spans), 1, "the first cycle was never emitted")
+        self.assertEqual(len(self.marks), 2)
+
+    def test_attributes_do_not_leak_between_phases(self):
+        phase = telemetry.Phase()
+        phase.open("nvrx.ft", "nvrx.ft.cycle")
+        phase.close({"nvrx.cycle_outcome": "failed"})
+        phase.open("nvrx.ft", "nvrx.ft.cycle")
+        phase.close()
+        self.assertEqual(self.spans[1][4], {})
+
+
 class TestSetupTelemetry(unittest.TestCase):
 
     def test_returns_handle_with_idempotent_shutdown(self):

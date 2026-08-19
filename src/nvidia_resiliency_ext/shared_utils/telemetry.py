@@ -29,6 +29,7 @@ names are dotted and so cannot be Python keywords.
 import logging
 import os
 import threading
+import time
 from contextlib import ExitStack, contextmanager
 from typing import ClassVar, Optional
 
@@ -249,6 +250,7 @@ def backdated_span(
     start: Optional[float],
     end: Optional[float],
     attributes: Optional[dict] = None,
+    parent=None,
 ) -> None:
     """Record a span for a window that elapsed before there was a tracer.
 
@@ -257,9 +259,14 @@ def backdated_span(
     with both timestamps rather than wrapped around live code. ``start`` and
     ``end`` are wall-clock seconds.
 
-    Emitted with an empty context, so it roots its own trace rather than
-    attaching to whatever happens to be open. These describe the run before this
-    process, and are not part of any cycle.
+    ``parent`` is the ``SpanContext`` this span belongs under, normally the
+    ``SpanContext`` returned by the ``mark`` that opened the window. Passing it
+    explicitly is what puts the backdated span in the same trace as the spans
+    that ran inside the window, even though nothing was held open across it.
+
+    Without a ``parent`` the span is emitted with an empty context and roots its
+    own trace, which is what a window that predates every other span in the
+    process wants.
 
     A no-op if the window is not a positive interval, so callers can pass
     whatever timestamps they found without pre-checking.
@@ -268,24 +275,34 @@ def backdated_span(
         return
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return
+    from opentelemetry import trace
     from opentelemetry.context import Context
 
+    context = Context()
+    if parent is not None:
+        context = trace.set_span_in_context(trace.NonRecordingSpan(parent), context)
     tracer = _get_tracer(__name__)
     span = tracer.start_span(
-        name, context=Context(), start_time=int(start * 1e9), attributes=attributes or {}
+        name, context=context, start_time=int(start * 1e9), attributes=attributes or {}
     )
     span.end(end_time=int(end * 1e9))
 
 
-def mark(group: str, name: str, attributes: Optional[dict] = None) -> None:
+def mark(group: str, name: str, attributes: Optional[dict] = None):
     """Record an instant: a zero-duration span pinning a moment in time.
 
     For a boundary worth a timestamp but with no duration of its own, where the
     surrounding spans start too late to pin it -- a detected fault sits between
     the run span ending and the teardown span starting.
+
+    Returns the ``SpanContext`` of the instant, or None when the group is off.
+    A mark exports the moment it is made, so its context outlives it: it is a
+    trace and span id, not a handle to anything still running. That is what lets
+    a long window be opened by a mark and closed by a backdated span in the same
+    trace, without a span being held open across it.
     """
-    with span(group, name, attributes):
-        pass
+    with span(group, name, attributes) as recorded:
+        return recorded.get_span_context() if recorded is not None else None
 
 
 def set_span_attributes(attributes: dict) -> None:
@@ -299,3 +316,98 @@ def set_span_attributes(attributes: dict) -> None:
     from opentelemetry import trace
 
     _safe_set_span_attributes(trace.get_current_span(), attributes)
+
+
+class Phase:
+    """A long window, recorded as a start marker now and a backdated span later.
+
+    A span exports only when it ends, so a span held open across a restart cycle
+    -- which on a healthy job is the whole job -- is invisible for as long as the
+    thing it measures is interesting. Worse, if the process dies the span is
+    never exported at all, and the window that most wanted recording is the one
+    that goes missing.
+
+    So a phase is two spans. ``open()`` records a zero-duration ``<name>_start``
+    mark, which exports immediately; ``close()`` records a ``<name>`` span
+    backdated to that instant, carrying the duration and the outcome. A phase
+    that never closes leaves its marker and every span that ran inside it, and
+    the absence of the backdated span is itself the signal that it did not
+    finish.
+
+    Between the two, the marker's ``SpanContext`` is the active OTel context, so
+    spans opened anywhere on this thread nest under the phase and land in its
+    trace without anything being passed to them. That is ``ManualSpan``'s
+    grouping property without ``ManualSpan``'s lifetime.
+
+    Attributes given to ``open`` go on the marker; attributes accumulated by
+    ``set`` and ``close`` go on the backdated span, since there is no live span
+    to carry them in between.
+
+    ORDERING CONTRACT, inherited from ``contextvars``: tokens must be reset in
+    the reverse order they were set, on the thread that set them. So ``open()``
+    and ``close()`` must run on the same thread, and any phase or span opened
+    after this one must close before it does.
+    """
+
+    def __init__(self) -> None:
+        self._group: Optional[str] = None
+        self._name: Optional[str] = None
+        self._start: Optional[float] = None
+        self._parent = None
+        self._token = None
+        self._attributes: dict = {}
+
+    def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
+        """Mark the start of the phase, closing any phase this handle had open."""
+        self.close()
+        self._group, self._name = group, name
+        self._start = time.time()
+        self._attributes = {}
+        self._parent = mark(group, f"{name}_start", attributes)
+        if not _AVAILABLE or self._parent is None:
+            return
+        try:
+            from opentelemetry import context as otel_context
+            from opentelemetry import trace
+
+            self._token = otel_context.attach(
+                trace.set_span_in_context(trace.NonRecordingSpan(self._parent))
+            )
+        except Exception:
+            # Losing the ambient context costs nesting, not spans, and must not
+            # cost the workload anything at all.
+            logger.debug("Could not make %s the active context", self._name, exc_info=True)
+
+    def set(self, attributes: Optional[dict] = None) -> None:
+        """Record attributes to be emitted on the backdated span at close."""
+        if self._start is None or not attributes:
+            return
+        self._attributes.update(attributes)
+
+    def close(self, attributes: Optional[dict] = None) -> None:
+        """Emit the backdated span covering the phase. Idempotent."""
+        self.set(attributes)
+        if self._start is None:
+            return
+        if self._token is not None:
+            try:
+                from opentelemetry import context as otel_context
+
+                otel_context.detach(self._token)
+            except Exception:
+                # A phase opened after this one outlived it, so the token is no
+                # longer the top of this thread's context stack. The span is
+                # still correct; only the ambient context for whatever runs next
+                # is stale, and the next open() replaces it.
+                logger.debug("Out-of-order close for phase %s", self._name, exc_info=True)
+            self._token = None
+        backdated_span(
+            self._group,
+            self._name,
+            self._start,
+            time.time(),
+            self._attributes,
+            parent=self._parent,
+        )
+        self._group = self._name = self._start = self._parent = None
+        self._attributes = {}

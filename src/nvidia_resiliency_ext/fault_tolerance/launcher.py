@@ -453,9 +453,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
-        self._cycle_span = telemetry.ManualSpan()
-        self._run_span = telemetry.ManualSpan()
-        self._cycle_start_time: Optional[float] = None
+        # Phases, not spans: a cycle lasts the whole job when nothing goes wrong,
+        # and a span that long exports nothing until it is over.
+        self._cycle_phase = telemetry.Phase()
+        self._run_phase = telemetry.Phase()
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -702,8 +703,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                     self._exit_barrier_timeout,
                 )
-                self._run_span.close()
-                self._cycle_span.close({CYCLE_OUTCOME: "succeeded"})
+                self._run_phase.close()
+                self._cycle_phase.close({CYCLE_OUTCOME: "succeeded"})
                 self._exit_barrier()
                 return run_result
 
@@ -725,10 +726,10 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
-                self._run_span.close()
+                self._run_phase.close()
                 rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
                 self._stop_workers(self._worker_group)
-                self._cycle_span.close({CYCLE_OUTCOME: "terminated"})
+                self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                 self._worker_group.state = WorkerState.FAILED
                 raise NoRestartRequested(
                     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
@@ -746,7 +747,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 # The teardown span only starts once the restart decision has been made,
                 # so without this instant the detect-to-decide gap is unmeasured.
                 failures = len(run_result.failures or {})
-                self._run_span.close()
+                self._run_phase.close()
                 telemetry.mark(
                     "nvrx.ft",
                     "nvrx.ft.fault",
@@ -759,7 +760,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 # Set now, but the span stays open until the next rendezvous, so that
                 # _stop_workers records its teardown inside the cycle that failed.
-                self._cycle_span.set({CYCLE_OUTCOME: "failed", "nvrx.failures": failures})
+                self._cycle_phase.set({CYCLE_OUTCOME: "failed", "nvrx.failures": failures})
                 telemetry.flush()  # this node may be killed moments from here
 
                 log_msg = (
@@ -776,7 +777,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
-                self._cycle_span.close()
+                self._cycle_phase.close()
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED, failures=run_result.failures)
             elif state == WorkerState.HEALTHY:
@@ -796,9 +797,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                             role,
                             no_restart,
                         )
-                        self._run_span.close()
+                        self._run_phase.close()
                         self._stop_workers(self._worker_group)
-                        self._cycle_span.close({CYCLE_OUTCOME: "terminated"})
+                        self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                         self._worker_group.state = WorkerState.FAILED
                         raise NoRestartRequested(no_restart)
 
@@ -810,8 +811,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                         rank=group_rank,
                     )
 
-                    self._run_span.close()
-                    self._cycle_span.set({CYCLE_OUTCOME: "peer_restart"})
+                    self._run_phase.close()
+                    self._cycle_phase.set({CYCLE_OUTCOME: "peer_restart"})
 
                     log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
                     # The node that triggered the failure already opened the rendezvous.
@@ -821,7 +822,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     if not should_restart:
                         self._stop_workers(self._worker_group)
-                        self._cycle_span.close()
+                        self._cycle_phase.close()
                         self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
             else:
@@ -1492,12 +1493,12 @@ class LocalElasticAgent(SimpleElasticAgent):
         return attrs
 
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:
-        """Override to open the run span once the workers are actually running."""
+        """Override to open the run phase once the workers are actually running."""
         super()._initialize_workers(worker_group)
         # Every cycle passes through here, initial and restart alike, so this is the one
-        # place the run span has to open. It opens after _start_workers has returned:
-        # that method's own span must close before this one opens (see ManualSpan).
-        self._run_span.open("nvrx.ft", "nvrx.ft.run", {"is_goodput_span": False})
+        # place the run phase has to open. It opens after _start_workers has returned:
+        # that method's own span must close before this one opens (see Phase).
+        self._run_phase.open("nvrx.ft", "nvrx.ft.run", {"is_goodput_span": False})
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
@@ -1508,21 +1509,20 @@ class LocalElasticAgent(SimpleElasticAgent):
         # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
-        # Opening closes the previous cycle, which was held open so that _stop_workers
+        # Opening closes the previous cycle, which stayed open so that _stop_workers
         # could record its teardown span inside the cycle it belongs to.
-        self._cycle_start_time = time.time()
         opening = {"nvrx.cycle": self._get_global_cycle_number(), "nvrx.node": self._node_id}
-        self._cycle_span.open("nvrx.ft", "nvrx.ft.cycle", opening)
+        self._cycle_phase.open("nvrx.ft", "nvrx.ft.cycle", opening)
         try:
             # Call the parent class _rendezvous method
             super()._rendezvous(worker_group)
         except UnhealthyNodeException:
-            self._cycle_span.close({CYCLE_OUTCOME: "excluded"})  # failed the health check
+            self._cycle_phase.close({CYCLE_OUTCOME: "excluded"})  # failed the health check
             raise
         except (RendezvousClosedError, RendezvousGracefulExitError):
-            self._cycle_span.close({CYCLE_OUTCOME: "standby"})  # job ended while it waited
+            self._cycle_phase.close({CYCLE_OUTCOME: "standby"})  # job ended while it waited
             raise
-        self._cycle_span.set(self._joined_cycle_attrs(worker_group))
+        self._cycle_phase.set(self._joined_cycle_attrs(worker_group))
 
 
 # Source
