@@ -195,18 +195,6 @@ class TestExtendedResourceAttributes(unittest.TestCase):
         self.assertEqual(second, "cluster=oci-aga,nvrx.cycle=1")
 
 
-class TestTraceparent(unittest.TestCase):
-    """A cycle's start mark, handed to the process that runs inside the cycle."""
-
-    def test_none_without_a_context(self):
-        self.assertIsNone(telemetry.traceparent(None))
-
-    def test_none_without_telemetry(self):
-        # Nothing to format a context with, so the variable is simply not set --
-        # rather than set to something the receiver would try to parse.
-        self.assertIsNone(telemetry.traceparent(object()))
-
-
 class TestContextCarrier(unittest.TestCase):
     """Cause is handed to the checkpoint worker as a picklable dict of headers."""
 

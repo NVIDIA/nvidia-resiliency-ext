@@ -47,7 +47,7 @@ graph TD
 Exports, in three groups:
 
 - **Spans** — `span`, `linked_span`, `trace_fn`, `ManualSpan`, `Phase`, `mark`, `backdated_span`, `set_span_attributes`, `record_process_startup`
-- **Cross-process context** — `extended_resource_attributes`, `traceparent`, `context_carrier`, `carrier_baggage`
+- **Cross-process context** — `extended_resource_attributes`, `context_carrier`, `carrier_baggage`
 - **Lifecycle** — `setup_telemetry`, `shutdown`, `flush`
 
 ### Where NVRx data lives in OTel
@@ -58,7 +58,7 @@ NVRx uses three of OTel's carriers, and which one a value belongs in follows fro
 | ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------- |
 | **Resource attributes** | the emitting process, for its whole life | `OTEL_RESOURCE_ATTRIBUTES`, plus `setup_telemetry(resource_attributes=)` for what NVRx knows about itself | once per export batch |
 | **Span attributes**     | one span                                 | the dict passed to `span`, `linked_span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes` | once per span   |
-| **Span links**          | a related span in another trace          | `TRACEPARENT` on worker launch; `AsyncRequest.telemetry_carrier` on enqueue                               | once per span         |
+| **Span links**          | a related span in another trace          | `AsyncRequest.telemetry_carrier` on enqueue — the only one                                                | once per span         |
 
 Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. It is ambient context, not telemetry: it reaches no span by itself, and NVRx installs nothing that would make it. NVRx reads it explicitly at enqueue and sets it on `save.schedule`, then carries it to the checkpoint worker on the `AsyncRequest`, where the worker reads it back and sets it on `save.request`. A deployment that configures a `BaggageSpanProcessor` gets it on every other trainer-side span too, at no cost to this design and with no code here.
 
@@ -147,16 +147,23 @@ Export strategy is nemo-lens's default, set through `NEMO_LENS_EXPORT_STRATEGY`.
 
 ### Published to workers
 
-`_start_workers` extends the worker cohort's environment. Two variables, both additive:
+`_start_workers` extends the worker cohort's environment with one variable, additively:
 
 | Variable                   | Contents                                                         |
 | -------------------------- | ---------------------------------------------------------------- |
 | `OTEL_RESOURCE_ATTRIBUTES` | appended with `nvrx.cycle`, `nvrx.membership`, `nvrx.infra_rank` |
-| `TRACEPARENT`              | the cycle start marker's `SpanContext`                           |
 
 Cycle number is a **resource** attribute for a worker because a worker process is new each cycle, and a **span** attribute for the agent because the agent outlives cycles.
 
-A trainer extracts `TRACEPARENT` explicitly — no SDK reads it automatically — and attaches it as a **link**, not a parent, so per-rank traces stay per-rank.
+**No span reference crosses this boundary — not a parent, and not a link.** Belonging to a cycle is a property of the worker, not a relationship between two spans: it is constant for the worker's entire life, identical on every span it emits, and answers its queries as a `GROUP BY nvrx.cycle`. Three things follow.
+
+A parent is wrong outright. Trace membership is inherited through parentage and cannot be set independently, so parenting to the cycle would put every rank of every cycle in a single trace — the one outcome the design exists to prevent.
+
+A link is wrong too, though less obviously. Links name one related span; a cycle that runs for weeks contains thousands of trainer traces, and a reference repeated identically across all of them is a constant, which belongs in the Resource where it costs once per export batch.
+
+And a link could only ever name the wrong span. The reference is captured at worker launch, when the only cycle span in existence is the zero-duration `cycle_start` mark. `nvrx.ft.cycle` — the span carrying the duration and the outcome — is a different span with a different id, created at close, long after the worker was told anything.
+
+A `TRACEPARENT` variable is therefore not set. It would announce "adopt this trace and parent to this span," which is the opposite of what is meant, and a consumer following that convention would do the opposite of the design silently.
 
 ## Fault tolerance
 

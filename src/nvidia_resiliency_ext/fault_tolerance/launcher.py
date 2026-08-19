@@ -1177,17 +1177,17 @@ class LocalElasticAgent(SimpleElasticAgent):
             )
         except Exception:
             logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
+        # One variable, and no span reference. Which cycle a worker belongs to is an
+        # attribute of the worker, not a relationship between two spans: it is constant
+        # for the worker's whole life, identical across every span it emits, and answers
+        # its queries as a GROUP BY. A span reference would restate it per span, and
+        # could only ever name the cycle's start mark -- the backdated cycle span, the
+        # one carrying the duration and the outcome, does not exist yet at launch.
         cohort_env = {
             "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
                 worker_resource_attrs
             )
         }
-        # The cycle's start mark, for the worker to reference. A link, on the receiving
-        # side, and not a parent: it records which cycle a rank ran under without pulling
-        # every rank of every cycle into a single trace.
-        cycle_traceparent = telemetry.traceparent(self._cycle_phase.context)
-        if cycle_traceparent is not None:
-            cohort_env["TRACEPARENT"] = cycle_traceparent
 
         # Record worker start start event
         record_profiling_event(

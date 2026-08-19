@@ -359,38 +359,6 @@ def extended_resource_attributes(attributes: dict) -> str:
     return f"{_INHERITED_RESOURCE_ATTRIBUTES},{added}"
 
 
-def traceparent(context) -> Optional[str]:
-    """Format a ``SpanContext`` as a W3C ``traceparent``, for another process.
-
-    Returns None when there is no context to pass on, or when telemetry is not
-    available to format it.
-
-    What the receiving process does with it is the receiver's decision, and the
-    intended one is a **link** rather than a parent. A link references a span
-    without inheriting its trace id or its lifetime, so a trainer's spans stay
-    in the trainer's own per-rank trace and merely record which cycle they ran
-    under. Parenting would pull every rank of every cycle into one trace, which
-    no viewer can open and no query needs.
-
-    Nothing reads this variable automatically -- no OTel SDK looks for
-    TRACEPARENT in the environment -- so the receiver extracts it explicitly.
-    """
-    if not _AVAILABLE or context is None:
-        return None
-    try:
-        from opentelemetry import trace
-        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-
-        carrier: dict = {}
-        TraceContextTextMapPropagator().inject(
-            carrier, context=trace.set_span_in_context(trace.NonRecordingSpan(context))
-        )
-        return carrier.get("traceparent")
-    except Exception:
-        logger.debug("Could not format a traceparent", exc_info=True)
-        return None
-
-
 def context_carrier() -> Optional[dict]:
     """Serialize the active trace context and Baggage into a picklable dict.
 
@@ -553,16 +521,6 @@ class Phase:
         self._parent = None
         self._token = None
         self._attributes: dict = {}
-
-    @property
-    def context(self):
-        """The start mark's ``SpanContext``, or None while no phase is open.
-
-        This is what another process is given in order to link to the phase.
-        It stays valid for the phase's whole lifetime precisely because the mark
-        it names has already ended.
-        """
-        return self._parent
 
     def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
         """Mark the start of the phase, closing any phase this handle had open."""
