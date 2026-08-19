@@ -155,6 +155,57 @@ class TestBackdatedSpan(unittest.TestCase):
         telemetry.backdated_span("job", "python.imports", 1000.0, 1000.0)
 
 
+class TestExtendedResourceAttributes(unittest.TestCase):
+    """The agent extends a variable it must never parse, once per cohort."""
+
+    def extend(self, inherited, attributes):
+        with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", inherited):
+            return telemetry.extended_resource_attributes(attributes)
+
+    def test_carries_the_inherited_value_through_untouched(self):
+        # Whatever the launching environment set is opaque here, including keys
+        # NVRx has no notion of.
+        inherited = "slurm.job_id=370487,cluster=oci-aga,job.uid=b3f1"
+        result = self.extend(inherited, {"nvrx.cycle": 2})
+        self.assertTrue(result.startswith(inherited + ","))
+        self.assertTrue(result.endswith("nvrx.cycle=2"))
+
+    def test_works_with_nothing_inherited(self):
+        self.assertEqual(self.extend("", {"nvrx.cycle": 0}), "nvrx.cycle=0")
+
+    def test_no_attributes_leaves_the_value_alone(self):
+        self.assertEqual(self.extend("cluster=oci-aga", {}), "cluster=oci-aga")
+        self.assertEqual(self.extend("", {}), "")
+
+    def test_values_are_percent_encoded(self):
+        # A value containing a comma or an equals would otherwise be read back as
+        # extra pairs, silently rewriting the resource.
+        result = self.extend("", {"nvrx.membership": "active,standby=maybe"})
+        self.assertEqual(result, "nvrx.membership=active%2Cstandby%3Dmaybe")
+
+    def test_extends_the_inherited_value_not_the_last_one(self):
+        # The agent relaunches a cohort every cycle. Extending its own previous
+        # output would append another nvrx.cycle each time, without bound.
+        inherited = "cluster=oci-aga"
+        first = self.extend(inherited, {"nvrx.cycle": 0})
+        second = self.extend(inherited, {"nvrx.cycle": 1})
+        self.assertEqual(first.count("nvrx.cycle"), 1)
+        self.assertEqual(second.count("nvrx.cycle"), 1)
+        self.assertEqual(second, "cluster=oci-aga,nvrx.cycle=1")
+
+
+class TestTraceparent(unittest.TestCase):
+    """A cycle's start mark, handed to the process that runs inside the cycle."""
+
+    def test_none_without_a_context(self):
+        self.assertIsNone(telemetry.traceparent(None))
+
+    def test_none_without_telemetry(self):
+        # Nothing to format a context with, so the variable is simply not set --
+        # rather than set to something the receiver would try to parse.
+        self.assertIsNone(telemetry.traceparent(object()))
+
+
 class TestPhase(unittest.TestCase):
     """A phase is a mark now and a backdated span later; check the two line up.
 

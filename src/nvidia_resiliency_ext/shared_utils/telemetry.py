@@ -37,6 +37,13 @@ logger = logging.getLogger(__name__)
 
 _NVRX_GROUPS = frozenset(["nvrx.ft", "nvrx.ckpt"])
 
+# The OTEL_RESOURCE_ATTRIBUTES this process inherited, captured before anything
+# can extend it. Every extension is built from this value rather than from the
+# last extended one: the agent launches a fresh worker cohort every cycle, and
+# extending the extension would append another nvrx.cycle each time until the
+# variable grew without bound across a long-running job.
+_INHERITED_RESOURCE_ATTRIBUTES = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
+
 try:
     # Names NVRx re-exports keep their nemo-lens spelling, so that searching for
     # one finds every use across nemo-lens and its consumers. The underscored
@@ -318,6 +325,71 @@ def set_span_attributes(attributes: dict) -> None:
     _safe_set_span_attributes(trace.get_current_span(), attributes)
 
 
+def extended_resource_attributes(attributes: dict) -> str:
+    """Extend the inherited ``OTEL_RESOURCE_ATTRIBUTES`` with more pairs.
+
+    The variable is comma-separated ``key=value`` with percent-encoded values.
+    An OTel SDK reads it into the process Resource with no code at all, and it
+    is inherited across every process spawn, which makes it the way to tell a
+    process something about itself that it cannot work out on its own -- and it
+    costs nothing per span, since a Resource is serialized once per export batch
+    rather than once per span.
+
+    NVRx reads this variable but never parses it. Whatever a launching
+    environment put in it is an opaque string here: NVRx looks up no key in it,
+    and behaves identically whether it holds nothing or twenty keys from some
+    scheduler NVRx has never heard of. Reading a string in order to extend it
+    creates no coupling; branching on a key in it would.
+
+    Values are percent-encoded. NVRx's own are integers and a fixed enum, so
+    they would survive unencoded, but encoding makes that a property of the code
+    rather than a property of the current set of attributes.
+
+    Callers must not pass a key the inherited value already sets, since which
+    occurrence wins is not something to depend on.
+    """
+    from urllib.parse import quote
+
+    added = ",".join(f"{key}={quote(str(value), safe='')}" for key, value in attributes.items())
+    if not _INHERITED_RESOURCE_ATTRIBUTES:
+        return added
+    if not added:
+        return _INHERITED_RESOURCE_ATTRIBUTES
+    return f"{_INHERITED_RESOURCE_ATTRIBUTES},{added}"
+
+
+def traceparent(context) -> Optional[str]:
+    """Format a ``SpanContext`` as a W3C ``traceparent``, for another process.
+
+    Returns None when there is no context to pass on, or when telemetry is not
+    available to format it.
+
+    What the receiving process does with it is the receiver's decision, and the
+    intended one is a **link** rather than a parent. A link references a span
+    without inheriting its trace id or its lifetime, so a trainer's spans stay
+    in the trainer's own per-rank trace and merely record which cycle they ran
+    under. Parenting would pull every rank of every cycle into one trace, which
+    no viewer can open and no query needs.
+
+    Nothing reads this variable automatically -- no OTel SDK looks for
+    TRACEPARENT in the environment -- so the receiver extracts it explicitly.
+    """
+    if not _AVAILABLE or context is None:
+        return None
+    try:
+        from opentelemetry import trace
+        from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+        carrier: dict = {}
+        TraceContextTextMapPropagator().inject(
+            carrier, context=trace.set_span_in_context(trace.NonRecordingSpan(context))
+        )
+        return carrier.get("traceparent")
+    except Exception:
+        logger.debug("Could not format a traceparent", exc_info=True)
+        return None
+
+
 def record_process_startup(
     group: str,
     imports_started: float,
@@ -395,6 +467,16 @@ class Phase:
         self._parent = None
         self._token = None
         self._attributes: dict = {}
+
+    @property
+    def context(self):
+        """The start mark's ``SpanContext``, or None while no phase is open.
+
+        This is what another process is given in order to link to the phase.
+        It stays valid for the phase's whole lifetime precisely because the mark
+        it names has already ended.
+        """
+        return self._parent
 
     def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
         """Mark the start of the phase, closing any phase this handle had open."""

@@ -1156,18 +1156,36 @@ class LocalElasticAgent(SimpleElasticAgent):
             {"nvrx.cycle": restart_count, "nvrx.node": self._node_id, "is_goodput_span": True}
         )
 
-        # Telemetry handoff to the worker cohort: which cycle this process belongs to,
-        # and what role it plays in it. Both are facts about NVRx that the worker cannot
-        # observe for itself. No timestamps cross this boundary -- a worker measures its
-        # own windows, and NVRx measures its own.
-        cohort_env = {
-            "NVRX_CYCLE": str(restart_count),
-            "NVRX_MEMBERSHIP": "active",  # a launched worker is active this cycle
-        }
+        # Telemetry handoff to the worker cohort, over the two standard OTel variables
+        # rather than any of NVRx's own. What crosses is what the worker cannot work out
+        # for itself: which restart cycle it belongs to, and what its role in that cycle
+        # is. No timestamps cross -- a worker measures its own windows, and NVRx measures
+        # its own.
+        #
+        # These are resource attributes for a worker and span attributes for the agent,
+        # for the same value. A worker process is created fresh each cycle, so the cycle
+        # is constant for its whole life; the agent outlives cycles, so its Resource
+        # cannot name one. Placing them here means an instrumented trainer picks them up
+        # into its Resource with no code, and no knowledge that NVRx exists -- every span
+        # it emits carries the cycle, including the ones NVRx never sees.
+        worker_resource_attrs = {"nvrx.cycle": restart_count, "nvrx.membership": "active"}
         try:
-            cohort_env["NVRX_INFRA_RANK"] = str(get_infrastructure_rank(skip_nodename_logic=True))
+            worker_resource_attrs["nvrx.infra_rank"] = get_infrastructure_rank(
+                skip_nodename_logic=True
+            )
         except Exception:
             logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
+        cohort_env = {
+            "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
+                worker_resource_attrs
+            )
+        }
+        # The cycle's start mark, for the worker to reference. A link, on the receiving
+        # side, and not a parent: it records which cycle a rank ran under without pulling
+        # every rank of every cycle into a single trace.
+        cycle_traceparent = telemetry.traceparent(self._cycle_phase.context)
+        if cycle_traceparent is not None:
+            cohort_env["TRACEPARENT"] = cycle_traceparent
 
         # Record worker start start event
         record_profiling_event(
