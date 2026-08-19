@@ -81,19 +81,19 @@
 <span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
 <span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
 <span class="c1">#</span>
-<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the "License");</span>
 <span class="c1"># you may not use this file except in compliance with the License.</span>
 <span class="c1"># You may obtain a copy of the License at</span>
 <span class="c1">#</span>
 <span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
 <span class="c1">#</span>
 <span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
-<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># distributed under the License is distributed on an "AS IS" BASIS,</span>
 <span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
 
-<span class="sd">&quot;&quot;&quot; A basic manager for local checkpoints.&quot;&quot;&quot;</span>
+<span class="sd">""" A basic manager for local checkpoints."""</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
@@ -119,7 +119,7 @@
 <div class="viewcode-block" id="LocalCheckpointManager">
 <a class="viewcode-back" href="../../../../../checkpointing/local/api/local_ckpt_manager.html#nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager.LocalCheckpointManager">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">LocalCheckpointManager</span><span class="p">(</span><span class="n">BaseCheckpointManager</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;Local Checkpoint Manager designed for handling checkpoints on local storage devices</span>
+<span class="w">    </span><span class="sd">"""Local Checkpoint Manager designed for handling checkpoints on local storage devices</span>
 <span class="sd">    like SSDs or RAM disks.</span>
 
 <span class="sd">    Args:</span>
@@ -133,12 +133,12 @@
 <span class="sd">            differentiating different local checkpoints.</span>
 <span class="sd">        repl_strategy (ReplicationStrategy, optional): strategy used to perform local checkpoint</span>
 <span class="sd">            shards replication.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">root_local_ckpt_dir</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Path</span><span class="p">],</span>
-        <span class="n">session_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span><span class="p">,</span>
+        <span class="n">session_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s1">''</span><span class="p">,</span>
         <span class="n">repl_strategy</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">ReplicationStrategy</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="p">):</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">session_id</span><span class="p">,</span> <span class="n">repl_strategy</span><span class="p">)</span>
@@ -153,25 +153,25 @@
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_dir</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_ensure_dir</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Ensure the checkpoint directory exists, creating it if necessary.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Ensure the checkpoint directory exists, creating it if necessary."""</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dir_created</span><span class="p">:</span>
             <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_dir_created</span> <span class="o">=</span> <span class="kc">True</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_my_ckpt_ids</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">CkptID</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Collect all locally available checkpoint IDs.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Collect all locally available checkpoint IDs."""</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_dir</span><span class="p">()</span>
         <span class="n">my_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()</span> <span class="k">if</span> <span class="n">f</span><span class="o">.</span><span class="n">is_file</span><span class="p">()]</span>
-        <span class="n">pattern</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="s1">&#39;</span><span class="se">\\</span><span class="s1">d+&#39;</span><span class="p">,</span> <span class="s1">&#39;</span><span class="se">\\</span><span class="s1">d+&#39;</span><span class="p">,</span> <span class="s1">&#39;</span><span class="se">\\</span><span class="s1">&#39;</span><span class="p">)</span>
+        <span class="n">pattern</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="s1">'</span><span class="se">\\</span><span class="s1">d+'</span><span class="p">,</span> <span class="s1">'</span><span class="se">\\</span><span class="s1">d+'</span><span class="p">,</span> <span class="s1">'</span><span class="se">\\</span><span class="s1">'</span><span class="p">)</span>
         <span class="k">return</span> <span class="p">[</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_filename_to_id</span><span class="p">(</span><span class="n">filename</span><span class="p">)</span>
             <span class="k">for</span> <span class="n">filename</span> <span class="ow">in</span> <span class="n">my_files</span>
             <span class="k">if</span> <span class="n">re</span><span class="o">.</span><span class="n">fullmatch</span><span class="p">(</span><span class="n">pattern</span><span class="p">,</span> <span class="n">filename</span><span class="p">)</span>
         <span class="p">]</span>
 
-    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._load&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">'LocalCheckpointManager._load'</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_load</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">:</span> <span class="n">CkptID</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="nb">str</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Load of the checkpoint identified by ckpt_id.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Load of the checkpoint identified by ckpt_id."""</span>
         <span class="n">local_ckpt_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_path_from_id</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">)</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="c1"># Issue: [B614:pytorch_load_save] Use of unsafe PyTorch load or save</span>
@@ -180,82 +180,82 @@
             <span class="c1"># More Info: https://bandit.readthedocs.io/en/latest/plugins/b614_pytorch_load_save.html</span>
             <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">local_ckpt_path</span><span class="p">,</span> <span class="n">weights_only</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>  <span class="c1"># nosec</span>
         <span class="k">except</span> <span class="ne">FileNotFoundError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="n">err_msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;File </span><span class="si">{</span><span class="n">local_ckpt_path</span><span class="si">}</span><span class="s2"> does not exist!&quot;</span>
+            <span class="n">err_msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"File </span><span class="si">{</span><span class="n">local_ckpt_path</span><span class="si">}</span><span class="s2"> does not exist!"</span>
             <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
             <span class="n">ckpt_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()]</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;</span><span class="si">{</span><span class="n">err_msg</span><span class="si">}</span><span class="s1">. Checkpoint directory content: </span><span class="si">{</span><span class="n">ckpt_files</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">err_msg</span><span class="si">}</span><span class="s1">. Checkpoint directory content: </span><span class="si">{</span><span class="n">ckpt_files</span><span class="si">}</span><span class="s1">'</span><span class="p">)</span>
             <span class="k">raise</span> <span class="n">CheckpointingException</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
 
-    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._save&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">'LocalCheckpointManager._save'</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">:</span> <span class="n">TensorAwareStateDict</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">:</span> <span class="n">CkptID</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Save of the tensor_aware_state_dict identified by ckpt_id.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Save of the tensor_aware_state_dict identified by ckpt_id."""</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_dir</span><span class="p">()</span>
         <span class="n">save_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_path_from_id</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span>
-        <span class="k">assert</span> <span class="s2">&quot;.dirty&quot;</span> <span class="ow">in</span> <span class="n">save_path</span><span class="o">.</span><span class="n">suffixes</span>
+        <span class="k">assert</span> <span class="s2">".dirty"</span> <span class="ow">in</span> <span class="n">save_path</span><span class="o">.</span><span class="n">suffixes</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Saving to </span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">save_path</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Saving to </span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">save_path</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
             <span class="c1"># Open file for exclusive access.</span>
             <span class="c1"># Fail if already exists.</span>
-            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">save_path</span><span class="p">,</span> <span class="s2">&quot;bx&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">save_file</span><span class="p">:</span>
+            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">save_path</span><span class="p">,</span> <span class="s2">"bx"</span><span class="p">)</span> <span class="k">as</span> <span class="n">save_file</span><span class="p">:</span>
                 <span class="c1"># Issue: [B614:pytorch_load_save] Use of unsafe PyTorch load or save</span>
                 <span class="c1"># Severity: Medium   Confidence: High</span>
                 <span class="c1"># CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)</span>
                 <span class="c1"># More Info: https://bandit.readthedocs.io/en/latest/plugins/b614_pytorch_load_save.html</span>
                 <span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">state_dict</span><span class="p">,</span> <span class="n">save_file</span><span class="p">)</span>  <span class="c1"># nosec</span>
             <span class="n">final_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_local_ckpt_path_from_id</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
-            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Renaming </span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">save_path</span><span class="p">)</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">final_path</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Renaming </span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">save_path</span><span class="p">)</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">final_path</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
             <span class="n">save_path</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">final_path</span><span class="p">)</span>
 
         <span class="k">except</span> <span class="ne">FileExistsError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="n">ckpt_files</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()]</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">&#39;Checkpoint directory content: </span><span class="si">{</span><span class="n">ckpt_files</span><span class="si">}</span><span class="s1">&#39;</span><span class="p">)</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">'Checkpoint directory content: </span><span class="si">{</span><span class="n">ckpt_files</span><span class="si">}</span><span class="s1">'</span><span class="p">)</span>
             <span class="k">raise</span> <span class="n">SameMachineReplicationException</span><span class="p">(</span><span class="n">ckpt_id</span><span class="p">)</span> <span class="kn">from</span><span class="w"> </span><span class="nn">e</span>
 
-    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._cleanup&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">'LocalCheckpointManager._cleanup'</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Removes outdated or invalid checkpoints after successfully saving the checkpoint</span>
+<span class="w">        </span><span class="sd">"""Removes outdated or invalid checkpoints after successfully saving the checkpoint</span>
 <span class="sd">        for the specified iteration.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            iteration : The global iteration number for which the checkpoint was successfully saved</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">ckpts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="s1">&#39;*&#39;</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">))</span>
+<span class="sd">        """</span>
+        <span class="n">ckpts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="s1">'*'</span><span class="p">,</span> <span class="s1">'*'</span><span class="p">,</span> <span class="s1">'*'</span><span class="p">))</span>
         <span class="n">rm_ckpts</span> <span class="o">=</span> <span class="p">[</span><span class="n">ckpt</span> <span class="k">for</span> <span class="n">ckpt</span> <span class="ow">in</span> <span class="n">ckpts</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filename_to_id</span><span class="p">(</span><span class="n">ckpt</span><span class="o">.</span><span class="n">name</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">iteration</span><span class="p">]</span>
         <span class="k">for</span> <span class="n">ckpt</span> <span class="ow">in</span> <span class="n">rm_ckpts</span><span class="p">:</span>
-            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Removing </span><span class="si">{</span><span class="n">ckpt</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Removing </span><span class="si">{</span><span class="n">ckpt</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
             <span class="n">ckpt</span><span class="o">.</span><span class="n">unlink</span><span class="p">()</span>
 
-    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">&#39;LocalCheckpointManager._cleanup_failed_save&#39;</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
+    <span class="nd">@debug_time</span><span class="p">(</span><span class="s1">'LocalCheckpointManager._cleanup_failed_save'</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_cleanup_failed_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Removes invalid checkpoints that could not be saved due to a failure.</span>
+<span class="w">        </span><span class="sd">"""Removes invalid checkpoints that could not be saved due to a failure.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            iteration : The global iteration number for which the checkpoint failed to save.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="n">rm_ckpts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">))</span>
+<span class="sd">        """</span>
+        <span class="n">rm_ckpts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span><span class="o">.</span><span class="n">glob</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="s1">'*'</span><span class="p">,</span> <span class="s1">'*'</span><span class="p">))</span>
         <span class="k">for</span> <span class="n">ckpt</span> <span class="ow">in</span> <span class="n">rm_ckpts</span><span class="p">:</span>
-            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Removing </span><span class="si">{</span><span class="n">ckpt</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="n">logging</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Removing </span><span class="si">{</span><span class="n">ckpt</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
             <span class="n">ckpt</span><span class="o">.</span><span class="n">unlink</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_filename_from_template</span><span class="p">(</span>
-        <span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="n">rank</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="n">extra_suffix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">iteration</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="n">rank</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="n">extra_suffix</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">""</span>
     <span class="p">):</span>
         <span class="n">digits</span> <span class="o">=</span> <span class="mi">7</span>
         <span class="n">iteration_string</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">iteration</span><span class="p">)</span><span class="o">.</span><span class="n">zfill</span><span class="p">(</span><span class="n">digits</span><span class="p">)</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="nb">int</span><span class="p">)</span> <span class="k">else</span> <span class="n">iteration</span>
         <span class="k">if</span> <span class="n">iteration_string</span><span class="o">.</span><span class="n">isdigit</span><span class="p">():</span>
             <span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">iteration_string</span><span class="p">)</span> <span class="o">==</span> <span class="n">digits</span>
-        <span class="n">file_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;iter_</span><span class="si">{</span><span class="n">iteration_string</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">_local</span><span class="si">{</span><span class="n">extra_suffix</span><span class="si">}</span><span class="s2">.pt&quot;</span>
+        <span class="n">file_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"iter_</span><span class="si">{</span><span class="n">iteration_string</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">_local</span><span class="si">{</span><span class="n">extra_suffix</span><span class="si">}</span><span class="s2">.pt"</span>
         <span class="k">return</span> <span class="n">file_name</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_local_ckpt_path_from_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ckpt_id</span><span class="p">,</span> <span class="n">is_dirty</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
         <span class="n">iteration</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">session_id</span> <span class="o">=</span> <span class="n">ckpt_id</span>
         <span class="k">assert</span> <span class="n">session_id</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span>
-        <span class="n">suffix</span> <span class="o">=</span> <span class="s2">&quot;.dirty&quot;</span> <span class="k">if</span> <span class="n">is_dirty</span> <span class="k">else</span> <span class="s2">&quot;&quot;</span>
+        <span class="n">suffix</span> <span class="o">=</span> <span class="s2">".dirty"</span> <span class="k">if</span> <span class="n">is_dirty</span> <span class="k">else</span> <span class="s2">""</span>
         <span class="n">file_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_filename_from_template</span><span class="p">(</span><span class="n">iteration</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">suffix</span><span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">local_ckpt_dir</span> <span class="o">/</span> <span class="n">file_name</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_filename_to_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filename</span><span class="p">):</span>
-        <span class="n">_</span><span class="p">,</span> <span class="n">iteration</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">filename</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;_&#39;</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
+        <span class="n">_</span><span class="p">,</span> <span class="n">iteration</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">filename</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">'_'</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
         <span class="k">return</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">iteration</span><span class="p">),</span> <span class="nb">int</span><span class="p">(</span><span class="n">rank</span><span class="p">),</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span></div>
 
 </pre></div>

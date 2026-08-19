@@ -213,7 +213,7 @@ Allows the external caller to apply the save function synchronously or asynchron
 <dl class="simple">
 <dt>Returns: None (if there is nothing to write on this rank) or a tuple of:</dt><dd><ol class="arabic simple">
 <li><p>the function that saves the data.</p></li>
-<li><p>the function that stages the GPU tensors to a destination for async checkpointing.
+<li><p>the function that stages tensors to a destination for async checkpointing.
 This function should be self-contained.</p></li>
 <li><p>arguments to that function in 1).</p></li>
 </ol>
@@ -231,7 +231,7 @@ This function should be self-contained.</p></li>
 <span class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></span><span class="sig-name descname"><span class="pre">preload_tensors</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">resolved_plan_data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">non_blocking</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.preload_tensors"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors" title="Link to this definition"></a></dt>
 <dd><p>Creates write_buckets and preloads tensors to host memory.</p>
 <p>This runs in the persistent worker process. Bucket creation is done here
-(not in prepare_write_data) so that cached GPU tensor data stored in the
+(not in prepare_write_data) so that cached tensor data stored in the
 worker process can be retrieved and reused without re-pickling.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -296,9 +296,9 @@ worker process can be retrieved and reused without re-pickling.</p>
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_write_data">
 <span class="sig-name descname"><span class="pre">prepare_write_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">plan</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">planner</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.prepare_write_data"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.prepare_write_data" title="Link to this definition"></a></dt>
 <dd><p>First stage of async saving. Resolve data and store in compact format.</p>
-<p>Separates data into GPU tensors (potentially cacheable), CPU tensors (always fresh),
-and ByteIO (always fresh). Bucket creation is deferred to <cite>preload_tensors</cite> so that
-it can run in the persistent worker process and take advantage of the data cache.</p>
+<p>Separates tensor data into cacheable and uncached groups based on the transfer mode.
+ByteIO data is always resolved fresh. Bucket creation is deferred to <cite>preload_tensors</cite>
+so that it can run in the persistent worker process and use the data cache.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">

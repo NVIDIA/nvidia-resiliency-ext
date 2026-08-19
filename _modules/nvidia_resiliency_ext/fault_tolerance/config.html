@@ -81,14 +81,14 @@
 <span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
 <span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
 <span class="c1">#</span>
-<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the "License");</span>
 <span class="c1"># you may not use this file except in compliance with the License.</span>
 <span class="c1"># You may obtain a copy of the License at</span>
 <span class="c1">#</span>
 <span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
 <span class="c1">#</span>
 <span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
-<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># distributed under the License is distributed on an "AS IS" BASIS,</span>
 <span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
@@ -108,7 +108,7 @@
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig">[docs]</a>
 <span class="nd">@dataclass</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">FaultToleranceConfig</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Configuration of the fault tolerance</span>
 
 <span class="sd">    * `workload_check_interval` [float] periodic rank check interval (in seconds) in rank monitors.</span>
@@ -137,9 +137,9 @@
 <span class="sd">      Unlike enable_nic_monitor (which periodically monitors link_downed counters), this performs a one-time</span>
 <span class="sd">      state check during rendezvous. Can be used independently or together with enable_nic_monitor. Default: True.</span>
 <span class="sd">    * `pci_topo_file` - PCI topo file that describes GPU and NIC topology.</span>
-<span class="sd">    * `link_down_path_template` - Template path for NIC link down files. Should contain &#39;{dev_name}&#39;</span>
+<span class="sd">    * `link_down_path_template` - Template path for NIC link down files. Should contain '{dev_name}'</span>
 <span class="sd">      placeholder which will be replaced with actual NIC device name.</span>
-<span class="sd">    * `link_state_path_template` - Template path for NIC link state files. Should contain &#39;{nic}&#39;</span>
+<span class="sd">    * `link_state_path_template` - Template path for NIC link state files. Should contain '{nic}'</span>
 <span class="sd">      placeholder which will be replaced with actual NIC device name. Default: /sys/class/infiniband/{nic}/ports/1/state</span>
 <span class="sd">    * `enable_dist_storage_healthcheck` - Enable distributed storage health check (Lustre + NFS)</span>
 <span class="sd">      before rendezvous. Checks Lustre health and reachability of Lustre/NFS mounts. Default: False.</span>
@@ -192,7 +192,7 @@
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
 
     <span class="n">workload_check_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span>
     <span class="n">initial_rank_heartbeat_timeout</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
@@ -240,14 +240,14 @@
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Check if progress tracking is enabled (controlled by max_no_progress_cycles &gt; 0).&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Check if progress tracking is enabled (controlled by max_no_progress_cycles &gt; 0)."""</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_no_progress_cycles</span> <span class="o">&gt;</span> <span class="mi">0</span>
 
 <div class="viewcode-block" id="FaultToleranceConfig.from_kwargs">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs">[docs]</a>
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">from_kwargs</span><span class="p">(</span><span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;FaultToleranceConfig&#39;</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_kwargs</span><span class="p">(</span><span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">'FaultToleranceConfig'</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Create a FaultToleranceConfig object from keyword arguments.</span>
 
 <span class="sd">        Args:</span>
@@ -259,20 +259,20 @@
 
 <span class="sd">        Raises:</span>
 <span class="sd">            ValueError: If there are unrecognized arguments and ignore_not_recognized is False.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="n">fields_set</span> <span class="o">=</span> <span class="p">{</span><span class="n">f</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="n">fields</span><span class="p">(</span><span class="n">FaultToleranceConfig</span><span class="p">)</span> <span class="k">if</span> <span class="n">f</span><span class="o">.</span><span class="n">init</span><span class="p">}</span>
         <span class="n">matching_args</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">fields_set</span><span class="p">}</span>
         <span class="n">extra_args</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">fields_set</span><span class="p">}</span>
         <span class="k">if</span> <span class="n">extra_args</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">ignore_not_recognized</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Not recognized args: </span><span class="si">{</span><span class="n">extra_args</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Not recognized args: </span><span class="si">{</span><span class="n">extra_args</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">FaultToleranceConfig</span><span class="p">(</span><span class="o">**</span><span class="n">matching_args</span><span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="FaultToleranceConfig.from_yaml_file">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_yaml_file">[docs]</a>
     <span class="nd">@staticmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">from_yaml_file</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;FaultToleranceConfig&#39;</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">from_yaml_file</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">'FaultToleranceConfig'</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Load the fault tolerance configuration from a YAML file.</span>
 
 <span class="sd">        YAML file should contain `fault_tolerance` section.</span>
@@ -287,9 +287,9 @@
 <span class="sd">            FaultToleranceConfig: The fault tolerance configuration object.</span>
 
 <span class="sd">        Raises:</span>
-<span class="sd">            ValueError: If the &#39;fault_tolerance&#39; section is not found in the config file.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">,</span> <span class="s1">&#39;r&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">file</span><span class="p">:</span>
+<span class="sd">            ValueError: If the 'fault_tolerance' section is not found in the config file.</span>
+<span class="sd">        """</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">,</span> <span class="s1">'r'</span><span class="p">)</span> <span class="k">as</span> <span class="n">file</span><span class="p">:</span>
             <span class="n">yaml_data</span> <span class="o">=</span> <span class="n">yaml</span><span class="o">.</span><span class="n">safe_load</span><span class="p">(</span><span class="n">file</span><span class="p">)</span>
             <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_find_fault_tol_section</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">ft_cfg</span><span class="p">:</span>
@@ -297,47 +297,47 @@
                     <span class="o">**</span><span class="n">ft_cfg</span><span class="p">,</span> <span class="n">ignore_not_recognized</span><span class="o">=</span><span class="n">ignore_not_recognized</span>
                 <span class="p">)</span>
             <span class="k">else</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;&#39;fault_tolerance&#39; section not found in config file </span><span class="si">{</span><span class="n">cfg_path</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span></div>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"'fault_tolerance' section not found in config file </span><span class="si">{</span><span class="n">cfg_path</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></div>
 
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_parse_timeout_arg</span><span class="p">(</span><span class="n">timeout_arg</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Parse a timeout CLI argument.</span>
-<span class="sd">        Timeout can be a float or &#39;None&#39;/&#39;null&#39;/&#39;&#39; to represent None.</span>
+<span class="sd">        Timeout can be a float or 'None'/'null'/'' to represent None.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            timeout_arg (str): The timeout value as a string</span>
 
 <span class="sd">        Returns:</span>
 <span class="sd">            Optional[float]: The parsed timeout value or None</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="n">timeout_arg</span> <span class="o">=</span> <span class="n">timeout_arg</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
-        <span class="k">if</span> <span class="n">timeout_arg</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;none&#39;</span><span class="p">,</span> <span class="s1">&#39;null&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">]:</span>
+        <span class="k">if</span> <span class="n">timeout_arg</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">'none'</span><span class="p">,</span> <span class="s1">'null'</span><span class="p">,</span> <span class="s1">''</span><span class="p">]:</span>
             <span class="k">return</span> <span class="kc">None</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">timeout_arg</span><span class="p">)</span>
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_parse_section_timeouts_arg</span><span class="p">(</span><span class="n">section_timeouts_arg</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]]:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Parse section timeouts CLI argument.</span>
-<span class="sd">        Expected format: &quot;section1:timeout1,section2:timeout2,...&quot;</span>
-<span class="sd">        Timeout can be a float or &#39;None&#39;/&#39;null&#39;/&#39;&#39; to represent None.</span>
+<span class="sd">        Expected format: "section1:timeout1,section2:timeout2,..."</span>
+<span class="sd">        Timeout can be a float or 'None'/'null'/'' to represent None.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            section_timeouts_arg (str): The section timeouts string</span>
 
 <span class="sd">        Returns:</span>
 <span class="sd">            Mapping[str, Optional[float]]: Dictionary mapping section names to timeout values</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="n">section_timeouts_arg</span> <span class="o">=</span> <span class="n">section_timeouts_arg</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">section_timeouts_arg</span><span class="p">:</span>
             <span class="k">return</span> <span class="p">{}</span>
-        <span class="n">section_timeout_pairs</span> <span class="o">=</span> <span class="n">section_timeouts_arg</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;,&quot;</span><span class="p">)</span>
+        <span class="n">section_timeout_pairs</span> <span class="o">=</span> <span class="n">section_timeouts_arg</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">","</span><span class="p">)</span>
         <span class="n">res</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="k">for</span> <span class="n">st</span> <span class="ow">in</span> <span class="n">section_timeout_pairs</span><span class="p">:</span>
-            <span class="n">section</span><span class="p">,</span> <span class="n">timeout</span> <span class="o">=</span> <span class="n">st</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;:&quot;</span><span class="p">)</span>
+            <span class="n">section</span><span class="p">,</span> <span class="n">timeout</span> <span class="o">=</span> <span class="n">st</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">":"</span><span class="p">)</span>
             <span class="n">section</span> <span class="o">=</span> <span class="n">section</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
             <span class="n">timeout</span> <span class="o">=</span> <span class="n">timeout</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
             <span class="n">res</span><span class="p">[</span><span class="n">section</span><span class="p">]</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_timeout_arg</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
@@ -347,18 +347,18 @@
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_args">[docs]</a>
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">from_args</span><span class="p">(</span><span class="n">args</span><span class="p">:</span> <span class="n">argparse</span><span class="o">.</span><span class="n">Namespace</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Init FT config object from parsed CLI args.</span>
 
 <span class="sd">        Implements the following logic:</span>
 <span class="sd">        - Use default FT config as a base.</span>
 <span class="sd">        - If there is a config file argument defined, first try to read the FT config from the file.</span>
 <span class="sd">        - Update the FT config with FT args provided via CLI.</span>
-<span class="sd">        - If can&#39;t read from file and there are no related args in CLI, raise an exception.</span>
+<span class="sd">        - If can't read from file and there are no related args in CLI, raise an exception.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            args (argparse.Namespace): Parsed arguments</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="c1"># Start with default config</span>
         <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="p">()</span>
         <span class="n">is_read_from_file</span> <span class="o">=</span> <span class="kc">False</span>
@@ -372,22 +372,22 @@
         <span class="c1"># Extract FT args from CLI</span>
         <span class="n">cli_ft_args</span> <span class="o">=</span> <span class="p">{}</span>
         <span class="n">timeout_fields</span> <span class="o">=</span> <span class="p">[</span>
-            <span class="s1">&#39;initial_rank_heartbeat_timeout&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;rank_heartbeat_timeout&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;rank_out_of_section_timeout&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;workload_check_interval&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;node_health_check_interval&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;safety_factor&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;restart_check_interval&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;gpu_memory_reclaim_timeout&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;gpu_memory_tolerance_mb&#39;</span><span class="p">,</span>
-            <span class="s1">&#39;gpu_memory_poll_interval&#39;</span><span class="p">,</span>
+            <span class="s1">'initial_rank_heartbeat_timeout'</span><span class="p">,</span>
+            <span class="s1">'rank_heartbeat_timeout'</span><span class="p">,</span>
+            <span class="s1">'rank_out_of_section_timeout'</span><span class="p">,</span>
+            <span class="s1">'workload_check_interval'</span><span class="p">,</span>
+            <span class="s1">'node_health_check_interval'</span><span class="p">,</span>
+            <span class="s1">'safety_factor'</span><span class="p">,</span>
+            <span class="s1">'restart_check_interval'</span><span class="p">,</span>
+            <span class="s1">'gpu_memory_reclaim_timeout'</span><span class="p">,</span>
+            <span class="s1">'gpu_memory_tolerance_mb'</span><span class="p">,</span>
+            <span class="s1">'gpu_memory_poll_interval'</span><span class="p">,</span>
         <span class="p">]</span>
         <span class="k">for</span> <span class="n">field</span> <span class="ow">in</span> <span class="n">fields</span><span class="p">(</span><span class="n">FaultToleranceConfig</span><span class="p">):</span>
-            <span class="n">cli_field_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;ft_</span><span class="si">{</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span>
+            <span class="n">cli_field_name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"ft_</span><span class="si">{</span><span class="n">field</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">"</span>
             <span class="n">val</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">cli_field_name</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">val</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">&quot;rank_section_timeouts&quot;</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span> <span class="o">==</span> <span class="s2">"rank_section_timeouts"</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
                     <span class="n">val</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_section_timeouts_arg</span><span class="p">(</span><span class="n">val</span><span class="p">)</span>
                 <span class="k">elif</span> <span class="n">field</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="n">timeout_fields</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
                     <span class="n">val</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_parse_timeout_arg</span><span class="p">(</span><span class="n">val</span><span class="p">)</span>
@@ -407,7 +407,7 @@
 <div class="viewcode-block" id="FaultToleranceConfig.to_yaml_file">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.to_yaml_file">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">to_yaml_file</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Convert the configuration object to a YAML file and save it to the specified path.</span>
 
 <span class="sd">        Args:</span>
@@ -415,24 +415,24 @@
 
 <span class="sd">        Returns:</span>
 <span class="sd">            None</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="c1"># first, ensure that `rank_termination_signal` and `log_level` have their native types</span>
         <span class="c1"># this might not be the case, if the object was modified after creation</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_fix_rank_termination_signal_type</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_fix_log_level_type</span><span class="p">()</span>
-        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">,</span> <span class="s1">&#39;w&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">file</span><span class="p">:</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">,</span> <span class="s1">'w'</span><span class="p">)</span> <span class="k">as</span> <span class="n">file</span><span class="p">:</span>
             <span class="n">ft_cfg_dict</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
-            <span class="n">ft_cfg_dict</span><span class="p">[</span><span class="s1">&#39;rank_termination_signal&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="o">.</span><span class="n">name</span>
-            <span class="n">ft_cfg_dict</span><span class="p">[</span><span class="s1">&#39;log_level&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span>
-            <span class="n">ft_cfg_dict</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fault_tolerance&#39;</span><span class="p">:</span> <span class="n">ft_cfg_dict</span><span class="p">}</span>
+            <span class="n">ft_cfg_dict</span><span class="p">[</span><span class="s1">'rank_termination_signal'</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="o">.</span><span class="n">name</span>
+            <span class="n">ft_cfg_dict</span><span class="p">[</span><span class="s1">'log_level'</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span>
+            <span class="n">ft_cfg_dict</span> <span class="o">=</span> <span class="p">{</span><span class="s1">'fault_tolerance'</span><span class="p">:</span> <span class="n">ft_cfg_dict</span><span class="p">}</span>
             <span class="n">yaml</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">ft_cfg_dict</span><span class="p">,</span> <span class="n">file</span><span class="p">)</span></div>
 
 
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_find_fault_tol_section</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">):</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
-            <span class="k">if</span> <span class="s2">&quot;fault_tolerance&quot;</span> <span class="ow">in</span> <span class="n">yaml_data</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">yaml_data</span><span class="p">[</span><span class="s2">&quot;fault_tolerance&quot;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="s2">"fault_tolerance"</span> <span class="ow">in</span> <span class="n">yaml_data</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">yaml_data</span><span class="p">[</span><span class="s2">"fault_tolerance"</span><span class="p">]</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">yaml_data</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
                     <span class="n">sub_config</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_find_fault_tol_section</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
@@ -452,38 +452,38 @@
             <span class="n">sig_str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span>
             <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">signal</span><span class="p">,</span> <span class="n">sig_str</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                    <span class="sa">f</span><span class="s2">&quot;Invalid rank_termination_signal string: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="si">}</span><span class="s2">&quot;</span>
+                    <span class="sa">f</span><span class="s2">"Invalid rank_termination_signal string: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="si">}</span><span class="s2">"</span>
                 <span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span> <span class="o">=</span> <span class="n">signal</span><span class="o">.</span><span class="n">Signals</span><span class="p">[</span><span class="n">sig_str</span><span class="p">]</span>
         <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="p">,</span> <span class="n">signal</span><span class="o">.</span><span class="n">Signals</span><span class="p">):</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">&quot;Invalid value for rank_termination_signal: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="si">}</span><span class="s2">&quot;</span>
+                <span class="sa">f</span><span class="s2">"Invalid value for rank_termination_signal: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="si">}</span><span class="s2">"</span>
             <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_fix_log_level_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
             <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span> <span class="o">&lt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span> <span class="o">&lt;=</span> <span class="n">logging</span><span class="o">.</span><span class="n">CRITICAL</span><span class="p">):</span>
                 <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                    <span class="sa">f</span><span class="s2">&quot;Invalid log level value (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="si">}</span><span class="s2">). Should be in [</span><span class="si">{</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span><span class="si">}</span><span class="s2"> (DEBUG), </span><span class="si">{</span><span class="n">logging</span><span class="o">.</span><span class="n">FATAL</span><span class="si">}</span><span class="s2"> (CRITICAL)]&quot;</span>
+                    <span class="sa">f</span><span class="s2">"Invalid log level value (</span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="si">}</span><span class="s2">). Should be in [</span><span class="si">{</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span><span class="si">}</span><span class="s2"> (DEBUG), </span><span class="si">{</span><span class="n">logging</span><span class="o">.</span><span class="n">FATAL</span><span class="si">}</span><span class="s2"> (CRITICAL)]"</span>
                 <span class="p">)</span>
         <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
             <span class="n">log_level_str</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span>
-            <span class="k">if</span> <span class="n">log_level_str</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;DEBUG&#39;</span><span class="p">,</span> <span class="s1">&#39;DBG&#39;</span><span class="p">]:</span>
+            <span class="k">if</span> <span class="n">log_level_str</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">'DEBUG'</span><span class="p">,</span> <span class="s1">'DBG'</span><span class="p">]:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span>
-            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="o">==</span> <span class="s1">&#39;INFO&#39;</span><span class="p">:</span>
+            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="o">==</span> <span class="s1">'INFO'</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">INFO</span>
-            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;WARNING&#39;</span><span class="p">,</span> <span class="s1">&#39;WARN&#39;</span><span class="p">]:</span>
+            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">'WARNING'</span><span class="p">,</span> <span class="s1">'WARN'</span><span class="p">]:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">WARNING</span>
-            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="o">==</span> <span class="s1">&#39;ERROR&#39;</span><span class="p">:</span>
+            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="o">==</span> <span class="s1">'ERROR'</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">ERROR</span>
-            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="o">==</span> <span class="s1">&#39;CRITICAL&#39;</span><span class="p">:</span>
+            <span class="k">elif</span> <span class="n">log_level_str</span> <span class="o">==</span> <span class="s1">'CRITICAL'</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">CRITICAL</span>
             <span class="k">else</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Invalid log level string: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Invalid log level string: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Invalid value for rank_termination_signal: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Invalid value for rank_termination_signal: </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">log_level</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">__post_init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_fix_rank_termination_signal_type</span><span class="p">()</span>

@@ -254,8 +254,8 @@
 
 <span class="c1"># Custom configuration</span>
 <span class="n">logger</span> <span class="o">=</span> <span class="n">setup_logger</span><span class="p">(</span>
-    <span class="n">node_local_tmp_dir</span><span class="o">=</span><span class="s2">&quot;/custom/logs&quot;</span><span class="p">,</span>
-    <span class="n">node_local_tmp_prefix</span><span class="o">=</span><span class="s2">&quot;mytraining&quot;</span><span class="p">,</span>
+    <span class="n">node_local_tmp_dir</span><span class="o">=</span><span class="s2">"/custom/logs"</span><span class="p">,</span>
+    <span class="n">node_local_tmp_prefix</span><span class="o">=</span><span class="s2">"mytraining"</span><span class="p">,</span>
     <span class="n">force_reset</span><span class="o">=</span><span class="kc">True</span>
 <span class="p">)</span>
 </pre></div>
@@ -309,11 +309,11 @@ srun<span class="w"> </span>python<span class="w"> </span>training_script.py
 <span class="w">        </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">nvrx-training:latest</span>
 <span class="w">        </span><span class="nt">env</span><span class="p">:</span>
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NVRX_NODE_LOCAL_TMPDIR</span>
-<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/tmp/nvrx_logs&quot;</span>
+<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">"/tmp/nvrx_logs"</span>
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NVRX_LOG_DEBUG</span>
-<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1&quot;</span>
+<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">"1"</span>
 <span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NVRX_LOG_MAX_FILE_SIZE_KB</span>
-<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;10240&quot;</span>
+<span class="w">          </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="s">"10240"</span>
 </pre></div>
 </div>
 </section>

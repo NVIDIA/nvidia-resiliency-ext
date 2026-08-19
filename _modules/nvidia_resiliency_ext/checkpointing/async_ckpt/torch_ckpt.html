@@ -81,22 +81,22 @@
 <span></span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
 <span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
 <span class="c1">#</span>
-<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the "License");</span>
 <span class="c1"># you may not use this file except in compliance with the License.</span>
 <span class="c1"># You may obtain a copy of the License at</span>
 <span class="c1">#</span>
 <span class="c1"># http://www.apache.org/licenses/LICENSE-2.0</span>
 <span class="c1">#</span>
 <span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
-<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># distributed under the License is distributed on an "AS IS" BASIS,</span>
 <span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
 <span class="c1"># See the License for the specific language governing permissions and</span>
 <span class="c1"># limitations under the License.</span>
 
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 <span class="sd">TorchAsyncCheckpoint defines a wrapper for the async version of `torch.save` with</span>
 <span class="sd">an additional method to synchronize async saving requests</span>
-<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">"""</span>
 
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
@@ -125,10 +125,10 @@
 <div class="viewcode-block" id="TorchAsyncCheckpoint.async_save">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.async_save">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">async_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Keeps the original interface of `torch.save`</span>
 <span class="sd">        Schedules a `AsyncReuqest` with preloading tensors to CPU with pinned memcpy</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
 
         <span class="n">preloaded_sd</span> <span class="o">=</span> <span class="n">preload_tensors</span><span class="p">(</span><span class="n">state_dict</span><span class="p">)</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
@@ -141,7 +141,7 @@
 <div class="viewcode-block" id="TorchAsyncCheckpoint.finalize_async_save">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.finalize_async_save">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">finalize_async_save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">terminate</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Finalizes active async save calls.</span>
+<span class="w">        </span><span class="sd">"""Finalizes active async save calls.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            blocking (bool, optional): if True, will wait until all active requests</span>
@@ -151,11 +151,11 @@
 <span class="sd">                asynchronous checkpoint writer without synchronization.</span>
 <span class="sd">            terminate (bool, optional): if True, the asynchronous queue will</span>
 <span class="sd">                be closed as the last action of this function.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">if</span> <span class="n">blocking</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span><span class="o">.</span><span class="n">get_num_unfinalized_calls</span><span class="p">()</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
-                    <span class="s1">&#39;Unfinalized async checkpoint saves. Finalizing them synchronously now.&#39;</span>
+                    <span class="s1">'Unfinalized async checkpoint saves. Finalizing them synchronously now.'</span>
                 <span class="p">)</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="n">no_dist</span><span class="p">)</span>
@@ -164,21 +164,21 @@
 
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_get_async_calls_queue</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Function introduced for unit test purpose to validate the state of the Async CP workers.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span>
 
 <div class="viewcode-block" id="TorchAsyncCheckpoint.close">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/torch_ckpt.html#nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt.TorchAsyncCheckpoint.close">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">abort</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;This method make sure the TorchAsyncCheckpoint is terminated</span>
+<span class="w">        </span><span class="sd">"""This method make sure the TorchAsyncCheckpoint is terminated</span>
 <span class="sd">        with all its assigned async request completed</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            abort (bool, optional): Default to False. Needs to be manually set to true when</span>
 <span class="sd">                the checkpoint async process needs to be aborted.</span>
-<span class="sd">        &quot;&quot;&quot;</span>
+<span class="sd">        """</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_async_calls_queue</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></div>
 

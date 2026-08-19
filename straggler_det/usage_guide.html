@@ -126,8 +126,8 @@ A performance score can be interpreted as the ratio of current performance to re
 <p>If there are 8 ranks and 2 sections “data_loading” and “fwd” defined, scores might look like this:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Relative section performance scores:
 {
-&#39;data_loading&#39;: {0: 0.961, 1: 0.919, 2: 0.941, 3: 0.999, 4: 1.0, 5: 0.847, 6: 0.591, 7: 0.788},
-&#39;fwd&#39;: {0: 0.994, 1: 0.949, 2: 0.994, 3: 0.998, 4: 1.0, 5: 0.947, 6: 0.991, 7: 0.988}
+'data_loading': {0: 0.961, 1: 0.919, 2: 0.941, 3: 0.999, 4: 1.0, 5: 0.847, 6: 0.591, 7: 0.788},
+'fwd': {0: 0.994, 1: 0.949, 2: 0.994, 3: 0.998, 4: 1.0, 5: 0.947, 6: 0.991, 7: 0.988}
 }
 Relative GPU performance scores:
 {
@@ -165,18 +165,18 @@ The simplest approach might be to wrap the model’s <code class="docutils liter
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.attribution.straggler</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">straggler</span>
 
 <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span>
-   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;relative_perf_scores&quot;</span><span class="p">,</span> <span class="s2">&quot;individual_perf_scores&quot;</span><span class="p">],</span>
-   <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span> <span class="c1"># all ranks&#39; results will be available on rank 0</span>
+   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">"relative_perf_scores"</span><span class="p">,</span> <span class="s2">"individual_perf_scores"</span><span class="p">],</span>
+   <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span> <span class="c1"># all ranks' results will be available on rank 0</span>
 <span class="p">)</span>
 
 <span class="k">for</span> <span class="n">training_iter</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_iters</span><span class="p">):</span>
 
    <span class="o">...</span>
 
-   <span class="k">with</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span><span class="s2">&quot;data_loading&quot;</span><span class="p">,</span> <span class="n">profile_cuda</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+   <span class="k">with</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span><span class="s2">"data_loading"</span><span class="p">,</span> <span class="n">profile_cuda</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
       <span class="n">data</span><span class="p">,</span> <span class="n">labels</span> <span class="o">=</span> <span class="n">data_loader</span><span class="o">.</span><span class="n">get_next_batch</span><span class="p">()</span>
 
-   <span class="k">with</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span><span class="s2">&quot;fwd&quot;</span><span class="p">,</span> <span class="n">profile_cuda</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+   <span class="k">with</span> <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">detection_section</span><span class="p">(</span><span class="s2">"fwd"</span><span class="p">,</span> <span class="n">profile_cuda</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
       <span class="n">out</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
    <span class="o">...</span>
 
@@ -195,14 +195,14 @@ The simplest approach might be to wrap the model’s <code class="docutils liter
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.straggler</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">straggler</span>
 
 <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span>
-   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;relative_perf_scores&quot;</span><span class="p">,</span> <span class="s2">&quot;individual_perf_scores&quot;</span><span class="p">],</span>
-   <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span> <span class="c1"># all ranks&#39; results will be available on rank 0</span>
+   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">"relative_perf_scores"</span><span class="p">,</span> <span class="s2">"individual_perf_scores"</span><span class="p">],</span>
+   <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">True</span> <span class="c1"># all ranks' results will be available on rank 0</span>
 <span class="p">)</span>
 
 <span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">wrap_callables</span><span class="p">(</span>
    <span class="n">callable_ids</span><span class="o">=</span><span class="p">[</span>
-      <span class="n">straggler</span><span class="o">.</span><span class="n">CallableId</span><span class="p">(</span><span class="n">DataLoaderClass</span><span class="p">,</span> <span class="s2">&quot;get_next_batch&quot;</span><span class="p">,</span> <span class="n">ignored_args</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;self&quot;</span><span class="p">,)),</span>
-      <span class="n">straggler</span><span class="o">.</span><span class="n">CallableId</span><span class="p">(</span><span class="n">ModelClass</span><span class="p">,</span> <span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">ignored_args</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;self&quot;</span><span class="p">,)),</span>
+      <span class="n">straggler</span><span class="o">.</span><span class="n">CallableId</span><span class="p">(</span><span class="n">DataLoaderClass</span><span class="p">,</span> <span class="s2">"get_next_batch"</span><span class="p">,</span> <span class="n">ignored_args</span><span class="o">=</span><span class="p">(</span><span class="s2">"self"</span><span class="p">,)),</span>
+      <span class="n">straggler</span><span class="o">.</span><span class="n">CallableId</span><span class="p">(</span><span class="n">ModelClass</span><span class="p">,</span> <span class="s2">"forward"</span><span class="p">,</span> <span class="n">ignored_args</span><span class="o">=</span><span class="p">(</span><span class="s2">"self"</span><span class="p">,)),</span>
    <span class="p">]</span>
 <span class="p">)</span>
 
@@ -272,7 +272,7 @@ If <code class="docutils literal notranslate"><span class="pre">profiling_interv
 </dl>
 <p>Hence, the following initialization parameters can be used to avoid any inter-rank synchronization:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">straggler</span><span class="o">.</span><span class="n">Detector</span><span class="o">.</span><span class="n">initialize</span><span class="p">(</span>
-   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;individual_perf_scores&quot;</span><span class="p">],</span>
+   <span class="n">scores_to_compute</span><span class="o">=</span><span class="p">[</span><span class="s2">"individual_perf_scores"</span><span class="p">],</span>
    <span class="n">gather_on_rank0</span><span class="o">=</span><span class="kc">False</span> <span class="c1"># each rank will report its own results</span>
 <span class="p">)</span>
 </pre></div>
@@ -294,7 +294,7 @@ All that is needed is to include <code class="xref py py-class docutils literal 
    <span class="n">gpu_relative_perf_threshold</span><span class="o">=</span><span class="mf">0.7</span><span class="p">,</span>
    <span class="n">gpu_individual_perf_threshold</span><span class="o">=</span><span class="mf">0.7</span><span class="p">,</span>
    <span class="n">stop_if_detected</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-   <span class="n">logger_name</span><span class="o">=</span><span class="s2">&quot;test_logger&quot;</span><span class="p">,</span>
+   <span class="n">logger_name</span><span class="o">=</span><span class="s2">"test_logger"</span><span class="p">,</span>
 <span class="p">)</span>
 
 <span class="n">straggler_det_cb</span> <span class="o">=</span> <span class="n">StragglerDetectionCallback</span><span class="p">(</span><span class="o">**</span><span class="n">straggler_cb_args</span><span class="p">)</span>

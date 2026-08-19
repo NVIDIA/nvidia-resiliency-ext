@@ -228,11 +228,11 @@ will appear in the wrapper’s <code class="docutils literal notranslate"><span 
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/usr/bin/env bash</span>
 <span class="nb">set</span><span class="w"> </span>-euo<span class="w"> </span>pipefail
 
-<span class="k">if</span><span class="w"> </span>/path/to/bcm-healthcheck<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$@</span><span class="s2">&quot;</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
-<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;{&quot;fail_count&quot;: 0, &quot;failed_checks&quot;: []}\n&#39;</span>
+<span class="k">if</span><span class="w"> </span>/path/to/bcm-healthcheck<span class="w"> </span><span class="s2">"</span><span class="nv">$@</span><span class="s2">"</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'{"fail_count": 0, "failed_checks": []}\n'</span>
 <span class="w">  </span><span class="nb">exit</span><span class="w"> </span><span class="m">0</span>
 <span class="k">else</span>
-<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">&#39;{&quot;fail_count&quot;: 1, &quot;failed_checks&quot;: [&quot;bcm_healthcheck&quot;]}\n&#39;</span>
+<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'{"fail_count": 1, "failed_checks": ["bcm_healthcheck"]}\n'</span>
 <span class="w">  </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span>
 <span class="k">fi</span>
 </pre></div>
@@ -272,7 +272,7 @@ By default it is disabled. When enabled (via CLI or YAML), it:</p>
 </ul>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
 <span class="w">  </span><span class="c1"># Comma-separated absolute paths</span>
-<span class="w">  </span><span class="nt">storage_healthcheck_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/data/checkpoints,/mnt/dataset&quot;</span>
+<span class="w">  </span><span class="nt">storage_healthcheck_path</span><span class="p">:</span><span class="w"> </span><span class="s">"/data/checkpoints,/mnt/dataset"</span>
 </pre></div>
 </div>
 <dl class="simple">

@@ -241,11 +241,11 @@ last process to exit, allowing it to complete its cleanup responsibilities.</p><
 <section id="complete-slurm-launch-command">
 <h3>Complete SLURM Launch Command<a class="headerlink" href="#complete-slurm-launch-command" title="Link to this heading"></a></h3>
 <p>Use the following command format to launch your job with SLURM:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>srun<span class="w"> </span>--kill-on-bad-exit<span class="o">=</span><span class="m">0</span><span class="w"> </span>&lt;other_srun_options&gt;<span class="w"> </span>bash<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>srun<span class="w"> </span>--kill-on-bad-exit<span class="o">=</span><span class="m">0</span><span class="w"> </span>&lt;other_srun_options&gt;<span class="w"> </span>bash<span class="w"> </span>-c<span class="w"> </span><span class="s2">"</span>
 <span class="s2">python -u </span><span class="si">${</span><span class="nv">run_cmd</span><span class="si">}</span>
 <span class="s2">ret=\$?</span>
 <span class="s2">python -m nvidia_resiliency_ext.shared_utils.wait_daemon /tmp/inprocess_monitor\${SLURM_PROCID}.pid</span>
-<span class="s2">exit \$ret&quot;</span>
+<span class="s2">exit \$ret"</span>
 </pre></div>
 </div>
 </section>
@@ -255,7 +255,7 @@ last process to exit, allowing it to complete its cleanup responsibilities.</p><
 must specify the <code class="docutils literal notranslate"><span class="pre">monitor_process_pidfile</span></code> parameter to match the path used in
 the wait_daemon command:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">train</span> <span class="o">=</span> <span class="n">inprocess</span><span class="o">.</span><span class="n">Wrapper</span><span class="p">(</span>
-    <span class="n">monitor_process_pidfile</span><span class="o">=</span><span class="s2">&quot;/tmp/inprocess_monitor_</span><span class="si">{rank}</span><span class="s2">.pid&quot;</span><span class="p">,</span>
+    <span class="n">monitor_process_pidfile</span><span class="o">=</span><span class="s2">"/tmp/inprocess_monitor_</span><span class="si">{rank}</span><span class="s2">.pid"</span><span class="p">,</span>
     <span class="c1"># ... other parameters ...</span>
 <span class="p">)(</span><span class="n">train</span><span class="p">)</span>
 </pre></div>
@@ -563,7 +563,7 @@ protection is automatically re-enabled.</p>
 
     <span class="c1"># Disable hang protection for long-running data loading</span>
     <span class="k">with</span> <span class="n">call_wrapper</span><span class="o">.</span><span class="n">disable_hang_protection</span><span class="p">():</span>
-        <span class="n">load_large_dataset</span><span class="p">()</span>  <span class="c1"># This won&#39;t trigger timeout restarts</span>
+        <span class="n">load_large_dataset</span><span class="p">()</span>  <span class="c1"># This won't trigger timeout restarts</span>
 
     <span class="c1"># Hang protection is automatically re-enabled</span>
     <span class="n">train_step</span><span class="p">()</span>  <span class="c1"># This will trigger hang detection if it hangs</span>

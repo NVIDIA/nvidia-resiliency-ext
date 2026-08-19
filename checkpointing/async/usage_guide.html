@@ -227,7 +227,7 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 
 <span class="c1"># Create writer with MSC enabled</span>
 <span class="n">writer</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="p">(</span>
-    <span class="s2">&quot;msc://model-checkpoints/iteration-0010&quot;</span><span class="p">,</span>
+    <span class="s2">"msc://model-checkpoints/iteration-0010"</span><span class="p">,</span>
     <span class="n">use_msc</span><span class="o">=</span><span class="kc">True</span>
 <span class="p">)</span>
 </pre></div>
@@ -254,9 +254,9 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">async_save_checkpoint</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">,</span> <span class="n">thread_count</span><span class="o">=</span><span class="mi">2</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Save checkpoint asynchronously to MSC storage.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="c1"># Create async queue</span>
     <span class="n">async_queue</span> <span class="o">=</span> <span class="n">AsyncCallsQueue</span><span class="p">()</span>
 
@@ -274,7 +274,7 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
     <span class="n">save_fn</span><span class="p">,</span> <span class="n">preload_fn</span><span class="p">,</span> <span class="n">save_args</span> <span class="o">=</span> <span class="n">writer</span><span class="o">.</span><span class="n">get_save_function_and_args</span><span class="p">()</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">finalize_fn</span><span class="p">():</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Finalizes async checkpointing and synchronizes processes.&quot;&quot;&quot;</span>
+<span class="w">        </span><span class="sd">"""Finalizes async checkpointing and synchronizes processes."""</span>
         <span class="n">save_state_dict_async_finalize</span><span class="p">(</span><span class="o">*</span><span class="n">save_state_dict_ret</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
             <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
@@ -287,9 +287,9 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 
 
 <span class="k">def</span><span class="w"> </span><span class="nf">load_checkpoint</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Load checkpoint from MSC storage into the state_dict.</span>
-<span class="sd">    &quot;&quot;&quot;</span>
+<span class="sd">    """</span>
     <span class="c1"># Create reader with MSC path</span>
     <span class="n">reader</span> <span class="o">=</span> <span class="n">msc</span><span class="o">.</span><span class="n">torch</span><span class="o">.</span><span class="n">MultiStorageFileSystemReader</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">thread_count</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
 
@@ -307,7 +307,7 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 <span class="n">state_dict</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">()</span>
 
 <span class="c1"># Save checkpoint asynchronously</span>
-<span class="n">checkpoint_path</span> <span class="o">=</span> <span class="s2">&quot;msc://model-checkpoints/iteration-0010&quot;</span>
+<span class="n">checkpoint_path</span> <span class="o">=</span> <span class="s2">"msc://model-checkpoints/iteration-0010"</span>
 <span class="n">async_queue</span> <span class="o">=</span> <span class="n">async_save_checkpoint</span><span class="p">(</span><span class="n">checkpoint_path</span><span class="p">,</span> <span class="n">state_dict</span><span class="p">)</span>
 <span class="n">async_queue</span><span class="o">.</span><span class="n">maybe_finalize_async_calls</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">no_dist</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
