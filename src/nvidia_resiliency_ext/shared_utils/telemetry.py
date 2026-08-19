@@ -390,6 +390,91 @@ def traceparent(context) -> Optional[str]:
         return None
 
 
+def context_carrier() -> Optional[dict]:
+    """Serialize the active trace context and Baggage into a picklable dict.
+
+    For handing a span's identity to a process that does not share memory with
+    this one. The result is a small dict of W3C header strings -- ``traceparent``
+    and, when anything is in Baggage, ``baggage`` -- so it survives pickling onto
+    a multiprocessing queue, which a live ``SpanContext`` does not.
+
+    Uses the globally configured propagators, so whatever the deployment has set
+    up rides along rather than only the two NVRx happens to know about.
+
+    Returns None when there is nothing to carry, which is also what a caller
+    should store when telemetry is off: the receiving side then behaves exactly
+    as it did before any of this existed.
+    """
+    if not _AVAILABLE:
+        return None
+    try:
+        from opentelemetry import propagate
+
+        carrier: dict = {}
+        propagate.inject(carrier)
+        return carrier or None
+    except Exception:
+        logger.debug("Could not capture a context carrier", exc_info=True)
+        return None
+
+
+def carrier_baggage(carrier: Optional[dict]) -> dict:
+    """Read the Baggage out of a carrier, as a plain dict.
+
+    Baggage is ambient key/value context that rides alongside the trace context.
+    It is not telemetry by itself and lands on no span automatically -- reading a
+    value out of it and setting it as a span attribute is a deliberate act, which
+    is why this returns the values rather than applying them.
+    """
+    if not _AVAILABLE or not carrier:
+        return {}
+    try:
+        from opentelemetry import baggage, propagate
+
+        return dict(baggage.get_all(propagate.extract(carrier)))
+    except Exception:
+        logger.debug("Could not read baggage from a carrier", exc_info=True)
+        return {}
+
+
+@contextmanager
+def linked_span(group: str, name: str, carrier: Optional[dict], attributes: Optional[dict] = None):
+    """A span in this process's own trace, linking to a span in another.
+
+    A **link** references another span without inheriting its trace id or its
+    lifetime. That is the difference that matters here: parenting would pull
+    every worker span into the trainer's trace, and with it every rank of every
+    checkpoint, producing one trace no viewer can open. A link leaves the worker
+    in its own trace and still records what caused the work, so a consumer can
+    navigate from a slow write back to the training step that asked for it.
+
+    Falls back to an ordinary span when there is no carrier or no telemetry, so
+    a caller needs no branch of its own.
+    """
+    if not _AVAILABLE or not carrier:
+        with span(group, name, attributes) as recorded:
+            yield recorded
+        return
+    try:
+        from opentelemetry import propagate, trace
+
+        link_context = trace.get_current_span(propagate.extract(carrier)).get_span_context()
+        links = [trace.Link(link_context)] if link_context.is_valid else None
+    except Exception:
+        logger.debug("Could not build a link from a carrier", exc_info=True)
+        links = None
+    if links is None or not _is_span_group_enabled(group):
+        with span(group, name, attributes) as recorded:
+            yield recorded
+        return
+    from opentelemetry import trace
+
+    tracer = _get_tracer(__name__)
+    started = tracer.start_span(name, links=links, attributes=attributes or {})
+    with trace.use_span(started, end_on_exit=True):
+        yield started
+
+
 def record_process_startup(
     group: str,
     imports_started: float,

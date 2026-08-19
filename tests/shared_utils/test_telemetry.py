@@ -21,6 +21,7 @@ nemo-lens is missing or uninitialized, and never propagates a telemetry
 failure into the workload. They run with or without nemo-lens installed.
 """
 
+import pickle
 import threading
 import time
 import unittest
@@ -204,6 +205,63 @@ class TestTraceparent(unittest.TestCase):
         # Nothing to format a context with, so the variable is simply not set --
         # rather than set to something the receiver would try to parse.
         self.assertIsNone(telemetry.traceparent(object()))
+
+
+class TestContextCarrier(unittest.TestCase):
+    """Cause is handed to the checkpoint worker as a picklable dict of headers."""
+
+    def test_carrier_is_none_without_telemetry(self):
+        # The AsyncRequest field then defaults to None, and the worker takes the
+        # same path it took before any of this existed.
+        self.assertIsNone(telemetry.context_carrier())
+
+    def test_carrier_survives_pickling(self):
+        # The request is pickled onto a multiprocessing queue, which is the whole
+        # reason this is headers rather than a live SpanContext.
+        carrier = telemetry.context_carrier() or {
+            "traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-01"
+        }
+        self.assertEqual(pickle.loads(pickle.dumps(carrier)), carrier)
+
+    def test_baggage_of_nothing_is_empty(self):
+        self.assertEqual(telemetry.carrier_baggage(None), {})
+        self.assertEqual(telemetry.carrier_baggage({}), {})
+
+    def test_baggage_never_raises_on_a_malformed_carrier(self):
+        # The carrier crossed a process boundary and came from another repo's
+        # instrumentation; a bad one must cost the attribute, not the checkpoint.
+        self.assertEqual(telemetry.carrier_baggage({"traceparent": "nonsense"}), {})
+        self.assertEqual(telemetry.carrier_baggage({"baggage": "="}), {})
+
+
+class TestLinkedSpan(unittest.TestCase):
+    """Worker spans link to the trainer's rather than joining its trace."""
+
+    def test_runs_the_body_without_a_carrier(self):
+        ran = False
+        with telemetry.linked_span("nvrx.ckpt", "nvrx.ckpt.save.request", None) as active:
+            ran = True
+            self.assertIsNone(active)
+        self.assertTrue(ran)
+
+    def test_runs_the_body_with_a_carrier(self):
+        ran = False
+        carrier = {"traceparent": "00-" + "a" * 32 + "-" + "b" * 16 + "-01"}
+        with telemetry.linked_span(
+            "nvrx.ckpt", "nvrx.ckpt.save.request", carrier, {"nvrx.call_idx": 4}
+        ):
+            ran = True
+        self.assertTrue(ran)
+
+    def test_malformed_carrier_still_runs_the_body(self):
+        with telemetry.linked_span("nvrx.ckpt", "nvrx.ckpt.save.write", {"traceparent": "x"}):
+            pass
+
+    def test_propagates_body_exceptions(self):
+        # Same contract as span(): a checkpoint failure must reach the caller.
+        with self.assertRaises(ValueError):
+            with telemetry.linked_span("nvrx.ckpt", "nvrx.ckpt.save.request", None):
+                raise ValueError("from the instrumented body")
 
 
 class TestPhase(unittest.TestCase):

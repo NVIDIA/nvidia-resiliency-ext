@@ -44,7 +44,11 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-Exports `span`, `trace_fn`, `ManualSpan`, `mark`, `backdated_span`, `set_span_attributes`, `setup_telemetry`, `shutdown`, `flush`.
+Exports, in three groups:
+
+- **Spans** — `span`, `linked_span`, `trace_fn`, `ManualSpan`, `Phase`, `mark`, `backdated_span`, `set_span_attributes`, `record_process_startup`
+- **Cross-process context** — `extended_resource_attributes`, `traceparent`, `context_carrier`, `carrier_baggage`
+- **Lifecycle** — `setup_telemetry`, `shutdown`, `flush`
 
 ### Where NVRx data lives in OTel
 
@@ -53,10 +57,10 @@ NVRx uses three of OTel's carriers, and which one a value belongs in follows fro
 | OTel carrier            | Describes                                | Set through                                                                                               | Serialized            |
 | ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------- |
 | **Resource attributes** | the emitting process, for its whole life | `OTEL_RESOURCE_ATTRIBUTES`, plus `setup_telemetry(resource_attributes=)` for what NVRx knows about itself | once per export batch |
-| **Span attributes**     | one span                                 | the dict passed to `span`, `mark`, `backdated_span`, `ManualSpan.open/set/close`, `set_span_attributes`   | once per span         |
-| **Span links**          | a related span in another trace          | `TRACEPARENT` on worker launch; the captured context on an `AsyncRequest`                                 | once per span         |
+| **Span attributes**     | one span                                 | the dict passed to `span`, `linked_span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes` | once per span   |
+| **Span links**          | a related span in another trace          | `TRACEPARENT` on worker launch; `AsyncRequest.telemetry_carrier` on enqueue                               | once per span         |
 
-Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. It is ambient context, not telemetry, and reaches spans by two explicit routes: a `BaggageSpanProcessor` in the trainer copies it onto trainer-side spans as they start, and NVRx reads it with `get_baggage` at enqueue and carries it to the checkpoint worker on the `AsyncRequest`, where the worker sets it as a span attribute.
+Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. It is ambient context, not telemetry: it reaches no span by itself, and NVRx installs nothing that would make it. NVRx reads it explicitly at enqueue and sets it on `save.schedule`, then carries it to the checkpoint worker on the `AsyncRequest`, where the worker reads it back and sets it on `save.request`. A deployment that configures a `BaggageSpanProcessor` gets it on every other trainer-side span too, at no cost to this design and with no code here.
 
 ### Which carrier for which value
 
@@ -81,12 +85,16 @@ Everything is gated on its span group and no-ops when the group is off, which in
 | Mechanism             | Shape                                                                                  | Used by                                            |
 | --------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------- |
 | `@trace_fn`           | the span _is_ a method                                                                 | `worker_start`, `teardown`                         |
-| `with span(...)`      | the span is a block                                                                    | `round_wait`, `health_check`, all `ckpt` spans     |
+| `with span(...)`      | the span is a block                                                                    | `round_wait`, `health_check`, most `ckpt` spans   |
+| `with linked_span(...)` | a block, linking to a span in another process                                        | `ckpt.save.request`                                |
 | `ManualSpan`          | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                        |
 | `mark(...)`           | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`                |
-| `backdated_span(...)` | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `python.startup`, `python.imports`, `cycle`, `run` |
+| `backdated_span(...)` | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `python.startup`, `python.imports`                 |
+| `Phase`               | a window too long to hold a span open: a start mark now, a backdated span at close     | `cycle`, `run`                                     |
 
 `ManualSpan` owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. It knows nothing about fault tolerance — the caller supplies group, name, and every attribute key.
+
+`Phase` is `ManualSpan`'s grouping without its lifetime. `open()` marks `<name>_start` and makes that mark's `SpanContext` the active context; `close()` emits `<name>`, backdated to the mark. Spans opened in between still nest under the phase, but nothing is held open, so a phase that never closes leaves its mark and all of its children rather than nothing at all. Both share the `contextvars` ordering contract: open and close on one thread, and anything opened inside closes first.
 
 ### Span groups
 
@@ -316,9 +324,11 @@ Reusing those shm tensors introduces a second exposed wait that has no counterpa
 
 ### Trainer side
 
-Checkpoint code called from the trainer runs on the trainer's thread and inherits its context, so trainer-side `nvrx.ckpt` spans nest under the trainer's active span with no reference passing, and a `BaggageSpanProcessor` stamps `nvrx.iteration` on them.
+Checkpoint code called from the trainer runs on the trainer's thread and inherits its context, so trainer-side `nvrx.ckpt` spans nest under the trainer's active span with no reference passing.
 
-At enqueue NVRx captures its own current context — it is already inside the caller's active span — and reads `nvrx.iteration` from Baggage. Both travel to the worker in a defaulted field on the `AsyncRequest` `NamedTuple`, which leaves every existing call site unchanged.
+At enqueue NVRx captures its own current context — it is already inside `save.schedule` — into `AsyncRequest.telemetry_carrier`, a defaulted field on the `NamedTuple` that leaves every existing call site unchanged. `AsyncCallsQueue` already rebuilds a request whose field count does not match, so the addition is compatible in both directions.
+
+The carrier is a dict of W3C header strings, `traceparent` plus `baggage`, produced by the globally configured propagators. Headers rather than a live `SpanContext` because the request is pickled onto a multiprocessing queue; the configured propagators rather than a fixed two so that whatever a deployment sets up rides along. It is `None` when telemetry is off, and the worker then takes exactly the path it took before any of this existed.
 
 ### Worker side
 

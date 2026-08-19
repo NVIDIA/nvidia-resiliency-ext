@@ -133,6 +133,12 @@ class AsyncRequest(NamedTuple):
         is_frozen (Bool): a flag to indicate this async request can be modified or not.
         call_idx (int): index variable used to order async requests for synchronization
                         in preloading and writing tensors on the async caller
+        telemetry_carrier (Dict): W3C trace context and Baggage of whatever scheduled
+                        this request, captured at enqueue and used by the worker to
+                        link its spans back. A dict of header strings rather than a
+                        live context, because the request is pickled onto a queue.
+                        None when telemetry is off, which is the default and leaves
+                        every existing call site unchanged.
 
     """
 
@@ -143,6 +149,7 @@ class AsyncRequest(NamedTuple):
     preload_fn: Callable = None
     is_frozen: bool = False
     call_idx: int = 0
+    telemetry_carrier: Optional[Dict] = None
 
     def add_finalize_fn(self, fn: Callable) -> None:
         """Adds a new finalize function to the request.
@@ -532,13 +539,23 @@ class PersistentAsyncCaller(AsyncCaller):
         if async_req.async_fn is None:
             return  # nothing to do
 
-        # Set on the span trace_fn opened. Training is stopped for the whole of this
-        # method, whichever staging mode is in use, so this is the span that says
-        # what a checkpoint costs. nvrx.call_idx joins it to the worker's spans for
-        # any consumer that does not follow links.
-        telemetry.set_span_attributes(
-            {"is_goodput_span": True, "nvrx.call_idx": async_req.call_idx}
-        )
+        # Captured here, inside the save.schedule span trace_fn opened, because that
+        # is the span the worker should link back to: it is the one that says what
+        # this checkpoint cost the trainer. Anything the trainer put in Baggage --
+        # nvrx.iteration in particular -- rides along in the same carrier.
+        carrier = telemetry.context_carrier()
+        async_req = async_req._replace(telemetry_carrier=carrier)
+
+        # Set on the save.schedule span. Training is stopped for the whole of this
+        # method, whichever staging mode is in use, so this is the span that says what
+        # a checkpoint costs. call_idx and iteration are also set on the worker's
+        # spans, so the two sides join for any consumer that does not follow links.
+        schedule_attrs = {"is_goodput_span": True, "nvrx.call_idx": async_req.call_idx}
+        # Baggage reaches no span on its own; the value is read out and set explicitly.
+        iteration = telemetry.carrier_baggage(carrier).get("nvrx.iteration")
+        if iteration is not None:
+            schedule_attrs["nvrx.iteration"] = iteration
+        telemetry.set_span_attributes(schedule_attrs)
 
         if self.rank is None:
             self.rank = torch.distributed.get_rank()
@@ -806,10 +823,23 @@ class PersistentAsyncCaller(AsyncCaller):
                     # Everything this process does overlaps training, so none of it
                     # costs goodput. The trainer's own spans measure what training
                     # actually stopped for; marking these True would double-count.
-                    with telemetry.span(
+                    request_attrs = {"is_goodput_span": False, "nvrx.call_idx": item.call_idx}
+                    # The training iteration, if the trainer put one in Baggage. Baggage
+                    # reaches no span on its own, so it is read out and set explicitly.
+                    # It is what lets a consumer line a checkpoint up against the loss
+                    # curve without following links.
+                    iteration = telemetry.carrier_baggage(item.telemetry_carrier).get(
+                        "nvrx.iteration"
+                    )
+                    if iteration is not None:
+                        request_attrs["nvrx.iteration"] = iteration
+                    # Linked to the trainer's save.schedule, not parented to it: the
+                    # worker keeps its own trace, and cause stays navigable.
+                    with telemetry.linked_span(
                         "nvrx.ckpt",
                         "nvrx.ckpt.save.request",
-                        {"is_goodput_span": False, "nvrx.call_idx": item.call_idx},
+                        item.telemetry_carrier,
+                        request_attrs,
                     ):
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
