@@ -267,17 +267,12 @@ def backdated_span(
     with both timestamps rather than wrapped around live code. ``start`` and
     ``end`` are wall-clock seconds.
 
-    ``parent`` is the ``SpanContext`` this span belongs under, normally the
-    ``SpanContext`` returned by the ``mark`` that opened the window. Passing it
-    explicitly is what puts the backdated span in the same trace as the spans
-    that ran inside the window, even though nothing was held open across it.
+    ``parent`` is normally the ``SpanContext`` returned by the ``mark`` that opened
+    the window, which is what puts this span in the same trace as the spans that
+    ran inside it. Without one the span roots its own trace.
 
-    Without a ``parent`` the span is emitted with an empty context and roots its
-    own trace, which is what a window that predates every other span in the
-    process wants.
-
-    A no-op if the window is not a positive interval, so callers can pass
-    whatever timestamps they found without pre-checking.
+    A no-op if the window is not a positive interval, so callers can pass whatever
+    timestamps they found without pre-checking.
     """
     if start is None or end is None or end <= start:
         return
@@ -303,11 +298,9 @@ def mark(group: str, name: str, attributes: Optional[dict] = None):
     surrounding spans start too late to pin it -- a detected fault sits between
     the run span ending and the teardown span starting.
 
-    Returns the ``SpanContext`` of the instant, or None when the group is off.
-    A mark exports the moment it is made, so its context outlives it: it is a
-    trace and span id, not a handle to anything still running. That is what lets
-    a long window be opened by a mark and closed by a backdated span in the same
-    trace, without a span being held open across it.
+    Returns the ``SpanContext`` of the instant, or None when the group is off. A
+    mark exports immediately, so its context outlives it -- a trace and span id,
+    not a handle to anything running.
     """
     with span(group, name, attributes) as recorded:
         return recorded.get_span_context() if recorded is not None else None
@@ -329,25 +322,16 @@ def set_span_attributes(attributes: dict) -> None:
 def extended_resource_attributes(attributes: dict) -> str:
     """Extend the inherited ``OTEL_RESOURCE_ATTRIBUTES`` with more pairs.
 
-    The variable is comma-separated ``key=value`` with percent-encoded values.
-    An OTel SDK reads it into the process Resource with no code at all, and it
-    is inherited across every process spawn, which makes it the way to tell a
-    process something about itself that it cannot work out on its own -- and it
-    costs nothing per span, since a Resource is serialized once per export batch
-    rather than once per span.
+    Comma-separated ``key=value`` with percent-encoded values, which an OTel SDK
+    reads into the process Resource with no code and every spawn inherits.
 
-    NVRx reads this variable but never parses it. Whatever a launching
-    environment put in it is an opaque string here: NVRx looks up no key in it,
-    and behaves identically whether it holds nothing or twenty keys from some
-    scheduler NVRx has never heard of. Reading a string in order to extend it
-    creates no coupling; branching on a key in it would.
+    NVRx reads the variable but never parses it: whatever a launching environment
+    put there is an opaque string to extend. Reading a string to extend it couples
+    nothing; branching on a key in it would.
 
-    Values are percent-encoded. NVRx's own are integers and a fixed enum, so
-    they would survive unencoded, but encoding makes that a property of the code
-    rather than a property of the current set of attributes.
-
-    Callers must not pass a key the inherited value already sets, since which
-    occurrence wins is not something to depend on.
+    Built from the value inherited at process start, not from the last extension,
+    or a relaunched cohort would accumulate a key per restart. Callers must not
+    pass a key the inherited value already sets.
     """
     from urllib.parse import quote
 
@@ -362,17 +346,12 @@ def extended_resource_attributes(attributes: dict) -> str:
 def context_carrier() -> Optional[dict]:
     """Serialize the active trace context and Baggage into a picklable dict.
 
-    For handing a span's identity to a process that does not share memory with
-    this one. The result is a small dict of W3C header strings -- ``traceparent``
-    and, when anything is in Baggage, ``baggage`` -- so it survives pickling onto
-    a multiprocessing queue, which a live ``SpanContext`` does not.
+    A dict of W3C header strings -- ``traceparent``, and ``baggage`` when anything
+    is in it -- so it survives pickling onto a multiprocessing queue, which a live
+    ``SpanContext`` does not. Uses the globally configured propagators.
 
-    Uses the globally configured propagators, so whatever the deployment has set
-    up rides along rather than only the two NVRx happens to know about.
-
-    Returns None when there is nothing to carry, which is also what a caller
-    should store when telemetry is off: the receiving side then behaves exactly
-    as it did before any of this existed.
+    None when there is nothing to carry, which is what a caller stores when
+    telemetry is off.
     """
     if not _AVAILABLE:
         return None
@@ -452,25 +431,14 @@ def record_process_startup(
 ) -> None:
     """Record how long this process took to become able to run.
 
-    Two windows, both over before there was a tracer to measure them, so both
-    are backdated:
+    Two backdated windows: ``python.startup``, from process creation to the entry
+    module's first statement, and ``python.imports``, the entry module's top-level
+    imports. ``imports_started`` and ``imports_finished`` are wall-clock seconds
+    stamped around that import block; the create time comes from the OS.
 
-    * ``python.startup`` -- the process being created to its entry module's
-      first statement. Interpreter start, and on a shared filesystem the cost of
-      finding and reading the interpreter and the standard library at all.
-    * ``python.imports`` -- the entry module's top-level imports. Importing
-      torch alone is seconds, and on a cold page cache across thousands of nodes
-      it is a large share of the time before a job does any work.
-
-    ``imports_started`` and ``imports_finished`` are wall-clock seconds stamped
-    around the entry module's import block; the process create time comes from
-    the OS. Neither span carries an ``nvrx.`` prefix -- they describe Python, not
-    NVRx, and ``service.name`` already says which process emitted them, so one
-    query answers "how long did imports take" across every service that records
-    them.
-
-    Both root their own trace. They precede every cycle, so there is nothing for
-    them to belong to.
+    Neither carries an ``nvrx.`` prefix -- they describe Python, and
+    ``service.name`` already says which process emitted them. Both root their own
+    trace, having preceded everything else in the process.
     """
     try:
         import psutil
@@ -484,34 +452,22 @@ def record_process_startup(
 
 
 class Phase:
-    """A long window, recorded as a start marker now and a backdated span later.
+    """A long window, recorded as a start mark now and a backdated span later.
 
-    A span exports only when it ends, so a span held open across a restart cycle
-    -- which on a healthy job is the whole job -- is invisible for as long as the
-    thing it measures is interesting. Worse, if the process dies the span is
-    never exported at all, and the window that most wanted recording is the one
-    that goes missing.
+    For a window too long to hold a span open across -- a restart cycle is the
+    whole job when nothing goes wrong, and a span exports only when it ends.
+    ``open()`` marks ``<name>_start``, which exports immediately; ``close()``
+    records ``<name>`` backdated to it. A phase that never closes leaves its mark
+    and every span that ran inside it, so the missing backdated span is the signal.
 
-    So a phase is two spans. ``open()`` records a zero-duration ``<name>_start``
-    mark, which exports immediately; ``close()`` records a ``<name>`` span
-    backdated to that instant, carrying the duration and the outcome. A phase
-    that never closes leaves its marker and every span that ran inside it, and
-    the absence of the backdated span is itself the signal that it did not
-    finish.
+    In between, the mark's ``SpanContext`` is the active OTel context, so spans
+    opened on this thread nest under the phase without being passed anything.
 
-    Between the two, the marker's ``SpanContext`` is the active OTel context, so
-    spans opened anywhere on this thread nest under the phase and land in its
-    trace without anything being passed to them. That is ``ManualSpan``'s
-    grouping property without ``ManualSpan``'s lifetime.
+    Attributes given to ``open`` go on the mark; those from ``set`` and ``close``
+    go on the backdated span, there being no live span in between.
 
-    Attributes given to ``open`` go on the marker; attributes accumulated by
-    ``set`` and ``close`` go on the backdated span, since there is no live span
-    to carry them in between.
-
-    ORDERING CONTRACT, inherited from ``contextvars``: tokens must be reset in
-    the reverse order they were set, on the thread that set them. So ``open()``
-    and ``close()`` must run on the same thread, and any phase or span opened
-    after this one must close before it does.
+    ORDERING CONTRACT, from ``contextvars``: ``open()`` and ``close()`` must run on
+    the same thread, and anything opened after this one must close before it does.
     """
 
     def __init__(self) -> None:

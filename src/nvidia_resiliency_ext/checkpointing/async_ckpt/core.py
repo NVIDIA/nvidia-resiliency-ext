@@ -134,11 +134,7 @@ class AsyncRequest(NamedTuple):
         call_idx (int): index variable used to order async requests for synchronization
                         in preloading and writing tensors on the async caller
         telemetry_carrier (Dict): W3C trace context and Baggage of whatever scheduled
-                        this request, captured at enqueue and used by the worker to
-                        link its spans back. A dict of header strings rather than a
-                        live context, because the request is pickled onto a queue.
-                        None when telemetry is off, which is the default and leaves
-                        every existing call site unchanged.
+                        this request, for the worker and the finalize to link back to.
 
     """
 
@@ -556,13 +552,7 @@ class PersistentAsyncCaller(AsyncCaller):
 
         if async_req.preload_fn:
             start_sync = time()
-            # Synchronize for pre-staging tensors. Training is stopped for exactly
-            # this window, and nothing here proceeds until the worker signals done.
-            # In CUDA IPC mode that is the whole D2H out of this process's GPU
-            # memory, and the only part of such a save that is not overlapped; in
-            # CPU SHM mode the copy already happened above and this is short. Either
-            # way it is a real stall, and its own span rather than a subtraction out
-            # of save.schedule.
+            # Synchronize for pre-staging tensors
             with telemetry.span(
                 "nvrx.ckpt", "nvrx.ckpt.save.stage_wait", {"is_goodput_span": True}
             ):
@@ -769,23 +759,11 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
-        # Spawned worker: the environment is inherited but no in-memory state is, so
-        # telemetry is set up again here. nemo-lens therefore reads the same config
-        # the trainer saw, and OTEL_RESOURCE_ATTRIBUTES carries job and cycle context
-        # across the spawn with no code at all.
-        #
-        # Identity is the one thing that must not be inherited. The worker shares a
-        # rank number with the trainer it serves, so under the default
-        # service.instance.id the two processes claim the same identity and a backend
-        # cannot tell their spans apart. Both fields are overridden.
-        #
-        # Role and rank, and deliberately not the job id: the id only has to separate
-        # processes reporting to one collector, and which job they belong to is already
-        # in OTEL_RESOURCE_ATTRIBUTES, put there by whatever launched the job. Naming a
-        # scheduler variable here would duplicate that and tie the worker to Slurm.
-        #
-        # Spans here are independent of the launcher's trace and join to the trainer's
-        # across ranks on nvrx.call_idx.
+        # Spawned worker: no in-memory state is inherited, so telemetry is set up
+        # again here. The environment is inherited, so nemo-lens reads the same
+        # config the trainer saw. Spans are independent of the launcher's trace and
+        # join across ranks on nvrx.call_idx. Identity is overridden because this
+        # process shares a rank number with the trainer it serves.
         tel_handle = telemetry.setup_telemetry(
             rank,
             int(os.environ.get("WORLD_SIZE", "1")),
@@ -803,21 +781,12 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    # Everything this process does overlaps training, so none of it
-                    # costs goodput. The trainer's own spans measure what training
-                    # actually stopped for; marking these True would double-count.
                     request_attrs = {"is_goodput_span": False, "nvrx.call_idx": item.call_idx}
-                    # The training iteration, if the trainer put one in Baggage. Baggage
-                    # reaches no span on its own, so it is read out and set explicitly.
-                    # It is what lets a consumer line a checkpoint up against the loss
-                    # curve without following links.
                     iteration = telemetry.carrier_baggage(item.telemetry_carrier).get(
                         "nvrx.iteration"
                     )
                     if iteration is not None:
                         request_attrs["nvrx.iteration"] = iteration
-                    # Linked to the trainer's save.schedule, not parented to it: the
-                    # worker keeps its own trace, and cause stays navigable.
                     with telemetry.linked_span(
                         "nvrx.ckpt",
                         "nvrx.ckpt.save.request",
@@ -827,17 +796,6 @@ class PersistentAsyncCaller(AsyncCaller):
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
                             call_idx = preload_q.get()
-                            # Staging, in both modes, which is why it keeps one name.
-                            # In CUDA IPC mode this is the D2H itself, out of the
-                            # trainer's GPU memory over an IPC handle. In CPU SHM mode
-                            # the trainer has already copied to shared memory, so what
-                            # is left here is bucket assembly over host memory and this
-                            # span is short. Which mode ran is service.name plus the
-                            # duration, not two different span names.
-                            #
-                            # The trainer is blocked on preload_q.join() for exactly
-                            # this window and measures it as save.stage_wait; the
-                            # difference between the two is queue and IPC overhead.
                             with telemetry.span(
                                 "nvrx.ckpt",
                                 "nvrx.ckpt.save.preload",
@@ -1061,21 +1019,13 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
         async_request = async_request.freeze()
-        # Training is stopped for the whole of this call, whichever staging mode is in
-        # use, so this is the span that says what a checkpoint costs the trainer. It is
-        # also the hub the rest of the operation points back at: the worker's spans and
-        # the finalize both link here, so a request that spans three processes and two
-        # traces stays navigable from any of them.
         schedule_attrs = {"is_goodput_span": True, "nvrx.call_idx": self.call_idx}
         with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.schedule", schedule_attrs):
-            # Captured inside the span so that it names the span. Anything the trainer
-            # put in Baggage -- nvrx.iteration in particular -- rides along in it.
             carrier = telemetry.context_carrier()
             iteration = telemetry.carrier_baggage(carrier).get("nvrx.iteration")
             if iteration is not None:
                 telemetry.set_span_attributes({"nvrx.iteration": iteration})
-            # On both copies: the dispatched one so the worker can link, and the
-            # retained one so the finalize can, an iteration or more later.
+            # Set on the retained copy too: the finalize links from it, iterations later.
             async_request = async_request._replace(telemetry_carrier=carrier)
             async_caller.schedule_async_call(
                 async_request._replace(call_idx=self.call_idx, finalize_fns=[])
@@ -1110,11 +1060,6 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 break
             with debug_time("finalize", logger):
                 idx, _, async_request = self.async_calls.popleft()
-                # Exposed trainer time: the finalize functions run inline, and
-                # validate_matching_call_idx adds an all-reduce across every rank.
-                # It happens an iteration or more after the request, in whatever
-                # trace is open by then, so without the link back to save.schedule
-                # nothing connects it to the checkpoint it completes.
                 finalize_attrs = {"is_goodput_span": True, "nvrx.call_idx": idx}
                 iteration = telemetry.carrier_baggage(async_request.telemetry_carrier).get(
                     "nvrx.iteration"

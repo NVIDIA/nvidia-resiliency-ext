@@ -14,11 +14,8 @@
 
 import time
 
-# Stamped around this module's import block so the agent can report what its own
-# startup cost. Importing torch alone is seconds, and on a cold page cache across
-# a whole job it is a large share of the time before any work happens. Nothing
-# else may be imported above this line, or it is measured as startup rather than
-# as an import.
+# Stamped around this module's import block. Nothing else may be imported above this
+# line, or its cost is measured as interpreter startup rather than as an import.
 _IMPORTS_STARTED = time.time()  # isort: split
 
 import asyncio
@@ -463,8 +460,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
-        # Phases, not spans: a cycle lasts the whole job when nothing goes wrong,
-        # and a span that long exports nothing until it is over.
         self._cycle_phase = telemetry.Phase()
         self._run_phase = telemetry.Phase()
 
@@ -567,8 +562,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             node_rank = 0
         # An agent's rank is a node ordinal, not a trainer rank, so under the default
         # service.instance.id it would collide with the checkpoint worker of that rank.
-        # Role and rank only: which job this is comes from OTEL_RESOURCE_ATTRIBUTES,
-        # set by whatever launched it, so NVRx need not name a scheduler variable.
         self._tel_handle = telemetry.setup_telemetry(
             node_rank,
             int(os.environ.get("SLURM_NNODES", "1")),
@@ -578,8 +571,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                 "service.instance.id": f"nvrx-agent{node_rank}",
             },
         )
-        # Backdated as soon as there is a tracer: both windows closed long before
-        # this line, and neither belongs to a cycle.
         telemetry.record_process_startup(
             "job", _IMPORTS_STARTED, _IMPORTS_FINISHED, {"nvrx.node": self._node_id}
         )
@@ -1158,18 +1149,8 @@ class LocalElasticAgent(SimpleElasticAgent):
             {"nvrx.cycle": restart_count, "nvrx.node": self._node_id, "is_goodput_span": True}
         )
 
-        # Telemetry handoff to the worker cohort, over the two standard OTel variables
-        # rather than any of NVRx's own. What crosses is what the worker cannot work out
-        # for itself: which restart cycle it belongs to, and what its role in that cycle
-        # is. No timestamps cross -- a worker measures its own windows, and NVRx measures
-        # its own.
-        #
-        # These are resource attributes for a worker and span attributes for the agent,
-        # for the same value. A worker process is created fresh each cycle, so the cycle
-        # is constant for its whole life; the agent outlives cycles, so its Resource
-        # cannot name one. Placing them here means an instrumented trainer picks them up
-        # into its Resource with no code, and no knowledge that NVRx exists -- every span
-        # it emits carries the cycle, including the ones NVRx never sees.
+        # Resource attributes for the worker, span attributes for the agent: a worker
+        # process is new each cycle, the agent outlives them.
         worker_resource_attrs = {"nvrx.cycle": restart_count, "nvrx.membership": "active"}
         try:
             worker_resource_attrs["nvrx.infra_rank"] = get_infrastructure_rank(
@@ -1177,12 +1158,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             )
         except Exception:
             logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
-        # One variable, and no span reference. Which cycle a worker belongs to is an
-        # attribute of the worker, not a relationship between two spans: it is constant
-        # for the worker's whole life, identical across every span it emits, and answers
-        # its queries as a GROUP BY. A span reference would restate it per span, and
-        # could only ever name the cycle's start mark -- the backdated cycle span, the
-        # one carrying the duration and the outcome, does not exist yet at launch.
         cohort_env = {
             "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
                 worker_resource_attrs

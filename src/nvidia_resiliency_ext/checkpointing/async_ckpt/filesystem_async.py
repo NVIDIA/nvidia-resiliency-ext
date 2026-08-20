@@ -382,12 +382,6 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # the worker for checkpoint N may still be reading these buffers
                     # while we are about to overwrite them with checkpoint N+1 values.
                     if FileSystemWriterAsync._shm_drain_callback is not None:
-                        # This blocks checkpoint N+1 on checkpoint N's write, which is
-                        # this mode's characteristic stall and is invisible without its
-                        # own span -- the time lands in the wrong checkpoint otherwise.
-                        # Deliberately not named stage_wait: that is a wait on this
-                        # checkpoint's own staging, and conflating the two would hide
-                        # that a slow save here is usually caused by the preceding one.
                         with telemetry.span(
                             "nvrx.ckpt", "nvrx.ckpt.save.shm_drain", {"is_goodput_span": True}
                         ):
@@ -415,10 +409,6 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # time and the worker receives them directly without caching.
                     shm_tensors = []
                     total_bytes = 0
-                    # save.stage, not save.preload: this is the trainer stopped, before
-                    # the request is even enqueued, whereas preload names the worker's
-                    # overlapped staging. One name for both would put an exposed cost
-                    # and an overlapped one in the same bucket.
                     with telemetry.span(
                         "nvrx.ckpt", "nvrx.ckpt.save.stage", {"is_goodput_span": True}
                     ):
