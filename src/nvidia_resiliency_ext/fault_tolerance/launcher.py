@@ -16,7 +16,7 @@ import time
 
 # Stamped around this module's import block. Nothing else may be imported above this
 # line, or its cost is measured as interpreter startup rather than as an import.
-_IMPORTS_STARTED = time.time()  # isort: split
+__imports_started__ = time.time()  # isort: split
 
 import asyncio
 
@@ -121,7 +121,7 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logg
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
 
-_IMPORTS_FINISHED = time.time()
+__imports_finished__ = time.time()
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -572,7 +572,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             },
         )
         telemetry.record_process_startup(
-            "job", _IMPORTS_STARTED, _IMPORTS_FINISHED, {"nvrx.node": self._node_id}
+            "job", __imports_started__, __imports_finished__, {"nvrx.node": self._node_id}
         )
         start_time = time.monotonic()
         shutdown_called: bool = False

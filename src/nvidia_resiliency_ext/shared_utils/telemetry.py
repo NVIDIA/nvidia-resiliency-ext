@@ -49,6 +49,8 @@ try:
     # one finds every use across nemo-lens and its consumers. The underscored
     # ones are internal: they only exist when nemo-lens is installed, and
     # _setup_telemetry would otherwise collide with the wrapper defined below.
+    # trace_fn's alias is not redundant: it is the PEP 484 re-export form, and is what
+    # tells a linter this module deliberately exports a name it never calls.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanGroup as _SpanGroup
     from nemo.lens import get_tracer as _get_tracer
@@ -56,7 +58,7 @@ try:
     from nemo.lens import managed_span as _managed_span
     from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
-    from nemo.lens import trace_fn
+    from nemo.lens import trace_fn as trace_fn
 
     class _NVRxSpanGroup(_SpanGroup):
         """Teaches nemo-lens about the NVRx groups, and about groups nobody declared.
