@@ -284,6 +284,7 @@ class AsyncCaller(ABC):
         """
         raise NotImplementedError("This should be implemented")
 
+    @telemetry.trace_fn("nvrx.ckpt", "nvrx.ckpt.save.completion_sync")
     def sync_all_async_calls(self, is_alive: int) -> bool:
         """Check if all ranks have completed async checkpoint writing
 
@@ -294,6 +295,7 @@ class AsyncCaller(ABC):
             bool: True if all ranks are done, False if at least one rank is still active.
 
         """
+        telemetry.set_span_attributes({"is_goodput_span": True})
         ten = torch.tensor([is_alive], dtype=torch.int, device=torch.cuda.current_device())
         torch.distributed.all_reduce(ten)
         return ten[0] == 0

@@ -274,13 +274,13 @@ It is set wherever the answer is **locally true of that span**, never inferred f
 | ---------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True`                                   |
 | `run`                                                                                          | `False` — training is executing          |
-| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`, `ckpt.save.finalize` | `True` — training is stopped |
+| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`, `ckpt.save.completion_sync`, `ckpt.save.finalize` | `True` — training is stopped |
 | `ckpt.save.request`, `ckpt.save.write`                                                         | `False` — worker side, overlaps training |
 | `ckpt.save.preload`                                                                            | `False` — always worker side             |
 
 ## Checkpointing
 
-`save.schedule` and `save.finalize` sit on `AsyncCallsQueue`, the entry point a trainer actually calls. Everything below them covers `PersistentAsyncCaller` only: `TemporalAsyncCaller` is deprecated and warns on use, so it is left uninstrumented rather than given spans that would have to be maintained until it is removed.
+`save.schedule` and `save.finalize` sit on `AsyncCallsQueue`, the entry point a trainer actually calls; `save.completion_sync` sits on the `AsyncCaller` base, so it covers every caller. Everything below them covers `PersistentAsyncCaller` only: `TemporalAsyncCaller` is deprecated and warns on use, so it is left uninstrumented rather than given spans that would have to be maintained until it is removed.
 
 **Which process performs the device-to-host copy depends on `cpu_shm_mode`, and the two modes expose different work to training.** Spans are placed by process and by mode, not by name. In both, the trainer's blocking wait is its own span, because it is the only part that stops training.
 
@@ -295,6 +295,7 @@ The worker sets its CUDA device and initializes a CUDA context so it can receive
 | `nvrx.ckpt.save.request`    | worker  | one request, end to end             | `False`                                       |
 | `nvrx.ckpt.save.preload`    | worker  | D2H staging into host memory        | `False`                                       |
 | `nvrx.ckpt.save.write`      | worker  | the write itself                    | `False`                                       |
+| `nvrx.ckpt.save.completion_sync` | trainer | the all-reduce agreeing the save is done | `True` — once per poll                 |
 | `nvrx.ckpt.save.finalize`   | trainer | finalize callbacks, a later iteration | `True`                                      |
 
 `stage_wait` nests inside `schedule`. The worker's `preload` measures the same physical work from the other side, so the difference between them is queue and IPC overhead.
@@ -314,6 +315,7 @@ Reusing those shm tensors introduces a second exposed wait that has no counterpa
 | `nvrx.ckpt.save.request`    | worker  | one request, end to end                    | `False`                                       |
 | `nvrx.ckpt.save.preload`    | worker  | bucket assembly over host memory           | `False`                                       |
 | `nvrx.ckpt.save.write`      | worker  | the write itself                           | `False`                                       |
+| `nvrx.ckpt.save.completion_sync` | trainer | the all-reduce agreeing the save is done | `True` — once per poll                  |
 | `nvrx.ckpt.save.finalize`   | trainer | finalize callbacks, a later iteration      | `True`                                        |
 
 `schedule` and `stage_wait` are the same spans as in IPC mode, because the code path is the same: a request always carries a `preload_fn`, and the trainer always waits on it. What differs is only what that work costs. In IPC mode the worker's `preload` is the D2H itself and the trainer's `stage_wait` covers all of it; in CPU SHM mode the D2H already happened on the trainer, so `preload` is bucket assembly over host memory and `stage_wait` is short. The mode is legible from the durations rather than from which spans exist.
@@ -333,6 +335,14 @@ At enqueue NVRx captures its own current context — it is already inside `save.
 It is set on **both** copies of the request: the one dispatched to the worker, and the one retained in `async_calls` for finalization. The retained copy is what makes a link possible from the finalize, which runs an iteration or more later.
 
 The carrier is a dict of W3C header strings, `traceparent` plus `baggage`, produced by the globally configured propagators. Headers rather than a live `SpanContext` because the request is pickled onto a multiprocessing queue; the configured propagators rather than a fixed two so that whatever a deployment sets up rides along. It is `None` when telemetry is off, and the worker then takes exactly the path it took before any of this existed.
+
+### Completion polling
+
+Finalizing is preceded by asking whether the save is done, and that question is a collective: `sync_all_async_calls` all-reduces one flag across every rank. It runs once per poll — every iteration, for as long as a checkpoint is outstanding — on the training critical path, so it is goodput.
+
+Its duration is mostly not the all-reduce. It is how long this rank waits for the slowest rank to arrive, which makes `save.completion_sync` a **straggler signal** rather than a cost measurement: the rank still writing reports a short sync, and every rank blocked on it reports a long one. Comparing the span across ranks for one iteration names the laggard — the same query as "identify a rank where an operation took longer than the others", answered without a separate mechanism.
+
+It carries no `nvrx.call_idx` and no link. It is a per-iteration cost of the trainer's own trace, not a phase of one request, and it is also the one place that has no request in hand.
 
 ### One request, three processes, three traces
 
