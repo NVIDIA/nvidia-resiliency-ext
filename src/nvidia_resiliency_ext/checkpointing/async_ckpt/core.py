@@ -522,7 +522,6 @@ class PersistentAsyncCaller(AsyncCaller):
         for cb in PersistentAsyncCaller._worker_restart_callbacks:
             cb()
 
-    @telemetry.trace_fn("nvrx.ckpt", "nvrx.ckpt.save.schedule")
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
         """Put `AsyncRequest` to the Persistent Async Caller
 
@@ -538,24 +537,6 @@ class PersistentAsyncCaller(AsyncCaller):
         """
         if async_req.async_fn is None:
             return  # nothing to do
-
-        # Captured here, inside the save.schedule span trace_fn opened, because that
-        # is the span the worker should link back to: it is the one that says what
-        # this checkpoint cost the trainer. Anything the trainer put in Baggage --
-        # nvrx.iteration in particular -- rides along in the same carrier.
-        carrier = telemetry.context_carrier()
-        async_req = async_req._replace(telemetry_carrier=carrier)
-
-        # Set on the save.schedule span. Training is stopped for the whole of this
-        # method, whichever staging mode is in use, so this is the span that says what
-        # a checkpoint costs. call_idx and iteration are also set on the worker's
-        # spans, so the two sides join for any consumer that does not follow links.
-        schedule_attrs = {"is_goodput_span": True, "nvrx.call_idx": async_req.call_idx}
-        # Baggage reaches no span on its own; the value is read out and set explicitly.
-        iteration = telemetry.carrier_baggage(carrier).get("nvrx.iteration")
-        if iteration is not None:
-            schedule_attrs["nvrx.iteration"] = iteration
-        telemetry.set_span_attributes(schedule_attrs)
 
         if self.rank is None:
             self.rank = torch.distributed.get_rank()
@@ -1078,9 +1059,25 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
         async_request = async_request.freeze()
-        async_caller.schedule_async_call(
-            async_request._replace(call_idx=self.call_idx, finalize_fns=[])
-        )
+        # Training is stopped for the whole of this call, whichever staging mode is in
+        # use, so this is the span that says what a checkpoint costs the trainer. It is
+        # also the hub the rest of the operation points back at: the worker's spans and
+        # the finalize both link here, so a request that spans three processes and two
+        # traces stays navigable from any of them.
+        schedule_attrs = {"is_goodput_span": True, "nvrx.call_idx": self.call_idx}
+        with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.schedule", schedule_attrs):
+            # Captured inside the span so that it names the span. Anything the trainer
+            # put in Baggage -- nvrx.iteration in particular -- rides along in it.
+            carrier = telemetry.context_carrier()
+            iteration = telemetry.carrier_baggage(carrier).get("nvrx.iteration")
+            if iteration is not None:
+                telemetry.set_span_attributes({"nvrx.iteration": iteration})
+            # On both copies: the dispatched one so the worker can link, and the
+            # retained one so the finalize can, an iteration or more later.
+            async_request = async_request._replace(telemetry_carrier=carrier)
+            async_caller.schedule_async_call(
+                async_request._replace(call_idx=self.call_idx, finalize_fns=[])
+            )
         self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
         return self.call_idx
 
@@ -1110,10 +1107,27 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             if not next_async_done:
                 break
             with debug_time("finalize", logger):
-                _, _, async_request = self.async_calls.popleft()
-                call_idx = async_request.execute_finalize_fns(
-                    validate_matching_call_idx=(not no_dist)
+                idx, _, async_request = self.async_calls.popleft()
+                # Exposed trainer time: the finalize functions run inline, and
+                # validate_matching_call_idx adds an all-reduce across every rank.
+                # It happens an iteration or more after the request, in whatever
+                # trace is open by then, so without the link back to save.schedule
+                # nothing connects it to the checkpoint it completes.
+                finalize_attrs = {"is_goodput_span": True, "nvrx.call_idx": idx}
+                iteration = telemetry.carrier_baggage(async_request.telemetry_carrier).get(
+                    "nvrx.iteration"
                 )
+                if iteration is not None:
+                    finalize_attrs["nvrx.iteration"] = iteration
+                with telemetry.linked_span(
+                    "nvrx.ckpt",
+                    "nvrx.ckpt.save.finalize",
+                    async_request.telemetry_carrier,
+                    finalize_attrs,
+                ):
+                    call_idx = async_request.execute_finalize_fns(
+                        validate_matching_call_idx=(not no_dist)
+                    )
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
 

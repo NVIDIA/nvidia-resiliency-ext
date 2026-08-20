@@ -54,13 +54,13 @@ Exports, in three groups:
 
 NVRx uses three of OTel's carriers, and which one a value belongs in follows from its lifetime and its cost.
 
-| OTel carrier            | Describes                                | Set through                                                                                               | Serialized            |
-| ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------- |
-| **Resource attributes** | the emitting process, for its whole life | `OTEL_RESOURCE_ATTRIBUTES`, plus `setup_telemetry(resource_attributes=)` for what NVRx knows about itself | once per export batch |
-| **Span attributes**     | one span                                 | the dict passed to `span`, `linked_span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes` | once per span   |
-| **Span links**          | a related span in another trace          | `AsyncRequest.telemetry_carrier` on enqueue — the only one                                                | once per span         |
+| OTel carrier            | Describes                                | Set through                                                                                                     | Serialized            |
+| ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------- |
+| **Resource attributes** | the emitting process, for its whole life | `OTEL_RESOURCE_ATTRIBUTES`, plus `setup_telemetry(resource_attributes=)` for what NVRx knows about itself       | once per export batch |
+| **Span attributes**     | one span                                 | the dict passed to `span`, `linked_span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes` | once per span         |
+| **Span links**          | a related span in another trace          | `AsyncRequest.telemetry_carrier` on enqueue — the only one                                                      | once per span         |
 
-Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. It is ambient context, not telemetry: it reaches no span by itself, and NVRx installs no span processor to make it. NVRx reads it out explicitly at enqueue and sets it on exactly two spans, `save.schedule` in the trainer and `save.request` in the worker — the two that have to join. It travels between them in the carrier NVRx already captures, so it costs one entry in an existing dict, once per checkpoint, and nothing per span.
+Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. NVRx reads it out explicitly at enqueue and sets it on exactly two spans, `save.schedule` in the trainer and `save.request` in the worker — the two that have to join. It travels between them in the carrier NVRx already captures, so it costs one entry in an existing dict, once per checkpoint, and nothing per span.
 
 ### Which carrier for which value
 
@@ -72,7 +72,7 @@ A value's carrier follows from whether it is constant for the _emitting process'
 | Trainer worker    | `nvrx.cycle`, `nvrx.membership`, `nvrx.infra_rank`, elastic rank           | `nvrx.iteration`                        |
 | Checkpoint worker | same as the trainer, plus its own `service.name` and `service.instance.id` | `nvrx.call_idx`, `nvrx.iteration`       |
 
-`nvrx.cycle` appears on both sides of that table, which is the clearest case. The agent outlives cycles, so its Resource cannot carry a cycle number and the value is a span attribute. A worker process is created fresh for each cycle, so the cycle is constant for its entire life and belongs in its Resource — which is why the agent appends it to `OTEL_RESOURCE_ATTRIBUTES` at launch rather than passing it some other way. Same value, different carrier, decided by process lifetime.
+`nvrx.cycle` appears on both sides of that table, which is the clearest case. The agent outlives cycles, so its Resource cannot carry a cycle number and the value is a span attribute. A worker process is created fresh for each cycle, so the cycle is constant for its entire life and belongs in its Resource — which is why the agent appends it to `OTEL_RESOURCE_ATTRIBUTES` at launch rather than passing it some other way.
 
 **Span attributes are a dict at every entry point.** nemo-lens's `managed_span` takes keyword arguments, and every NVRx attribute name is dotted — `nvrx.cycle`, `nvrx.call_idx` — which cannot be a Python keyword. A dict is the only shape that carries these names, so it is the shape everywhere.
 
@@ -82,15 +82,15 @@ Values are restricted to OTel's attribute types — string, bool, int, double, o
 
 Everything is gated on its span group and no-ops when the group is off, which includes before `setup_telemetry` runs, since groups default to empty.
 
-| Mechanism             | Shape                                                                                  | Used by                                            |
-| --------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `@trace_fn`           | the span _is_ a method                                                                 | `worker_start`, `teardown`                         |
-| `with span(...)`      | the span is a block                                                                    | `round_wait`, `health_check`, most `ckpt` spans   |
-| `with linked_span(...)` | a block, linking to a span in another process                                        | `ckpt.save.request`                                |
-| `ManualSpan`          | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                        |
-| `mark(...)`           | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`                |
-| `backdated_span(...)` | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `python.startup`, `python.imports`                 |
-| `Phase`               | a window too long to hold a span open: a start mark now, a backdated span at close     | `cycle`, `run`                                     |
+| Mechanism               | Shape                                                                                  | Used by                                         |
+| ----------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `@trace_fn`             | the span _is_ a method                                                                 | `worker_start`, `teardown`                      |
+| `with span(...)`        | the span is a block                                                                    | `round_wait`, `health_check`, most `ckpt` spans |
+| `with linked_span(...)` | a block, linking to a span in another process                                          | `ckpt.save.request`                             |
+| `ManualSpan`            | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                     |
+| `mark(...)`             | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`             |
+| `backdated_span(...)`   | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `python.startup`, `python.imports`              |
+| `Phase`                 | a window too long to hold a span open: a start mark now, a backdated span at close     | `cycle`, `run`                                  |
 
 `ManualSpan` owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. It knows nothing about fault tolerance — the caller supplies group, name, and every attribute key.
 
@@ -155,15 +155,7 @@ Export strategy is nemo-lens's default, set through `NEMO_LENS_EXPORT_STRATEGY`.
 
 Cycle number is a **resource** attribute for a worker because a worker process is new each cycle, and a **span** attribute for the agent because the agent outlives cycles.
 
-**No span reference crosses this boundary — not a parent, and not a link.** Belonging to a cycle is a property of the worker, not a relationship between two spans: it is constant for the worker's entire life, identical on every span it emits, and answers its queries as a `GROUP BY nvrx.cycle`. Three things follow.
-
-A parent is wrong outright. Trace membership is inherited through parentage and cannot be set independently, so parenting to the cycle would put every rank of every cycle in a single trace — the one outcome the design exists to prevent.
-
-A link is wrong too, though less obviously. Links name one related span; a cycle that runs for weeks contains thousands of trainer traces, and a reference repeated identically across all of them is a constant, which belongs in the Resource where it costs once per export batch.
-
-And a link could only ever name the wrong span. The reference is captured at worker launch, when the only cycle span in existence is the zero-duration `cycle_start` mark. `nvrx.ft.cycle` — the span carrying the duration and the outcome — is a different span with a different id, created at close, long after the worker was told anything.
-
-A `TRACEPARENT` variable is therefore not set. It would announce "adopt this trace and parent to this span," which is the opposite of what is meant, and a consumer following that convention would do the opposite of the design silently.
+**No span reference crosses this boundary — not a parent, and not a link.** Belonging to a cycle is a property of the worker, not a relationship between two spans: it is constant for the worker's entire life, identical on every span it emits, and answers its queries as a `GROUP BY nvrx.cycle`.
 
 ## Fault tolerance
 
@@ -278,17 +270,17 @@ Spans carry labels so a collector config can filter and route on them without kn
 
 It is set wherever the answer is **locally true of that span**, never inferred from what the span nests inside — NVRx is a library and its spans sit under callers' spans.
 
-| Span                                                                                           | `is_goodput_span`                                              |
-| ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True`                                                         |
-| `run`                                                                                          | `False` — training is executing                                |
-| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`         | `True` — training is stopped                                   |
-| `ckpt.save.request`, `ckpt.save.write`                                                         | `False` — worker side, overlaps training                       |
-| `ckpt.save.preload`                                                                            | `False` — always worker side                                   |
+| Span                                                                                           | `is_goodput_span`                        |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True`                                   |
+| `run`                                                                                          | `False` — training is executing          |
+| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`, `ckpt.save.finalize` | `True` — training is stopped |
+| `ckpt.save.request`, `ckpt.save.write`                                                         | `False` — worker side, overlaps training |
+| `ckpt.save.preload`                                                                            | `False` — always worker side             |
 
 ## Checkpointing
 
-Instrumentation covers `PersistentAsyncCaller` only. `TemporalAsyncCaller` is deprecated and warns on use, so it is left uninstrumented rather than given spans that would have to be maintained until it is removed.
+`save.schedule` and `save.finalize` sit on `AsyncCallsQueue`, the entry point a trainer actually calls. Everything below them covers `PersistentAsyncCaller` only: `TemporalAsyncCaller` is deprecated and warns on use, so it is left uninstrumented rather than given spans that would have to be maintained until it is removed.
 
 **Which process performs the device-to-host copy depends on `cpu_shm_mode`, and the two modes expose different work to training.** Spans are placed by process and by mode, not by name. In both, the trainer's blocking wait is its own span, because it is the only part that stops training.
 
@@ -298,11 +290,12 @@ The worker sets its CUDA device and initializes a CUDA context so it can receive
 
 | Span                        | Process | Covers                           | `is_goodput_span`                             |
 | --------------------------- | ------- | -------------------------------- | --------------------------------------------- |
-| `nvrx.ckpt.save.schedule`   | trainer | `schedule_async_call` end to end | `True`                                        |
-| `nvrx.ckpt.save.stage_wait` | trainer | the `preload_q.join()` block     | `True` — training is stopped for exactly this |
-| `nvrx.ckpt.save.request`    | worker  | one request, end to end          | `False`                                       |
-| `nvrx.ckpt.save.preload`    | worker  | D2H staging into host memory     | `False`                                       |
-| `nvrx.ckpt.save.write`      | worker  | the write itself                 | `False`                                       |
+| `nvrx.ckpt.save.schedule`   | trainer | `schedule_async_request` end to end | `True`                                        |
+| `nvrx.ckpt.save.stage_wait` | trainer | the `preload_q.join()` block        | `True` — training is stopped for exactly this |
+| `nvrx.ckpt.save.request`    | worker  | one request, end to end             | `False`                                       |
+| `nvrx.ckpt.save.preload`    | worker  | D2H staging into host memory        | `False`                                       |
+| `nvrx.ckpt.save.write`      | worker  | the write itself                    | `False`                                       |
+| `nvrx.ckpt.save.finalize`   | trainer | finalize callbacks, a later iteration | `True`                                      |
 
 `stage_wait` nests inside `schedule`. The worker's `preload` measures the same physical work from the other side, so the difference between them is queue and IPC overhead.
 
@@ -321,6 +314,7 @@ Reusing those shm tensors introduces a second exposed wait that has no counterpa
 | `nvrx.ckpt.save.request`    | worker  | one request, end to end                    | `False`                                       |
 | `nvrx.ckpt.save.preload`    | worker  | bucket assembly over host memory           | `False`                                       |
 | `nvrx.ckpt.save.write`      | worker  | the write itself                           | `False`                                       |
+| `nvrx.ckpt.save.finalize`   | trainer | finalize callbacks, a later iteration      | `True`                                        |
 
 `schedule` and `stage_wait` are the same spans as in IPC mode, because the code path is the same: a request always carries a `preload_fn`, and the trainer always waits on it. What differs is only what that work costs. In IPC mode the worker's `preload` is the D2H itself and the trainer's `stage_wait` covers all of it; in CPU SHM mode the D2H already happened on the trainer, so `preload` is bucket assembly over host memory and `stage_wait` is short. The mode is legible from the durations rather than from which spans exist.
 
@@ -336,13 +330,33 @@ Checkpoint code called from the trainer runs on the trainer's thread and inherit
 
 At enqueue NVRx captures its own current context — it is already inside `save.schedule` — into `AsyncRequest.telemetry_carrier`, a defaulted field on the `NamedTuple` that leaves every existing call site unchanged. `AsyncCallsQueue` already rebuilds a request whose field count does not match, so the addition is compatible in both directions.
 
+It is set on **both** copies of the request: the one dispatched to the worker, and the one retained in `async_calls` for finalization. The retained copy is what makes a link possible from the finalize, which runs an iteration or more later.
+
 The carrier is a dict of W3C header strings, `traceparent` plus `baggage`, produced by the globally configured propagators. Headers rather than a live `SpanContext` because the request is pickled onto a multiprocessing queue; the configured propagators rather than a fixed two so that whatever a deployment sets up rides along. It is `None` when telemetry is off, and the worker then takes exactly the path it took before any of this existed.
+
+### One request, three processes, three traces
+
+An async save does not fit in a trace, and is not meant to. The trainer schedules it during one iteration; the worker writes it in its own process; the trainer finalizes it during some later iteration, by which time the trace that requested it is closed. Three traces, by construction.
+
+They are tied together as a **star, with `save.schedule` at the centre**:
+
+```
+trace A (iteration N)     nvrx.ckpt.save.schedule  ◀──────┐
+                                                          │ link
+trace B (worker)          nvrx.ckpt.save.request  ────────┤
+                                                          │ link
+trace C (iteration N+k)   nvrx.ckpt.save.finalize ────────┘
+```
+
+Both links point **backwards**, and could not do otherwise: a link is supplied when a span starts, so it can only name something that already exists. `save.schedule` has ended before either of the others begins, so the later spans hold the references and the hub holds none.
+
+`save.schedule` is the hub because it is the request's identity — the span that measures what the checkpoint cost the trainer. There is deliberately no link from the worker to the finalize: `nvrx.call_idx` is on all three, so the worker-finished-to-trainer-noticed interval is a subtraction rather than an edge, and making it an edge would mean carrying a context back through the completion queue.
 
 ### Worker side
 
 The persistent worker is spawned with `start_method="spawn"`. It inherits the environment but no in-memory state, so it calls `setup_telemetry` at the top of `async_process_target` with its own `service.name` and `service.instance.id` — the trainer and the worker must not claim the same instance identity. `OTEL_RESOURCE_ATTRIBUTES` carries job and cycle context across the spawn with no code.
 
-Each request's span **links** to the trainer's `save.schedule` span via the captured context, so cause is navigable without the worker joining the trainer's trace. `nvrx.call_idx` and `nvrx.iteration` join the two sides for any consumer that cannot follow links.
+Each request's span **links** to the trainer's `save.schedule`, so cause is navigable without the worker joining the trainer's trace. A link rather than a parent for three reasons: the write is not time-contained in `save.schedule`, which ends as soon as staging does, and parent-child implies containment in most tooling; sampling decisions are inherited by children, so parenting would drop the worker's spans whenever the training trace was sampled out; and the worker is persistent, serving requests from many traces. `nvrx.call_idx` and `nvrx.iteration` join the sides for any consumer that cannot follow links.
 
 Each phase is its own span so a breakdown is a group-by rather than a subtraction.
 
