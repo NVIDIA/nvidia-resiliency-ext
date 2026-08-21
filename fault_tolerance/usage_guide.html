@@ -284,6 +284,13 @@ By default it is disabled. When enabled (via CLI or YAML), it:</p>
 </dd>
 </dl>
 </section>
+<section id="segment-health-check">
+<h4>Segment Health Check<a class="headerlink" href="#segment-health-check" title="Link to this heading"></a></h4>
+<p>Set <code class="docutils literal notranslate"><span class="pre">--ft-segment-health-check-dir</span> <span class="pre">&lt;ABSOLUTE_PATH&gt;</span></code> or
+<code class="docutils literal notranslate"><span class="pre">fault_tolerance.segment_health_check_dir</span></code> to consume segment health
+decisions before rendezvous. Omitting the setting disables the check.</p>
+<p>See the <a class="reference internal" href="integration/segment_health_check.html"><span class="doc">Segment Health Check integration guide</span></a> for the consumer contract.</p>
+</section>
 <section id="attribution-service-integration">
 <h4>Attribution service integration<a class="headerlink" href="#attribution-service-integration" title="Link to this heading"></a></h4>
 <p>Per-cycle application logs do not enable attribution by themselves. To enable attribution, set

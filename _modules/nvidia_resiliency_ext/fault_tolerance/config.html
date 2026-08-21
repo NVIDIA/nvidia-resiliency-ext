@@ -189,6 +189,9 @@
 <span class="sd">      the cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path</span>
 <span class="sd">      to the current cycle file via NVRX_CURRENT_CYCLE_INFO.</span>
 <span class="sd">      Default: None (disabled).</span>
+<span class="sd">    * `segment_health_check_dir` [str|None] Shared directory containing per-task</span>
+<span class="sd">      segment health decision artifacts. Allocation-unit process 0 checks its artifact</span>
+<span class="sd">      before joining a rendezvous. Default: None (disabled).</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
@@ -237,6 +240,9 @@
 
     <span class="c1"># NVRx cycle info: base directory for cycle_info JSON files</span>
     <span class="n">cycle_info_dir</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="c1"># Segment health check: shared directory containing per-task decision artifacts</span>
+    <span class="n">segment_health_check_dir</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
