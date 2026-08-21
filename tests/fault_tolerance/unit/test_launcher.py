@@ -979,6 +979,32 @@ def test_cli_cycle_info_dir_does_not_require_per_cycle_applog():
     _validate_args(args)
 
 
+def test_segment_health_check_dir_is_passed_to_rendezvous(tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance.launcher import config_from_args, get_args_parser
+
+    parser = get_args_parser()
+    args = parser.parse_args(["--ft-segment-health-check-dir", str(tmp_path), "train.py"])
+
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.launcher.LocalElasticAgent.setup_rank_monitors_early",
+        return_value={},
+    ):
+        config, _, _ = config_from_args(args)
+
+    assert config.fault_tol_cfg.segment_health_check_dir == str(tmp_path)
+    assert config.rdzv_configs["segment_health_check_dir"] == str(tmp_path)
+
+
+def test_segment_health_check_dir_must_be_absolute():
+    from nvidia_resiliency_ext.fault_tolerance.launcher import config_from_args, get_args_parser
+
+    parser = get_args_parser()
+    args = parser.parse_args(["--ft-segment-health-check-dir", "relative/path", "train.py"])
+
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        config_from_args(args)
+
+
 def test_cli_attribution_endpoint_requires_per_cycle_applog():
     from nvidia_resiliency_ext.fault_tolerance.launcher import (
         _validate_attribution_requires_per_cycle_applog,

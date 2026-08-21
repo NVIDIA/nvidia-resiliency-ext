@@ -107,6 +107,9 @@ class FaultToleranceConfig:
       the cycle_info.<job_id>.current symlink there. The workload receives the path
       to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
       Default: None (disabled).
+    * `segment_health_check_dir` [str|None] Shared directory containing per-task
+      segment health decision artifacts. Allocation-unit process 0 checks its artifact
+      before joining a rendezvous. Default: None (disabled).
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -155,6 +158,9 @@ class FaultToleranceConfig:
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None
+
+    # Segment health check: shared directory containing per-task decision artifacts
+    segment_health_check_dir: Optional[str] = None
 
     @property
     def is_progress_tracking_enabled(self) -> bool:

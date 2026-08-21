@@ -2556,6 +2556,16 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-segment-health-check-dir",
+        "--ft_segment_health_check_dir",
+        type=str,
+        default=None,
+        dest="ft_segment_health_check_dir",
+        help="Shared directory containing per-task decisions consumed by the segment health check. "
+        "The feature is disabled when omitted.",
+    )
+
+    parser.add_argument(
         "--ft-skip-section-response",
         "--ft-skip_section_response",
         type=lambda x: str(x).lower() in ["true", "1", "yes"],
@@ -2960,6 +2970,14 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
 
     fault_tol_cfg = FaultToleranceConfig.from_args(args)
     _validate_attribution_requires_per_cycle_applog(args, fault_tol_cfg)
+
+    if fault_tol_cfg.segment_health_check_dir:
+        if not os.path.isabs(fault_tol_cfg.segment_health_check_dir):
+            raise ValueError(
+                "--ft-segment-health-check-dir must be an absolute path, got: "
+                f"{fault_tol_cfg.segment_health_check_dir}"
+            )
+        rdzv_configs['segment_health_check_dir'] = fault_tol_cfg.segment_health_check_dir
 
     # Pass segment-related configs to rendezvous config
     rdzv_configs['segment'] = fault_tol_cfg.segment
