@@ -14,7 +14,13 @@ from .response_contract import L1_RESPONSE_CONTRACT
 def model_evidence_contract_errors(payload: Mapping[str, Any]) -> list[str]:
     """Return structural errors without applying semantic policy judgment."""
 
-    errors = _object_shape_errors(payload, L1_RESPONSE_CONTRACT.top_level_fields, "top-level")
+    errors = _object_shape_errors(
+        payload,
+        L1_RESPONSE_CONTRACT.top_level_fields,
+        "top-level",
+        optional=L1_RESPONSE_CONTRACT.optional_top_level_fields,
+    )
+    errors.extend(_category_selection_errors(payload.get("category_selection")))
     if payload.get("schema_version") != L1_EVIDENCE_SCHEMA_VERSION:
         errors.append(f"schema_version must be {L1_EVIDENCE_SCHEMA_VERSION}")
 
@@ -66,6 +72,8 @@ def _object_shape_errors(
     value: Mapping[str, Any],
     expected: frozenset[str],
     field: str,
+    *,
+    optional: frozenset[str] = frozenset(),
 ) -> list[str]:
     errors: list[str] = []
     missing = sorted(expected.difference(value))
@@ -317,3 +325,37 @@ def _positive_line_errors(value: Any, field: str) -> list[str]:
 
 def _nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _category_selection_errors(value: Any) -> list[str]:
+    """Validate the optional L1 category_selection block.
+
+    The block is optional. When present, it must have all three curated fields
+    (category_id, category_confidence, category_rationale). category_id must be
+    an integer in the range [0, 38] (0 means "no listed category matches").
+    category_confidence must be an integer in [0, 100]. category_rationale must
+    be a non-empty string of at most max_category_rationale_chars characters.
+    """
+
+    if value is None:
+        return []
+    if not isinstance(value, Mapping):
+        return ["category_selection must be an object"]
+    errors = _object_shape_errors(
+        value, L1_RESPONSE_CONTRACT.category_selection_fields, "category_selection"
+    )
+    cid = value.get("category_id")
+    if isinstance(cid, bool) or not isinstance(cid, int) or cid < 0 or cid > 38:
+        errors.append("category_selection.category_id must be an integer in [0, 38]")
+    conf = value.get("category_confidence")
+    if isinstance(conf, bool) or not isinstance(conf, int) or conf < 0 or conf > 100:
+        errors.append("category_selection.category_confidence must be an integer in [0, 100]")
+    rationale = value.get("category_rationale")
+    if not isinstance(rationale, str) or not rationale.strip():
+        errors.append("category_selection.category_rationale must be a non-empty string")
+    elif len(rationale) > L1_RESPONSE_CONTRACT.max_category_rationale_chars:
+        errors.append(
+            f"category_selection.category_rationale must be at most "
+            f"{L1_RESPONSE_CONTRACT.max_category_rationale_chars} characters"
+        )
+    return errors

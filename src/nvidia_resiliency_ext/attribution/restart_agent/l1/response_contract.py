@@ -42,6 +42,15 @@ class L1ResponseContract:
             "evidence",
         }
     )
+    # Optional top-level field: the L1 category selection from the 38-entry
+    # taxonomy (see l1/categories.py). Its presence is not required by the
+    # contract; when present it flows to L4 as an additional evidence signal
+    # for policy_context matching, not as a direct STOP/RESTART override.
+    optional_top_level_fields: frozenset[str] = frozenset({"category_selection"})
+    category_selection_fields: frozenset[str] = frozenset(
+        {"category_id", "category_confidence", "category_rationale"}
+    )
+    max_category_rationale_chars: int = 400
     primary_failure_fields: frozenset[str] = frozenset({"line", "causal_role", "failure_identity"})
     observed_failure_fields: frozenset[str] = frozenset(
         {"id", "line", "causal_role", "failure_identity", "rationale", "evidence_ids"}
