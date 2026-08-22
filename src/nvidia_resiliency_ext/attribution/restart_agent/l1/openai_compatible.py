@@ -32,7 +32,7 @@ from .tool_contracts import (
     execute_tool_request,
 )
 from .tools import LogTools
-from .validation import model_evidence_contract_errors
+from .validation import model_evidence_contract_errors, repair_model_evidence
 
 DEFAULT_BASE_URL = NVIDIA_INFERENCE_HUB.base_url
 DEFAULT_MODEL = NVIDIA_INFERENCE_HUB.model
@@ -2006,6 +2006,12 @@ def _parse_model_evidence(text: str | None) -> dict[str, Any]:
         raise ModelEvidenceContractError(
             (f"top-level value must be an object, got {type(payload).__name__}",)
         )
+    # In-place repair for known non-semantic contract violations before strict
+    # validation (biconditional value/status pairs, over-length lists, invalid
+    # supports tags, over-length category_rationale, hallucinated
+    # schema_version). Repairs never touch semantic content; they preserve the
+    # raw output in the trace so an auditor can see what the model actually said.
+    repair_model_evidence(payload)
     contract_errors = model_evidence_contract_errors(payload)
     if contract_errors:
         raise ModelEvidenceContractError(contract_errors, payload=payload)
