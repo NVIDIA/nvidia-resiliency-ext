@@ -48,6 +48,12 @@ class L4PolicyInput:
     model_recovery_assessment: ModelRecoveryAssessment | None = None
     retry_policy: RetryPolicyConfig = RetryPolicyConfig()
     policy_contexts: PolicyContextConfig = PolicyContextConfig()
+    # Opt-in L1 signal: the model's category selection from the 38-taxonomy in
+    # l1/categories.py. When present with high confidence, it can drive a
+    # policy_context override. None means "no signal" and reverts to the base
+    # rule cascade; there is no default.
+    l1_category_selection: Mapping[str, Any] | None = None
+    l1_category_confidence_threshold: int | None = None
 
     def __post_init__(self) -> None:
         if self.model_recovery_assessment is not None and not isinstance(
@@ -222,6 +228,10 @@ class L4CyclePolicyInput:
     l1_primary_declared: bool = False
     retry_policy: RetryPolicyConfig = RetryPolicyConfig()
     policy_contexts: PolicyContextConfig = PolicyContextConfig()
+    # L1 category selection - opt-in evidence signal for policy_context match.
+    # None means the model didn't provide it (or L1 didn't run at all).
+    l1_category_selection: Mapping[str, Any] | None = None
+    l1_category_confidence_threshold: int | None = None
 
 
 @dataclass(frozen=True)
@@ -277,6 +287,8 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
         primary=policy_input.primary,
         current_facts=policy_input.current_failure_facts,
         configured=policy_input.policy_contexts,
+        l1_category_selection=policy_input.l1_category_selection,
+        l1_category_confidence_threshold=policy_input.l1_category_confidence_threshold,
     )
     effective_policy = (
         policy_context_match.effective_policy
@@ -482,6 +494,8 @@ def evaluate_cycle_policy(policy_input: L4CyclePolicyInput) -> L4PolicyOutcome:
             model_recovery_assessment=assessment,
             retry_policy=policy_input.retry_policy,
             policy_contexts=policy_input.policy_contexts,
+            l1_category_selection=policy_input.l1_category_selection,
+            l1_category_confidence_threshold=policy_input.l1_category_confidence_threshold,
         )
     )
     return L4PolicyOutcome(
@@ -569,11 +583,84 @@ def _effective_policy(
     )
 
 
+L1_CATEGORY_CONFIRMED_STOP_CONTEXT_ID = "l1_category_confirmed_stop"
+DEFAULT_L1_CATEGORY_CONFIDENCE_THRESHOLD = 80
+
+
+def _match_l1_category_context(
+    *,
+    primary: FailureEvidence | None,
+    l1_category_selection: Mapping[str, Any] | None,
+    threshold: int | None,
+) -> _PolicyContextMatch | None:
+    """Match the L1 category taxonomy as a policy_context.
+
+    This is the integration hook proposed as an evidence-signal input to L4:
+    the LLM classifies into the 38-entry taxonomy at l1/categories.py; when it
+    picks a category whose taxonomy-declared decision is STOP at a confidence
+    at or above the threshold, and the primary is grounded, override with a
+    zero-retry policy (which behaves the same as cuda_oom_no_retry for the
+    ledger and produces STOP on first occurrence).
+
+    Deliberate constraints:
+    - Requires a grounded primary. Category can't drive policy for a
+      no-primary case; that path stays with the existing base rules.
+    - Uses the LLM's own confidence gate. Threshold defaults to 80.
+    - Only STOP-labeled categories fire. RESTART-labeled categories fall
+      through to the base rule, since general_retry already models them.
+    - Precedence: this context is checked LAST, so any deterministic
+      classifier context (cuda_oom_no_retry, port_bind_confirmation_retry,
+      rejected_iteration_retry_then_skip) that matched earlier wins.
+    """
+
+    from ..l1.categories import category_by_id  # local import to keep L4 loose-coupled
+
+    if primary is None or not isinstance(l1_category_selection, Mapping):
+        return None
+    cid = l1_category_selection.get("category_id")
+    conf = l1_category_selection.get("category_confidence")
+    if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0:
+        return None
+    if not isinstance(conf, int) or isinstance(conf, bool):
+        return None
+    effective_threshold = (
+        threshold if isinstance(threshold, int) else DEFAULT_L1_CATEGORY_CONFIDENCE_THRESHOLD
+    )
+    if conf < effective_threshold:
+        return None
+    category = category_by_id(cid)
+    if category is None or category.decision != "STOP":
+        return None
+    effective = EffectiveRetryPolicy(
+        source="policy_context",
+        rule=RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value,
+        history_match_scope=None,
+        allowed_retries=0,
+        policy_context_id=L1_CATEGORY_CONFIRMED_STOP_CONTEXT_ID,
+    )
+    return _PolicyContextMatch(
+        effective_policy=effective,
+        payload={
+            "policy_context_id": L1_CATEGORY_CONFIRMED_STOP_CONTEXT_ID,
+            "matched": True,
+            "current_signature": {
+                "l1_category_id": cid,
+                "l1_category_name": category.name,
+                "l1_category_confidence": conf,
+                "confidence_threshold": effective_threshold,
+            },
+            "retry_policy": effective.to_payload(),
+        },
+    )
+
+
 def _match_policy_context(
     *,
     primary: FailureEvidence | None,
     current_facts: AttemptFailureFacts | None,
     configured: PolicyContextConfig,
+    l1_category_selection: Mapping[str, Any] | None = None,
+    l1_category_confidence_threshold: int | None = None,
 ) -> _PolicyContextMatch | None:
     cuda_oom = configured.cuda_oom_no_retry
     if (
@@ -674,6 +761,16 @@ def _match_policy_context(
             },
             "retry_policy": effective.to_payload(),
         },
+    )
+
+
+# L1 category-driven context runs LAST so any deterministic classifier context
+# above takes precedence. This is the integration hook proposed as a
+# discussion spike - callers pass l1_category_selection via L4PolicyInput.
+    return _match_l1_category_context(
+        primary=primary,
+        l1_category_selection=l1_category_selection,
+        threshold=l1_category_confidence_threshold,
     )
 
 

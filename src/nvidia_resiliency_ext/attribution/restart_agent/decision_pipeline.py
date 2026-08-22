@@ -5,8 +5,29 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+
+def _l1_category_threshold_override() -> int | None:
+    """Read per-model L1 category confidence threshold from env var.
+
+    NVRX_L1_CATEGORY_CONFIDENCE_THRESHOLD is expected to be set by the
+    caller (eval harness, or a runtime shim) based on the model target.
+    Returns None to fall back to the default in the L4 policy (80).
+    """
+
+    raw = os.environ.get("NVRX_L1_CATEGORY_CONFIDENCE_THRESHOLD")
+    if not raw:
+        return None
+    try:
+        val = int(raw.strip())
+    except ValueError:
+        return None
+    if 0 <= val <= 100:
+        return val
+    return None
 
 from .attempt_records import AttemptRecordAssembler
 from .causality import build_result_cascades
@@ -132,6 +153,8 @@ def build_decision_outcome(
             l1_primary_declared=_l1_primary_declared(l1_result),
             retry_policy=RetryPolicyConfig.from_mapping(execution_context.retry_policy),
             policy_contexts=execution_context.policy_contexts,
+            l1_category_selection=l1_result.category_selection(),
+            l1_category_confidence_threshold=_l1_category_threshold_override(),
         )
     )
     assert l4_outcome.selected_failure_facts is not None
