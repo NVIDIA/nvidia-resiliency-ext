@@ -515,7 +515,15 @@ class PersistentAsyncCaller(AsyncCaller):
             ),
             daemon=self.background_worker_is_daemon,
         )
-        self.process.start()
+        # The worker's telemetry identity, handed over the only channel a spawn
+        # has. It is published here rather than derived in the worker because
+        # this is where it is known: the worker serves this trainer, and shares
+        # its rank, so a service.instance.id it computed for itself would collide
+        # with the trainer's.
+        with telemetry.publish_resource_attributes(
+            {"dl.rank": rank, "service.instance.id": f"nvrx-ckpt{rank}"}
+        ):
+            self.process.start()
         logger.debug(f"PersistentAsyncCaller: {rank}, Started Async Caller {self.process}")
         for cb in PersistentAsyncCaller._worker_restart_callbacks:
             cb()
@@ -760,16 +768,12 @@ class PersistentAsyncCaller(AsyncCaller):
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
         # Spawned worker: no in-memory state is inherited, so telemetry is set up
-        # again here. The environment is inherited, so nemo-lens reads the same
-        # config the trainer saw. Spans are independent of the launcher's trace and
-        # join across ranks on nvrx.call_idx. Identity is given explicitly because
-        # this process shares a rank number with the trainer it serves, so the
-        # derived one would collide with it.
-        tel_handle = telemetry.setup_telemetry(
-            "nvrx.ckpt_worker",
-            f"nvrx-ckpt{rank}",
-            {"dl.rank": rank},
-        )
+        # again here. Everything identifying this process -- its rank, its
+        # instance id -- arrives through OTEL_RESOURCE_ATTRIBUTES, published by
+        # _start_worker around the spawn, so this call names only what kind of
+        # process it is. Spans are independent of the launcher's trace and join
+        # across ranks on nvrx.call_idx.
+        tel_handle = telemetry.setup_telemetry("nvrx.ckpt_worker")
 
         # Start busy loop waiting for and executing checkpoint saves.
         try:

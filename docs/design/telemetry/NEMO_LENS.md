@@ -149,7 +149,11 @@ NVRx sets only what describes itself:
 | `service.instance.id` | unique per emitting process — the agent, the trainer, and the checkpoint worker must never collide |
 | `nvrx.node`           | this node's identity                                                                               |
 
-`setup_telemetry(service_name, instance_id)` requires both, because neither nemo-lens default is usable in an NVRx process: nemo-lens derives `service.instance.id` from `dl.rank`, and no process NVRx owns has a trainer rank. The agent is one per node and runs before rendezvous, so it is keyed on its hostname and publishes no `dl.rank` at all — a node ordinal is not a rank, and lens supports its absence given an explicit identity. The checkpoint worker does have a rank, but shares it with the trainer it serves, so it names itself `nvrx-ckpt<rank>` and publishes `dl.rank` separately. The elastic `group_rank` is a span attribute, set once rendezvous assigns it.
+`setup_telemetry(service_name, instance_id=None)` always names the kind of process, because `OTEL_SERVICE_NAME` names the workload a launching environment came to run and these processes are NVRx's own. Identity of the *individual* process has to come from somewhere too, since the nemo-lens default is unusable here: nemo-lens derives `service.instance.id` from `dl.rank`, the agent has no rank at all, and the checkpoint worker shares one with the trainer it serves.
+
+**A process is named by whoever placed it, not by itself.** Rank and instance id are facts about placement, known where the placing happened. So the trainer publishes the checkpoint worker's identity into `OTEL_RESOURCE_ATTRIBUTES` around the spawn and the worker passes no identity at all — it does not have to know how it was placed, and there is no argument to keep in sync when the placement changes. Only the fault-tolerance agent supplies its own, because nothing upstream could have: it is launched by the cluster, not by NVRx. It is keyed on its hostname and publishes no `dl.rank`, a node ordinal not being a rank; nemo-lens supports the absence given an explicit identity, and warns without one. The elastic `group_rank` is a span attribute, set once rendezvous assigns it.
+
+Values published this way arrive in the child as strings, because that is what the encoding carries — `dl.rank` reaches a spawned worker's Resource as `"3"`, not `3`. Nothing reads it back as a number.
 
 Export strategy is nemo-lens's default, set through `NEMO_LENS_EXPORT_STRATEGY`. NVRx overrides nothing: whether every node exports or only one depends on the collector topology the launching environment provides, which NVRx cannot know. A deployment running a collector per node sets `all_ranks` to get per-node visibility.
 
@@ -372,7 +376,11 @@ Both links point **backwards**, and could not do otherwise: a link is supplied w
 
 ### Worker side
 
-The persistent worker is spawned with `start_method="spawn"`. It inherits the environment but no in-memory state, so it calls `setup_telemetry` at the top of `async_process_target` with its own `service.name` and `service.instance.id` — the trainer and the worker must not claim the same instance identity. `OTEL_RESOURCE_ATTRIBUTES` carries job and cycle context across the spawn with no code.
+The persistent worker is spawned with `start_method="spawn"`. It inherits the environment but no in-memory state, so it calls `setup_telemetry("nvrx.ckpt_worker")` at the top of `async_process_target` — the kind of process, and nothing else.
+
+Its identity comes the other way. `_start_worker` wraps `Process.start()` in `publish_resource_attributes`, which sets `OTEL_RESOURCE_ATTRIBUTES` for the duration of the spawn and restores it after, adding `dl.rank` and a `service.instance.id` of `nvrx-ckpt<rank>` so the worker and the trainer it serves never claim the same identity. `multiprocessing.Process` has no `env` parameter, so this is not one option among several: the child inherits whatever `os.environ` held when `start()` ran, and there is no other channel. The same variable carries job and cycle context across the spawn with no code at all.
+
+Restoring it matters. Left set, it would describe the trainer itself — and every later child of it — as the process that was spawned there.
 
 Each request's span **links** to the trainer's `save.schedule`, so cause is navigable without the worker joining the trainer's trace. A link rather than a parent for three reasons: the write is not time-contained in `save.schedule`, which ends as soon as staging does, and parent-child implies containment in most tooling; sampling decisions are inherited by children, so parenting would drop the worker's spans whenever the training trace was sampled out; and the worker is persistent, serving requests from many traces. `nvrx.call_idx` and `nvrx.iteration` join the sides for any consumer that cannot follow links.
 

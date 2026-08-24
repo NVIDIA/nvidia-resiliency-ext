@@ -22,6 +22,7 @@ failure into the workload. They run with or without nemo-lens installed.
 """
 
 import ast
+import os
 import pathlib
 import pickle
 import threading
@@ -195,6 +196,57 @@ class TestExtendedResourceAttributes(unittest.TestCase):
         self.assertEqual(first.count("nvrx.cycle"), 1)
         self.assertEqual(second.count("nvrx.cycle"), 1)
         self.assertEqual(second, "cluster=oci-aga,nvrx.cycle=1")
+
+
+class TestPublishResourceAttributes(unittest.TestCase):
+    """The only channel that reaches a spawned child, so it has to be exact."""
+
+    def setUp(self):
+        self.env = unittest.mock.patch.dict(
+            "os.environ", {"OTEL_RESOURCE_ATTRIBUTES": "job.uid=abc"}, clear=False
+        )
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.inherited = unittest.mock.patch.object(
+            telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", "job.uid=abc"
+        )
+        self.inherited.start()
+        self.addCleanup(self.inherited.stop)
+
+    def test_the_child_sees_both_inherited_and_published(self):
+        with telemetry.publish_resource_attributes({"dl.rank": 3}):
+            published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
+        self.assertIn("job.uid=abc", published)
+        self.assertIn("dl.rank=3", published)
+
+    def test_the_parent_is_restored(self):
+        # Left set, it would describe this process, and every later child of it,
+        # as the one that was spawned here.
+        with telemetry.publish_resource_attributes({"dl.rank": 3}):
+            pass
+        self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
+
+    def test_restored_even_when_the_spawn_raises(self):
+        with self.assertRaises(RuntimeError):
+            with telemetry.publish_resource_attributes({"dl.rank": 3}):
+                raise RuntimeError("Process.start() failed")
+        self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
+
+    def test_an_unset_variable_is_removed_again_not_left_empty(self):
+        with unittest.mock.patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("OTEL_RESOURCE_ATTRIBUTES", None)
+            with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", ""):
+                with telemetry.publish_resource_attributes({"dl.rank": 3}):
+                    self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "dl.rank=3")
+                self.assertNotIn("OTEL_RESOURCE_ATTRIBUTES", os.environ)
+
+    def test_successive_publishes_do_not_accumulate(self):
+        # A worker is restarted per cycle; building from the last published value
+        # rather than the inherited one grows the variable without bound.
+        for _ in range(3):
+            with telemetry.publish_resource_attributes({"dl.rank": 3}):
+                published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
+        self.assertEqual(published.count("dl.rank"), 1)
 
 
 class TestContextCarrier(unittest.TestCase):

@@ -75,6 +75,7 @@ try:
     # tells a linter this module deliberately exports a name it never calls.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanRegistry as _SpanRegistry
+    from nemo.lens import encode_resource_attributes as _encode_resource_attributes
     from nemo.lens import get_tracer as _get_tracer
     from nemo.lens import is_span_group_enabled as _is_span_group_enabled
     from nemo.lens import managed_span as _managed_span
@@ -134,7 +135,9 @@ class _NoOpHandle:
 
 
 def setup_telemetry(
-    service_name: str, instance_id: str, resource_attributes: Optional[dict] = None
+    service_name: str,
+    instance_id: Optional[str] = None,
+    resource_attributes: Optional[dict] = None,
 ):
     """Initialize nemo-lens for this process. Call once, at process start.
 
@@ -143,15 +146,23 @@ def setup_telemetry(
     belongs to whatever framework is training, and NVRx spans emitted there ride
     that framework's providers.
 
-    ``service_name`` names the kind of process and ``instance_id`` the individual
-    one, becoming ``service.name`` and ``service.instance.id``. Both are required
-    because neither default is usable here: nemo-lens derives its own instance id
-    from ``dl.rank``, and none of NVRx's own processes has a trainer rank to
-    derive it from -- the agent is one per node, and the checkpoint worker shares
-    its rank number with the trainer it serves, so the derived id would collide.
+    ``service_name`` names the kind of process, becoming ``service.name``. It is
+    given here rather than left to ``OTEL_SERVICE_NAME``, which a launching
+    environment sets to name the workload it came to run; these processes are
+    NVRx's, and telling them apart in a backend is the point of naming them.
 
-    ``resource_attributes`` is merged over that, for whatever else identifies this
-    process to a backend.
+    ``instance_id`` names the individual process, becoming
+    ``service.instance.id``. Omit it when the process was spawned by one that
+    published an identity through :func:`publish_resource_attributes`, which is
+    the case that should be preferred: identity then reaches a process that has
+    no way to compute its own, and this call needs to know nothing about how the
+    process is placed. Supply it only where nothing upstream could have -- the
+    fault-tolerance agent is launched by the cluster, not by NVRx.
+
+    Either way it has to come from somewhere, because the nemo-lens default is
+    unusable here: nemo-lens derives ``service.instance.id`` from ``dl.rank``,
+    and the agent has no rank at all while the checkpoint worker shares one with
+    the trainer it serves.
 
     Export strategy is left entirely to nemo-lens's default and
     ``NEMO_LENS_EXPORT_STRATEGY``. NVRx does not override it: whether every node
@@ -163,12 +174,8 @@ def setup_telemetry(
         return _NoOpHandle()
     try:
         config = _NemoLensConfig.from_env()
-        # Over OTEL_SERVICE_NAME, which a launching environment sets for the
-        # workload it came to run. These processes are NVRx's, not that
-        # workload's, and telling them apart in a backend is the whole point of
-        # naming them.
         config.service_name = service_name
-        attributes = {"service.instance.id": instance_id}
+        attributes = {"service.instance.id": instance_id} if instance_id else {}
         attributes.update(resource_attributes or {})
         return _setup_telemetry(config, resource_attributes=attributes)
     except Exception:
@@ -351,7 +358,14 @@ def extended_resource_attributes(attributes: dict) -> str:
     Built from the value inherited at process start, not from the last extension,
     or a relaunched cohort would accumulate a key per restart. Callers must not
     pass a key the inherited value already sets.
+
+    nemo-lens owns the encoding, since it also owns the decoding; the local
+    fallback exists only so that a deployment running a plain OTel SDK without
+    nemo-lens still receives what NVRx publishes.
     """
+    if _AVAILABLE:
+        return _encode_resource_attributes(attributes, _INHERITED_RESOURCE_ATTRIBUTES)
+
     from urllib.parse import quote
 
     added = ",".join(f"{key}={quote(str(value), safe='')}" for key, value in attributes.items())
@@ -360,6 +374,44 @@ def extended_resource_attributes(attributes: dict) -> str:
     if not added:
         return _INHERITED_RESOURCE_ATTRIBUTES
     return f"{_INHERITED_RESOURCE_ATTRIBUTES},{added}"
+
+
+@contextmanager
+def publish_resource_attributes(attributes: dict):
+    """Publish attributes into the environment, for a child spawned inside.
+
+    ``multiprocessing.Process`` has no ``env`` parameter, so a child inherits
+    whatever ``os.environ`` held when ``start()`` ran and there is no other way to
+    hand it one. Wrap the ``start()`` call:
+
+    .. code-block:: python
+
+        with telemetry.publish_resource_attributes({"dl.rank": rank}):
+            process.start()
+
+    That is what lets the child's ``setup_telemetry`` name only what kind of
+    process it is. Anything that identifies *which* one -- its rank, its instance
+    id -- is a fact about how the parent placed it, known where the placing
+    happened, and a child that has to derive its own identity can only do so from
+    whatever its caller happened to pass it.
+
+    The variable is restored on exit rather than left set. It would otherwise
+    describe this process too, and every later child of it, as the one that was
+    spawned here.
+
+    Values arrive in the child as strings, since that is what the encoding
+    carries. Nothing NVRx publishes is read back as a number.
+    """
+    key = "OTEL_RESOURCE_ATTRIBUTES"
+    previous = os.environ.get(key)
+    os.environ[key] = extended_resource_attributes(attributes)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 def context_carrier() -> Optional[dict]:
