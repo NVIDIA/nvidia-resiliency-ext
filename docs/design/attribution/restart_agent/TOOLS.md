@@ -26,12 +26,13 @@ executable tools from model requests.
 
 The default route configuration advertises:
 
-- `overview`;
 - `grep_log`;
 - `read_window`.
 
-`get_evidence_objects` is implemented but not advertised by default. A route
-may enable it explicitly for controlled evaluation.
+`overview` and `get_evidence_objects` are implemented but not advertised by
+default. L0B already provides initial orientation, so a route enables
+`overview` only for controlled evaluation or a client that does not supply the
+normal L0B view.
 
 Tools remain generic inspection primitives. Failure-specific helpers such as
 `find_device_side_assert` or `find_nccl_timeout` do not belong in this
@@ -47,6 +48,7 @@ advertised and how many model/tool rounds are allowed.
 | `overview.head_lines` | 40 |
 | `overview.tail_lines` | 80 |
 | `overview.max_chars` | 12000 |
+| `grep_log.result_mode` | `compact` |
 | `grep_log.max_matches` | 50 |
 | `grep_log.max_matches_hard_limit` | 200 |
 | `read_window.before` | 20 |
@@ -62,6 +64,9 @@ silently changes source-line numbering.
 ## `overview`
 
 Input: none.
+
+This tool is opt-in because the normal L0B request already carries initial
+source and evidence orientation.
 
 Purpose: orient the model to file scale, bounded head/tail content, and the
 existing deterministic evidence without recomputing L0.
@@ -99,26 +104,63 @@ Input:
 {
   "pattern": "Traceback|RuntimeError",
   "ignore_case": true,
-  "max_matches": 50
+  "max_matches": 50,
+  "result_mode": "compact"
 }
 ```
 
-Purpose: search the immutable source snapshot while preserving original line
-numbers.
+Purpose: search the complete immutable source snapshot while preserving
+original line numbers. Compact mode reuses L0 normalized occurrence groups
+inside distributed-incident boundaries. Unclassified matches retain the
+existing incident-local normalized compaction or remain individual lines. Raw
+mode returns individual matching lines. Under a response limit, L0 error/cause
+groups are retained before diagnostic and unclassified samples while scan
+totals still describe the complete source boundary.
 
 Example output:
 
 ```json
 {
   "pattern": "Traceback|RuntimeError",
-  "matches": [{"line": 1174, "text": "..."}],
-  "total_matches": 1,
-  "truncated": false
+  "result_mode": "compact",
+  "matches": [
+    {
+      "line": 1174,
+      "text": "...",
+      "group_kind": "normalized_occurrence_group",
+      "incident_id": "di-2",
+      "occurrence_group_id": "og-12",
+      "classification": "error",
+      "registry_id": "observed_distributed_operation_timeout",
+      "occurrence_count": 12000,
+      "occurrence_group_total_count": 12000,
+      "distinct_rank_count": 12000,
+      "first_line": 1174,
+      "last_line": 18990
+    }
+  ],
+  "total_raw_matches": 12000,
+  "total_match_groups": 1,
+  "collapsed_matches": 11999,
+  "scan_complete": true,
+  "samples_truncated": false,
+  "initial_view_overlap": {
+    "available": true,
+    "matched_group_count": 1,
+    "represented_group_count": 1,
+    "new_group_count": 0,
+    "new_evidence_beyond_initial_view": false
+  }
 }
 ```
 
-The client bounds requested match count by the hard limit and records any
-truncation.
+`result_mode` defaults to `compact` and may be set to `raw`. In compact mode,
+`max_matches` limits representative groups; in raw mode, it limits individual
+lines. `scan_complete` states whether the entire immutable source boundary was
+searched; `samples_truncated` states whether matched groups or lines were
+omitted from the returned sample. The outer result-envelope `truncated` mirrors
+sample truncation, not scan completion. `initial_view_overlap` reports whether
+the search found normalized evidence beyond the initial L0B model view.
 
 ## `read_window`
 

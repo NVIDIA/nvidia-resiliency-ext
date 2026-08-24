@@ -40,7 +40,7 @@
     "tools": {
       "enabled": true,
       "advertisement": {
-        "overview": true,
+        "overview": false,
         "grep_log": true,
         "read_window": true,
         "get_evidence_objects": false
