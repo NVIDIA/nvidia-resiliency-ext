@@ -444,40 +444,16 @@ def repair_biconditional_unknowns(payload: Any) -> list[str]:
 
 
 def repair_overlong_lists(payload: Any) -> list[str]:
-    """In-place fix: truncate over-long enumerable lists to their contract caps.
+    """No-op under PR #400: over-long lists are advisory, not rejected.
 
-    Some models return more items than the contract allows on
-    root_cause_assessment.plausible_causes, root_cause_assessment.missing_evidence,
-    or related_failures. Truncating (keep first N) preserves the strongest items
-    the model already ranked at the top rather than rejecting the whole response.
-
-    Returns a list of repair notes for observability. Empty list means no
-    repair was applied.
+    PR #390 rejected responses whose plausible_causes / missing_evidence /
+    related_failures exceeded fixed caps. PR #400 downgraded these to
+    "recommended" limits (L1 contract advisories) and does NOT reject the
+    response for exceeding them. This repair therefore has nothing to do
+    under PR #400 and returns an empty note list.
     """
 
-    notes: list[str] = []
-    if not isinstance(payload, dict):
-        return notes
-    root_cause = payload.get("root_cause_assessment")
-    if isinstance(root_cause, dict):
-        for field, cap in (
-            ("plausible_causes", L1_RESPONSE_CONTRACT.max_plausible_causes),
-            ("missing_evidence", L1_RESPONSE_CONTRACT.max_missing_evidence),
-        ):
-            items = root_cause.get(field)
-            if isinstance(items, list) and len(items) > cap:
-                root_cause[field] = items[:cap]
-                notes.append(
-                    f"root_cause_assessment.{field}: truncated {len(items)} -> {cap} items"
-                )
-    related = payload.get("related_failures")
-    if isinstance(related, list) and len(related) > L1_RESPONSE_CONTRACT.max_related_failures:
-        payload["related_failures"] = related[: L1_RESPONSE_CONTRACT.max_related_failures]
-        notes.append(
-            f"related_failures: truncated {len(related)} -> "
-            f"{L1_RESPONSE_CONTRACT.max_related_failures} items"
-        )
-    return notes
+    return []
 
 
 
