@@ -102,22 +102,22 @@ A **span group** is a nemo-lens concept, not an OTel one. Every call site names 
 
 nemo-lens ships no group names of its own. A consuming library declares what it emits with `SpanRegistry.register()`, and `NEMO_LENS_SPAN_GROUPS` selects from what the process has registered. NVRx registers under the `nvrx` namespace **at import of `shared_utils/telemetry.py`**, not inside `setup_telemetry` — the trainer process emits NVRx checkpoint spans and never calls `setup_telemetry`, because the training framework owns that call. Registering there would leave exactly the spans that need it unselectable.
 
-| Group              | Contents                                                                                        |
-| ------------------ | ----------------------------------------------------------------------------------------------- |
-| `nvrx.job`         | `python.startup`, `python.imports`                                                               |
-| `nvrx.ft`          | every fault-tolerance span: cycle, run, rendezvous, health check, fault, teardown, attribution   |
-| `nvrx.ckpt`        | a checkpoint request from the outside: `save.schedule`, `save.request`, `save.finalize`          |
+| Group              | Contents                                                                                                   |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `nvrx.job`         | `python.startup`, `python.imports`                                                                         |
+| `nvrx.ft`          | every fault-tolerance span: cycle, run, rendezvous, health check, fault, teardown, attribution             |
+| `nvrx.ckpt`        | a checkpoint request from the outside: `save.schedule`, `save.request`, `save.finalize`                    |
 | `nvrx.ckpt.phases` | that request broken into stages: `stage_wait`, `shm_drain`, `stage`, `preload`, `write`, `completion_sync` |
 
-| Preset      | Groups                                       |
-| ----------- | -------------------------------------------- |
-| `default`   | `nvrx.job`, `nvrx.ft`, `nvrx.ckpt`           |
-| `per_step`  | the above plus `nvrx.ckpt.phases`            |
-| `profiling` | every NVRx group                             |
+| Preset      | Groups                             |
+| ----------- | ---------------------------------- |
+| `default`   | `nvrx.job`, `nvrx.ft`, `nvrx.ckpt` |
+| `per_step`  | the above plus `nvrx.ckpt.phases`  |
+| `profiling` | every NVRx group                   |
 
 Presets **union across namespaces**, so `NEMO_LENS_SPAN_GROUPS=default` in a job running both Megatron and NVRx means both libraries' idea of `default`. The built-in `all` means every group registered in the process.
 
-The checkpoint split is a drill-down. `nvrx.ckpt` is one span per request per side, bounded by checkpoint count, so it stays on. `nvrx.ckpt.phases` is what you turn on once a checkpoint is already known to be slow and the question is *where*.
+The checkpoint split is a drill-down. `nvrx.ckpt` is one span per request per side, bounded by checkpoint count, so it stays on. `nvrx.ckpt.phases` is what you turn on once a checkpoint is already known to be slow and the question is _where_.
 
 A `NEMO_LENS_SPAN_GROUPS` entry naming nothing the process registered is reported and ignored, never raised — a spec is job-wide while a registry is per process, and an agent that never imports Megatron will legitimately see Megatron group names it cannot resolve. That leniency is right for a spec and wrong for a call site, where an unregistered group is a typo that costs those spans silently and forever, so `tests/shared_utils/test_telemetry.py` walks the source for group literals at call sites and fails on any NVRx does not register.
 
@@ -149,7 +149,7 @@ NVRx sets only what describes itself:
 | `service.instance.id` | unique per emitting process — the agent, the trainer, and the checkpoint worker must never collide |
 | `nvrx.node`           | this node's identity                                                                               |
 
-`setup_telemetry(service_name, instance_id=None)` always names the kind of process, because `OTEL_SERVICE_NAME` names the workload a launching environment came to run and these processes are NVRx's own. Identity of the *individual* process has to come from somewhere too, since the nemo-lens default is unusable here: nemo-lens derives `service.instance.id` from `dl.rank`, the agent has no rank at all, and the checkpoint worker shares one with the trainer it serves.
+`setup_telemetry(service_name, instance_id=None)` always names the kind of process, because `OTEL_SERVICE_NAME` names the workload a launching environment came to run and these processes are NVRx's own. Identity of the _individual_ process has to come from somewhere too, since the nemo-lens default is unusable here: nemo-lens derives `service.instance.id` from `dl.rank`, the agent has no rank at all, and the checkpoint worker shares one with the trainer it serves.
 
 **A process is named by whoever placed it, not by itself.** Rank and instance id are facts about placement, known where the placing happened. So the trainer publishes the checkpoint worker's identity into `OTEL_RESOURCE_ATTRIBUTES` around the spawn and the worker passes no identity at all — it does not have to know how it was placed, and there is no argument to keep in sync when the placement changes. Only the fault-tolerance agent supplies its own, because nothing upstream could have: it is launched by the cluster, not by NVRx. It is keyed on its hostname and publishes no `dl.rank`, a node ordinal not being a rank; nemo-lens supports the absence given an explicit identity, and warns without one. The elastic `group_rank` is a span attribute, set once rendezvous assigns it.
 
@@ -214,21 +214,21 @@ An exclusion needs no separate signal: `UnhealthyNodeException` propagating out 
 
 ### Spans
 
-| Span                   | Group     | Source                     | Covers                                                   |
-| ---------------------- | ----- | --------- | -------------------------- | -------------------------------------------------------- |
+| Span                   | Group      | Source                     | Covers                                                   |
+| ---------------------- | ---------- | -------------------------- | -------------------------------------------------------- |
 | `python.startup`       | `nvrx.job` | `launcher.py`              | process create time to the entry point's first statement |
 | `python.imports`       | `nvrx.job` | `launcher.py`              | the entry point's top-level imports                      |
-| `nvrx.ft.cycle_start`  | `nvrx.ft` | `launcher.py`              | instant: a cycle began                                   |
-| `nvrx.ft.cycle`        | `nvrx.ft` | `launcher.py`              | one full restart cycle, backdated at close               |
-| `nvrx.ft.round_wait`   | `nvrx.ft` | `ft_rendezvous_barrier.py` | waiting for a round to open                              |
-| `nvrx.ft.rendezvous`   | `nvrx.ft` | `ft_rendezvous_barrier.py` | one rendezvous round, after it opened                    |
-| `nvrx.ft.health_check` | `nvrx.ft` | `ft_rendezvous_barrier.py` | `ensure_node_is_healthy`                                 |
-| `nvrx.ft.worker_start` | `nvrx.ft` | `launcher.py`              | `_start_workers`                                         |
-| `nvrx.ft.run_start`    | `nvrx.ft` | `launcher.py`              | instant: workers are up                                  |
-| `nvrx.ft.run`          | `nvrx.ft` | `launcher.py`              | workers executing, backdated at close                    |
-| `nvrx.ft.fault`        | `nvrx.ft` | `launcher.py`              | instant: a failure was detected                          |
-| `nvrx.ft.teardown`     | `nvrx.ft` | `launcher.py`              | `_stop_workers`                                          |
-| `nvrx.ft.attribution`  | `nvrx.ft` | `health_check.py`          | an attribution lookup (root span)                        |
+| `nvrx.ft.cycle_start`  | `nvrx.ft`  | `launcher.py`              | instant: a cycle began                                   |
+| `nvrx.ft.cycle`        | `nvrx.ft`  | `launcher.py`              | one full restart cycle, backdated at close               |
+| `nvrx.ft.round_wait`   | `nvrx.ft`  | `ft_rendezvous_barrier.py` | waiting for a round to open                              |
+| `nvrx.ft.rendezvous`   | `nvrx.ft`  | `ft_rendezvous_barrier.py` | one rendezvous round, after it opened                    |
+| `nvrx.ft.health_check` | `nvrx.ft`  | `ft_rendezvous_barrier.py` | `ensure_node_is_healthy`                                 |
+| `nvrx.ft.worker_start` | `nvrx.ft`  | `launcher.py`              | `_start_workers`                                         |
+| `nvrx.ft.run_start`    | `nvrx.ft`  | `launcher.py`              | instant: workers are up                                  |
+| `nvrx.ft.run`          | `nvrx.ft`  | `launcher.py`              | workers executing, backdated at close                    |
+| `nvrx.ft.fault`        | `nvrx.ft`  | `launcher.py`              | instant: a failure was detected                          |
+| `nvrx.ft.teardown`     | `nvrx.ft`  | `launcher.py`              | `_stop_workers`                                          |
+| `nvrx.ft.attribution`  | `nvrx.ft`  | `health_check.py`          | an attribution lookup (root span)                        |
 
 `python.startup` and `python.imports` carry no `nvrx.` prefix and are distinguished by `service.name`, so one query answers "how long did imports take" across every service that emits them. Both are measured entirely within this process — `psutil.Process().create_time()` and two `time.time()` stamps — and backdated once telemetry is up.
 
@@ -282,13 +282,13 @@ Spans carry labels so a collector config can filter and route on them without kn
 
 It is set wherever the answer is **locally true of that span**, never inferred from what the span nests inside — NVRx is a library and its spans sit under callers' spans.
 
-| Span                                                                                           | Group | `is_goodput_span`                        |
-| ---------------------------------------------------------------------------------------------- | ----- | ---------------------------------------- |
-| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution` | `True`                                   |
-| `run`                                                                                          | `False` — training is executing          |
-| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`, `ckpt.save.completion_sync`, `ckpt.save.finalize` | `True` — training is stopped |
-| `ckpt.save.request`, `ckpt.save.write`                                                         | `False` — worker side, overlaps training |
-| `ckpt.save.preload`                                                                            | `False` — always worker side             |
+| Span                                                                                                                                      | Group                                    | `is_goodput_span` |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ----------------- |
+| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution`                                            | `True`                                   |
+| `run`                                                                                                                                     | `False` — training is executing          |
+| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`, `ckpt.save.completion_sync`, `ckpt.save.finalize` | `True` — training is stopped             |
+| `ckpt.save.request`, `ckpt.save.write`                                                                                                    | `False` — worker side, overlaps training |
+| `ckpt.save.preload`                                                                                                                       | `False` — always worker side             |
 
 ## Checkpointing
 
@@ -300,15 +300,15 @@ It is set wherever the answer is **locally true of that span**, never inferred f
 
 The worker sets its CUDA device and initializes a CUDA context so it can receive IPC handles into the trainer's GPU memory. Staging therefore runs **in the worker**. The trainer enqueues, then blocks on `preload_q.join()` until the worker signals staging complete, and the write overlaps training from there.
 
-| Span                        | Group | Process | Covers                           | `is_goodput_span`                             |
-| --------------------------- | ----- | ------- | -------------------------------- | --------------------------------------------- |
-| `nvrx.ckpt.save.schedule`   | `nvrx.ckpt` | trainer | `schedule_async_request` end to end | `True`                                        |
-| `nvrx.ckpt.save.stage_wait` | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block        | `True` — training is stopped for exactly this |
-| `nvrx.ckpt.save.request`    | `nvrx.ckpt` | worker  | one request, end to end             | `False`                                       |
-| `nvrx.ckpt.save.preload`    | `nvrx.ckpt.phases` | worker  | D2H staging into host memory        | `False`                                       |
-| `nvrx.ckpt.save.write`      | `nvrx.ckpt.phases` | worker  | the write itself                    | `False`                                       |
-| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done | `True` — once per poll                 |
-| `nvrx.ckpt.save.finalize`   | `nvrx.ckpt` | trainer | finalize callbacks, a later iteration | `True`                                      |
+| Span                             | Group              | Process | Covers                                   | `is_goodput_span`                             |
+| -------------------------------- | ------------------ | ------- | ---------------------------------------- | --------------------------------------------- |
+| `nvrx.ckpt.save.schedule`        | `nvrx.ckpt`        | trainer | `schedule_async_request` end to end      | `True`                                        |
+| `nvrx.ckpt.save.stage_wait`      | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block             | `True` — training is stopped for exactly this |
+| `nvrx.ckpt.save.request`         | `nvrx.ckpt`        | worker  | one request, end to end                  | `False`                                       |
+| `nvrx.ckpt.save.preload`         | `nvrx.ckpt.phases` | worker  | D2H staging into host memory             | `False`                                       |
+| `nvrx.ckpt.save.write`           | `nvrx.ckpt.phases` | worker  | the write itself                         | `False`                                       |
+| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done | `True` — once per poll                        |
+| `nvrx.ckpt.save.finalize`        | `nvrx.ckpt`        | trainer | finalize callbacks, a later iteration    | `True`                                        |
 
 `stage_wait` nests inside `schedule`. The worker's `preload` measures the same physical work from the other side, so the difference between them is queue and IPC overhead.
 
@@ -318,17 +318,17 @@ The worker skips CUDA initialization entirely and needs no IPC handles. Staging 
 
 Reusing those shm tensors introduces a second exposed wait that has no counterpart in IPC mode. Before the first `copy_()` into a reused tensor, `prepare_write_data` fires the drain that `AsyncCallsQueue` registers — `maybe_finalize_async_calls(blocking=True, no_dist=True)` — so any prior write still reading those tensors completes first. **This blocks the current checkpoint on the previous one's write**, which is the mode's characteristic stall and needs its own span to be visible at all.
 
-| Span                        | Group | Process | Covers                                     | `is_goodput_span`                             |
-| --------------------------- | ----- | ------- | ------------------------------------------ | --------------------------------------------- |
-| `nvrx.ckpt.save.shm_drain`  | `nvrx.ckpt.phases` | trainer | the blocking drain in `prepare_write_data` | `True` — blocked on the _previous_ checkpoint |
-| `nvrx.ckpt.save.stage`      | `nvrx.ckpt.phases` | trainer | GPU to shared memory copy                  | `True`                                        |
-| `nvrx.ckpt.save.schedule`   | `nvrx.ckpt` | trainer | `schedule_async_call`                      | `True`                                        |
-| `nvrx.ckpt.save.stage_wait` | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block               | `True` — short here, but not zero             |
-| `nvrx.ckpt.save.request`    | `nvrx.ckpt` | worker  | one request, end to end                    | `False`                                       |
-| `nvrx.ckpt.save.preload`    | `nvrx.ckpt.phases` | worker  | bucket assembly over host memory           | `False`                                       |
-| `nvrx.ckpt.save.write`      | `nvrx.ckpt.phases` | worker  | the write itself                           | `False`                                       |
-| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done | `True` — once per poll                  |
-| `nvrx.ckpt.save.finalize`   | `nvrx.ckpt` | trainer | finalize callbacks, a later iteration      | `True`                                        |
+| Span                             | Group              | Process | Covers                                     | `is_goodput_span`                             |
+| -------------------------------- | ------------------ | ------- | ------------------------------------------ | --------------------------------------------- |
+| `nvrx.ckpt.save.shm_drain`       | `nvrx.ckpt.phases` | trainer | the blocking drain in `prepare_write_data` | `True` — blocked on the _previous_ checkpoint |
+| `nvrx.ckpt.save.stage`           | `nvrx.ckpt.phases` | trainer | GPU to shared memory copy                  | `True`                                        |
+| `nvrx.ckpt.save.schedule`        | `nvrx.ckpt`        | trainer | `schedule_async_call`                      | `True`                                        |
+| `nvrx.ckpt.save.stage_wait`      | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block               | `True` — short here, but not zero             |
+| `nvrx.ckpt.save.request`         | `nvrx.ckpt`        | worker  | one request, end to end                    | `False`                                       |
+| `nvrx.ckpt.save.preload`         | `nvrx.ckpt.phases` | worker  | bucket assembly over host memory           | `False`                                       |
+| `nvrx.ckpt.save.write`           | `nvrx.ckpt.phases` | worker  | the write itself                           | `False`                                       |
+| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done   | `True` — once per poll                        |
+| `nvrx.ckpt.save.finalize`        | `nvrx.ckpt`        | trainer | finalize callbacks, a later iteration      | `True`                                        |
 
 `schedule` and `stage_wait` are the same spans as in IPC mode, because the code path is the same: a request always carries a `preload_fn`, and the trainer always waits on it. What differs is only what that work costs. In IPC mode the worker's `preload` is the D2H itself and the trainer's `stage_wait` covers all of it; in CPU SHM mode the D2H already happened on the trainer, so `preload` is bucket assembly over host memory and `stage_wait` is short. The mode is legible from the durations rather than from which spans exist.
 
