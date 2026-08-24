@@ -40,13 +40,14 @@ class L1ResponseContract:
             "model_recovery_assessment",
             "related_failures",
             "evidence",
+            # Required by the schema so OpenAI structured output emits it every
+            # time. category_id=0 with category_confidence=0 is the sanctioned
+            # 'no listed category matches' placeholder. Callers treat category_id
+            # <= 0 or confidence < threshold as 'no signal'.
+            "category_selection",
         }
     )
-    # Optional top-level field: the L1 category selection from the 38-entry
-    # taxonomy (see l1/categories.py). Its presence is not required by the
-    # contract; when present it flows to L4 as an additional evidence signal
-    # for policy_context matching, not as a direct STOP/RESTART override.
-    optional_top_level_fields: frozenset[str] = frozenset({"category_selection"})
+    optional_top_level_fields: frozenset[str] = frozenset()
     category_selection_fields: frozenset[str] = frozenset(
         {"category_id", "category_confidence", "category_rationale"}
     )
@@ -235,12 +236,33 @@ class L1ResponseContract:
                 },
             },
         }
+        category_selection = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(self.category_selection_fields),
+            "properties": {
+                "category_id": {"type": "integer", "minimum": 0, "maximum": 38},
+                "category_confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+                "category_rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": self.max_category_rationale_chars,
+                },
+            },
+            "description": (
+                "Optional evidence signal: which curated category best fits the primary "
+                "failure. See l1/categories.py for the 38-entry taxonomy. "
+                "category_id=0 means no curated category matches. This block is optional "
+                "and does not itself control STOP/RESTART - L4 policy decides."
+            ),
+        }
         return {
             "type": "object",
             "additionalProperties": False,
             "required": sorted(self.top_level_fields),
             "properties": {
                 "schema_version": {"type": "string", "const": L1_EVIDENCE_SCHEMA_VERSION},
+                "category_selection": category_selection,
                 "analysis_status": {
                     "type": "string",
                     "enum": sorted(self.analysis_statuses),
