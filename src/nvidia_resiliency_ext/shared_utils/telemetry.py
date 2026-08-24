@@ -18,9 +18,12 @@
 The only file in NVRx that imports nemo-lens. When nemo-lens is absent every
 export here is a no-op, so callers never need to guard their instrumentation.
 
-nemo-lens gates on span groups that default to empty until ``setup_telemetry``
-runs, so every span here is a no-op before (or without) initialization -- there
-is nothing for this module to re-implement.
+nemo-lens gates on span groups that stay empty until some process in this
+interpreter calls ``setup_telemetry``, so every span here is a no-op before (or
+without) initialization -- there is nothing for this module to re-implement. The
+groups themselves are declared here, at import, so that a process which emits
+NVRx spans without ever initializing telemetry itself -- a trainer, whose
+framework owns that call -- can still have them selected.
 
 Attributes are passed as a dict to every entry point, because NVRx attribute
 names are dotted and so cannot be Python keywords.
@@ -31,11 +34,30 @@ import os
 import threading
 import time
 from contextlib import ExitStack, contextmanager
-from typing import ClassVar, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_NVRX_GROUPS = frozenset(["nvrx.ft", "nvrx.ckpt"])
+#: The span groups NVRx emits, and the presets selecting them. Registered with
+#: nemo-lens at import, because nemo-lens ships no group names of its own: a
+#: group nobody registers is unselectable, so its spans go silently dark.
+#:
+#: The split is a drill-down. ``nvrx.ckpt`` is a checkpoint request seen from the
+#: outside -- one span per request per side -- and stays on by default because
+#: its cardinality is bounded by checkpoint count. ``nvrx.ckpt.phases`` breaks
+#: each request into its stages, which is what you turn on once a checkpoint is
+#: already known to be slow and you need to know *where*.
+_NAMESPACE = "nvrx"
+_JOB = "nvrx.job"
+_FT = "nvrx.ft"
+_CKPT = "nvrx.ckpt"
+_CKPT_PHASES = "nvrx.ckpt.phases"
+_GROUPS = frozenset([_JOB, _FT, _CKPT, _CKPT_PHASES])
+_PRESETS = {
+    "default": frozenset([_JOB, _FT, _CKPT]),
+    "per_step": frozenset([_JOB, _FT, _CKPT, _CKPT_PHASES]),
+    "profiling": _GROUPS,
+}
 
 # The OTEL_RESOURCE_ATTRIBUTES this process inherited, captured before anything
 # can extend it. Every extension is built from this value rather than from the
@@ -52,7 +74,7 @@ try:
     # trace_fn's alias is not redundant: it is the PEP 484 re-export form, and is what
     # tells a linter this module deliberately exports a name it never calls.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
-    from nemo.lens import SpanGroup as _SpanGroup
+    from nemo.lens import SpanRegistry as _SpanRegistry
     from nemo.lens import get_tracer as _get_tracer
     from nemo.lens import is_span_group_enabled as _is_span_group_enabled
     from nemo.lens import managed_span as _managed_span
@@ -60,53 +82,32 @@ try:
     from nemo.lens import setup_telemetry as _setup_telemetry
     from nemo.lens import trace_fn as trace_fn
 
-    class _NVRxSpanGroup(_SpanGroup):
-        """Teaches nemo-lens about the NVRx groups, and about groups nobody declared.
-
-        The base ``SpanGroup.resolve()`` only knows its own groups, so without
-        this ``NEMO_LENS_SPAN_GROUPS=nvrx.ft`` raises ValueError and the stock
-        presets emit no NVRx spans. Every preset gains the NVRx groups so that
-        ``NEMO_LENS_ENABLED=1`` alone is sufficient; ``nvrx`` selects them alone.
-        """
-
-        FT = "nvrx.ft"
-        CKPT = "nvrx.ckpt"
-        ALL_GROUPS = _SpanGroup.ALL_GROUPS | _NVRX_GROUPS
-        _PRESETS: ClassVar[dict] = {
-            **{name: groups | _NVRX_GROUPS for name, groups in _SpanGroup._PRESETS.items()},
-            "nvrx": _NVRX_GROUPS,
-        }
-
-        @classmethod
-        def resolve(cls, spec: str) -> frozenset:
-            """Resolve a span-group spec, passing unknown names through as groups.
-
-            Upstream raises on any name it does not recognise. Since NVRx catches
-            that and degrades to a no-op handle, one undeclared name would take
-            *all* telemetry down rather than just enabling that group -- and the
-            failure is silent. It also means adding a span under a new group, for
-            a one-off investigation you intend to filter on in the collector,
-            could not be done without editing this file.
-
-            So an unrecognised name is its own group. A typo then costs that one
-            group rather than the entire signal, and the log line says which.
-            """
-            known = cls.ALL_GROUPS | set(cls._PRESETS)
-            parts = [p.strip().lower() for p in spec.split(",") if p.strip()]
-            declared = ",".join(p for p in parts if p in known)
-            adhoc = frozenset(p for p in parts if p not in known)
-            if adhoc:
-                logger.info("Enabling span groups not declared by NVRx: %s", sorted(adhoc))
-            return (super().resolve(declared) if declared else frozenset()) | adhoc
-
     _AVAILABLE = True
 
-except ModuleNotFoundError:
+except ImportError:
+    # Catches nemo-lens being absent and a nemo-lens whose surface has moved
+    # under us, which from here are one condition: the names above are not
+    # importable, so there is nothing to call.
     _AVAILABLE = False
 
 except Exception:
     logger.warning("nemo-lens import failed, continuing without telemetry", exc_info=True)
     _AVAILABLE = False
+
+
+if _AVAILABLE:
+    try:
+        # At import rather than in setup_telemetry, because the process that
+        # emits the trainer-side checkpoint spans never calls setup_telemetry --
+        # Megatron owns that call. Registration has to happen wherever this
+        # module is imported, or those groups are unselectable in exactly the
+        # process that needs them.
+        _SpanRegistry.register(_NAMESPACE, _GROUPS, _PRESETS)
+    except Exception:
+        # A collision means something else already claimed these names. That
+        # costs the selectability of the NVRx groups, not the ability to emit
+        # anything else, so it must not disable telemetry wholesale.
+        logger.warning("Could not register the NVRx span groups", exc_info=True)
 
 
 if not _AVAILABLE:
@@ -132,28 +133,44 @@ class _NoOpHandle:
         pass
 
 
-def setup_telemetry(rank: int, world_size: int, resource_attributes: Optional[dict] = None):
+def setup_telemetry(
+    service_name: str, instance_id: str, resource_attributes: Optional[dict] = None
+):
     """Initialize nemo-lens for this process. Call once, at process start.
 
-    ``rank`` and ``world_size`` identify this process in the OTel resource
-    (``dl.rank``, ``dl.world_size``, ``service.instance.id``), so they must be
-    distinct per emitter or backends cannot tell the processes apart.
-    ``resource_attributes`` is merged over those defaults, which is how a
-    process whose rank is not a trainer rank overrides ``service.instance.id``
-    rather than colliding with the trainer that happens to share its number.
+    Only for a process NVRx itself owns -- the fault-tolerance agent, the spawned
+    checkpoint worker. A trainer process is not one of those: its telemetry
+    belongs to whatever framework is training, and NVRx spans emitted there ride
+    that framework's providers.
+
+    ``service_name`` names the kind of process and ``instance_id`` the individual
+    one, becoming ``service.name`` and ``service.instance.id``. Both are required
+    because neither default is usable here: nemo-lens derives its own instance id
+    from ``dl.rank``, and none of NVRx's own processes has a trainer rank to
+    derive it from -- the agent is one per node, and the checkpoint worker shares
+    its rank number with the trainer it serves, so the derived id would collide.
+
+    ``resource_attributes`` is merged over that, for whatever else identifies this
+    process to a backend.
 
     Export strategy is left entirely to nemo-lens's default and
     ``NEMO_LENS_EXPORT_STRATEGY``. NVRx does not override it: whether every node
     should export or only one depends on how many collectors the deployment runs
     and where, which is a property of the launching environment rather than of
-    NVRx. A deployment with a collector per node sets ``all_ranks`` to get
-    per-node visibility; one with a single gateway does not.
+    NVRx.
     """
     if not _AVAILABLE:
         return _NoOpHandle()
     try:
-        config = _NemoLensConfig.from_env(span_group_cls=_NVRxSpanGroup)
-        return _setup_telemetry(config, rank, world_size, resource_attributes=resource_attributes)
+        config = _NemoLensConfig.from_env()
+        # Over OTEL_SERVICE_NAME, which a launching environment sets for the
+        # workload it came to run. These processes are NVRx's, not that
+        # workload's, and telling them apart in a backend is the whole point of
+        # naming them.
+        config.service_name = service_name
+        attributes = {"service.instance.id": instance_id}
+        attributes.update(resource_attributes or {})
+        return _setup_telemetry(config, resource_attributes=attributes)
     except Exception:
         logger.warning("nemo-lens init failed, continuing without telemetry", exc_info=True)
         return _NoOpHandle()

@@ -383,12 +383,14 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # while we are about to overwrite them with checkpoint N+1 values.
                     if FileSystemWriterAsync._shm_drain_callback is not None:
                         with telemetry.span(
-                            "nvrx.ckpt", "nvrx.ckpt.save.shm_drain", {"is_goodput_span": True}
+                            "nvrx.ckpt.phases",
+                            "nvrx.ckpt.save.shm_drain",
+                            {"is_goodput_span": True},
                         ):
                             FileSystemWriterAsync._shm_drain_callback()
                     _, shm_tensors = FileSystemWriterAsync._shm_tensor_cache[key]
                     with telemetry.span(
-                        "nvrx.ckpt", "nvrx.ckpt.save.stage", {"is_goodput_span": True}
+                        "nvrx.ckpt.phases", "nvrx.ckpt.save.stage", {"is_goodput_span": True}
                     ):
                         for i, (shm_t, gpu_t) in enumerate(zip(shm_tensors, gpu_data)):
                             shm_t.copy_(gpu_t, non_blocking=True)
@@ -410,7 +412,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     shm_tensors = []
                     total_bytes = 0
                     with telemetry.span(
-                        "nvrx.ckpt", "nvrx.ckpt.save.stage", {"is_goodput_span": True}
+                        "nvrx.ckpt.phases", "nvrx.ckpt.save.stage", {"is_goodput_span": True}
                     ):
                         for i, t in enumerate(gpu_data):
                             tc = t.contiguous()

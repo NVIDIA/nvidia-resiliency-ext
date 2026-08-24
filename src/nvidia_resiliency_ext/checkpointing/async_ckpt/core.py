@@ -280,7 +280,7 @@ class AsyncCaller(ABC):
         """
         raise NotImplementedError("This should be implemented")
 
-    @telemetry.trace_fn("nvrx.ckpt", "nvrx.ckpt.save.completion_sync")
+    @telemetry.trace_fn("nvrx.ckpt.phases", "nvrx.ckpt.save.completion_sync")
     def sync_all_async_calls(self, is_alive: int) -> bool:
         """Check if all ranks have completed async checkpoint writing
 
@@ -554,7 +554,7 @@ class PersistentAsyncCaller(AsyncCaller):
             start_sync = time()
             # Synchronize for pre-staging tensors
             with telemetry.span(
-                "nvrx.ckpt", "nvrx.ckpt.save.stage_wait", {"is_goodput_span": True}
+                "nvrx.ckpt.phases", "nvrx.ckpt.save.stage_wait", {"is_goodput_span": True}
             ):
                 self.preload_q.join()
             end_sync = time()
@@ -762,15 +762,13 @@ class PersistentAsyncCaller(AsyncCaller):
         # Spawned worker: no in-memory state is inherited, so telemetry is set up
         # again here. The environment is inherited, so nemo-lens reads the same
         # config the trainer saw. Spans are independent of the launcher's trace and
-        # join across ranks on nvrx.call_idx. Identity is overridden because this
-        # process shares a rank number with the trainer it serves.
+        # join across ranks on nvrx.call_idx. Identity is given explicitly because
+        # this process shares a rank number with the trainer it serves, so the
+        # derived one would collide with it.
         tel_handle = telemetry.setup_telemetry(
-            rank,
-            int(os.environ.get("WORLD_SIZE", "1")),
-            resource_attributes={
-                "service.name": "nvrx.ckpt_worker",
-                "service.instance.id": f"nvrx-ckpt{rank}",
-            },
+            "nvrx.ckpt_worker",
+            f"nvrx-ckpt{rank}",
+            {"dl.rank": rank},
         )
 
         # Start busy loop waiting for and executing checkpoint saves.
@@ -797,7 +795,7 @@ class PersistentAsyncCaller(AsyncCaller):
                         if item.preload_fn:
                             call_idx = preload_q.get()
                             with telemetry.span(
-                                "nvrx.ckpt",
+                                "nvrx.ckpt.phases",
                                 "nvrx.ckpt.save.preload",
                                 {"is_goodput_span": False},
                             ):
@@ -810,7 +808,9 @@ class PersistentAsyncCaller(AsyncCaller):
                             # The write overlaps training, so it costs no goodput; marking
                             # it True would double-count against the exposed save.
                             with telemetry.span(
-                                "nvrx.ckpt", "nvrx.ckpt.save.write", {"is_goodput_span": False}
+                                "nvrx.ckpt.phases",
+                                "nvrx.ckpt.save.write",
+                                {"is_goodput_span": False},
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")

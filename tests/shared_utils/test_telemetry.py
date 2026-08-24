@@ -21,6 +21,8 @@ nemo-lens is missing or uninitialized, and never propagates a telemetry
 failure into the workload. They run with or without nemo-lens installed.
 """
 
+import ast
+import pathlib
 import pickle
 import threading
 import time
@@ -349,7 +351,7 @@ class TestSetupTelemetry(unittest.TestCase):
     def test_returns_handle_with_idempotent_shutdown(self):
         # Disabled is the default (NEMO_LENS_ENABLED is unset), so this exercises
         # the no-op path whether or not nemo-lens is installed.
-        handle = telemetry.setup_telemetry(0, 1)
+        handle = telemetry.setup_telemetry("nvrx.test", "nvrx-test0")
         self.assertTrue(hasattr(handle, "shutdown"))
         handle.shutdown()
         handle.shutdown()
@@ -367,52 +369,109 @@ class TestSetupTelemetry(unittest.TestCase):
                     telemetry, "_NemoLensConfig", create=True
                 ) as config_cls:
                     config_cls.from_env.return_value = unittest.mock.MagicMock()
-                    handle = telemetry.setup_telemetry(0, 1)
+                    handle = telemetry.setup_telemetry("nvrx.test", "nvrx-test0")
             self.assertIsInstance(handle, telemetry._NoOpHandle)
         finally:
             telemetry._AVAILABLE = original
 
 
 @unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
-class TestAdHocSpanGroups(unittest.TestCase):
-    """A group nobody declared must cost that group, not the whole signal."""
+class TestSpanGroupRegistration(unittest.TestCase):
+    """The NVRx groups must be selectable, or every NVRx span is dark.
 
-    def test_unknown_group_resolves_to_itself(self):
-        resolved = telemetry._NVRxSpanGroup.resolve("nvrx,debug_issue12345")
-        self.assertIn("debug_issue12345", resolved)
-        self.assertIn("nvrx.ft", resolved, "declared groups must survive alongside it")
+    nemo-lens ships no group names of its own, so nothing else in the process
+    declares these. Importing the shim is what makes them resolvable, which is
+    the property these tests pin: the registration happens at import, not inside
+    ``setup_telemetry``, because the trainer emits NVRx spans without ever
+    calling it.
+    """
 
-    def test_unknown_group_alone_still_resolves(self):
-        self.assertEqual(
-            telemetry._NVRxSpanGroup.resolve("debug_issue12345"),
-            frozenset(["debug_issue12345"]),
+    def test_registered_under_the_nvrx_namespace(self):
+        from nemo.lens import SpanRegistry
+
+        self.assertIn(telemetry._NAMESPACE, SpanRegistry.namespaces())
+
+    def test_every_group_resolves_by_name(self):
+        from nemo.lens import SpanRegistry
+
+        for group in telemetry._GROUPS:
+            enabled, pending = SpanRegistry.resolve(group)
+            self.assertEqual(enabled, frozenset([group]))
+            self.assertEqual(pending, frozenset(), f"{group!r} resolved to nothing")
+
+    def test_presets_resolve_to_their_members(self):
+        from nemo.lens import SpanRegistry
+
+        for preset, members in telemetry._PRESETS.items():
+            enabled, _ = SpanRegistry.resolve(preset)
+            self.assertTrue(
+                members <= enabled, f"preset {preset!r} is missing {sorted(members - enabled)}"
+            )
+
+    def test_phases_are_a_drill_down_not_a_default(self):
+        # The whole point of the split: the per-request spans are always on, the
+        # per-stage ones cost cardinality and are opted into.
+        self.assertIn(telemetry._CKPT, telemetry._PRESETS["default"])
+        self.assertNotIn(telemetry._CKPT_PHASES, telemetry._PRESETS["default"])
+        self.assertIn(telemetry._CKPT_PHASES, telemetry._PRESETS["per_step"])
+
+
+class TestEverySpanGroupIsRegistered(unittest.TestCase):
+    """No call site may name a group NVRx does not register.
+
+    A group nobody registers is not an error anywhere -- nemo-lens reports it and
+    carries on, by design, since a spec is job-wide while a registry is per
+    process. That is right for a spec and wrong for a call site: a typo in one
+    costs those spans permanently and silently. Nothing at runtime will catch it,
+    so it is caught here, by reading the source rather than importing it -- which
+    is what lets this run with nemo-lens absent.
+    """
+
+    #: Every call that takes a span group as its first positional argument.
+    _CALLS = frozenset(
+        ["span", "linked_span", "mark", "trace_fn", "backdated_span", "record_process_startup"]
+    )
+
+    def test_no_call_site_names_an_unregistered_group(self):
+        root = pathlib.Path(telemetry.__file__).parent.parent
+        offenders = []
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if name not in self._CALLS:
+                    continue
+                group = node.args[0]
+                if not isinstance(group, ast.Constant) or not isinstance(group.value, str):
+                    continue
+                if group.value not in telemetry._GROUPS:
+                    offenders.append(
+                        f"{path.relative_to(root)}:{group.lineno} {name}({group.value!r})"
+                    )
+        self.assertEqual(offenders, [], "call sites naming an unregistered span group")
+
+    def test_the_scan_actually_finds_call_sites(self):
+        # Guards the test above against passing because it matched nothing at all
+        # -- a renamed helper or a moved package would do that silently.
+        root = pathlib.Path(telemetry.__file__).parent.parent
+        found = sum(
+            1
+            for path in root.rglob("*.py")
+            for node in ast.walk(ast.parse(path.read_text(), filename=str(path)))
+            if isinstance(node, ast.Call)
+            and node.args
+            and (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else getattr(node.func, "id", None)
+            )
+            in self._CALLS
+            and isinstance(node.args[0], ast.Constant)
         )
-
-    def test_declared_groups_are_unaffected(self):
-        self.assertEqual(
-            telemetry._NVRxSpanGroup.resolve("nvrx"),
-            frozenset(["nvrx.ft", "nvrx.ckpt"]),
-        )
-
-
-@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
-class TestSpanGroups(unittest.TestCase):
-    """NVRx groups must resolve, and must be on by default."""
-
-    def test_nvrx_groups_resolve(self):
-        self.assertEqual(
-            telemetry._NVRxSpanGroup.resolve("nvrx"),
-            frozenset(["nvrx.ft", "nvrx.ckpt"]),
-        )
-
-    def test_nvrx_groups_are_in_every_preset(self):
-        for preset in telemetry._NVRxSpanGroup._PRESETS:
-            resolved = telemetry._NVRxSpanGroup.resolve(preset)
-            self.assertIn("nvrx.ft", resolved, f"missing from preset {preset!r}")
-            self.assertIn("nvrx.ckpt", resolved, f"missing from preset {preset!r}")
-
-    def test_base_groups_are_preserved(self):
-        self.assertIn("job", telemetry._NVRxSpanGroup.resolve("default"))
+        self.assertGreater(found, 10, "the span-group scan matched almost nothing")
 
 
 if __name__ == "__main__":

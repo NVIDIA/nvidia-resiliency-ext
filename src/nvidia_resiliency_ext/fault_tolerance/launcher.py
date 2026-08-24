@@ -551,28 +551,17 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._remaining_restarts = (
             self._worker_group.spec.max_restarts - self._get_global_cycle_number()
         )
-        # Every agent exports, so dl.rank / service.instance.id have to differ per node.
-        # Rendezvous has not assigned elastic ranks yet, hence the infrastructure rank --
-        # skipping the nodename/topology encodings, which are not small ordinals. This
-        # resolves telemetry identity, so it must not be able to take the agent down.
-        try:
-            node_rank = max(get_infrastructure_rank(skip_nodename_logic=True), 0)
-        except Exception:
-            logger.debug("Infrastructure rank unavailable for telemetry", exc_info=True)
-            node_rank = 0
-        # An agent's rank is a node ordinal, not a trainer rank, so under the default
-        # service.instance.id it would collide with the checkpoint worker of that rank.
+        # An agent is one per node and runs before rendezvous, so it has no
+        # trainer rank -- and a node ordinal is not one. It is identified by the
+        # host it runs on, which is what distinguishes agents from each other and
+        # is already how every other agent-side signal is keyed.
         self._tel_handle = telemetry.setup_telemetry(
-            node_rank,
-            int(os.environ.get("SLURM_NNODES", "1")),
-            resource_attributes={
-                "service.name": "nvrx.ft_launcher",
-                "nvrx.node": self._node_id,
-                "service.instance.id": f"nvrx-agent{node_rank}",
-            },
+            "nvrx.ft_launcher",
+            f"nvrx-agent-{self._node_id}",
+            {"nvrx.node": self._node_id},
         )
         telemetry.record_process_startup(
-            "job", __imports_started__, __imports_finished__, {"nvrx.node": self._node_id}
+            "nvrx.job", __imports_started__, __imports_finished__, {"nvrx.node": self._node_id}
         )
         start_time = time.monotonic()
         shutdown_called: bool = False
