@@ -726,7 +726,35 @@ def _match_policy_context(
             },
         )
 
+    # rejected_iteration_retry_then_skip: check signature; if it matches, return
+    # match. If any precondition fails, fall through (do NOT return None early,
+    # since the L1 category context below is the next thing to try).
     context = configured.rejected_iteration_retry_then_skip
+    rej_iter_match = _try_rejected_iteration_context(
+        context=context, primary=primary, current_facts=current_facts
+    )
+    if rej_iter_match is not None:
+        return rej_iter_match
+
+    # L1 category-driven context runs LAST so any deterministic classifier
+    # context above takes precedence. This is the integration hook proposed
+    # as a discussion spike - callers pass l1_category_selection via
+    # L4PolicyInput.
+    return _match_l1_category_context(
+        primary=primary,
+        l1_category_selection=l1_category_selection,
+        threshold=l1_category_confidence_threshold,
+    )
+
+
+def _try_rejected_iteration_context(
+    *,
+    context: Any,
+    primary: FailureEvidence | None,
+    current_facts: AttemptFailureFacts | None,
+) -> _PolicyContextMatch | None:
+    """Return a rejected_iteration_retry_then_skip match, or None to fall through."""
+
     if not context.enabled or primary is None or current_facts is None:
         return None
     if not current_facts.root_fingerprint or current_facts.failure_iteration is None:
@@ -761,16 +789,6 @@ def _match_policy_context(
             },
             "retry_policy": effective.to_payload(),
         },
-    )
-
-
-# L1 category-driven context runs LAST so any deterministic classifier context
-# above takes precedence. This is the integration hook proposed as a
-# discussion spike - callers pass l1_category_selection via L4PolicyInput.
-    return _match_l1_category_context(
-        primary=primary,
-        l1_category_selection=l1_category_selection,
-        threshold=l1_category_confidence_threshold,
     )
 
 
