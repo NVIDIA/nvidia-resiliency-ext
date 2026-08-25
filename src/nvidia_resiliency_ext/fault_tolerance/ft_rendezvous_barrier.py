@@ -71,6 +71,7 @@ from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
+from .segment_health_check import get_segment_health_check
 
 # Conditionally import failure injector (only active when NVRX_INJECT_GPU_FAILURE is set)
 if os.environ.get("NVRX_INJECT_GPU_FAILURE"):
@@ -220,6 +221,8 @@ class RendezvousSettings:
         nproc_per_node:
             Number of processes per node (local_world_size). Used to restore local_world_size
             when a standby node becomes active.
+        segment_health_check_dir:
+            Shared directory containing segment health decision artifacts.
     """
 
     run_id: str
@@ -231,6 +234,7 @@ class RendezvousSettings:
     segment: Optional[int] = None
     replacement_group_size: Optional[int] = None
     nproc_per_node: int = 1  # Default to 1 if not specified
+    segment_health_check_dir: Optional[str] = None
 
 
 @dataclass(eq=True, order=True, frozen=True)
@@ -2346,6 +2350,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         attribution_enforce_stop: bool = False,
         cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
+        segment_health_check_dir: Optional[str] = None,
     ):
         """Create a new :py:class:`FtRendezvousBarrierHandler`.
 
@@ -2396,6 +2401,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             segment=segment,
             replacement_group_size=replacement_group_size,
             nproc_per_node=nproc_per_node,
+            segment_health_check_dir=segment_health_check_dir,
         )
 
         return cls(
@@ -2451,6 +2457,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             )
         if settings.replacement_group_size is not None and settings.replacement_group_size < 1:
             raise ValueError("replacement_group_size must be a positive integer when configured.")
+        if settings.segment_health_check_dir and not os.path.isabs(
+            settings.segment_health_check_dir
+        ):
+            raise ValueError("segment_health_check_dir must be an absolute path.")
 
         self._this_node = node
         self._settings = settings
@@ -2500,6 +2510,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._storage_path_checker = (
             StoragePathHealthCheck(storage_healthcheck_paths) if storage_healthcheck_paths else None
         )
+        self._segment_health_checker = get_segment_health_check(settings.segment_health_check_dir)
 
         # Attribution service client (optional, only on master node)
         if is_store_host and attribution_endpoint:
@@ -2625,10 +2636,17 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             raise UnhealthyNodeException(str(e)) from e
 
     def ensure_node_is_healthy(self) -> None:
-        """Perform GPU, NIC link state, and Node health checks for this node."""
-        # Record the health check message
+        """Perform configured segment- and node-level health checks in order."""
+        # Record the health check before any configured check can raise.
         msg = f"Checking health status of {self._this_node}."
         self._record(message=msg)
+
+        if self._segment_health_checker is not None:
+            self._run_health_check(
+                self._segment_health_checker,
+                "Segment health check",
+                "The current Slurm array task segment is excluded by scheduler state.",
+            )
 
         # Perform GPU health check
         self._run_health_check(
@@ -3088,6 +3106,7 @@ def create_handler(
         )
         cycle_info_dir = params.config.get('cycle_info_dir', None)
         cycle_log_prefix = params.config.get('cycle_log_prefix', None)
+        segment_health_check_dir = params.config.get('segment_health_check_dir', None)
 
         return FtRendezvousBarrierHandler.from_backend(
             params.run_id,
@@ -3109,6 +3128,7 @@ def create_handler(
             attribution_enforce_stop=attribution_enforce_stop,
             cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
+            segment_health_check_dir=segment_health_check_dir,
         )
     except Exception as e:
         construct_and_record_rdzv_event(

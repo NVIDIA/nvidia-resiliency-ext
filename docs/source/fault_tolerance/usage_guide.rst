@@ -199,6 +199,17 @@ Validation behavior:
   - Other existing types (e.g., devices/symlinks): performs ``stat`` access
 
 
+Segment Health Check
+^^^^^^^^^^^^^^^^^^^^
+
+Set ``--ft-segment-health-check-dir <ABSOLUTE_PATH>`` or
+``fault_tolerance.segment_health_check_dir`` to consume segment health
+decisions before rendezvous. Omitting the setting disables the check.
+
+See the :doc:`Segment Health Check integration guide
+<integration/segment_health_check>` for the consumer contract.
+
+
 Attribution service integration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
