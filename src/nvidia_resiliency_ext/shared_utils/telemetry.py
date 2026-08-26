@@ -534,8 +534,11 @@ class Phase:
     In between, the mark's ``SpanContext`` is the active OTel context, so spans
     opened on this thread nest under the phase without being passed anything.
 
-    Attributes given to ``open`` go on the mark; those from ``set`` and ``close``
-    go on the backdated span, there being no live span in between.
+    Attributes given to ``open`` go on **both** the mark and the backdated span,
+    since the two are separate records and a consumer filtering one never sees the
+    other's attributes. Those from ``set`` and ``close`` can only reach the
+    backdated span, there being no live span in between; they override an opening
+    attribute of the same name.
 
     ORDERING CONTRACT, from ``contextvars``: ``open()`` and ``close()`` must run on
     the same thread, and anything opened after this one must close before it does.
@@ -554,7 +557,11 @@ class Phase:
         self.close()
         self._group, self._name = group, name
         self._start = time.time()
-        self._attributes = {}
+        # Seeded, not emptied: what identifies a phase belongs on the mark AND on
+        # the backdated span. They are two records and each has to stand alone --
+        # a consumer filtering spans never sees the mark's attributes, so a key
+        # left only there cannot be grouped on.
+        self._attributes = dict(attributes or {})
         self._parent = mark(group, f"{name}_start", attributes)
         if not _AVAILABLE or self._parent is None:
             return

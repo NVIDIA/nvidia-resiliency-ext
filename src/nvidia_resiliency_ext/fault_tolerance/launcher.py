@@ -1502,7 +1502,17 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Opening closes the previous cycle, which stayed open so that _stop_workers
         # could record its teardown span inside the cycle it belongs to.
-        opening = {"nvrx.cycle": self._get_global_cycle_number(), "nvrx.node": self._node_id}
+        opening = {
+            "nvrx.cycle": self._get_global_cycle_number(),
+            "nvrx.node": self._node_id,
+            # Seeded at open so the attribute is present on every close path,
+            # including any not enumerated here, rather than depending on which of
+            # them ran. Overridden once this node's role in the cycle is known:
+            # "active" by _joined_cycle_attrs, "standby" below. A node the health
+            # check rejected keeps "unjoined", which is what it was -- restating it
+            # as "excluded" would duplicate the cycle outcome under a second key.
+            "nvrx.membership": "unjoined",
+        }
         self._cycle_phase.open("nvrx.ft", "nvrx.ft.cycle", opening)
         try:
             # Call the parent class _rendezvous method
@@ -1511,7 +1521,8 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._cycle_phase.close({CYCLE_OUTCOME: "excluded"})  # failed the health check
             raise
         except (RendezvousClosedError, RendezvousGracefulExitError):
-            self._cycle_phase.close({CYCLE_OUTCOME: "standby"})  # job ended while it waited
+            # job ended while it waited
+            self._cycle_phase.close({CYCLE_OUTCOME: "standby", "nvrx.membership": "standby"})
             raise
         self._cycle_phase.set(self._joined_cycle_attrs(worker_group))
 

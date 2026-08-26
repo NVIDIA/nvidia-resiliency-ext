@@ -347,17 +347,30 @@ class TestPhase(unittest.TestCase):
         self.assertLessEqual(end, after)
         # Same trace as the mark, so the spans that ran inside the phase join it.
         self.assertEqual(parent, "ctx-of-nvrx.ft.cycle_start")
-        self.assertEqual(attributes, {"nvrx.cycle_outcome": "succeeded"})
+        # Opening attributes carry through to the span; close adds to them.
+        self.assertEqual(attributes, {"nvrx.cycle": 2, "nvrx.cycle_outcome": "succeeded"})
 
-    def test_open_attributes_go_on_the_mark_not_the_span(self):
+    def test_open_attributes_go_on_the_mark_and_the_span(self):
         # The mark is the only thing that exists while the phase runs, so what
-        # identifies the phase has to be on it -- the backdated span may never
-        # be emitted at all.
+        # identifies the phase has to be on it -- the backdated span may never be
+        # emitted at all. That is an argument for putting them on the mark, not for
+        # keeping them off the span: the two are separate records, and a consumer
+        # filtering spans never sees the mark's attributes.
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nvrx.ft.run", {"is_goodput_span": False})
+        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 3})
         phase.close()
-        self.assertEqual(self.marks[0][2], {"is_goodput_span": False})
-        self.assertEqual(self.spans[0][4], {})
+        self.assertEqual(self.marks[0][2], {"nvrx.cycle": 3})
+        self.assertEqual(self.spans[0][4], {"nvrx.cycle": 3})
+
+    def test_close_attributes_override_opening_ones(self):
+        # How a phase ended is not known when it opens, so a seeded placeholder has
+        # to be replaceable -- that is what lets a required attribute be set once at
+        # open rather than on each of several close paths.
+        phase = telemetry.Phase()
+        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.membership": "unjoined"})
+        phase.close({"nvrx.membership": "standby"})
+        self.assertEqual(self.marks[0][2], {"nvrx.membership": "unjoined"})
+        self.assertEqual(self.spans[0][4], {"nvrx.membership": "standby"})
 
     def test_set_accumulates_until_close(self):
         phase = telemetry.Phase()
