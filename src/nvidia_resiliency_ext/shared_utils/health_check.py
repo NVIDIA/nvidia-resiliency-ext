@@ -1980,7 +1980,7 @@ class AttributionService:
         self._attribution_span.open(
             "nvrx.ft",
             "nvrx.ft.attribution",
-            {"is_goodput_span": True, "nvrx.node": str(node_id)},
+            {"nvrx.node": str(node_id)},
         )
 
     def _submit_log(self, log_path: str) -> None:

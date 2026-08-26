@@ -749,7 +749,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                     "nvrx.ft",
                     "nvrx.ft.fault",
                     {
-                        "is_goodput_span": True,
                         "nvrx.state": state.name,
                         "nvrx.failures": failures,
                         "nvrx.node": self._node_id,
@@ -1055,7 +1054,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-        telemetry.set_span_attributes({"is_goodput_span": True, "nvrx.node": self._node_id})
+        telemetry.set_span_attributes({"nvrx.node": self._node_id})
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -1135,7 +1134,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
         telemetry.set_span_attributes(
-            {"nvrx.cycle": restart_count, "nvrx.node": self._node_id, "is_goodput_span": True}
+            {"nvrx.cycle": restart_count, "nvrx.node": self._node_id}
         )
 
         # Resource attributes for the worker, span attributes for the agent: a worker
@@ -1487,7 +1486,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Every cycle passes through here, initial and restart alike, so this is the one
         # place the run phase has to open. It opens after _start_workers has returned:
         # that method's own span must close before this one opens (see Phase).
-        self._run_phase.open("nvrx.ft", "nvrx.ft.run", {"is_goodput_span": False})
+        self._run_phase.open("nvrx.ft", "nvrx.ft.run")
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""

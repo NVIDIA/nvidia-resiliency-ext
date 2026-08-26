@@ -177,6 +177,8 @@ A cycle opens with a `nvrx.ft.cycle_start` marker, which exports immediately and
 
 A cycle that never closes leaves its marker and every completed child. Absence of the backdated span is the signal.
 
+`nvrx.ft.run` nests inside `nvrx.ft.cycle`: the cycle opens at rendezvous and closes when the next one opens, the run opens once `_start_workers` returns and closes when the workers stop. **`cycle` minus `run` is the cycle's resiliency overhead** — rendezvous, health check, worker launch, teardown. NVRx carries no per-span overhead label; the nesting is what answers the question, and it composes across cycles where a boolean would not.
+
 ```mermaid
 sequenceDiagram
     participant L as launcher.py
@@ -215,7 +217,7 @@ An exclusion needs no separate signal: `UnhealthyNodeException` propagating out 
 ### Spans
 
 | Span                   | Group      | Source                     | Covers                                                   |
-| ---------------------- | ---------- | -------------------------- | -------------------------------------------------------- |
+| ---------------------- | ---------- | -------------------------- |
 | `python.startup`       | `nvrx.job` | `launcher.py`              | process create time to the entry point's first statement |
 | `python.imports`       | `nvrx.job` | `launcher.py`              | the entry point's top-level imports                      |
 | `nvrx.ft.cycle_start`  | `nvrx.ft`  | `launcher.py`              | instant: a cycle began                                   |
@@ -272,23 +274,8 @@ Resource attributes are covered under Identity; everything here is per-span.
 | `nvrx.rdzv_run_id`        | str  | `cycle`               | rendezvous run id                         |
 | `nvrx.call_idx`           | int  | `ckpt.*`              | checkpoint call index; joins across ranks |
 | `nvrx.iteration`          | int  | `ckpt.*`              | training iteration; joins across ranks    |
-| `is_goodput_span`         | bool | see below             | label                                     |
 
 No span carries a roster of the job's other nodes. Every node already emits its own `nvrx.membership` and `nvrx.rank` each cycle, so the membership of a cycle is a group-by over `job.uid` and `nvrx.cycle` — rule 3, applied. Emitting the full list from every node would write O(N²) bytes to say what N spans already say, and at large node counts each copy is a multi-kilobyte attribute that `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` may silently truncate.
-
-### Labels
-
-Spans carry labels so a collector config can filter and route on them without knowing NVRx span names. Any attribute works; `is_goodput_span` is the one NVRx sets everywhere, marking resiliency overhead rather than productive training.
-
-It is set wherever the answer is **locally true of that span**, never inferred from what the span nests inside — NVRx is a library and its spans sit under callers' spans.
-
-| Span                                                                                                                                      | Group                                    | `is_goodput_span` |
-| ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ----------------- |
-| `round_wait`, `rendezvous`, `health_check`, `worker_start`, `teardown`, `fault`, `attribution`                                            | `True`                                   |
-| `run`                                                                                                                                     | `False` — training is executing          |
-| `ckpt.save.schedule`, `ckpt.save.stage_wait`, `ckpt.save.shm_drain`, `ckpt.save.stage`, `ckpt.save.completion_sync`, `ckpt.save.finalize` | `True` — training is stopped             |
-| `ckpt.save.request`, `ckpt.save.write`                                                                                                    | `False` — worker side, overlaps training |
-| `ckpt.save.preload`                                                                                                                       | `False` — always worker side             |
 
 ## Checkpointing
 
@@ -300,15 +287,15 @@ It is set wherever the answer is **locally true of that span**, never inferred f
 
 The worker sets its CUDA device and initializes a CUDA context so it can receive IPC handles into the trainer's GPU memory. Staging therefore runs **in the worker**. The trainer enqueues, then blocks on `preload_q.join()` until the worker signals staging complete, and the write overlaps training from there.
 
-| Span                             | Group              | Process | Covers                                   | `is_goodput_span`                             |
-| -------------------------------- | ------------------ | ------- | ---------------------------------------- | --------------------------------------------- |
-| `nvrx.ckpt.save.schedule`        | `nvrx.ckpt`        | trainer | `schedule_async_request` end to end      | `True`                                        |
-| `nvrx.ckpt.save.stage_wait`      | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block             | `True` — training is stopped for exactly this |
-| `nvrx.ckpt.save.request`         | `nvrx.ckpt`        | worker  | one request, end to end                  | `False`                                       |
-| `nvrx.ckpt.save.preload`         | `nvrx.ckpt.phases` | worker  | D2H staging into host memory             | `False`                                       |
-| `nvrx.ckpt.save.write`           | `nvrx.ckpt.phases` | worker  | the write itself                         | `False`                                       |
-| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done | `True` — once per poll                        |
-| `nvrx.ckpt.save.finalize`        | `nvrx.ckpt`        | trainer | finalize callbacks, a later iteration    | `True`                                        |
+| Span                             | Group              | Process | Covers                                   |
+| -------------------------------- | ------------------ | ------- | ---------------------------------------- |
+| `nvrx.ckpt.save.schedule`        | `nvrx.ckpt`        | trainer | `schedule_async_request` end to end      |
+| `nvrx.ckpt.save.stage_wait`      | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block             |
+| `nvrx.ckpt.save.request`         | `nvrx.ckpt`        | worker  | one request, end to end                  |
+| `nvrx.ckpt.save.preload`         | `nvrx.ckpt.phases` | worker  | D2H staging into host memory             |
+| `nvrx.ckpt.save.write`           | `nvrx.ckpt.phases` | worker  | the write itself                         |
+| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done |
+| `nvrx.ckpt.save.finalize`        | `nvrx.ckpt`        | trainer | finalize callbacks, a later iteration    |
 
 `stage_wait` nests inside `schedule`. The worker's `preload` measures the same physical work from the other side, so the difference between them is queue and IPC overhead.
 
@@ -318,17 +305,17 @@ The worker skips CUDA initialization entirely and needs no IPC handles. Staging 
 
 Reusing those shm tensors introduces a second exposed wait that has no counterpart in IPC mode. Before the first `copy_()` into a reused tensor, `prepare_write_data` fires the drain that `AsyncCallsQueue` registers — `maybe_finalize_async_calls(blocking=True, no_dist=True)` — so any prior write still reading those tensors completes first. **This blocks the current checkpoint on the previous one's write**, which is the mode's characteristic stall and needs its own span to be visible at all.
 
-| Span                             | Group              | Process | Covers                                     | `is_goodput_span`                             |
-| -------------------------------- | ------------------ | ------- | ------------------------------------------ | --------------------------------------------- |
-| `nvrx.ckpt.save.shm_drain`       | `nvrx.ckpt.phases` | trainer | the blocking drain in `prepare_write_data` | `True` — blocked on the _previous_ checkpoint |
-| `nvrx.ckpt.save.stage`           | `nvrx.ckpt.phases` | trainer | GPU to shared memory copy                  | `True`                                        |
-| `nvrx.ckpt.save.schedule`        | `nvrx.ckpt`        | trainer | `schedule_async_call`                      | `True`                                        |
-| `nvrx.ckpt.save.stage_wait`      | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block               | `True` — short here, but not zero             |
-| `nvrx.ckpt.save.request`         | `nvrx.ckpt`        | worker  | one request, end to end                    | `False`                                       |
-| `nvrx.ckpt.save.preload`         | `nvrx.ckpt.phases` | worker  | bucket assembly over host memory           | `False`                                       |
-| `nvrx.ckpt.save.write`           | `nvrx.ckpt.phases` | worker  | the write itself                           | `False`                                       |
-| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done   | `True` — once per poll                        |
-| `nvrx.ckpt.save.finalize`        | `nvrx.ckpt`        | trainer | finalize callbacks, a later iteration      | `True`                                        |
+| Span                             | Group              | Process | Covers                                     |
+| -------------------------------- | ------------------ | ------- | ------------------------------------------ |
+| `nvrx.ckpt.save.shm_drain`       | `nvrx.ckpt.phases` | trainer | the blocking drain in `prepare_write_data` |
+| `nvrx.ckpt.save.stage`           | `nvrx.ckpt.phases` | trainer | GPU to shared memory copy                  |
+| `nvrx.ckpt.save.schedule`        | `nvrx.ckpt`        | trainer | `schedule_async_call`                      |
+| `nvrx.ckpt.save.stage_wait`      | `nvrx.ckpt.phases` | trainer | the `preload_q.join()` block               |
+| `nvrx.ckpt.save.request`         | `nvrx.ckpt`        | worker  | one request, end to end                    |
+| `nvrx.ckpt.save.preload`         | `nvrx.ckpt.phases` | worker  | bucket assembly over host memory           |
+| `nvrx.ckpt.save.write`           | `nvrx.ckpt.phases` | worker  | the write itself                           |
+| `nvrx.ckpt.save.completion_sync` | `nvrx.ckpt.phases` | trainer | the all-reduce agreeing the save is done   |
+| `nvrx.ckpt.save.finalize`        | `nvrx.ckpt`        | trainer | finalize callbacks, a later iteration      |
 
 `schedule` and `stage_wait` are the same spans as in IPC mode, because the code path is the same: a request always carries a `preload_fn`, and the trainer always waits on it. What differs is only what that work costs. In IPC mode the worker's `preload` is the D2H itself and the trainer's `stage_wait` covers all of it; in CPU SHM mode the D2H already happened on the trainer, so `preload` is bucket assembly over host memory and `stage_wait` is short. The mode is legible from the durations rather than from which spans exist.
 
@@ -350,7 +337,7 @@ The carrier is a dict of W3C header strings, `traceparent` plus `baggage`, produ
 
 ### Completion polling
 
-Finalizing is preceded by asking whether the save is done, and that question is a collective: `sync_all_async_calls` all-reduces one flag across every rank. It runs once per poll — every iteration, for as long as a checkpoint is outstanding — on the training critical path, so it is goodput.
+Finalizing is preceded by asking whether the save is done, and that question is a collective: `sync_all_async_calls` all-reduces one flag across every rank. It runs once per poll — every iteration, for as long as a checkpoint is outstanding — on the training critical path.
 
 Its duration is mostly not the all-reduce. It is how long this rank waits for the slowest rank to arrive, which makes `save.completion_sync` a **straggler signal** rather than a cost measurement: the rank still writing reports a short sync, and every rank blocked on it reports a long one. Comparing the span across ranks for one iteration names the laggard — the same query as "identify a rank where an operation took longer than the others", answered without a separate mechanism.
 

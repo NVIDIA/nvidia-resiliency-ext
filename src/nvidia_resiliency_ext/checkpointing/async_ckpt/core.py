@@ -291,7 +291,6 @@ class AsyncCaller(ABC):
             bool: True if all ranks are done, False if at least one rank is still active.
 
         """
-        telemetry.set_span_attributes({"is_goodput_span": True})
         ten = torch.tensor([is_alive], dtype=torch.int, device=torch.cuda.current_device())
         torch.distributed.all_reduce(ten)
         return ten[0] == 0
@@ -558,9 +557,7 @@ class PersistentAsyncCaller(AsyncCaller):
         if async_req.preload_fn:
             start_sync = time()
             # Synchronize for pre-staging tensors
-            with telemetry.span(
-                "nvrx.ckpt.phases", "nvrx.ckpt.save.stage_wait", {"is_goodput_span": True}
-            ):
+            with telemetry.span("nvrx.ckpt.phases", "nvrx.ckpt.save.stage_wait"):
                 self.preload_q.join()
             end_sync = time()
 
@@ -776,7 +773,7 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    request_attrs = {"is_goodput_span": False, semconv.CKPT_CALL_IDX: item.call_idx}
+                    request_attrs = {semconv.CKPT_CALL_IDX: item.call_idx}
                     iteration = telemetry.carrier_baggage(item.telemetry_carrier).get(
                         semconv.ITERATION
                     )
@@ -791,23 +788,14 @@ class PersistentAsyncCaller(AsyncCaller):
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
                             call_idx = preload_q.get()
-                            with telemetry.span(
-                                "nvrx.ckpt.phases",
-                                "nvrx.ckpt.save.preload",
-                                {"is_goodput_span": False},
-                            ):
+                            with telemetry.span("nvrx.ckpt.phases", "nvrx.ckpt.save.preload"):
                                 # the 2nd arg is state dict
                                 async_fn_args[1] = item.preload_fn()
                             logger.debug(f"{rank} has completed D2H of {call_idx}")
                             preload_q.task_done()
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                            # Overlaps training, so it costs no goodput.
-                            with telemetry.span(
-                                "nvrx.ckpt.phases",
-                                "nvrx.ckpt.save.write",
-                                {"is_goodput_span": False},
-                            ):
+                            with telemetry.span("nvrx.ckpt.phases", "nvrx.ckpt.save.write"):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
                         comp_q.put(item.call_idx)
@@ -1014,7 +1002,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
         async_request = async_request.freeze()
-        schedule_attrs = {"is_goodput_span": True, semconv.CKPT_CALL_IDX: self.call_idx}
+        schedule_attrs = {semconv.CKPT_CALL_IDX: self.call_idx}
         with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.schedule", schedule_attrs):
             carrier = telemetry.context_carrier()
             iteration = telemetry.carrier_baggage(carrier).get(semconv.ITERATION)
@@ -1055,7 +1043,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 break
             with debug_time("finalize", logger):
                 idx, _, async_request = self.async_calls.popleft()
-                finalize_attrs = {"is_goodput_span": True, semconv.CKPT_CALL_IDX: idx}
+                finalize_attrs = {semconv.CKPT_CALL_IDX: idx}
                 iteration = telemetry.carrier_baggage(async_request.telemetry_carrier).get(
                     semconv.ITERATION
                 )

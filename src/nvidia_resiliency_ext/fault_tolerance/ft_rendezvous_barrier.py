@@ -1911,7 +1911,7 @@ class _RendezvousBarrierState:
             self._rdzv_span.close()
             record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
             try:
-                with span("nvrx.ft", "nvrx.ft.round_wait", {"is_goodput_span": True}):
+                with span("nvrx.ft", "nvrx.ft.round_wait"):
                     self._wait_for_rendezvous_open(node_desc)
             finally:
                 record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
@@ -1929,7 +1929,7 @@ class _RendezvousBarrierState:
             self._rdzv_span.open(
                 "nvrx.ft",
                 "nvrx.ft.rendezvous",
-                {"nvrx.round": self._round, "is_goodput_span": True},
+                {"nvrx.round": self._round},
             )
 
             if pre_join_hook is not None:
@@ -2740,7 +2740,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             try:
                 # An UnhealthyNodeException raised here is recorded on the span by
                 # nemo-lens, so exclusion needs no separate signal.
-                with span("nvrx.ft", "nvrx.ft.health_check", {"is_goodput_span": True}):
+                with span("nvrx.ft", "nvrx.ft.health_check"):
                     self.ensure_node_is_healthy()
             except UnhealthyNodeException:
                 record_profiling_event(ProfilingEvent.NODE_EXCLUDED, node_id=self._this_node)
