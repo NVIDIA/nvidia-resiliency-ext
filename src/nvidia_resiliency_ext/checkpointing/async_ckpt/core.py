@@ -133,8 +133,6 @@ class AsyncRequest(NamedTuple):
         is_frozen (Bool): a flag to indicate this async request can be modified or not.
         call_idx (int): index variable used to order async requests for synchronization
                         in preloading and writing tensors on the async caller
-        telemetry_carrier (Dict): W3C trace context and Baggage of whatever scheduled
-                        this request, for the worker and the finalize to link back to.
 
     """
 
@@ -145,7 +143,6 @@ class AsyncRequest(NamedTuple):
     preload_fn: Callable = None
     is_frozen: bool = False
     call_idx: int = 0
-    telemetry_carrier: Optional[Dict] = None
 
     def add_finalize_fn(self, fn: Callable) -> None:
         """Adds a new finalize function to the request.
@@ -774,17 +771,10 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    request_attrs = {semconv.CKPT_CALL_IDX: item.call_idx}
-                    iteration = telemetry.carrier_baggage(item.telemetry_carrier).get(
-                        semconv.ITERATION
-                    )
-                    if iteration is not None:
-                        request_attrs[semconv.ITERATION] = iteration
-                    with telemetry.linked_span(
+                    with telemetry.span(
                         "nvrx.ckpt",
                         "nvrx.ckpt.save.request",
-                        item.telemetry_carrier,
-                        request_attrs,
+                        {semconv.CKPT_CALL_IDX: item.call_idx},
                     ):
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
@@ -1003,12 +993,6 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         async_request = async_request.freeze()
         schedule_attrs = {semconv.CKPT_CALL_IDX: self.call_idx}
         with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.schedule", schedule_attrs):
-            carrier = telemetry.context_carrier()
-            iteration = telemetry.carrier_baggage(carrier).get(semconv.ITERATION)
-            if iteration is not None:
-                telemetry.set_span_attributes({semconv.ITERATION: iteration})
-            # Set on the retained copy too: the finalize links from it, iterations later.
-            async_request = async_request._replace(telemetry_carrier=carrier)
             async_caller.schedule_async_call(
                 async_request._replace(call_idx=self.call_idx, finalize_fns=[])
             )
@@ -1042,17 +1026,8 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 break
             with debug_time("finalize", logger):
                 idx, _, async_request = self.async_calls.popleft()
-                finalize_attrs = {semconv.CKPT_CALL_IDX: idx}
-                iteration = telemetry.carrier_baggage(async_request.telemetry_carrier).get(
-                    semconv.ITERATION
-                )
-                if iteration is not None:
-                    finalize_attrs[semconv.ITERATION] = iteration
-                with telemetry.linked_span(
-                    "nvrx.ckpt",
-                    "nvrx.ckpt.save.finalize",
-                    async_request.telemetry_carrier,
-                    finalize_attrs,
+                with telemetry.span(
+                    "nvrx.ckpt", "nvrx.ckpt.save.finalize", {semconv.CKPT_CALL_IDX: idx}
                 ):
                     call_idx = async_request.execute_finalize_fns(
                         validate_matching_call_idx=(not no_dist)

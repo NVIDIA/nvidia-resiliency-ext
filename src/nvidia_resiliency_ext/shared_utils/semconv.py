@@ -20,7 +20,3 @@
 #: schedule/finalize; the framework stamps what it received on its active span.
 #: The three spans cannot share a trace, so this relates them, not parentage.
 CKPT_CALL_IDX = "nvrx.call_idx"
-
-#: The training iteration a checkpoint belongs to. The framework puts it in
-#: Baggage; NVRx only reads it. Absent Baggage, the attribute is simply absent.
-ITERATION = "nvrx.iteration"

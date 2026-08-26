@@ -46,21 +46,20 @@ graph TD
 
 Exports, in three groups:
 
-- **Spans** — `span`, `linked_span`, `trace_fn`, `ManualSpan`, `Phase`, `mark`, `backdated_span`, `set_span_attributes`, `record_process_startup`
-- **Cross-process context** — `extended_resource_attributes`, `context_carrier`, `carrier_baggage`
+- **Spans** — `span`, `trace_fn`, `ManualSpan`, `Phase`, `mark`, `backdated_span`, `set_span_attributes`, `record_process_startup`
+- **Cross-process context** — `extended_resource_attributes`, `publish_resource_attributes`
 - **Lifecycle** — `setup_telemetry`, `shutdown`, `flush`
 
 ### Where NVRx data lives in OTel
 
-NVRx uses three of OTel's carriers, and which one a value belongs in follows from its lifetime and its cost.
+NVRx uses two of OTel's carriers, and which one a value belongs in follows from its lifetime and its cost.
 
 | OTel carrier            | Describes                                | Set through                                                                                                     | Serialized            |
 | ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------- |
 | **Resource attributes** | the emitting process, for its whole life | `OTEL_RESOURCE_ATTRIBUTES`, plus `setup_telemetry(resource_attributes=)` for what NVRx knows about itself       | once per export batch |
-| **Span attributes**     | one span                                 | the dict passed to `span`, `linked_span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes` | once per span         |
-| **Span links**          | a related span in another trace          | `AsyncRequest.telemetry_carrier` on enqueue — the only one                                                      | once per span         |
+| **Span attributes**     | one span                                 | the dict passed to `span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes`               | once per span         |
 
-Baggage appears once. The trainer places `nvrx.iteration` in Baggage at the top of each training step. NVRx reads it out explicitly at enqueue and sets it on exactly two spans, `save.schedule` in the trainer and `save.request` in the worker — the two that have to join. It travels between them in the carrier NVRx already captures, so it costs one entry in an existing dict, once per checkpoint, and nothing per span.
+**No span reference crosses a process boundary in either direction** — not a parent, and not a link. Everything is correlated by attribute, which is rule 3 applied without exception.
 
 ### Which carrier for which value
 
@@ -69,8 +68,8 @@ A value's carrier follows from whether it is constant for the _emitting process'
 | Process           | Constant for its life → Resource                                           | Varies during its life → span attribute |
 | ----------------- | -------------------------------------------------------------------------- | --------------------------------------- |
 | ft-launcher agent | `service.name`, `service.instance.id`, `nvrx.node`, infrastructure rank    | `nvrx.cycle`, and every per-span value  |
-| Trainer worker    | `nvrx.cycle`, `nvrx.membership`, `nvrx.infra_rank`, elastic rank           | `nvrx.iteration`                        |
-| Checkpoint worker | same as the trainer, plus its own `service.name` and `service.instance.id` | `nvrx.call_idx`, `nvrx.iteration`       |
+| Trainer worker    | `nvrx.cycle`, `nvrx.membership`, `nvrx.infra_rank`, elastic rank           | —                                       |
+| Checkpoint worker | same as the trainer, plus its own `service.name` and `service.instance.id` | `nvrx.call_idx`                         |
 
 `nvrx.cycle` appears on both sides of that table, which is the clearest case. The agent outlives cycles, so its Resource cannot carry a cycle number and the value is a span attribute. A worker process is created fresh for each cycle, so the cycle is constant for its entire life and belongs in its Resource — which is why the agent appends it to `OTEL_RESOURCE_ATTRIBUTES` at launch rather than passing it some other way.
 
@@ -86,7 +85,6 @@ Everything is gated on its span group and no-ops when the group is off, which in
 | ----------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | `@trace_fn`             | the span _is_ a method                                                                 | `worker_start`, `teardown`                      |
 | `with span(...)`        | the span is a block                                                                    | `round_wait`, `health_check`, most `ckpt` spans |
-| `with linked_span(...)` | a block, linking to a span in another process                                          | `ckpt.save.request`                             |
 | `ManualSpan`            | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                     |
 | `mark(...)`             | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`             |
 | `backdated_span(...)`   | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `python.startup`, `python.imports`              |
@@ -273,7 +271,6 @@ Resource attributes are covered under Identity; everything here is per-span.
 | `nvrx.remaining_restarts` | int  | `cycle`               | budget left when the round was joined     |
 | `nvrx.rdzv_run_id`        | str  | `cycle`               | rendezvous run id                         |
 | `nvrx.call_idx`           | int  | `ckpt.*`              | checkpoint call index; joins across ranks |
-| `nvrx.iteration`          | int  | `ckpt.*`              | training iteration; joins across ranks    |
 
 No span carries a roster of the job's other nodes. Every node already emits its own `nvrx.membership` and `nvrx.rank` each cycle, so the membership of a cycle is a group-by over `job.uid` and `nvrx.cycle` — rule 3, applied. Emitting the full list from every node would write O(N²) bytes to say what N spans already say, and at large node counts each copy is a multi-kilobyte attribute that `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` may silently truncate.
 
@@ -329,11 +326,7 @@ Reusing those shm tensors introduces a second exposed wait that has no counterpa
 
 Checkpoint code called from the trainer runs on the trainer's thread and inherits its context, so trainer-side `nvrx.ckpt` spans nest under the trainer's active span with no reference passing.
 
-At enqueue NVRx captures its own current context — it is already inside `save.schedule` — into `AsyncRequest.telemetry_carrier`, a defaulted field on the `NamedTuple` that leaves every existing call site unchanged. `AsyncCallsQueue` already rebuilds a request whose field count does not match, so the addition is compatible in both directions.
-
-It is set on **both** copies of the request: the one dispatched to the worker, and the one retained in `async_calls` for finalization. The retained copy is what makes a link possible from the finalize, which runs an iteration or more later.
-
-The carrier is a dict of W3C header strings, `traceparent` plus `baggage`, produced by the globally configured propagators. Headers rather than a live `SpanContext` because the request is pickled onto a multiprocessing queue; the configured propagators rather than a fixed two so that whatever a deployment sets up rides along. It is `None` when telemetry is off, and the worker then takes exactly the path it took before any of this existed.
+`nvrx.call_idx` is set on `save.schedule` and on the finalize, and NVRx assigns it, so nothing has to be carried alongside the request: **NVRx adds no field to `AsyncRequest` and changes no public API for telemetry.**
 
 ### Completion polling
 
@@ -341,25 +334,25 @@ Finalizing is preceded by asking whether the save is done, and that question is 
 
 Its duration is mostly not the all-reduce. It is how long this rank waits for the slowest rank to arrive, which makes `save.completion_sync` a **straggler signal** rather than a cost measurement: the rank still writing reports a short sync, and every rank blocked on it reports a long one. Comparing the span across ranks for one iteration names the laggard — the same query as "identify a rank where an operation took longer than the others", answered without a separate mechanism.
 
-It carries no `nvrx.call_idx` and no link. It is a per-iteration cost of the trainer's own trace, not a phase of one request, and it is also the one place that has no request in hand.
+It carries no `nvrx.call_idx`. It is a per-iteration cost of the trainer's own trace, not a phase of one request, and it is also the one place that has no request in hand.
 
 ### One request, three processes, three traces
 
 An async save does not fit in a trace, and is not meant to. The trainer schedules it during one iteration; the worker writes it in its own process; the trainer finalizes it during some later iteration, by which time the trace that requested it is closed. Three traces, by construction.
 
-They are tied together as a **star, with `save.schedule` at the centre**:
+They are related by attribute, not by reference. `nvrx.call_idx` is on all three:
 
 ```
-trace A (iteration N)     nvrx.ckpt.save.schedule  ◀──────┐
-                                                          │ link
-trace B (worker)          nvrx.ckpt.save.request  ────────┤
-                                                          │ link
-trace C (iteration N+k)   nvrx.ckpt.save.finalize ────────┘
+trace A (iteration N)     nvrx.ckpt.save.schedule    nvrx.call_idx=7
+trace B (worker)          nvrx.ckpt.save.request     nvrx.call_idx=7
+trace C (iteration N+k)   nvrx.ckpt.save.finalize    nvrx.call_idx=7
 ```
 
-Both links point **backwards**, and could not do otherwise: a link is supplied when a span starts, so it can only name something that already exists. `save.schedule` has ended before either of the others begins, so the later spans hold the references and the hub holds none.
+The key is `(job, nvrx.cycle, nvrx.call_idx)`. `call_idx` alone is not unique across a job — `AsyncCallsQueue` restarts it at `-1` per queue, so cycle 0's call 3 and cycle 3's call 3 collide — and `nvrx.cycle` is already on the Resource of both the trainer and the worker, which is what scopes it. Within a cycle it is monotonic.
 
-`save.schedule` is the hub because it is the request's identity — the span that measures what the checkpoint cost the trainer. There is deliberately no link from the worker to the finalize: `nvrx.call_idx` is on all three, so the worker-finished-to-trainer-noticed interval is a subtraction rather than an edge, and making it an edge would mean carrying a context back through the completion queue.
+It identifies a **request**, not a checkpoint iteration: a save that also dumps logits schedules two requests, and each gets its own index. That is the granularity a worker span needs.
+
+**Links were considered and dropped.** They would make the relationship clickable in a viewer rather than a query, which is the whole of what is lost. Against that, a link has to be carried, which meant a `telemetry_carrier` field on `AsyncRequest` — an API change for a navigation convenience — and it contradicted rule 3, which the design already applies at the agent-to-worker boundary and between the worker and the finalize.
 
 ### Worker side
 
@@ -369,24 +362,23 @@ Its identity comes the other way. `_start_worker` wraps `Process.start()` in `pu
 
 Restoring it matters. Left set, it would describe the trainer itself — and every later child of it — as the process that was spawned there.
 
-Each request's span **links** to the trainer's `save.schedule`, so cause is navigable without the worker joining the trainer's trace. A link rather than a parent for three reasons: the write is not time-contained in `save.schedule`, which ends as soon as staging does, and parent-child implies containment in most tooling; sampling decisions are inherited by children, so parenting would drop the worker's spans whenever the training trace was sampled out; and the worker is persistent, serving requests from many traces. `nvrx.call_idx` and `nvrx.iteration` join the sides for any consumer that cannot follow links.
+Each request's span carries `nvrx.call_idx` and roots its own trace. Nothing references the trainer's spans: the worker is persistent and serves requests from many traces, so it belongs in none of them.
 
 Each phase is its own span so a breakdown is a group-by rather than a subtraction.
 
 ## What NVRx expects of the training framework
 
-Two names cross the NVRx/framework boundary, and both are exported from
-`shared_utils/semconv.py` rather than written as literals on either side. That module
-imports nothing, so a framework can spell these keys without reasoning about whether
-nemo-lens is installed or telemetry is on.
+One name crosses the NVRx/framework boundary, exported from `shared_utils/semconv.py`
+rather than written as a literal on either side. That module imports nothing, so a
+framework can spell the key without reasoning about whether nemo-lens is installed or
+telemetry is on.
 
 ```python
-from nvidia_resiliency_ext.shared_utils.semconv import CKPT_CALL_IDX, ITERATION
+from nvidia_resiliency_ext.shared_utils.semconv import CKPT_CALL_IDX
 ```
 
-The rule is one string, one definition. A key spelled by two repositories is a rename
-waiting to break silently: the join simply stops matching, and no test in either repo
-fails.
+One string, one definition. A key spelled by two repositories is a rename waiting to
+break silently: the join stops matching, and no test in either repo fails.
 
 ### `CKPT_CALL_IDX` — NVRx assigns, the framework propagates
 
@@ -394,31 +386,22 @@ An async save is three spans that cannot share a trace: the trainer schedules it
 separate process performs it, and the finalize runs iterations later. This attribute,
 not parentage, is what relates them.
 
-NVRx mints the value in `AsyncCallsQueue.schedule_async_request` and returns it. It
-returns it again, as a list, from `maybe_finalize_async_calls`. NVRx sets it on its own
-three spans; the framework is asked to set it on whatever span is active when it
-receives it — the dispatch span at schedule, the finalize span at finalize.
+NVRx mints the value in `AsyncCallsQueue.schedule_async_request` and returns it, and
+returns it again as a list from `maybe_finalize_async_calls`. NVRx sets it on its own
+three spans; the framework sets it on whatever span is active when it receives it.
 
-**Requirement:** import the constant. Do not hardcode the string, and do not derive the
-value — a framework-side counter would be a second numbering that agrees with NVRx's
-only by luck.
-
-### `ITERATION` — the framework sets, NVRx only reads
-
-NVRx reads this key out of Baggage at enqueue and sets it on the schedule, request and
-finalize spans, so a checkpoint is attributable to the step that asked for it without
-NVRx knowing anything about training.
-
-**Requirement:** put the current iteration in Baggage under this key for the duration of
-the step. Nothing writes it today, in any repository, so the attribute is absent and
-everything else behaves identically until something does.
+**Requirements.** Import the constant rather than hardcoding the string. Do not derive
+the value — a framework-side counter would be a second numbering that agrees with NVRx's
+only by luck. And scope any join by cycle: `call_idx` restarts per `AsyncCallsQueue`, so
+the key is `(job, nvrx.cycle, nvrx.call_idx)` and `nvrx.cycle` is already on the Resource
+of both processes.
 
 ### What does not cross
 
-No span reference — not a parent, not a link — crosses between NVRx and the framework in
-either direction. The worker's link is to NVRx's own `save.schedule`, and cycle identity
-reaches a trainer through `OTEL_RESOURCE_ATTRIBUTES`, not through a context. A framework
-needs no NVRx trace context to produce a correlatable trace.
+No span reference — not a parent, not a link — crosses any process boundary in either
+direction, NVRx's own included. Cycle identity reaches a trainer through
+`OTEL_RESOURCE_ATTRIBUTES`, not through a context, and a framework needs no NVRx trace
+context to produce a correlatable trace.
 
 ## Initialization and shutdown
 
