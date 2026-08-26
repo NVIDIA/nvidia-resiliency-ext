@@ -33,7 +33,7 @@ from typing import Callable, ClassVar, Dict, List, NamedTuple, Optional, Tuple
 import torch
 from torch import multiprocessing as mp
 
-from ...shared_utils import telemetry
+from ...shared_utils import semconv, telemetry
 from ..utils import _disable_gc, debug_time
 
 logger = logging.getLogger(__name__)
@@ -783,12 +783,12 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    request_attrs = {"is_goodput_span": False, "nvrx.call_idx": item.call_idx}
+                    request_attrs = {"is_goodput_span": False, semconv.CKPT_CALL_IDX: item.call_idx}
                     iteration = telemetry.carrier_baggage(item.telemetry_carrier).get(
-                        "nvrx.iteration"
+                        semconv.ITERATION
                     )
                     if iteration is not None:
-                        request_attrs["nvrx.iteration"] = iteration
+                        request_attrs[semconv.ITERATION] = iteration
                     with telemetry.linked_span(
                         "nvrx.ckpt",
                         "nvrx.ckpt.save.request",
@@ -1023,12 +1023,12 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
         async_request = async_request.freeze()
-        schedule_attrs = {"is_goodput_span": True, "nvrx.call_idx": self.call_idx}
+        schedule_attrs = {"is_goodput_span": True, semconv.CKPT_CALL_IDX: self.call_idx}
         with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.schedule", schedule_attrs):
             carrier = telemetry.context_carrier()
-            iteration = telemetry.carrier_baggage(carrier).get("nvrx.iteration")
+            iteration = telemetry.carrier_baggage(carrier).get(semconv.ITERATION)
             if iteration is not None:
-                telemetry.set_span_attributes({"nvrx.iteration": iteration})
+                telemetry.set_span_attributes({semconv.ITERATION: iteration})
             # Set on the retained copy too: the finalize links from it, iterations later.
             async_request = async_request._replace(telemetry_carrier=carrier)
             async_caller.schedule_async_call(
@@ -1064,12 +1064,12 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 break
             with debug_time("finalize", logger):
                 idx, _, async_request = self.async_calls.popleft()
-                finalize_attrs = {"is_goodput_span": True, "nvrx.call_idx": idx}
+                finalize_attrs = {"is_goodput_span": True, semconv.CKPT_CALL_IDX: idx}
                 iteration = telemetry.carrier_baggage(async_request.telemetry_carrier).get(
-                    "nvrx.iteration"
+                    semconv.ITERATION
                 )
                 if iteration is not None:
-                    finalize_attrs["nvrx.iteration"] = iteration
+                    finalize_attrs[semconv.ITERATION] = iteration
                 with telemetry.linked_span(
                     "nvrx.ckpt",
                     "nvrx.ckpt.save.finalize",

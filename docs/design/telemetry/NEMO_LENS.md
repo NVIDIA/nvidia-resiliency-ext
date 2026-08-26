@@ -386,6 +386,53 @@ Each request's span **links** to the trainer's `save.schedule`, so cause is navi
 
 Each phase is its own span so a breakdown is a group-by rather than a subtraction.
 
+## What NVRx expects of the training framework
+
+Two names cross the NVRx/framework boundary, and both are exported from
+`shared_utils/semconv.py` rather than written as literals on either side. That module
+imports nothing, so a framework can spell these keys without reasoning about whether
+nemo-lens is installed or telemetry is on.
+
+```python
+from nvidia_resiliency_ext.shared_utils.semconv import CKPT_CALL_IDX, ITERATION
+```
+
+The rule is one string, one definition. A key spelled by two repositories is a rename
+waiting to break silently: the join simply stops matching, and no test in either repo
+fails.
+
+### `CKPT_CALL_IDX` — NVRx assigns, the framework propagates
+
+An async save is three spans that cannot share a trace: the trainer schedules it, a
+separate process performs it, and the finalize runs iterations later. This attribute,
+not parentage, is what relates them.
+
+NVRx mints the value in `AsyncCallsQueue.schedule_async_request` and returns it. It
+returns it again, as a list, from `maybe_finalize_async_calls`. NVRx sets it on its own
+three spans; the framework is asked to set it on whatever span is active when it
+receives it — the dispatch span at schedule, the finalize span at finalize.
+
+**Requirement:** import the constant. Do not hardcode the string, and do not derive the
+value — a framework-side counter would be a second numbering that agrees with NVRx's
+only by luck.
+
+### `ITERATION` — the framework sets, NVRx only reads
+
+NVRx reads this key out of Baggage at enqueue and sets it on the schedule, request and
+finalize spans, so a checkpoint is attributable to the step that asked for it without
+NVRx knowing anything about training.
+
+**Requirement:** put the current iteration in Baggage under this key for the duration of
+the step. Nothing writes it today, in any repository, so the attribute is absent and
+everything else behaves identically until something does.
+
+### What does not cross
+
+No span reference — not a parent, not a link — crosses between NVRx and the framework in
+either direction. The worker's link is to NVRx's own `save.schedule`, and cycle identity
+reaches a trainer through `OTEL_RESOURCE_ATTRIBUTES`, not through a context. A framework
+needs no NVRx trace context to produce a correlatable trace.
+
 ## Initialization and shutdown
 
 | Process           | Setup                                                         | Shutdown                |
