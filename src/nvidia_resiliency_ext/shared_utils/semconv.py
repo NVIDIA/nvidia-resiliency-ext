@@ -14,11 +14,6 @@
 # limitations under the License.
 
 """Telemetry names NVRx shares with the framework that drives it.
-
-Only names a second repository has to spell identically for a query to join.
-Two hardcoded copies of one string is a rename waiting to break silently.
-
-Imports nothing, so a caller need not reason about NVRx's optional dependencies.
 """
 
 #: Identifies one async checkpoint save. NVRx assigns it and returns it from

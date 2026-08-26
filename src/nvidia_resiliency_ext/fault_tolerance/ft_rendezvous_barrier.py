@@ -1906,8 +1906,9 @@ class _RendezvousBarrierState:
             # Hot spares and late-arriving nodes wait here indefinitely until a failure
             # opens the next round. Also checks for permanent shutdown.
             # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
-            # Closed before the wait, so a hot spare idling here does not sit inside the
-            # previous round's span.
+            #
+            # Telemetry rendezvous span closed before the wait, so a hot spare
+            # idling here does not sit inside the previous round's span.
             self._rdzv_span.close()
             record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
             try:
@@ -2738,8 +2739,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
             try:
-                # An UnhealthyNodeException raised here is recorded on the span by
-                # nemo-lens, so exclusion needs no separate signal.
                 with span("nvrx.ft", "nvrx.ft.health_check"):
                     self.ensure_node_is_healthy()
             except UnhealthyNodeException:
@@ -2756,8 +2755,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 )
             self.handle_control_requests_from_rank()
 
-        # Spans below nest under the launcher's cycle span via contextvars. The finally
-        # closes the round span on the error paths, so it can never outlive that cycle span.
         try:
             group_rank, total_participants = self._barrier_state.perform_rendezvous(
                 self._this_node,

@@ -460,8 +460,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
-        # Nested, not alternatives: the cycle spans rendezvous through teardown, the
-        # run only the workload executing. Cycle minus run is resiliency overhead.
+
         self._cycle_phase = telemetry.Phase()
         self._run_phase = telemetry.Phase()
 
@@ -553,8 +552,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._remaining_restarts = (
             self._worker_group.spec.max_restarts - self._get_global_cycle_number()
         )
-        # One agent per node, before rendezvous, so there is no trainer rank to
-        # identify it by -- and a node ordinal is not one. Keyed on the host.
+
         self._tel_handle = telemetry.setup_telemetry(
             "nvrx.ft_launcher",
             f"nvrx-agent-{self._node_id}",
@@ -1137,16 +1135,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             {"nvrx.cycle": restart_count, "nvrx.node": self._node_id}
         )
 
-        # Resource attributes for the worker, span attributes for the agent: a worker
-        # process is new each cycle, the agent outlives them.
         worker_resource_attrs = {"nvrx.cycle": restart_count, "nvrx.membership": "active"}
         try:
             worker_resource_attrs["nvrx.infra_rank"] = get_infrastructure_rank(
                 skip_nodename_logic=True
             )
         except (ValueError, RuntimeError):
-            # A non-numeric CROSS_SLURM_PROCID/SLURM_PROCID/SLURM_ARRAY_TASK_ID, or a
-            # job array with no SLURM_NNODES. Costs an attribute, not the launch.
             logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
         cohort_env = {
             "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
@@ -1475,17 +1469,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             "nvrx.max_restarts": spec.max_restarts,
             "nvrx.remaining_restarts": self._remaining_restarts,
         }
-        # Unguarded: get_run_id() is on the RendezvousHandler ABC, and the barrier
-        # settings reject an empty run id at construction.
         attrs["nvrx.rdzv_run_id"] = spec.rdzv_handler.get_run_id()
         return attrs
 
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:
         """Override to open the run phase once the workers are actually running."""
         super()._initialize_workers(worker_group)
-        # Every cycle passes through here, initial and restart alike, so this is the one
-        # place the run phase has to open. It opens after _start_workers has returned:
-        # that method's own span must close before this one opens (see Phase).
         self._run_phase.open("nvrx.ft", "nvrx.ft.run")
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
@@ -1497,13 +1486,9 @@ class LocalElasticAgent(SimpleElasticAgent):
         # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
-        # Opening closes the previous cycle, which stayed open so that _stop_workers
-        # could record its teardown span inside the cycle it belongs to.
         opening = {
             "nvrx.cycle": self._get_global_cycle_number(),
             "nvrx.node": self._node_id,
-            # Seeded so it is present on every close path, then overridden once the
-            # role is known. A node the health check rejected keeps "unjoined".
             "nvrx.membership": "unjoined",
         }
         self._cycle_phase.open("nvrx.ft", "nvrx.ft.cycle", opening)

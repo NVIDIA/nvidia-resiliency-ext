@@ -514,8 +514,9 @@ class PersistentAsyncCaller(AsyncCaller):
             ),
             daemon=self.background_worker_is_daemon,
         )
-        # Published here, not derived in the worker: it shares this trainer's rank,
-        # so an id it computed for itself would collide.
+
+        # Propagate resource attributes for the background worker process
+        # through the environment.
         with telemetry.publish_resource_attributes(
             {"dl.rank": rank, "service.instance.id": f"nvrx-ckpt{rank}"}
         ):
@@ -761,8 +762,8 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
-        # Spawned: no in-memory state is inherited. Identity arrives through
-        # OTEL_RESOURCE_ATTRIBUTES, published by _start_worker around the spawn.
+        # Merged with resource attributes published by the parent process via
+        # OTEL_RESOURCE_ATTRIBUTES.
         tel_handle = telemetry.setup_telemetry("nvrx.ckpt_worker")
 
         # Start busy loop waiting for and executing checkpoint saves.
@@ -816,8 +817,6 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
-            # _handle_sigterm turns SIGTERM into SystemExit so this runs at all;
-            # the flush is bounded so it cannot spend the whole grace period.
             telemetry.shutdown(tel_handle)
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
