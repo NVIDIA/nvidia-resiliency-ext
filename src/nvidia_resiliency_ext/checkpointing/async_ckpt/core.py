@@ -515,11 +515,8 @@ class PersistentAsyncCaller(AsyncCaller):
             ),
             daemon=self.background_worker_is_daemon,
         )
-        # The worker's telemetry identity, handed over the only channel a spawn
-        # has. It is published here rather than derived in the worker because
-        # this is where it is known: the worker serves this trainer, and shares
-        # its rank, so a service.instance.id it computed for itself would collide
-        # with the trainer's.
+        # Published here, not derived in the worker: it shares this trainer's rank,
+        # so an id it computed for itself would collide.
         with telemetry.publish_resource_attributes(
             {"dl.rank": rank, "service.instance.id": f"nvrx-ckpt{rank}"}
         ):
@@ -767,12 +764,8 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
-        # Spawned worker: no in-memory state is inherited, so telemetry is set up
-        # again here. Everything identifying this process -- its rank, its
-        # instance id -- arrives through OTEL_RESOURCE_ATTRIBUTES, published by
-        # _start_worker around the spawn, so this call names only what kind of
-        # process it is. Spans are independent of the launcher's trace and join
-        # across ranks on nvrx.call_idx.
+        # Spawned: no in-memory state is inherited. Identity arrives through
+        # OTEL_RESOURCE_ATTRIBUTES, published by _start_worker around the spawn.
         tel_handle = telemetry.setup_telemetry("nvrx.ckpt_worker")
 
         # Start busy loop waiting for and executing checkpoint saves.
@@ -809,8 +802,7 @@ class PersistentAsyncCaller(AsyncCaller):
                             preload_q.task_done()
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                            # The write overlaps training, so it costs no goodput; marking
-                            # it True would double-count against the exposed save.
+                            # Overlaps training, so it costs no goodput.
                             with telemetry.span(
                                 "nvrx.ckpt.phases",
                                 "nvrx.ckpt.save.write",
@@ -836,9 +828,8 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
-            # Bounded: _handle_sigterm turns the parent's SIGTERM into a SystemExit so
-            # this finally runs at all, and an unbounded flush against a collector that
-            # is already gone would spend that window instead of exiting.
+            # _handle_sigterm turns SIGTERM into SystemExit so this runs at all;
+            # the flush is bounded so it cannot spend the whole grace period.
             telemetry.shutdown(tel_handle)
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")

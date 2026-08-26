@@ -220,8 +220,7 @@ class TestPublishResourceAttributes(unittest.TestCase):
         self.assertIn("dl.rank=3", published)
 
     def test_the_parent_is_restored(self):
-        # Left set, it would describe this process, and every later child of it,
-        # as the one that was spawned here.
+        # Left set, it would describe this process and every later child of it.
         with telemetry.publish_resource_attributes({"dl.rank": 3}):
             pass
         self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
@@ -241,8 +240,7 @@ class TestPublishResourceAttributes(unittest.TestCase):
                 self.assertNotIn("OTEL_RESOURCE_ATTRIBUTES", os.environ)
 
     def test_successive_publishes_do_not_accumulate(self):
-        # A worker is restarted per cycle; building from the last published value
-        # rather than the inherited one grows the variable without bound.
+        # A worker restarts per cycle; building from the last value grows unbounded.
         for _ in range(3):
             with telemetry.publish_resource_attributes({"dl.rank": 3}):
                 published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
@@ -351,11 +349,8 @@ class TestPhase(unittest.TestCase):
         self.assertEqual(attributes, {"nvrx.cycle": 2, "nvrx.cycle_outcome": "succeeded"})
 
     def test_open_attributes_go_on_the_mark_and_the_span(self):
-        # The mark is the only thing that exists while the phase runs, so what
-        # identifies the phase has to be on it -- the backdated span may never be
-        # emitted at all. That is an argument for putting them on the mark, not for
-        # keeping them off the span: the two are separate records, and a consumer
-        # filtering spans never sees the mark's attributes.
+        # The mark is the only record while the phase runs, and the span is the only
+        # one a consumer filters. Both need the attributes.
         phase = telemetry.Phase()
         phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 3})
         phase.close()
@@ -363,9 +358,7 @@ class TestPhase(unittest.TestCase):
         self.assertEqual(self.spans[0][4], {"nvrx.cycle": 3})
 
     def test_close_attributes_override_opening_ones(self):
-        # How a phase ended is not known when it opens, so a seeded placeholder has
-        # to be replaceable -- that is what lets a required attribute be set once at
-        # open rather than on each of several close paths.
+        # Lets a required attribute be seeded at open rather than on each close path.
         phase = telemetry.Phase()
         phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.membership": "unjoined"})
         phase.close({"nvrx.membership": "standby"})
@@ -444,11 +437,8 @@ class TestSetupTelemetry(unittest.TestCase):
 class TestSpanGroupRegistration(unittest.TestCase):
     """The NVRx groups must be selectable, or every NVRx span is dark.
 
-    nemo-lens ships no group names of its own, so nothing else in the process
-    declares these. Importing the shim is what makes them resolvable, which is
-    the property these tests pin: the registration happens at import, not inside
-    ``setup_telemetry``, because the trainer emits NVRx spans without ever
-    calling it.
+    nemo-lens ships no group names, so importing the shim is what makes these
+    resolvable -- at import, not in ``setup_telemetry``, which the trainer never calls.
     """
 
     def test_registered_under_the_nvrx_namespace(self):
@@ -474,8 +464,7 @@ class TestSpanGroupRegistration(unittest.TestCase):
             )
 
     def test_phases_are_a_drill_down_not_a_default(self):
-        # The whole point of the split: the per-request spans are always on, the
-        # per-stage ones cost cardinality and are opted into.
+        # Per-request spans are always on; per-stage ones are opted into.
         self.assertIn(telemetry._CKPT, telemetry._PRESETS["default"])
         self.assertNotIn(telemetry._CKPT_PHASES, telemetry._PRESETS["default"])
         self.assertIn(telemetry._CKPT_PHASES, telemetry._PRESETS["per_step"])
@@ -484,12 +473,9 @@ class TestSpanGroupRegistration(unittest.TestCase):
 class TestEverySpanGroupIsRegistered(unittest.TestCase):
     """No call site may name a group NVRx does not register.
 
-    A group nobody registers is not an error anywhere -- nemo-lens reports it and
-    carries on, by design, since a spec is job-wide while a registry is per
-    process. That is right for a spec and wrong for a call site: a typo in one
-    costs those spans permanently and silently. Nothing at runtime will catch it,
-    so it is caught here, by reading the source rather than importing it -- which
-    is what lets this run with nemo-lens absent.
+    nemo-lens reports an unregistered group and carries on, which is right for a
+    job-wide spec and wrong for a call site, where it is a typo that costs those
+    spans silently. Reads the source rather than importing it, so it runs lens-free.
     """
 
     #: Every call that takes a span group as its first positional argument.
@@ -519,8 +505,7 @@ class TestEverySpanGroupIsRegistered(unittest.TestCase):
         self.assertEqual(offenders, [], "call sites naming an unregistered span group")
 
     def test_the_scan_actually_finds_call_sites(self):
-        # Guards the test above against passing because it matched nothing at all
-        # -- a renamed helper or a moved package would do that silently.
+        # Guards the test above against passing because it matched nothing.
         root = pathlib.Path(telemetry.__file__).parent.parent
         found = sum(
             1

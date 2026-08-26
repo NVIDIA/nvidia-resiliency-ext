@@ -13,20 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Optional nemo-lens OTel instrumentation.
+"""Optional nemo-lens OTel instrumentation. The only file in NVRx that imports it.
 
-The only file in NVRx that imports nemo-lens. When nemo-lens is absent every
-export here is a no-op, so callers never need to guard their instrumentation.
+Every export is a no-op when nemo-lens is absent or its span group is off, so
+callers need no guards. Attributes are dicts everywhere because NVRx attribute
+names are dotted and cannot be Python keywords.
 
-nemo-lens gates on span groups that stay empty until some process in this
-interpreter calls ``setup_telemetry``, so every span here is a no-op before (or
-without) initialization -- there is nothing for this module to re-implement. The
-groups themselves are declared here, at import, so that a process which emits
-NVRx spans without ever initializing telemetry itself -- a trainer, whose
-framework owns that call -- can still have them selected.
-
-Attributes are passed as a dict to every entry point, because NVRx attribute
-names are dotted and so cannot be Python keywords.
+Design and rationale: docs/design/telemetry/NEMO_LENS.md.
 """
 
 import logging
@@ -38,15 +31,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-#: The span groups NVRx emits, and the presets selecting them. Registered with
-#: nemo-lens at import, because nemo-lens ships no group names of its own: a
-#: group nobody registers is unselectable, so its spans go silently dark.
-#:
-#: The split is a drill-down. ``nvrx.ckpt`` is a checkpoint request seen from the
-#: outside -- one span per request per side -- and stays on by default because
-#: its cardinality is bounded by checkpoint count. ``nvrx.ckpt.phases`` breaks
-#: each request into its stages, which is what you turn on once a checkpoint is
-#: already known to be slow and you need to know *where*.
+#: Span groups NVRx emits, and the presets selecting them. nvrx.ckpt is one span
+#: per checkpoint request per side; nvrx.ckpt.phases breaks each into its stages
+#: and is opt-in, being per-stage cardinality.
 _NAMESPACE = "nvrx"
 _JOB = "nvrx.job"
 _FT = "nvrx.ft"
@@ -59,20 +46,13 @@ _PRESETS = {
     "profiling": _GROUPS,
 }
 
-# The OTEL_RESOURCE_ATTRIBUTES this process inherited, captured before anything
-# can extend it. Every extension is built from this value rather than from the
-# last extended one: the agent launches a fresh worker cohort every cycle, and
-# extending the extension would append another nvrx.cycle each time until the
-# variable grew without bound across a long-running job.
+# Captured before anything can extend it. Extensions build from this, never from
+# the last extension, or a relaunched cohort accumulates a key per restart.
 _INHERITED_RESOURCE_ATTRIBUTES = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
 
 try:
-    # Names NVRx re-exports keep their nemo-lens spelling, so that searching for
-    # one finds every use across nemo-lens and its consumers. The underscored
-    # ones are internal: they only exist when nemo-lens is installed, and
-    # _setup_telemetry would otherwise collide with the wrapper defined below.
-    # trace_fn's alias is not redundant: it is the PEP 484 re-export form, and is what
-    # tells a linter this module deliberately exports a name it never calls.
+    # Underscored names exist only when nemo-lens is installed. trace_fn's alias
+    # is the PEP 484 re-export form, marking a name this module never calls.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanRegistry as _SpanRegistry
     from nemo.lens import encode_resource_attributes as _encode_resource_attributes
@@ -86,9 +66,7 @@ try:
     _AVAILABLE = True
 
 except ImportError:
-    # Catches nemo-lens being absent and a nemo-lens whose surface has moved
-    # under us, which from here are one condition: the names above are not
-    # importable, so there is nothing to call.
+    # nemo-lens absent, or a version whose surface moved: either way, nothing to call.
     _AVAILABLE = False
 
 except Exception:
@@ -98,16 +76,11 @@ except Exception:
 
 if _AVAILABLE:
     try:
-        # At import rather than in setup_telemetry, because the process that
-        # emits the trainer-side checkpoint spans never calls setup_telemetry --
-        # Megatron owns that call. Registration has to happen wherever this
-        # module is imported, or those groups are unselectable in exactly the
-        # process that needs them.
+        # At import, not in setup_telemetry: the trainer emits NVRx checkpoint
+        # spans and never calls setup_telemetry, so its groups would be dark.
         _SpanRegistry.register(_NAMESPACE, _GROUPS, _PRESETS)
     except Exception:
-        # A collision means something else already claimed these names. That
-        # costs the selectability of the NVRx groups, not the ability to emit
-        # anything else, so it must not disable telemetry wholesale.
+        # A name collision costs these groups, not all telemetry.
         logger.warning("Could not register the NVRx span groups", exc_info=True)
 
 
@@ -139,36 +112,13 @@ def setup_telemetry(
     instance_id: Optional[str] = None,
     resource_attributes: Optional[dict] = None,
 ):
-    """Initialize nemo-lens for this process. Call once, at process start.
+    """Initialize nemo-lens. Call once, at process start, only in a process NVRx owns.
 
-    Only for a process NVRx itself owns -- the fault-tolerance agent, the spawned
-    checkpoint worker. A trainer process is not one of those: its telemetry
-    belongs to whatever framework is training, and NVRx spans emitted there ride
-    that framework's providers.
-
-    ``service_name`` names the kind of process, becoming ``service.name``. It is
-    given here rather than left to ``OTEL_SERVICE_NAME``, which a launching
-    environment sets to name the workload it came to run; these processes are
-    NVRx's, and telling them apart in a backend is the point of naming them.
-
-    ``instance_id`` names the individual process, becoming
-    ``service.instance.id``. Omit it when the process was spawned by one that
-    published an identity through :func:`publish_resource_attributes`, which is
-    the case that should be preferred: identity then reaches a process that has
-    no way to compute its own, and this call needs to know nothing about how the
-    process is placed. Supply it only where nothing upstream could have -- the
-    fault-tolerance agent is launched by the cluster, not by NVRx.
-
-    Either way it has to come from somewhere, because the nemo-lens default is
-    unusable here: nemo-lens derives ``service.instance.id`` from ``dl.rank``,
-    and the agent has no rank at all while the checkpoint worker shares one with
-    the trainer it serves.
-
-    Export strategy is left entirely to nemo-lens's default and
-    ``NEMO_LENS_EXPORT_STRATEGY``. NVRx does not override it: whether every node
-    should export or only one depends on how many collectors the deployment runs
-    and where, which is a property of the launching environment rather than of
-    NVRx.
+    ``service_name`` becomes ``service.name``, overriding ``OTEL_SERVICE_NAME``,
+    which names the workload rather than these processes. ``instance_id`` becomes
+    ``service.instance.id``; omit it when a parent published one through
+    :func:`publish_resource_attributes`. One of the two must supply it -- nemo-lens
+    derives its own from ``dl.rank``, which no NVRx process has a usable value for.
     """
     if not _AVAILABLE:
         return _NoOpHandle()
@@ -186,11 +136,8 @@ def setup_telemetry(
 def shutdown(handle, timeout_s: float = 2.0) -> None:
     """Flush and shut down, bounded.
 
-    ``TelemetryHandle.shutdown()`` flushes synchronously and can block for as
-    long as the exporter's own retry budget against a collector that is gone --
-    longer than the SIGTERM-to-SIGKILL grace a launcher gets. Run it on a daemon
-    thread and stop waiting after ``timeout_s``; a missed flush is preferable to
-    being killed mid-teardown.
+    ``TelemetryHandle.shutdown()`` can block for the exporter's whole retry budget
+    against a collector that is gone, which outlasts a SIGTERM grace period.
     """
     worker = threading.Thread(target=handle.shutdown, daemon=True)
     worker.start()
@@ -198,13 +145,7 @@ def shutdown(handle, timeout_s: float = 2.0) -> None:
 
 
 def flush(timeout_ms: int = 1500) -> None:
-    """Export what is buffered, without shutting the providers down.
-
-    For the handful of points where this process may be killed moments later --
-    a detected fault, a health-check exclusion -- so those spans reach the
-    collector rather than dying in the batch processor's queue. Everywhere else
-    the batch processor's own schedule is enough.
-    """
+    """Export what is buffered, for a point where this process may be killed next."""
     if not _AVAILABLE:
         return
     from opentelemetry import trace
@@ -215,23 +156,12 @@ def flush(timeout_ms: int = 1500) -> None:
 
 
 class ManualSpan:
-    """A span started and ended explicitly, for a lifetime that is not a block.
+    """A span opened in one call and closed in another. No-op while nothing is open.
 
-    `managed_span` covers anything scoped to a `with`. This is for the rest: a
-    span opened in one call and closed in another, where the caller cannot hold
-    a context manager across the two. It owns the ExitStack bookkeeping, and
-    every method is a no-op while no span is open, so callers need no guards.
-
-    ORDERING CONTRACT. `managed_span` attaches an OTel context token on entry
-    and detaches it on exit, and contextvar tokens must be reset in the reverse
-    order they were set, on the thread that set them. So:
-
-    * open() and close() must run on the same thread.
-    * Any span opened after this one -- including a `with managed_span(...)` or
-      a `@trace_fn` method -- must finish before close() is called.
-
-    Violating either does not raise. It silently restores a stale OTel context,
-    so later spans are parented to a span that has already ended.
+    ORDERING CONTRACT, from ``contextvars``: open() and close() must run on the same
+    thread, and anything opened after this one must close before it does. Violating
+    either does not raise -- it silently restores a stale context, parenting later
+    spans to a span that has ended.
     """
 
     def __init__(self) -> None:
@@ -263,17 +193,8 @@ class ManualSpan:
 def span(group: str, name: str, attributes: Optional[dict] = None):
     """A span around a block, yielding it (or None when the group is off).
 
-    Adapter over ``nemo.lens.managed_span``, which takes attributes as keyword
-    arguments. Every attribute NVRx sets is dotted -- ``nvrx.cycle``,
-    ``nvrx.call_idx`` -- and a dotted name is not a Python identifier, so it can
-    never be a keyword argument: ``f(nvrx.cycle=3)`` is a SyntaxError. A dict is
-    the only way to carry these names, and taking it here rather than making
-    every caller write ``**{...}`` keeps attributes one shape across ``span``,
-    ``mark``, ``set_span_attributes`` and ``ManualSpan``.
-
-    Returns the upstream context manager rather than wrapping it in another one,
-    so the only cost over calling ``managed_span`` directly is rebuilding the
-    dict that ``**`` unpacks -- about 200ns against 40us for an enabled span.
+    Dict adapter over ``managed_span``, which takes keywords: a dotted attribute
+    name can never be one. Returns the upstream context manager unwrapped.
     """
     return _managed_span(group, name, **(attributes or {}))
 
@@ -288,17 +209,9 @@ def backdated_span(
 ) -> None:
     """Record a span for a window that elapsed before there was a tracer.
 
-    Startup phases are only measurable in hindsight: the job was queued and the
-    launch script ran before this process existed, so the span has to be created
-    with both timestamps rather than wrapped around live code. ``start`` and
-    ``end`` are wall-clock seconds.
-
-    ``parent`` is normally the ``SpanContext`` returned by the ``mark`` that opened
-    the window, which is what puts this span in the same trace as the spans that
-    ran inside it. Without one the span roots its own trace.
-
-    A no-op if the window is not a positive interval, so callers can pass whatever
-    timestamps they found without pre-checking.
+    ``start`` and ``end`` are wall-clock seconds; ``parent`` is usually the
+    ``SpanContext`` of the ``mark`` that opened the window, and without one the span
+    roots its own trace. A no-op unless the window is a positive interval.
     """
     if start is None or end is None or end <= start:
         return
@@ -320,24 +233,15 @@ def backdated_span(
 def mark(group: str, name: str, attributes: Optional[dict] = None):
     """Record an instant: a zero-duration span pinning a moment in time.
 
-    For a boundary worth a timestamp but with no duration of its own, where the
-    surrounding spans start too late to pin it -- a detected fault sits between
-    the run span ending and the teardown span starting.
-
-    Returns the ``SpanContext`` of the instant, or None when the group is off. A
-    mark exports immediately, so its context outlives it -- a trace and span id,
-    not a handle to anything running.
+    Returns its ``SpanContext``, or None when the group is off. A mark exports
+    immediately, so the context outlives it -- ids, not a handle to anything live.
     """
     with span(group, name, attributes) as recorded:
         return recorded.get_span_context() if recorded is not None else None
 
 
 def set_span_attributes(attributes: dict) -> None:
-    """Set attributes on the currently active span.
-
-    For use inside a ``@trace_fn`` function, which owns its span but does not
-    hand it to the caller. A no-op when no span is recording.
-    """
+    """Set attributes on the active span, for inside a ``@trace_fn``. No-op if none."""
     if not _AVAILABLE:
         return
     from opentelemetry import trace
@@ -348,20 +252,9 @@ def set_span_attributes(attributes: dict) -> None:
 def extended_resource_attributes(attributes: dict) -> str:
     """Extend the inherited ``OTEL_RESOURCE_ATTRIBUTES`` with more pairs.
 
-    Comma-separated ``key=value`` with percent-encoded values, which an OTel SDK
-    reads into the process Resource with no code and every spawn inherits.
-
-    NVRx reads the variable but never parses it: whatever a launching environment
-    put there is an opaque string to extend. Reading a string to extend it couples
-    nothing; branching on a key in it would.
-
-    Built from the value inherited at process start, not from the last extension,
-    or a relaunched cohort would accumulate a key per restart. Callers must not
-    pass a key the inherited value already sets.
-
-    nemo-lens owns the encoding, since it also owns the decoding; the local
-    fallback exists only so that a deployment running a plain OTel SDK without
-    nemo-lens still receives what NVRx publishes.
+    NVRx never parses the variable -- it is an opaque string to append to. Callers
+    must not pass a key the inherited value already sets. The local encoder is the
+    fallback for a deployment on a plain OTel SDK without nemo-lens.
     """
     if _AVAILABLE:
         return _encode_resource_attributes(attributes, _INHERITED_RESOURCE_ATTRIBUTES)
@@ -380,27 +273,10 @@ def extended_resource_attributes(attributes: dict) -> str:
 def publish_resource_attributes(attributes: dict):
     """Publish attributes into the environment, for a child spawned inside.
 
-    ``multiprocessing.Process`` has no ``env`` parameter, so a child inherits
-    whatever ``os.environ`` held when ``start()`` ran and there is no other way to
-    hand it one. Wrap the ``start()`` call:
-
-    .. code-block:: python
-
-        with telemetry.publish_resource_attributes({"dl.rank": rank}):
-            process.start()
-
-    That is what lets the child's ``setup_telemetry`` name only what kind of
-    process it is. Anything that identifies *which* one -- its rank, its instance
-    id -- is a fact about how the parent placed it, known where the placing
-    happened, and a child that has to derive its own identity can only do so from
-    whatever its caller happened to pass it.
-
-    The variable is restored on exit rather than left set. It would otherwise
-    describe this process too, and every later child of it, as the one that was
-    spawned here.
-
-    Values arrive in the child as strings, since that is what the encoding
-    carries. Nothing NVRx publishes is read back as a number.
+    ``multiprocessing.Process`` has no ``env``, so the environment at ``start()``
+    is the only channel to a spawned child. Wrap that call. Restored on exit, or it
+    would describe this process and every later child of it too. Values arrive in
+    the child as strings.
     """
     key = "OTEL_RESOURCE_ATTRIBUTES"
     previous = os.environ.get(key)
@@ -417,12 +293,8 @@ def publish_resource_attributes(attributes: dict):
 def context_carrier() -> Optional[dict]:
     """Serialize the active trace context and Baggage into a picklable dict.
 
-    A dict of W3C header strings -- ``traceparent``, and ``baggage`` when anything
-    is in it -- so it survives pickling onto a multiprocessing queue, which a live
-    ``SpanContext`` does not. Uses the globally configured propagators.
-
-    None when there is nothing to carry, which is what a caller stores when
-    telemetry is off.
+    W3C header strings, so it survives a multiprocessing queue where a live
+    ``SpanContext`` would not. None when there is nothing to carry.
     """
     if not _AVAILABLE:
         return None
@@ -440,10 +312,8 @@ def context_carrier() -> Optional[dict]:
 def carrier_baggage(carrier: Optional[dict]) -> dict:
     """Read the Baggage out of a carrier, as a plain dict.
 
-    Baggage is ambient key/value context that rides alongside the trace context.
-    It is not telemetry by itself and lands on no span automatically -- reading a
-    value out of it and setting it as a span attribute is a deliberate act, which
-    is why this returns the values rather than applying them.
+    Returns rather than applies: Baggage lands on no span automatically, and
+    promoting a value to an attribute is a deliberate act.
     """
     if not _AVAILABLE or not carrier:
         return {}
@@ -460,15 +330,8 @@ def carrier_baggage(carrier: Optional[dict]) -> dict:
 def linked_span(group: str, name: str, carrier: Optional[dict], attributes: Optional[dict] = None):
     """A span in this process's own trace, linking to a span in another.
 
-    A **link** references another span without inheriting its trace id or its
-    lifetime. That is the difference that matters here: parenting would pull
-    every worker span into the trainer's trace, and with it every rank of every
-    checkpoint, producing one trace no viewer can open. A link leaves the worker
-    in its own trace and still records what caused the work, so a consumer can
-    navigate from a slow write back to the training step that asked for it.
-
-    Falls back to an ordinary span when there is no carrier or no telemetry, so
-    a caller needs no branch of its own.
+    A link records what caused the work without inheriting the other trace's id or
+    lifetime. Falls back to an ordinary span with no carrier, so callers need no branch.
     """
     if not _AVAILABLE or not carrier:
         with span(group, name, attributes) as recorded:
@@ -502,14 +365,8 @@ def record_process_startup(
 ) -> None:
     """Record how long this process took to become able to run.
 
-    Two backdated windows: ``python.startup``, from process creation to the entry
-    module's first statement, and ``python.imports``, the entry module's top-level
-    imports. ``imports_started`` and ``imports_finished`` are wall-clock seconds
-    stamped around that import block; the create time comes from the OS.
-
-    Neither carries an ``nvrx.`` prefix -- they describe Python, and
-    ``service.name`` already says which process emitted them. Both root their own
-    trace, having preceded everything else in the process.
+    Two backdated windows: process creation to the entry module's first statement,
+    and that module's top-level imports. Both root their own trace.
     """
     try:
         import psutil
@@ -525,20 +382,14 @@ def record_process_startup(
 class Phase:
     """A long window, recorded as a start mark now and a backdated span later.
 
-    For a window too long to hold a span open across -- a restart cycle is the
-    whole job when nothing goes wrong, and a span exports only when it ends.
-    ``open()`` marks ``<name>_start``, which exports immediately; ``close()``
-    records ``<name>`` backdated to it. A phase that never closes leaves its mark
-    and every span that ran inside it, so the missing backdated span is the signal.
+    For a window too long to hold a span open across, since a span exports only
+    when it ends. ``open()`` marks ``<name>_start`` and makes it the active context,
+    so spans on this thread nest under the phase; ``close()`` emits ``<name>``
+    backdated to that mark. A phase that never closes still leaves the mark and
+    everything that ran inside it.
 
-    In between, the mark's ``SpanContext`` is the active OTel context, so spans
-    opened on this thread nest under the phase without being passed anything.
-
-    Attributes given to ``open`` go on **both** the mark and the backdated span,
-    since the two are separate records and a consumer filtering one never sees the
-    other's attributes. Those from ``set`` and ``close`` can only reach the
-    backdated span, there being no live span in between; they override an opening
-    attribute of the same name.
+    ``open`` attributes go on both records; ``set`` and ``close`` reach only the
+    span and override by name.
 
     ORDERING CONTRACT, from ``contextvars``: ``open()`` and ``close()`` must run on
     the same thread, and anything opened after this one must close before it does.
@@ -557,10 +408,8 @@ class Phase:
         self.close()
         self._group, self._name = group, name
         self._start = time.time()
-        # Seeded, not emptied: what identifies a phase belongs on the mark AND on
-        # the backdated span. They are two records and each has to stand alone --
-        # a consumer filtering spans never sees the mark's attributes, so a key
-        # left only there cannot be grouped on.
+        # Seeded, not emptied: a consumer filtering spans never sees the mark's
+        # attributes, so a key left only there cannot be grouped on.
         self._attributes = dict(attributes or {})
         self._parent = mark(group, f"{name}_start", attributes)
         if not _AVAILABLE or self._parent is None:
@@ -573,8 +422,7 @@ class Phase:
                 trace.set_span_in_context(trace.NonRecordingSpan(self._parent))
             )
         except Exception:
-            # Losing the ambient context costs nesting, not spans, and must not
-            # cost the workload anything at all.
+            # Losing the ambient context costs nesting, not spans.
             logger.debug("Could not make %s the active context", self._name, exc_info=True)
 
     def set(self, attributes: Optional[dict] = None) -> None:
@@ -594,10 +442,9 @@ class Phase:
 
                 otel_context.detach(self._token)
             except Exception:
-                # A phase opened after this one outlived it, so the token is no
-                # longer the top of this thread's context stack. The span is
-                # still correct; only the ambient context for whatever runs next
-                # is stale, and the next open() replaces it.
+                # A phase opened after this one outlived it, so the token is not the
+                # top of the stack. The span is still correct; the next open() fixes
+                # the stale ambient context.
                 logger.debug("Out-of-order close for phase %s", self._name, exc_info=True)
             self._token = None
         backdated_span(

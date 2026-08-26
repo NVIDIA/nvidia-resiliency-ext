@@ -15,36 +15,17 @@
 
 """Telemetry names NVRx shares with the framework that drives it.
 
-Only the names that cross the boundary. NVRx's own span and attribute names are
-literals at their call sites; a name is promoted here when a *second repository*
-has to spell it identically for a query to join, at which point two hardcoded
-copies of one string is a rename waiting to break silently.
+Only names a second repository has to spell identically for a query to join.
+Two hardcoded copies of one string is a rename waiting to break silently.
 
-This module imports nothing. It is safe to import with nemo-lens absent, with
-telemetry disabled, and from a process that never initializes telemetry -- which
-is the point, since the caller on the other side is a training framework that
-should not have to reason about NVRx's optional dependencies to spell a key.
+Imports nothing, so a caller need not reason about NVRx's optional dependencies.
 """
 
-#: Identifies one async checkpoint save, across the three spans that see it.
-#:
-#: **NVRx assigns this value; the framework propagates it.** It is minted by
-#: ``AsyncCallsQueue.schedule_async_request`` and returned to the caller, and
-#: returned again as the finalized list from ``maybe_finalize_async_calls``.
-#: NVRx stamps it on the trainer's schedule span, the worker's request span and
-#: the finalize span; the framework is expected to stamp whichever value it
-#: received on whatever span is active when it receives it.
-#:
-#: The three spans cannot share a trace -- the worker is a different process and
-#: the finalize happens iterations later -- so this attribute, not parentage, is
-#: what relates them.
+#: Identifies one async checkpoint save. NVRx assigns it and returns it from
+#: schedule/finalize; the framework stamps what it received on its active span.
+#: The three spans cannot share a trace, so this relates them, not parentage.
 CKPT_CALL_IDX = "nvrx.call_idx"
 
-#: The training iteration a checkpoint belongs to, read from Baggage.
-#:
-#: **The framework sets this; NVRx only reads it.** NVRx takes it out of Baggage
-#: at enqueue and sets it on the schedule, request and finalize spans, so a
-#: checkpoint can be attributed to the step that asked for it without NVRx
-#: knowing anything about training. Absent Baggage, the attribute is absent and
-#: nothing else changes.
+#: The training iteration a checkpoint belongs to. The framework puts it in
+#: Baggage; NVRx only reads it. Absent Baggage, the attribute is simply absent.
 ITERATION = "nvrx.iteration"

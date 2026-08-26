@@ -460,15 +460,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
-        # Nested, not alternatives. The cycle opens at rendezvous and closes when the
-        # next one opens, so it covers rendezvous, the health check, worker launch,
-        # the run itself and teardown. The run opens only once _start_workers has
-        # returned and closes the moment the workers stop, so it covers just the
-        # workload executing.
-        #
-        # The difference is the point: cycle minus run is this cycle's resiliency
-        # overhead -- the time the job spent getting ready to train rather than
-        # training. Collapsing them into one span would make that unanswerable.
+        # Nested, not alternatives: the cycle spans rendezvous through teardown, the
+        # run only the workload executing. Cycle minus run is resiliency overhead.
         self._cycle_phase = telemetry.Phase()
         self._run_phase = telemetry.Phase()
 
@@ -560,10 +553,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._remaining_restarts = (
             self._worker_group.spec.max_restarts - self._get_global_cycle_number()
         )
-        # An agent is one per node and runs before rendezvous, so it has no
-        # trainer rank -- and a node ordinal is not one. It is identified by the
-        # host it runs on, which is what distinguishes agents from each other and
-        # is already how every other agent-side signal is keyed.
+        # One agent per node, before rendezvous, so there is no trainer rank to
+        # identify it by -- and a node ordinal is not one. Keyed on the host.
         self._tel_handle = telemetry.setup_telemetry(
             "nvrx.ft_launcher",
             f"nvrx-agent-{self._node_id}",
@@ -750,8 +741,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     rank=self._worker_group.group_rank,
                 )
 
-                # The teardown span only starts once the restart decision has been made,
-                # so without this instant the detect-to-decide gap is unmeasured.
+                # Teardown only starts after the restart decision, so without this
+                # the detect-to-decide gap is unmeasured.
                 failures = len(run_result.failures or {})
                 self._run_phase.close()
                 telemetry.mark(
@@ -764,8 +755,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                         "nvrx.node": self._node_id,
                     },
                 )
-                # Set now, but the span stays open until the next rendezvous, so that
-                # _stop_workers records its teardown inside the cycle that failed.
+                # Set now; the span stays open until the next rendezvous so teardown
+                # lands inside the cycle that failed.
                 self._cycle_phase.set({CYCLE_OUTCOME: "failed", "nvrx.failures": failures})
                 telemetry.flush()  # this node may be killed moments from here
 
@@ -1155,11 +1146,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 skip_nodename_logic=True
             )
         except (ValueError, RuntimeError):
-            # With skip_nodename_logic=True the remaining paths parse CROSS_SLURM_PROCID,
-            # SLURM_ARRAY_TASK_ID and SLURM_PROCID, so a non-numeric value raises
-            # ValueError; a job array with no SLURM_NNODES raises RuntimeError
-            # (utils.py:208). Both mean the environment cannot name this node, which
-            # costs one telemetry attribute and must not cost the cohort its launch.
+            # A non-numeric CROSS_SLURM_PROCID/SLURM_PROCID/SLURM_ARRAY_TASK_ID, or a
+            # job array with no SLURM_NNODES. Costs an attribute, not the launch.
             logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
         cohort_env = {
             "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
@@ -1488,10 +1476,8 @@ class LocalElasticAgent(SimpleElasticAgent):
             "nvrx.max_restarts": spec.max_restarts,
             "nvrx.remaining_restarts": self._remaining_restarts,
         }
-        # Unguarded: get_run_id() is on torchelastic's RendezvousHandler ABC so it
-        # always exists, and FtRendezvousBarrierSettings rejects an empty run id at
-        # construction (ft_rendezvous_barrier.py:2433), so it is a non-empty string
-        # by the time any cycle opens.
+        # Unguarded: get_run_id() is on the RendezvousHandler ABC, and the barrier
+        # settings reject an empty run id at construction.
         attrs["nvrx.rdzv_run_id"] = spec.rdzv_handler.get_run_id()
         return attrs
 
@@ -1517,12 +1503,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         opening = {
             "nvrx.cycle": self._get_global_cycle_number(),
             "nvrx.node": self._node_id,
-            # Seeded at open so the attribute is present on every close path,
-            # including any not enumerated here, rather than depending on which of
-            # them ran. Overridden once this node's role in the cycle is known:
-            # "active" by _joined_cycle_attrs, "standby" below. A node the health
-            # check rejected keeps "unjoined", which is what it was -- restating it
-            # as "excluded" would duplicate the cycle outcome under a second key.
+            # Seeded so it is present on every close path, then overridden once the
+            # role is known. A node the health check rejected keeps "unjoined".
             "nvrx.membership": "unjoined",
         }
         self._cycle_phase.open("nvrx.ft", "nvrx.ft.cycle", opening)

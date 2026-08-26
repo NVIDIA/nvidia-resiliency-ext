@@ -1825,10 +1825,9 @@ class AttributionService:
         # number that decides whether the precision is good enough to enforce.
         self._stop_verdict_count = 0
         self._get_started_recorded = False
-        # Attribution runs on the poll thread, so this span cannot nest under the
-        # launcher's cycle span: OTel context is per-thread. It is a root span
-        # correlated by nvrx.node instead. Only _poll_once drives it, so the
-        # ManualSpan same-thread ordering contract holds without extra locking.
+        # OTel context is per-thread and this is the poll thread, so the span roots
+        # its own trace and correlates by nvrx.node. Only _poll_once drives it, so
+        # ManualSpan's same-thread ordering holds.
         self._attribution_span = telemetry.ManualSpan()
         self._lock = threading.Lock()
         self._poll_stop_event = threading.Event()

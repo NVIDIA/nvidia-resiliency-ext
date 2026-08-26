@@ -2990,8 +2990,7 @@ class HandlerProfilingTest(TestCase):
             with self.assertRaises(ft_rendezvous_barrier_module.UnhealthyNodeException):
                 handler._perform_rendezvous()
 
-        # Exclusion is recorded from the except clause and the boundary from the
-        # finally, so the order is fixed: the node is excluded, then the check ends.
+        # except clause then finally, so the order is fixed.
         self.assertEqual(
             record_event.call_args_list,
             [
