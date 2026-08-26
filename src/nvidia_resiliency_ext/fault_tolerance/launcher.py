@@ -460,6 +460,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._children_pgids: Set[int] = set()
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
+        # Nested, not alternatives. The cycle opens at rendezvous and closes when the
+        # next one opens, so it covers rendezvous, the health check, worker launch,
+        # the run itself and teardown. The run opens only once _start_workers has
+        # returned and closes the moment the workers stop, so it covers just the
+        # workload executing.
+        #
+        # The difference is the point: cycle minus run is this cycle's resiliency
+        # overhead -- the time the job spent getting ready to train rather than
+        # training. Collapsing them into one span would make that unanswerable.
         self._cycle_phase = telemetry.Phase()
         self._run_phase = telemetry.Phase()
 
@@ -1145,7 +1154,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             worker_resource_attrs["nvrx.infra_rank"] = get_infrastructure_rank(
                 skip_nodename_logic=True
             )
-        except Exception:
+        except (ValueError, RuntimeError):
+            # With skip_nodename_logic=True the remaining paths parse CROSS_SLURM_PROCID,
+            # SLURM_ARRAY_TASK_ID and SLURM_PROCID, so a non-numeric value raises
+            # ValueError; a job array with no SLURM_NNODES raises RuntimeError
+            # (utils.py:208). Both mean the environment cannot name this node, which
+            # costs one telemetry attribute and must not cost the cohort its launch.
             logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
         cohort_env = {
             "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
@@ -1474,13 +1488,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             "nvrx.max_restarts": spec.max_restarts,
             "nvrx.remaining_restarts": self._remaining_restarts,
         }
-        try:
-            run_id = spec.rdzv_handler.get_run_id()
-        except Exception:
-            logger.debug("Rendezvous run id unavailable for telemetry", exc_info=True)
-        else:
-            if run_id is not None:
-                attrs["nvrx.rdzv_run_id"] = run_id
+        # Unguarded: get_run_id() is on torchelastic's RendezvousHandler ABC so it
+        # always exists, and FtRendezvousBarrierSettings rejects an empty run id at
+        # construction (ft_rendezvous_barrier.py:2433), so it is a non-empty string
+        # by the time any cycle opens.
+        attrs["nvrx.rdzv_run_id"] = spec.rdzv_handler.get_run_id()
         return attrs
 
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:
