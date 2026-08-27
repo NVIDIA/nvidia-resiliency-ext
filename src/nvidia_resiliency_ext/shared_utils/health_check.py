@@ -41,6 +41,7 @@ from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ANALYSIS_INTENT_PROGRESSIVE,
     ANALYSIS_INTENT_TERMINAL,
 )
+from nvidia_resiliency_ext.shared_utils import telemetry
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env, job_user_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
@@ -1824,6 +1825,10 @@ class AttributionService:
         # number that decides whether the precision is good enough to enforce.
         self._stop_verdict_count = 0
         self._get_started_recorded = False
+        # OTel context is per-thread and this is the poll thread, so the span roots
+        # its own trace and correlates by nvrx.node. Only _poll_once drives it, so
+        # ManualSpan's same-thread ordering holds.
+        self._attribution_span = telemetry.ManualSpan()
         self._lock = threading.Lock()
         self._poll_stop_event = threading.Event()
         self._poll_thread: Optional[threading.Thread] = None
@@ -1924,6 +1929,7 @@ class AttributionService:
             ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
             node_id=self._poll_node_id,
         )
+        self._attribution_span.close()
 
         with self._lock:
             if result:
@@ -1970,6 +1976,11 @@ class AttributionService:
         record_profiling_event(
             ProfilingEvent.ATTRIBUTION_GET_STARTED,
             node_id=node_id,
+        )
+        self._attribution_span.open(
+            "nvrx.ft",
+            "nvrx.ft.attribution",
+            {"nvrx.node": str(node_id)},
         )
 
     def _submit_log(self, log_path: str) -> None:

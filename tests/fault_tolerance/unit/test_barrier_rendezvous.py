@@ -33,7 +33,7 @@ import time
 import uuid
 from datetime import timedelta
 from unittest import TestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from torch.distributed import TCPStore
 from torch.distributed.elastic.multiprocessing import SignalException
@@ -2990,9 +2990,19 @@ class HandlerProfilingTest(TestCase):
             with self.assertRaises(ft_rendezvous_barrier_module.UnhealthyNodeException):
                 handler._perform_rendezvous()
 
-        record_event.assert_called_once_with(
-            ft_rendezvous_barrier_module.ProfilingEvent.HEALTH_CHECK_COMPLETED,
-            node_id=handler._this_node,
+        # except clause then finally, so the order is fixed.
+        self.assertEqual(
+            record_event.call_args_list,
+            [
+                call(
+                    ft_rendezvous_barrier_module.ProfilingEvent.NODE_EXCLUDED,
+                    node_id=handler._this_node,
+                ),
+                call(
+                    ft_rendezvous_barrier_module.ProfilingEvent.HEALTH_CHECK_COMPLETED,
+                    node_id=handler._this_node,
+                ),
+            ],
         )
         handler.ensure_node_is_healthy.assert_called_once_with()
         handler.handle_control_requests_from_rank.assert_not_called()

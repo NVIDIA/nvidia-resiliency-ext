@@ -51,6 +51,7 @@ httpx = ">=0.24.0"
 langchain-core = { version = ">=0.3.51,<0.4.0", optional = true }
 langchain-openai = { version = ">=0.3.0,<1.0.0", optional = true }
 mcp = { version = ">=1.15.0,<2.0.0", optional = true }
+nemo-lens = { version = ">=0.2.0", extras = ["sdk"], optional = true }
 setproctitle = { version = ">=1.3.0", optional = true }
 logsage = { version = ">=0.1.8", optional = true }
 fastapi = ">=0.100.0"
@@ -74,6 +75,7 @@ attribution = [
     "slack-bolt",
     "slack-sdk",
 ]
+otel = ["nemo-lens"]
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"

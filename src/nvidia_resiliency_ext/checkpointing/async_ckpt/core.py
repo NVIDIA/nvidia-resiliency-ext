@@ -33,6 +33,7 @@ from typing import Callable, ClassVar, Dict, List, NamedTuple, Optional, Tuple
 import torch
 from torch import multiprocessing as mp
 
+from ...shared_utils import semconv, telemetry
 from ..utils import _disable_gc, debug_time
 
 logger = logging.getLogger(__name__)
@@ -276,6 +277,7 @@ class AsyncCaller(ABC):
         """
         raise NotImplementedError("This should be implemented")
 
+    @telemetry.trace_fn("nvrx.ckpt.phases", "nvrx.ckpt.save.completion_sync")
     def sync_all_async_calls(self, is_alive: int) -> bool:
         """Check if all ranks have completed async checkpoint writing
 
@@ -509,7 +511,13 @@ class PersistentAsyncCaller(AsyncCaller):
             ),
             daemon=self.background_worker_is_daemon,
         )
-        self.process.start()
+
+        # Propagate resource attributes for the background worker process
+        # through the environment.
+        with telemetry.publish_resource_attributes(
+            {"dl.rank": rank, "service.instance.id": f"nvrx-ckpt{rank}"}
+        ):
+            self.process.start()
         logger.debug(f"PersistentAsyncCaller: {rank}, Started Async Caller {self.process}")
         for cb in PersistentAsyncCaller._worker_restart_callbacks:
             cb()
@@ -547,7 +555,8 @@ class PersistentAsyncCaller(AsyncCaller):
         if async_req.preload_fn:
             start_sync = time()
             # Synchronize for pre-staging tensors
-            self.preload_q.join()
+            with telemetry.span("nvrx.ckpt.phases", "nvrx.ckpt.save.stage_wait"):
+                self.preload_q.join()
             end_sync = time()
 
             logger.debug(f"rank: {self.rank}, takes {end_sync - start_sync} to finish D2H ")
@@ -750,6 +759,10 @@ class PersistentAsyncCaller(AsyncCaller):
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
 
+        # Merged with resource attributes published by the parent process via
+        # OTEL_RESOURCE_ATTRIBUTES.
+        tel_handle = telemetry.setup_telemetry("nvrx.ckpt_worker")
+
         # Start busy loop waiting for and executing checkpoint saves.
         try:
             while True:
@@ -758,20 +771,27 @@ class PersistentAsyncCaller(AsyncCaller):
                     queue.task_done()
                     break
                 elif isinstance(item, AsyncRequest):
-                    async_fn_args = list(item.async_fn_args)
-                    if item.preload_fn:
-                        call_idx = preload_q.get()
-                        # the 2nd arg is state dict
-                        async_fn_args[1] = item.preload_fn()
-                        logger.debug(f"{rank} has completed D2H of {call_idx}")
-                        preload_q.task_done()
-                    if item.async_fn is not None:
-                        async_fn_kwargs = dict(item.async_fn_kwargs or {})
-                        item.async_fn(*async_fn_args, **async_fn_kwargs)
-                    logger.debug(f"{rank} has completed saving {item.call_idx}")
-                    comp_q.put(item.call_idx)
-                    queue.task_done()
-                    del async_fn_args
+                    with telemetry.span(
+                        "nvrx.ckpt",
+                        "nvrx.ckpt.save.request",
+                        {semconv.CKPT_CALL_IDX: item.call_idx},
+                    ):
+                        async_fn_args = list(item.async_fn_args)
+                        if item.preload_fn:
+                            call_idx = preload_q.get()
+                            with telemetry.span("nvrx.ckpt.phases", "nvrx.ckpt.save.preload"):
+                                # the 2nd arg is state dict
+                                async_fn_args[1] = item.preload_fn()
+                            logger.debug(f"{rank} has completed D2H of {call_idx}")
+                            preload_q.task_done()
+                        if item.async_fn is not None:
+                            async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                            with telemetry.span("nvrx.ckpt.phases", "nvrx.ckpt.save.write"):
+                                item.async_fn(*async_fn_args, **async_fn_kwargs)
+                        logger.debug(f"{rank} has completed saving {item.call_idx}")
+                        comp_q.put(item.call_idx)
+                        queue.task_done()
+                        del async_fn_args
                 del item
                 gc.collect()
         except RuntimeError as e:
@@ -787,6 +807,7 @@ class PersistentAsyncCaller(AsyncCaller):
             # Cleanup worker data cache before exiting, regardless of how the loop exits
             # (normal termination via 'DONE' sentinel or unhandled exception).
             PersistentAsyncCaller.cleanup_worker_data_cache()
+            telemetry.shutdown(tel_handle)
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: persistent ckpt worker for {rank} has terminated")
         else:
@@ -970,9 +991,11 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
         async_request = async_request.freeze()
-        async_caller.schedule_async_call(
-            async_request._replace(call_idx=self.call_idx, finalize_fns=[])
-        )
+        schedule_attrs = {semconv.CKPT_CALL_IDX: self.call_idx}
+        with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.schedule", schedule_attrs):
+            async_caller.schedule_async_call(
+                async_request._replace(call_idx=self.call_idx, finalize_fns=[])
+            )
         self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
         return self.call_idx
 
@@ -1002,10 +1025,13 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             if not next_async_done:
                 break
             with debug_time("finalize", logger):
-                _, _, async_request = self.async_calls.popleft()
-                call_idx = async_request.execute_finalize_fns(
-                    validate_matching_call_idx=(not no_dist)
-                )
+                idx, _, async_request = self.async_calls.popleft()
+                with telemetry.span(
+                    "nvrx.ckpt", "nvrx.ckpt.save.finalize", {semconv.CKPT_CALL_IDX: idx}
+                ):
+                    call_idx = async_request.execute_finalize_fns(
+                        validate_matching_call_idx=(not no_dist)
+                    )
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
 
