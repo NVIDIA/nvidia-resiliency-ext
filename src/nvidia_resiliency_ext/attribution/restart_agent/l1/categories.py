@@ -303,12 +303,13 @@ CATEGORIES: tuple[CategoryDef, ...] = (
         id=25,
         name="CUDA OOM",
         description=(
-            "Device OOM at fixed batch/config. Old STOP rested on a same-job/config "
-            "determinism presumption, not on in-log evidence."
+            "Device OOM at fixed batch/config. A CUDA OOM under an unchanged workload "
+            "is highly likely to reproduce on the next attempt; product policy calls "
+            "this a STOP because the retry cost is high and the outcome is stable."
         ),
-        decision="RESTART",
+        decision="STOP",
         failure_domain="workload",
-        retry_outlook="may_recover",
+        retry_outlook="cannot_recover",
     ),
     CategoryDef(
         id=26,
@@ -325,12 +326,13 @@ CATEGORIES: tuple[CategoryDef, ...] = (
         id=27,
         name="CUDA OOM during checkpoint async-save",
         description=(
-            "CUDA OOM inside the async checkpoint-save path on a near-full GPU; "
-            "determinism evidence lives outside the log."
+            "CUDA OOM inside the async checkpoint-save path on a near-full GPU. "
+            "As with cat 25, an unchanged workload will keep hitting the same "
+            "allocation ceiling on retry, so product policy calls this a STOP."
         ),
-        decision="RESTART",
+        decision="STOP",
         failure_domain="workload",
-        retry_outlook="may_recover",
+        retry_outlook="cannot_recover",
     ),
     CategoryDef(
         id=28,
