@@ -308,8 +308,10 @@ def record_process_startup(
     except Exception:
         logger.debug("Process create time unavailable", exc_info=True)
         created = None
-    backdated_span(group, "python.startup", created, imports_started, attributes)
-    backdated_span(group, "python.imports", imports_started, imports_finished, attributes)
+    backdated_span(group, "nv.nvrx.ftl.python.startup", created, imports_started, attributes)
+    backdated_span(
+        group, "nv.nvrx.ftl.python.imports", imports_started, imports_finished, attributes
+    )
 
 
 class Phase:

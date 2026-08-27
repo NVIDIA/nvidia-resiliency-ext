@@ -134,7 +134,7 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
-CYCLE_OUTCOME = "nvrx.cycle_outcome"  # telemetry: how a restart cycle ended
+CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -556,10 +556,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._tel_handle = telemetry.setup_telemetry(
             "nvrx.ft_launcher",
             f"nvrx-agent-{self._node_id}",
-            {"nvrx.node": self._node_id},
+            {"nv.nvrx.ftl.node": self._node_id},
         )
         telemetry.record_process_startup(
-            "nvrx.job", __imports_started__, __imports_finished__, {"nvrx.node": self._node_id}
+            "nvrx.job", __imports_started__, __imports_finished__, {"nv.nvrx.ftl.node": self._node_id}
         )
         start_time = time.monotonic()
         shutdown_called: bool = False
@@ -745,16 +745,16 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._run_phase.close()
                 telemetry.mark(
                     "nvrx.ft",
-                    "nvrx.ft.fault",
+                    "nv.nvrx.ftl.fault",
                     {
-                        "nvrx.state": state.name,
-                        "nvrx.failures": failures,
-                        "nvrx.node": self._node_id,
+                        "nv.nvrx.ftl.cycle.state": state.name,
+                        "nv.nvrx.ftl.cycle.failures": failures,
+                        "nv.nvrx.ftl.node": self._node_id,
                     },
                 )
                 # Set now; the span stays open until the next rendezvous so teardown
                 # lands inside the cycle that failed.
-                self._cycle_phase.set({CYCLE_OUTCOME: "failed", "nvrx.failures": failures})
+                self._cycle_phase.set({CYCLE_OUTCOME: "failed", "nv.nvrx.ftl.cycle.failures": failures})
                 telemetry.flush()  # this node may be killed moments from here
 
                 log_msg = (
@@ -1045,14 +1045,14 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    @telemetry.trace_fn("nvrx.ft", "nvrx.ft.teardown")
+    @telemetry.trace_fn("nvrx.ft", "nv.nvrx.ftl.teardown")
     def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-        telemetry.set_span_attributes({"nvrx.node": self._node_id})
+        telemetry.set_span_attributes({"nv.nvrx.ftl.node": self._node_id})
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -1118,7 +1118,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    @telemetry.trace_fn("nvrx.ft", "nvrx.ft.worker_start")
+    @telemetry.trace_fn("nvrx.ft", "nv.nvrx.ftl.worker_launch")
     def _start_workers(self, worker_group: WorkerGroup) -> Dict[int, Any]:
         spec = worker_group.spec
         store = worker_group.store
@@ -1132,12 +1132,12 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
         telemetry.set_span_attributes(
-            {"nvrx.cycle": restart_count, "nvrx.node": self._node_id}
+            {"nv.nvrx.cycle.index": restart_count, "nv.nvrx.ftl.node": self._node_id}
         )
 
-        worker_resource_attrs = {"nvrx.cycle": restart_count, "nvrx.membership": "active"}
+        worker_resource_attrs = {"nv.nvrx.cycle.index": restart_count, "nv.nvrx.ftl.membership": "active"}
         try:
-            worker_resource_attrs["nvrx.infra_rank"] = get_infrastructure_rank(
+            worker_resource_attrs["nv.nvrx.ftl.infra.rank"] = get_infrastructure_rank(
                 skip_nodename_logic=True
             )
         except (ValueError, RuntimeError):
@@ -1459,23 +1459,23 @@ class LocalElasticAgent(SimpleElasticAgent):
         rosters are deliberately not among them: each node recording every other
         node's address costs bytes quadratic in job size, on every cycle span of
         every node, to say something each node already reports about itself.
-        Who was active in a cycle is a GROUP BY over nvrx.cycle, not a list.
+        Who was active in a cycle is a GROUP BY over nv.nvrx.cycle.index, not a list.
         """
         spec = worker_group.spec
         attrs = {
-            "nvrx.rank": worker_group.group_rank,
-            "nvrx.group_world_size": worker_group.group_world_size,
-            "nvrx.membership": "active",
-            "nvrx.max_restarts": spec.max_restarts,
-            "nvrx.remaining_restarts": self._remaining_restarts,
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+            "nv.nvrx.ftl.max_restarts": spec.max_restarts,
+            "nv.nvrx.ftl.remaining_restarts": self._remaining_restarts,
         }
-        attrs["nvrx.rdzv_run_id"] = spec.rdzv_handler.get_run_id()
+        attrs["nv.nvrx.ftl.rdzv.run_id"] = spec.rdzv_handler.get_run_id()
         return attrs
 
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:
         """Override to open the run phase once the workers are actually running."""
         super()._initialize_workers(worker_group)
-        self._run_phase.open("nvrx.ft", "nvrx.ft.run")
+        self._run_phase.open("nvrx.ft", "nv.nvrx.ftl.run")
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
@@ -1487,11 +1487,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         spec.rdzv_handler.set_worker_group(worker_group)
 
         opening = {
-            "nvrx.cycle": self._get_global_cycle_number(),
-            "nvrx.node": self._node_id,
-            "nvrx.membership": "unjoined",
+            "nv.nvrx.cycle.index": self._get_global_cycle_number(),
+            "nv.nvrx.ftl.node": self._node_id,
+            "nv.nvrx.ftl.membership": "unjoined",
         }
-        self._cycle_phase.open("nvrx.ft", "nvrx.ft.cycle", opening)
+        self._cycle_phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", opening)
         try:
             # Call the parent class _rendezvous method
             super()._rendezvous(worker_group)
@@ -1500,7 +1500,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             raise
         except (RendezvousClosedError, RendezvousGracefulExitError):
             # job ended while it waited
-            self._cycle_phase.close({CYCLE_OUTCOME: "standby", "nvrx.membership": "standby"})
+            self._cycle_phase.close({CYCLE_OUTCOME: "standby", "nv.nvrx.ftl.membership": "standby"})
             raise
         self._cycle_phase.set(self._joined_cycle_attrs(worker_group))
 

@@ -19,4 +19,4 @@
 #: Identifies one async checkpoint save. NVRx assigns it and returns it from
 #: schedule/finalize; the framework stamps what it received on its active span.
 #: The three spans cannot share a trace, so this relates them, not parentage.
-CKPT_CALL_IDX = "nvrx.call_idx"
+CKPT_CALL_IDX = "nv.nvrx.ckpt.call_idx"

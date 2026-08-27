@@ -1826,7 +1826,7 @@ class AttributionService:
         self._stop_verdict_count = 0
         self._get_started_recorded = False
         # OTel context is per-thread and this is the poll thread, so the span roots
-        # its own trace and correlates by nvrx.node. Only _poll_once drives it, so
+        # its own trace and correlates by nv.nvrx.ftl.node. Only _poll_once drives it, so
         # ManualSpan's same-thread ordering holds.
         self._attribution_span = telemetry.ManualSpan()
         self._lock = threading.Lock()
@@ -1979,8 +1979,8 @@ class AttributionService:
         )
         self._attribution_span.open(
             "nvrx.ft",
-            "nvrx.ft.attribution",
-            {"nvrx.node": str(node_id)},
+            "nv.nvrx.ftl.attribution",
+            {"nv.nvrx.ftl.node": str(node_id)},
         )
 
     def _submit_log(self, log_path: str) -> None:

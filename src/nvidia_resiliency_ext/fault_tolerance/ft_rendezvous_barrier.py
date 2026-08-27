@@ -1912,7 +1912,7 @@ class _RendezvousBarrierState:
             self._rdzv_span.close()
             record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
             try:
-                with span("nvrx.ft", "nvrx.ft.round_wait"):
+                with span("nvrx.ft", "nv.nvrx.ftl.await_round"):
                     self._wait_for_rendezvous_open(node_desc)
             finally:
                 record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
@@ -1929,8 +1929,8 @@ class _RendezvousBarrierState:
             )
             self._rdzv_span.open(
                 "nvrx.ft",
-                "nvrx.ft.rendezvous",
-                {"nvrx.round": self._round},
+                "nv.nvrx.ftl.rendezvous",
+                {"nv.nvrx.ftl.rdzv.round": self._round},
             )
 
             if pre_join_hook is not None:
@@ -2045,7 +2045,9 @@ class _RendezvousBarrierState:
 
             if rank != GroupRankStatus.UNASSIGNED.value and rank < min_nodes:
                 # Active rank: return to launcher to start training workers.
-                self._rdzv_span.close({"nvrx.rank": rank, "nvrx.membership": "active"})
+                self._rdzv_span.close(
+                    {"nv.nvrx.ftl.group.rank": rank, "nv.nvrx.ftl.membership": "active"}
+                )
                 return rank, total_participants
 
             # rank == UNASSIGNED: late comer that joined after the store host's snapshot.
@@ -2056,13 +2058,13 @@ class _RendezvousBarrierState:
                     f"[{node_desc}] Late joiner detected for round {self._round} "
                     f"(rank=UNASSIGNED); retrying in round {self._round + 1}"
                 )
-                self._rdzv_span.set({"nvrx.membership": "late_joiner"})
+                self._rdzv_span.set({"nv.nvrx.ftl.membership": "late_joiner"})
             else:
                 log.info(
                     f"[{node_desc}] Standby (rank={rank}) for round {self._round}; "
                     f"waiting for round {self._round + 1} to open"
                 )
-                self._rdzv_span.set({"nvrx.membership": "standby"})
+                self._rdzv_span.set({"nv.nvrx.ftl.membership": "standby"})
             # Loop back to Step 0; _sync_from_per_round_state() will advance _round
             # from N to N+1 when it sees round_done_N=1 (closed).
 
@@ -2739,7 +2741,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
             try:
-                with span("nvrx.ft", "nvrx.ft.health_check"):
+                with span("nvrx.ft", "nv.nvrx.ftl.health_check"):
                     self.ensure_node_is_healthy()
             except UnhealthyNodeException:
                 record_profiling_event(ProfilingEvent.NODE_EXCLUDED, node_id=self._this_node)

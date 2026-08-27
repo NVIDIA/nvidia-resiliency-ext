@@ -37,7 +37,7 @@ class TestTelemetryIsInert(unittest.TestCase):
 
     def test_managed_span_yields_and_runs_body(self):
         ran = False
-        with telemetry.span("nvrx.ft", "nvrx.ft.cycle") as active:
+        with telemetry.span("nvrx.ft", "nv.nvrx.ftl.cycle") as active:
             ran = True
             self.assertIsNone(active)
         self.assertTrue(ran)
@@ -46,15 +46,15 @@ class TestTelemetryIsInert(unittest.TestCase):
         # Telemetry must never swallow a workload error -- notably SignalException,
         # which torch elastic raises out of the launcher's monitor loop.
         with self.assertRaises(ValueError):
-            with telemetry.span("nvrx.ft", "nvrx.ft.cycle"):
+            with telemetry.span("nvrx.ft", "nv.nvrx.ftl.cycle"):
                 raise ValueError("from the instrumented body")
 
     def test_managed_span_accepts_attributes(self):
-        with telemetry.span("nvrx.ckpt", "nvrx.ckpt.save.request", {"nvrx.call_idx": 7}):
+        with telemetry.span("nvrx.ckpt", "nv.nvrx.ckpt.save.request", {"nv.nvrx.ckpt.call_idx": 7}):
             pass
 
     def test_trace_fn_returns_a_working_decorator(self):
-        @telemetry.trace_fn("nvrx.ft", "nvrx.ft.worker_start")
+        @telemetry.trace_fn("nvrx.ft", "nv.nvrx.ftl.worker_launch")
         def start(a, b=2):
             return a + b
 
@@ -62,7 +62,7 @@ class TestTelemetryIsInert(unittest.TestCase):
         self.assertEqual(start(1, b=10), 11)
 
     def test_trace_fn_propagates_exceptions(self):
-        @telemetry.trace_fn("nvrx.ft", "nvrx.ft.teardown")
+        @telemetry.trace_fn("nvrx.ft", "nv.nvrx.ftl.teardown")
         def boom():
             raise RuntimeError("worker teardown failed")
 
@@ -70,7 +70,7 @@ class TestTelemetryIsInert(unittest.TestCase):
             boom()
 
     def test_set_span_attributes_without_active_span(self):
-        telemetry.set_span_attributes({"nvrx.cycle": 3, "nvrx.node": "node-0"})
+        telemetry.set_span_attributes({"nv.nvrx.cycle.index": 3, "nv.nvrx.ftl.node": "node-0"})
 
 
 class TestManualSpan(unittest.TestCase):
@@ -78,32 +78,32 @@ class TestManualSpan(unittest.TestCase):
 
     def test_all_methods_are_safe_before_open(self):
         span = telemetry.ManualSpan()
-        span.set({"nvrx.cycle": 0})
-        span.close({"nvrx.cycle_outcome": "terminated"})
+        span.set({"nv.nvrx.cycle.index": 0})
+        span.close({"nv.nvrx.cycle.outcome": "terminated"})
         span.close()
 
     def test_close_is_idempotent(self):
         span = telemetry.ManualSpan()
-        span.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 0})
-        span.close({"nvrx.cycle_outcome": "succeeded"})
+        span.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 0})
+        span.close({"nv.nvrx.cycle.outcome": "succeeded"})
         span.close()
-        span.close({"nvrx.cycle_outcome": "terminated"})
+        span.close({"nv.nvrx.cycle.outcome": "terminated"})
 
     def test_reopen_closes_the_previous_span(self):
         # The restart path relies on this: a cycle is left open so teardown lands
         # inside it, and the next rendezvous closes it by opening the next cycle.
         span = telemetry.ManualSpan()
-        span.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 0})
+        span.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 0})
         first_stack = span._stack
-        span.set({"nvrx.cycle_outcome": "failed"})
-        span.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 1})
+        span.set({"nv.nvrx.cycle.outcome": "failed"})
+        span.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 1})
         self.assertIsNot(span._stack, first_stack)
         span.close()
         self.assertIsNone(span._stack)
 
     def test_set_tolerates_none_and_empty(self):
         span = telemetry.ManualSpan()
-        span.open("nvrx.ft", "nvrx.ft.cycle")
+        span.open("nvrx.ft", "nv.nvrx.ftl.cycle")
         span.set(None)
         span.set({})
         span.close()
@@ -112,8 +112,12 @@ class TestManualSpan(unittest.TestCase):
 class TestMarkAndFlush(unittest.TestCase):
 
     def test_mark_is_inert(self):
-        telemetry.mark("nvrx.ft", "nvrx.ft.fault")
-        telemetry.mark("nvrx.ft", "nvrx.ft.fault", {"nvrx.state": "FAILED", "nvrx.failures": 2})
+        telemetry.mark("nvrx.ft", "nv.nvrx.ftl.fault")
+        telemetry.mark(
+            "nvrx.ft",
+            "nv.nvrx.ftl.fault",
+            {"nv.nvrx.ftl.cycle.state": "FAILED", "nv.nvrx.ftl.cycle.failures": 2},
+        )
 
     def test_flush_is_inert(self):
         # Must tolerate a provider with no force_flush (the no-op one) and a
@@ -142,8 +146,10 @@ class TestBackdatedSpan(unittest.TestCase):
     """Startup windows are reconstructed from timestamps, so guard the inputs."""
 
     def test_inert_without_telemetry(self):
-        telemetry.backdated_span("job", "python.startup", 1000.0, 1016.7)
-        telemetry.backdated_span("job", "python.imports", 1016.7, 1020.9, {"nvrx.node": "n0"})
+        telemetry.backdated_span("job", "nv.nvrx.ftl.python.startup", 1000.0, 1016.7)
+        telemetry.backdated_span(
+            "job", "nv.nvrx.ftl.python.imports", 1016.7, 1020.9, {"nv.nvrx.ftl.node": "n0"}
+        )
 
     def test_absent_timestamps_are_dropped_not_raised(self):
         # SLURM_JOB_START_TIME is absent off Slurm, so the caller passes None
@@ -154,8 +160,8 @@ class TestBackdatedSpan(unittest.TestCase):
 
     def test_non_positive_window_is_dropped(self):
         # A coarse clock can make a fast window measure as zero-length or inverted.
-        telemetry.backdated_span("job", "python.imports", 1016.7, 1000.0)
-        telemetry.backdated_span("job", "python.imports", 1000.0, 1000.0)
+        telemetry.backdated_span("job", "nv.nvrx.ftl.python.imports", 1016.7, 1000.0)
+        telemetry.backdated_span("job", "nv.nvrx.ftl.python.imports", 1000.0, 1000.0)
 
 
 class TestExtendedResourceAttributes(unittest.TestCase):
@@ -169,12 +175,12 @@ class TestExtendedResourceAttributes(unittest.TestCase):
         # Whatever the launching environment set is opaque here, including keys
         # NVRx has no notion of.
         inherited = "slurm.job_id=370487,cluster=oci-aga,job.uid=b3f1"
-        result = self.extend(inherited, {"nvrx.cycle": 2})
+        result = self.extend(inherited, {"nv.nvrx.cycle.index": 2})
         self.assertTrue(result.startswith(inherited + ","))
-        self.assertTrue(result.endswith("nvrx.cycle=2"))
+        self.assertTrue(result.endswith("nv.nvrx.cycle.index=2"))
 
     def test_works_with_nothing_inherited(self):
-        self.assertEqual(self.extend("", {"nvrx.cycle": 0}), "nvrx.cycle=0")
+        self.assertEqual(self.extend("", {"nv.nvrx.cycle.index": 0}), "nv.nvrx.cycle.index=0")
 
     def test_no_attributes_leaves_the_value_alone(self):
         self.assertEqual(self.extend("cluster=oci-aga", {}), "cluster=oci-aga")
@@ -183,18 +189,18 @@ class TestExtendedResourceAttributes(unittest.TestCase):
     def test_values_are_percent_encoded(self):
         # A value containing a comma or an equals would otherwise be read back as
         # extra pairs, silently rewriting the resource.
-        result = self.extend("", {"nvrx.membership": "active,standby=maybe"})
-        self.assertEqual(result, "nvrx.membership=active%2Cstandby%3Dmaybe")
+        result = self.extend("", {"nv.nvrx.ftl.membership": "active,standby=maybe"})
+        self.assertEqual(result, "nv.nvrx.ftl.membership=active%2Cstandby%3Dmaybe")
 
     def test_extends_the_inherited_value_not_the_last_one(self):
         # The agent relaunches a cohort every cycle. Extending its own previous
-        # output would append another nvrx.cycle each time, without bound.
+        # output would append another nv.nvrx.cycle.index each time, without bound.
         inherited = "cluster=oci-aga"
-        first = self.extend(inherited, {"nvrx.cycle": 0})
-        second = self.extend(inherited, {"nvrx.cycle": 1})
-        self.assertEqual(first.count("nvrx.cycle"), 1)
-        self.assertEqual(second.count("nvrx.cycle"), 1)
-        self.assertEqual(second, "cluster=oci-aga,nvrx.cycle=1")
+        first = self.extend(inherited, {"nv.nvrx.cycle.index": 0})
+        second = self.extend(inherited, {"nv.nvrx.cycle.index": 1})
+        self.assertEqual(first.count("nv.nvrx.cycle.index"), 1)
+        self.assertEqual(second.count("nv.nvrx.cycle.index"), 1)
+        self.assertEqual(second, "cluster=oci-aga,nv.nvrx.cycle.index=1")
 
 
 class TestPublishResourceAttributes(unittest.TestCase):
@@ -274,74 +280,82 @@ class TestPhase(unittest.TestCase):
     def test_marks_the_start_and_backdates_the_span_to_it(self):
         phase = telemetry.Phase()
         before = time.time()
-        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 2})
-        phase.close({"nvrx.cycle_outcome": "succeeded"})
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 2})
+        phase.close({"nv.nvrx.cycle.outcome": "succeeded"})
         after = time.time()
 
-        self.assertEqual(self.marks, [("nvrx.ft", "nvrx.ft.cycle_start", {"nvrx.cycle": 2})])
+        self.assertEqual(
+            self.marks, [("nvrx.ft", "nv.nvrx.ftl.cycle_start", {"nv.nvrx.cycle.index": 2})]
+        )
         (group, name, start, end, attributes, parent) = self.spans[0]
-        self.assertEqual((group, name), ("nvrx.ft", "nvrx.ft.cycle"))
+        self.assertEqual((group, name), ("nvrx.ft", "nv.nvrx.ftl.cycle"))
         # The span covers the window, rather than being an instant at close.
         self.assertLessEqual(before, start)
         self.assertLessEqual(start, end)
         self.assertLessEqual(end, after)
         # Same trace as the mark, so the spans that ran inside the phase join it.
-        self.assertEqual(parent, "ctx-of-nvrx.ft.cycle_start")
+        self.assertEqual(parent, "ctx-of-nv.nvrx.ftl.cycle_start")
         # Opening attributes carry through to the span; close adds to them.
-        self.assertEqual(attributes, {"nvrx.cycle": 2, "nvrx.cycle_outcome": "succeeded"})
+        self.assertEqual(
+            attributes, {"nv.nvrx.cycle.index": 2, "nv.nvrx.cycle.outcome": "succeeded"}
+        )
 
     def test_open_attributes_go_on_the_mark_and_the_span(self):
         # The mark is the only record while the phase runs, and the span is the only
         # one a consumer filters. Both need the attributes.
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 3})
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 3})
         phase.close()
-        self.assertEqual(self.marks[0][2], {"nvrx.cycle": 3})
-        self.assertEqual(self.spans[0][4], {"nvrx.cycle": 3})
+        self.assertEqual(self.marks[0][2], {"nv.nvrx.cycle.index": 3})
+        self.assertEqual(self.spans[0][4], {"nv.nvrx.cycle.index": 3})
 
     def test_close_attributes_override_opening_ones(self):
         # Lets a required attribute be seeded at open rather than on each close path.
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.membership": "unjoined"})
-        phase.close({"nvrx.membership": "standby"})
-        self.assertEqual(self.marks[0][2], {"nvrx.membership": "unjoined"})
-        self.assertEqual(self.spans[0][4], {"nvrx.membership": "standby"})
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.ftl.membership": "unjoined"})
+        phase.close({"nv.nvrx.ftl.membership": "standby"})
+        self.assertEqual(self.marks[0][2], {"nv.nvrx.ftl.membership": "unjoined"})
+        self.assertEqual(self.spans[0][4], {"nv.nvrx.ftl.membership": "standby"})
 
     def test_set_accumulates_until_close(self):
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nvrx.ft.cycle")
-        phase.set({"nvrx.rank": 3})
-        phase.set({"nvrx.membership": "active"})
-        phase.close({"nvrx.cycle_outcome": "failed"})
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
+        phase.set({"nv.nvrx.ftl.group.rank": 3})
+        phase.set({"nv.nvrx.ftl.membership": "active"})
+        phase.close({"nv.nvrx.cycle.outcome": "failed"})
         self.assertEqual(
             self.spans[0][4],
-            {"nvrx.rank": 3, "nvrx.membership": "active", "nvrx.cycle_outcome": "failed"},
+            {
+                "nv.nvrx.ftl.group.rank": 3,
+                "nv.nvrx.ftl.membership": "active",
+                "nv.nvrx.cycle.outcome": "failed",
+            },
         )
 
     def test_close_is_idempotent(self):
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nvrx.ft.cycle")
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
         phase.close()
-        phase.close({"nvrx.cycle_outcome": "succeeded"})
+        phase.close({"nv.nvrx.cycle.outcome": "succeeded"})
         self.assertEqual(len(self.spans), 1)
 
     def test_close_without_open_is_a_no_op(self):
-        telemetry.Phase().close({"nvrx.cycle_outcome": "succeeded"})
+        telemetry.Phase().close({"nv.nvrx.cycle.outcome": "succeeded"})
         self.assertEqual(self.spans, [])
 
     def test_open_closes_the_previous_phase(self):
         # The launcher reuses one handle across cycles and relies on this.
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 0})
-        phase.open("nvrx.ft", "nvrx.ft.cycle", {"nvrx.cycle": 1})
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 0})
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 1})
         self.assertEqual(len(self.spans), 1, "the first cycle was never emitted")
         self.assertEqual(len(self.marks), 2)
 
     def test_attributes_do_not_leak_between_phases(self):
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nvrx.ft.cycle")
-        phase.close({"nvrx.cycle_outcome": "failed"})
-        phase.open("nvrx.ft", "nvrx.ft.cycle")
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
+        phase.close({"nv.nvrx.cycle.outcome": "failed"})
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
         phase.close()
         self.assertEqual(self.spans[1][4], {})
 
