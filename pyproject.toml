@@ -65,6 +65,7 @@ grpcio-tools = "^1.76.0"
 protobuf = ">=4.22.0"
 
 [tool.poetry.extras]
+# Full attribution stack: LogSage log analysis + MCP server + Slack posting.
 attribution = [
     "langchain-core",
     "langchain-openai",
@@ -73,6 +74,12 @@ attribution = [
     "setproctitle",
     "slack-bolt",
     "slack-sdk",
+]
+# LogSage-only alias for users who want the log analyzer but not MCP / Slack.
+logsage = [
+    "langchain-core",
+    "langchain-openai",
+    "logsage",
 ]
 
 [tool.poetry.scripts]

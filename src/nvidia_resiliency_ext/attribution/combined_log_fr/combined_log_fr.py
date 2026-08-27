@@ -13,7 +13,10 @@ from nvidia_resiliency_ext.attribution.base import (
     merged_attribution_config,
     normalize_attribution_args,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+
+# ``NVRxLogAnalyzer`` requires LogSage / LangChain (installed via the ``[attribution]`` extra);
+# it is imported lazily inside :func:`main` so that ``CombinedLogFR`` (the merge class) is
+# importable under the default install.
 from nvidia_resiliency_ext.attribution.logging_utils import bounded_log_value
 from nvidia_resiliency_ext.attribution.orchestration.config import (
     DEFAULT_LLM_BASE_URL,
@@ -161,6 +164,9 @@ def main():
     fr_paths = args_dict.get("fr_path")
     if isinstance(fr_paths, list) and fr_paths:
         args_dict["fr_path"] = fr_paths[0]
+
+    # Lazy import: keeps LogSage / LangChain out of the default install path.
+    from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 
     log_analyzer = NVRxLogAnalyzer(args_dict)
     log_result = log_analyzer.run_sync(args_dict)

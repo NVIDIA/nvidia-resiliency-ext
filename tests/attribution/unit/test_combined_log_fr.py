@@ -180,7 +180,12 @@ def test_log_fr_mcp_path_collects_without_merge_by_default(monkeypatch):
         def __init__(self, _kwargs):
             raise AssertionError("merge LLM should not be constructed unless merge_llm=True")
 
-    monkeypatch.setattr(module, "NVRxLogAnalyzer", FakeLogAnalyzer)
+    # ``NVRxLogAnalyzer`` is imported lazily inside ``_run_from_paths``; patch the source
+    # module so the lazy ``from ... import NVRxLogAnalyzer`` picks up the fake.
+    nvrx_logsage_mod = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    )
+    monkeypatch.setattr(nvrx_logsage_mod, "NVRxLogAnalyzer", FakeLogAnalyzer, raising=False)
     monkeypatch.setattr(module, "CollectiveAnalyzer", FakeFRAnalyzer)
     monkeypatch.setattr(module, "CombinedLogFR", FakeCombinedLogFR)
     monkeypatch.setattr(module, "fr_path_resolvable_for_collective_analyzer", lambda _path: True)
@@ -241,7 +246,12 @@ def test_log_fr_mcp_path_passes_cycle_counter_to_logsage(monkeypatch):
         def __init__(self, _kwargs):
             raise AssertionError("merge LLM should not be constructed unless merge_llm=True")
 
-    monkeypatch.setattr(module, "NVRxLogAnalyzer", FakeLogAnalyzer)
+    # ``NVRxLogAnalyzer`` is imported lazily inside ``_run_from_paths``; patch the source
+    # module so the lazy ``from ... import NVRxLogAnalyzer`` picks up the fake.
+    nvrx_logsage_mod = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    )
+    monkeypatch.setattr(nvrx_logsage_mod, "NVRxLogAnalyzer", FakeLogAnalyzer, raising=False)
     monkeypatch.setattr(module, "CollectiveAnalyzer", FakeFRAnalyzer)
     monkeypatch.setattr(module, "CombinedLogFR", FakeCombinedLogFR)
     monkeypatch.setattr(module, "fr_path_resolvable_for_collective_analyzer", lambda _path: True)
@@ -311,7 +321,12 @@ def test_log_fr_mcp_path_reuses_logsage_analyzer_across_cycles(monkeypatch):
         def __init__(self, _kwargs):
             raise AssertionError("merge LLM should not be constructed unless merge_llm=True")
 
-    monkeypatch.setattr(module, "NVRxLogAnalyzer", FakeLogAnalyzer)
+    # ``NVRxLogAnalyzer`` is imported lazily inside ``_run_from_paths``; patch the source
+    # module so the lazy ``from ... import NVRxLogAnalyzer`` picks up the fake.
+    nvrx_logsage_mod = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    )
+    monkeypatch.setattr(nvrx_logsage_mod, "NVRxLogAnalyzer", FakeLogAnalyzer, raising=False)
     monkeypatch.setattr(module, "CollectiveAnalyzer", FakeFRAnalyzer)
     monkeypatch.setattr(module, "CombinedLogFR", FakeCombinedLogFR)
     monkeypatch.setattr(module, "fr_path_resolvable_for_collective_analyzer", lambda _path: True)
@@ -395,7 +410,12 @@ def test_log_fr_mcp_path_state_ignores_fr_and_merge_stop_when_merge_enabled(monk
                 AttributionState.STOP,
             )
 
-    monkeypatch.setattr(module, "NVRxLogAnalyzer", FakeLogAnalyzer)
+    # ``NVRxLogAnalyzer`` is imported lazily inside ``_run_from_paths``; patch the source
+    # module so the lazy ``from ... import NVRxLogAnalyzer`` picks up the fake.
+    nvrx_logsage_mod = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    )
+    monkeypatch.setattr(nvrx_logsage_mod, "NVRxLogAnalyzer", FakeLogAnalyzer, raising=False)
     monkeypatch.setattr(module, "CollectiveAnalyzer", FakeFRAnalyzer)
     monkeypatch.setattr(module, "CombinedLogFR", FakeCombinedLogFR)
     monkeypatch.setattr(module, "fr_path_resolvable_for_collective_analyzer", lambda _path: True)
@@ -466,7 +486,12 @@ def test_log_fr_mcp_path_merge_unwraps_logsage_result_for_llm(monkeypatch):
             captured["run_log_input"] = kwargs["input_data"][0]
             return ("merged", AttributionState.CONTINUE)
 
-    monkeypatch.setattr(module, "NVRxLogAnalyzer", FakeLogAnalyzer)
+    # ``NVRxLogAnalyzer`` is imported lazily inside ``_run_from_paths``; patch the source
+    # module so the lazy ``from ... import NVRxLogAnalyzer`` picks up the fake.
+    nvrx_logsage_mod = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    )
+    monkeypatch.setattr(nvrx_logsage_mod, "NVRxLogAnalyzer", FakeLogAnalyzer, raising=False)
     monkeypatch.setattr(module, "CollectiveAnalyzer", FakeFRAnalyzer)
     monkeypatch.setattr(module, "CombinedLogFR", FakeCombinedLogFR)
     monkeypatch.setattr(module, "fr_path_resolvable_for_collective_analyzer", lambda _path: True)
@@ -526,7 +551,12 @@ def test_log_fr_mcp_skips_merge_when_fr_data_is_missing(monkeypatch):
         def __init__(self, _kwargs):
             raise AssertionError("merge LLM should not be constructed without FR data")
 
-    monkeypatch.setattr(module, "NVRxLogAnalyzer", FakeLogAnalyzer)
+    # ``NVRxLogAnalyzer`` is imported lazily inside ``_run_from_paths``; patch the source
+    # module so the lazy ``from ... import NVRxLogAnalyzer`` picks up the fake.
+    nvrx_logsage_mod = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    )
+    monkeypatch.setattr(nvrx_logsage_mod, "NVRxLogAnalyzer", FakeLogAnalyzer, raising=False)
     monkeypatch.setattr(module, "CollectiveAnalyzer", FakeFRAnalyzer)
     monkeypatch.setattr(module, "CombinedLogFR", FakeCombinedLogFR)
     monkeypatch.setattr(module, "fr_path_resolvable_for_collective_analyzer", lambda _path: True)

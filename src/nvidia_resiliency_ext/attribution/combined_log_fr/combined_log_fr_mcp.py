@@ -8,12 +8,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nvidia_resiliency_ext.attribution.base import AttributionState
 from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr import CombinedLogFR
 from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import unpack_run_result
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+
+# ``NVRxLogAnalyzer`` pulls in LogSage / LangChain (see the ``[attribution]`` extra); imported
+# lazily inside :meth:`CombinedLogFRMCPOrchestrator._run_from_paths` so this module can be
+# imported under the default install (e.g. for typing / registration paths that never run it).
 from nvidia_resiliency_ext.attribution.orchestration.config import (
     MODULE_LOG_ANALYZER,
     MODULE_LOG_FR_ANALYZER,
@@ -25,6 +28,9 @@ from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import Coll
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
     fr_path_resolvable_for_collective_analyzer,
 )
+
+if TYPE_CHECKING:
+    from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +229,9 @@ class CombinedLogFRMCPOrchestrator:
         }
 
         async def _run_log_analyzer() -> Any:
+            # Lazy import: keeps LogSage / LangChain out of the default install path.
+            from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+
             async with self._log_analyzer_lock:
                 if self._log_analyzer is None:
                     self._log_analyzer = NVRxLogAnalyzer(log_kw)

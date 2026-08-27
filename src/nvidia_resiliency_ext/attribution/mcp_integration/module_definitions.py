@@ -9,7 +9,10 @@ from typing import Any
 from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp import (
     CombinedLogFRMCPOrchestrator,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+
+# ``NVRxLogAnalyzer`` requires LogSage / LangChain (installed via the ``[attribution]`` extra);
+# it is imported lazily inside :func:`register_all_modules` — the only caller in this module —
+# so the module itself can be imported under the default install.
 from nvidia_resiliency_ext.attribution.mcp_integration.registry import global_registry
 from nvidia_resiliency_ext.attribution.orchestration.config import (
     DEFAULT_LLM_BASE_URL,
@@ -225,6 +228,9 @@ def _progressive_start_output_schema() -> dict[str, Any]:
 
 def register_all_modules():
     """Register all NVRX attribution modules with the global registry."""
+
+    # Lazy import: keeps LogSage / LangChain out of the default install path.
+    from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
 
     # Register Log Analyzer (LogSage)
     global_registry.register(

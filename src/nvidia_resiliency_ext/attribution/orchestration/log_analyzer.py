@@ -19,7 +19,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from nvidia_resiliency_ext.attribution.coalescing import LogAnalysisCoalesced
 
 # svc is a connector layer; cross-package imports from attribution.* are intentional.
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+# ``NVRxLogAnalyzer`` pulls in LogSage / LangChain (see ``[attribution]`` extra); we import it
+# lazily inside :meth:`LogSageRunner._get_lib_log_analyzer` so that this module can be imported
+# under the default install (e.g. by :mod:`~nvidia_resiliency_ext.attribution.analyzer.engine`
+# and :class:`~nvidia_resiliency_ext.attribution.controller.AttributionController`).
 from nvidia_resiliency_ext.attribution.mcp_integration import create_mcp_client
 from nvidia_resiliency_ext.attribution.path_utils import path_is_under_allowed_root
 from nvidia_resiliency_ext.attribution.postprocessing import post_analysis_items
@@ -210,6 +213,11 @@ class LogSageRunner:
             if self._lib_log_analyzer_init_error is not None:
                 raise self._lib_log_analyzer_init_error
             try:
+                # Lazy import: keeps LogSage / LangChain out of the default install path.
+                from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import (
+                    NVRxLogAnalyzer,
+                )
+
                 self._lib_log_analyzer = NVRxLogAnalyzer(dict(run_kwargs))
             except Exception as e:
                 self._lib_log_analyzer_init_error = e
