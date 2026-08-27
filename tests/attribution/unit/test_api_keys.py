@@ -18,7 +18,9 @@ if PY310_PLUS:
         llm_api_key_missing_message,
         load_llm_api_key,
     )
-    from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import merge_log_fr_llm
+    from nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.llm_merge import (
+        merge_log_fr_llm,
+    )
     from nvidia_resiliency_ext.attribution.orchestration.config import DEFAULT_LLM_BASE_URL
 
 

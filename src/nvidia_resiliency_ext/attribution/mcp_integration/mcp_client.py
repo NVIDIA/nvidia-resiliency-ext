@@ -57,7 +57,9 @@ def normalize_mcp_server_log_level(level: str) -> str:
     return name
 
 
-def get_server_command(*, log_level: str = "INFO") -> List[str]:
+def get_server_command(
+    *, log_level: str = "INFO", enable_legacy_logsage: bool = False
+) -> List[str]:
     """
     Resolve and return the server launcher command for the MCP client.
 
@@ -68,6 +70,8 @@ def get_server_command(*, log_level: str = "INFO") -> List[str]:
     Args:
         log_level: Subprocess logging level (same names as ``server_launcher --log-level``).
             Typically matches host app config (e.g. ``NVRX_ATTRSVC_LOG_LEVEL``).
+        enable_legacy_logsage: Add ``--enable-legacy-logsage`` for source-checkout-only
+            LogSage MCP tools.
 
     Returns:
         Command list to launch the MCP server subprocess.
@@ -80,21 +84,33 @@ def get_server_command(*, log_level: str = "INFO") -> List[str]:
         raise FileNotFoundError(f"failed to locate server_launcher.py in package {pkg}: {e}")
     if not resource.exists():
         raise FileNotFoundError(f"server launcher not found in package: {pkg}/server_launcher.py")
-    return [sys.executable, str(resource), "--log-level", lvl]
+    cmd = [sys.executable, str(resource), "--log-level", lvl]
+    if enable_legacy_logsage:
+        cmd.append("--enable-legacy-logsage")
+    return cmd
 
 
-def create_mcp_client(*, mcp_server_log_level: str = "INFO") -> "NVRxMCPClient":
+def create_mcp_client(
+    *, mcp_server_log_level: str = "INFO", enable_legacy_logsage: bool = False
+) -> "NVRxMCPClient":
     """
     Create and return an NVRxMCPClient with the default server command.
 
     Args:
         mcp_server_log_level: Passed to ``server_launcher`` as ``--log-level`` (e.g. from
             :class:`~nvidia_resiliency_ext.attribution.orchestration.config.LogSageExecutionConfig`).
+        enable_legacy_logsage: Add ``--enable-legacy-logsage`` for source-checkout-only
+            LogSage MCP tools.
 
     Returns:
         Configured NVRxMCPClient ready for use as async context manager.
     """
-    return NVRxMCPClient(get_server_command(log_level=mcp_server_log_level))
+    return NVRxMCPClient(
+        get_server_command(
+            log_level=mcp_server_log_level,
+            enable_legacy_logsage=enable_legacy_logsage,
+        )
+    )
 
 
 class NVRxMCPClient:

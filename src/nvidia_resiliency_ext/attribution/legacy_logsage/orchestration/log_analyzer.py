@@ -5,7 +5,7 @@
 
 :class:`LogAnalyzer` is the log-side facade (jobs, splitlog, LogSage). It can run **log-only** or
 **log + flight-recorder** analysis via :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`
-and :func:`run_attribution_pipeline`. :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer`
+and :func:`run_attribution_pipeline`. :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine.Analyzer`
 composes it with request coalescing as the public entry point.
 """
 
@@ -19,8 +19,39 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from nvidia_resiliency_ext.attribution.coalescing import LogAnalysisCoalesced
 
 # svc is a connector layer; cross-package imports from attribution.* are intentional.
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+from nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage import (
+    NVRxLogAnalyzer,
+)
 from nvidia_resiliency_ext.attribution.mcp_integration import create_mcp_client
+from nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline import (
+    AnalysisPipelineMode,
+    run_attribution_pipeline,
+)
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    MODULE_LOG_FR_ANALYZER,
+    ErrorCode,
+    LogSageExecutionConfig,
+)
+from nvidia_resiliency_ext.attribution.orchestration.job import Job
+from nvidia_resiliency_ext.attribution.orchestration.log_path_metadata import (
+    CYCLE_NUM_PATTERN,
+    extract_job_metadata,
+)
+from nvidia_resiliency_ext.attribution.orchestration.progressive import (
+    MODULE_LOG_ANALYZER_PROGRESSIVE_START,
+    PROGRESSIVE_STATUS_UNSUPPORTED,
+    ProgressiveStartResult,
+    progressive_start_result_from_mcp_response,
+)
+from nvidia_resiliency_ext.attribution.orchestration.types import (
+    LogAnalyzerError,
+    LogAnalyzerFilePreview,
+    LogAnalyzerSubmitResult,
+)
+from nvidia_resiliency_ext.attribution.orchestration.utils import (
+    nvrx_run_result_to_log_dict,
+    validate_log_path,
+)
 from nvidia_resiliency_ext.attribution.path_utils import path_is_under_allowed_root
 from nvidia_resiliency_ext.attribution.postprocessing import post_analysis_items
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
@@ -30,20 +61,8 @@ from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
 )
 from nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer import TraceAnalyzer
 
-from .analysis_pipeline import AnalysisPipelineMode, run_attribution_pipeline
-from .config import MODULE_LOG_FR_ANALYZER, ErrorCode, LogSageExecutionConfig
-from .job import Job
-from .log_path_metadata import CYCLE_NUM_PATTERN, extract_job_metadata
-from .progressive import (
-    MODULE_LOG_ANALYZER_PROGRESSIVE_START,
-    PROGRESSIVE_STATUS_UNSUPPORTED,
-    ProgressiveStartResult,
-    progressive_start_result_from_mcp_response,
-)
 from .splitlog import SplitlogTracker
 from .tracked_jobs import TrackedJobs
-from .types import LogAnalyzerError, LogAnalyzerFilePreview, LogAnalyzerSubmitResult
-from .utils import nvrx_run_result_to_log_dict, validate_log_path
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +82,7 @@ class LogSageRunner:
             try:
                 self._mcp_client = create_mcp_client(
                     mcp_server_log_level=config.mcp_server_log_level,
+                    enable_legacy_logsage=True,
                 )
             except Exception as e:
                 raise RuntimeError(f"failed to create MCP client: {e}") from e
@@ -311,8 +331,6 @@ class LogSageRunner:
                 pattern="_dump_*",
                 verbose=False,
                 health_check=False,
-                llm_analyze=False,
-                **self.config.llm_endpoint_overrides(),
             )
         return fr_result_from_mcp_module_response(resp)
 
@@ -335,7 +353,6 @@ class LogSageRunner:
             "pattern": "_dump_*",
             "verbose": False,
             "health_check": False,
-            "llm_analyze": False,
             "merge_llm": merge_llm,
             "threshold": 0,
             **self.config.llm_runtime_overrides(),
@@ -410,6 +427,7 @@ class LogAnalyzer:
         self._tracked = TrackedJobs(
             track_submission=track_submission,
             splitlog_tracker=splitlog_tracker,
+            allowed_root=allowed_root,
         )
         self._post_tasks: set[asyncio.Task[None]] = set()
 

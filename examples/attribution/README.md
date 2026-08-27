@@ -1,18 +1,37 @@
 # NVRx Attribution Examples
 
-These examples cover the existing attribution MCP integration and the Restart
-Agent CLI configuration.
+These examples cover the Restart Agent CLI configuration, packaged
+restart-agent/FR MCP integration, and legacy source-checkout LogSage notes.
 
-Install NVIDIA Resiliency Extension with the optional attribution dependencies
-when running the MCP example, then run the examples from the repository root:
+The Restart Agent CLI and attrsvc paths are shipped in the main wheel:
+
+```bash
+pip install nvidia-resiliency-ext
+```
+
+Packaged MCP support for restart-agent log analysis and Flight Recorder analysis
+is available from the attribution extra:
 
 ```bash
 pip install 'nvidia-resiliency-ext[attribution]'
+python -m nvidia_resiliency_ext.attribution.mcp_integration.server_launcher \
+  --modules restart_agent fr_analyzer
 ```
+
+Legacy LogSage implementations and their MCP tools are not shipped in the main
+wheel, and there is no wheel extra for them. Source-checkout workflows that use
+the legacy LogSage-backed MCP tools (`log_analyzer`, `log_fr_analyzer`) can
+install the source-only dependencies with:
+
+```bash
+python -m pip install -r src/nvidia_resiliency_ext/attribution/legacy_logsage/requirements.txt
+```
+
+Then launch the server with `--enable-legacy-logsage`.
 
 | File | Description |
 |------|-------------|
-| `single_server_example.py` | Single MCP server with multiple attribution modules (run from repo root). |
+| `single_server_example.py` | Source-checkout single MCP server with packaged restart-agent plus FR tools (run from repo root). |
 | `restart_agent.json` | Minimal `restart_agent_config.v1` configuration with one Nemotron model route. |
 
 The Restart Agent configuration contains no credential path or key material. It

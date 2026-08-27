@@ -11,7 +11,7 @@ def _stub_module(monkeypatch, name):
 
 
 def _import_nvrx_logsage_with_optional_dependency_stubs(monkeypatch):
-    module_name = "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+    module_name = "nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage"
     monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     langchain_openai = _stub_module(monkeypatch, "langchain_openai")

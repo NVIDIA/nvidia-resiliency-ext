@@ -7,7 +7,7 @@ The service-layer wiring (analysis pipeline, job tracking, splitlog, parsers, co
 lives in :mod:`nvidia_resiliency_ext.attribution.orchestration`.
 
 Example:
-    from nvidia_resiliency_ext.attribution.analyzer import Analyzer
+    from nvidia_resiliency_ext.attribution.legacy_logsage.analyzer import Analyzer
 
     analyzer = Analyzer(allowed_root="/logs", use_lib_log_analysis=False)
     result = await analyzer.analyze("/logs/slurm-12345.out")

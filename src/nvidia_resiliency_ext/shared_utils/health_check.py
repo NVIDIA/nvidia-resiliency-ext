@@ -2133,8 +2133,6 @@ class AttributionService:
             return None
         try:
             with httpx.Client(base_url=base_url, timeout=timeout) as client:
-                url = f"{base_url}{ROUTE_LOGS}"
-                logger.debug("AttributionService GET: %s (log_path=%s)", url, log_path)
                 resp = get_log_response(client, log_path, wait=False)
                 if resp.status_code == 200:
                     payload = resp.json() if resp.text else {}

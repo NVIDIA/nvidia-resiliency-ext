@@ -271,10 +271,8 @@ async def analyze_fr_dump(dump_path: str) -> Optional[FRAnalysisResult]:
         args = {
             "fr_path": dump_path,
             "pattern": "_dump_*",
-            "model": None,
             "verbose": False,
             "health_check": False,
-            "llm_analyze": False,
             "threshold": None,
         }
 
@@ -319,9 +317,8 @@ def fr_fields_for_dataflow_record(
         try:
             nums = [int(x) for x in re.findall(r"\d+", str(fr_analysis.hanging_ranks or ""))]
             out["l_hanging_ranks"] = nums
-        except Exception:
-            # Keep best-effort; don't fail record assembly on parse errors
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.debug("Failed to parse FR hanging ranks for dataflow record: %s", exc)
     return out
 
 
