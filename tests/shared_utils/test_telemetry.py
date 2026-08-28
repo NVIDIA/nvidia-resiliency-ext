@@ -85,7 +85,7 @@ class TestManualSpan(unittest.TestCase):
     def test_close_is_idempotent(self):
         span = telemetry.ManualSpan()
         span.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 0})
-        span.close({"nv.nvrx.cycle.outcome": "succeeded"})
+        span.close({"nv.nvrx.cycle.outcome": "completed"})
         span.close()
         span.close({"nv.nvrx.cycle.outcome": "terminated"})
 
@@ -219,20 +219,20 @@ class TestPublishResourceAttributes(unittest.TestCase):
         self.addCleanup(self.inherited.stop)
 
     def test_the_child_sees_both_inherited_and_published(self):
-        with telemetry.publish_resource_attributes({"dl.rank": 3}):
+        with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
             published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
         self.assertIn("job.uid=abc", published)
-        self.assertIn("dl.rank=3", published)
+        self.assertIn("nv.dl.rank=3", published)
 
     def test_the_parent_is_restored(self):
         # Left set, it would describe this process and every later child of it.
-        with telemetry.publish_resource_attributes({"dl.rank": 3}):
+        with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
             pass
         self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
 
     def test_restored_even_when_the_spawn_raises(self):
         with self.assertRaises(RuntimeError):
-            with telemetry.publish_resource_attributes({"dl.rank": 3}):
+            with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
                 raise RuntimeError("Process.start() failed")
         self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
 
@@ -240,16 +240,16 @@ class TestPublishResourceAttributes(unittest.TestCase):
         with unittest.mock.patch.dict("os.environ", {}, clear=False):
             os.environ.pop("OTEL_RESOURCE_ATTRIBUTES", None)
             with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", ""):
-                with telemetry.publish_resource_attributes({"dl.rank": 3}):
-                    self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "dl.rank=3")
+                with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
+                    self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "nv.dl.rank=3")
                 self.assertNotIn("OTEL_RESOURCE_ATTRIBUTES", os.environ)
 
     def test_successive_publishes_do_not_accumulate(self):
         # A worker restarts per cycle; building from the last value grows unbounded.
         for _ in range(3):
-            with telemetry.publish_resource_attributes({"dl.rank": 3}):
+            with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
                 published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
-        self.assertEqual(published.count("dl.rank"), 1)
+        self.assertEqual(published.count("nv.dl.rank"), 1)
 
 
 class TestPhase(unittest.TestCase):
@@ -281,7 +281,7 @@ class TestPhase(unittest.TestCase):
         phase = telemetry.Phase()
         before = time.time()
         phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 2})
-        phase.close({"nv.nvrx.cycle.outcome": "succeeded"})
+        phase.close({"nv.nvrx.cycle.outcome": "completed"})
         after = time.time()
 
         self.assertEqual(
@@ -297,7 +297,7 @@ class TestPhase(unittest.TestCase):
         self.assertEqual(parent, "ctx-of-nv.nvrx.ftl.cycle_start")
         # Opening attributes carry through to the span; close adds to them.
         self.assertEqual(
-            attributes, {"nv.nvrx.cycle.index": 2, "nv.nvrx.cycle.outcome": "succeeded"}
+            attributes, {"nv.nvrx.cycle.index": 2, "nv.nvrx.cycle.outcome": "completed"}
         )
 
     def test_open_attributes_go_on_the_mark_and_the_span(self):
@@ -336,11 +336,11 @@ class TestPhase(unittest.TestCase):
         phase = telemetry.Phase()
         phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
         phase.close()
-        phase.close({"nv.nvrx.cycle.outcome": "succeeded"})
+        phase.close({"nv.nvrx.cycle.outcome": "completed"})
         self.assertEqual(len(self.spans), 1)
 
     def test_close_without_open_is_a_no_op(self):
-        telemetry.Phase().close({"nv.nvrx.cycle.outcome": "succeeded"})
+        telemetry.Phase().close({"nv.nvrx.cycle.outcome": "completed"})
         self.assertEqual(self.spans, [])
 
     def test_open_closes_the_previous_phase(self):

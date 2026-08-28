@@ -68,7 +68,7 @@ A value's carrier follows from whether it is constant for the _emitting process'
 | Process           | Constant for its life → Resource                                           | Varies during its life → span attribute |
 | ----------------- | -------------------------------------------------------------------------- | --------------------------------------- |
 | ft-launcher agent | `service.name`, `service.instance.id`, `nv.nvrx.ftl.node`, infrastructure rank    | `nv.nvrx.cycle.index`, and every per-span value  |
-| Trainer worker    | `nv.nvrx.cycle.index`, `nv.nvrx.ftl.membership`, `nv.nvrx.ftl.infra.rank`, elastic rank           | —                                       |
+| Trainer worker    | `nv.nvrx.cycle.index`, `nv.nvrx.ftl.membership`, the placement and node-budget keys below, elastic rank | —                             |
 | Checkpoint worker | same as the trainer, plus its own `service.name` and `service.instance.id` | `nv.nvrx.ckpt.call_idx`                         |
 
 `nv.nvrx.cycle.index` appears on both sides of that table, which is the clearest case. The agent outlives cycles, so its Resource cannot carry a cycle number and the value is a span attribute. A worker process is created fresh for each cycle, so the cycle is constant for its entire life and belongs in its Resource — which is why the agent appends it to `OTEL_RESOURCE_ATTRIBUTES` at launch rather than passing it some other way.
@@ -147,11 +147,11 @@ NVRx sets only what describes itself:
 | `service.instance.id` | unique per emitting process — the agent, the trainer, and the checkpoint worker must never collide |
 | `nv.nvrx.ftl.node`           | this node's identity                                                                               |
 
-`setup_telemetry(service_name, instance_id=None)` always names the kind of process, because `OTEL_SERVICE_NAME` names the workload a launching environment came to run and these processes are NVRx's own. Identity of the _individual_ process has to come from somewhere too, since the nemo-lens default is unusable here: nemo-lens derives `service.instance.id` from `dl.rank`, the agent has no rank at all, and the checkpoint worker shares one with the trainer it serves.
+`setup_telemetry(service_name, instance_id=None)` always names the kind of process, because `OTEL_SERVICE_NAME` names the workload a launching environment came to run and these processes are NVRx's own. Identity of the _individual_ process has to come from somewhere too, since the nemo-lens default is unusable here: nemo-lens derives `service.instance.id` from `nv.dl.rank`, the agent has no rank at all, and the checkpoint worker shares one with the trainer it serves.
 
-**A process is named by whoever placed it, not by itself.** Rank and instance id are facts about placement, known where the placing happened. So the trainer publishes the checkpoint worker's identity into `OTEL_RESOURCE_ATTRIBUTES` around the spawn and the worker passes no identity at all — it does not have to know how it was placed, and there is no argument to keep in sync when the placement changes. Only the fault-tolerance agent supplies its own, because nothing upstream could have: it is launched by the cluster, not by NVRx. It is keyed on its hostname and publishes no `dl.rank`, a node ordinal not being a rank; nemo-lens supports the absence given an explicit identity, and warns without one. The elastic `group_rank` is a span attribute, set once rendezvous assigns it.
+**A process is named by whoever placed it, not by itself.** Rank and instance id are facts about placement, known where the placing happened. So the trainer publishes the checkpoint worker's identity into `OTEL_RESOURCE_ATTRIBUTES` around the spawn and the worker passes no identity at all — it does not have to know how it was placed, and there is no argument to keep in sync when the placement changes. Only the fault-tolerance agent supplies its own, because nothing upstream could have: it is launched by the cluster, not by NVRx. It is keyed on its hostname and publishes no `nv.dl.rank`, a node ordinal not being a rank; nemo-lens supports the absence given an explicit identity, and warns without one. The elastic `group_rank` is a span attribute, set once rendezvous assigns it.
 
-Values published this way arrive in the child as strings, because that is what the encoding carries — `dl.rank` reaches a spawned worker's Resource as `"3"`, not `3`. Nothing reads it back as a number.
+Values published this way arrive in the child as strings, because that is what the encoding carries — `nv.dl.rank` reaches a spawned worker's Resource as `"3"`, not `3`. Nothing reads it back as a number.
 
 Export strategy is nemo-lens's default, set through `NEMO_LENS_EXPORT_STRATEGY`. NVRx overrides nothing: whether every node exports or only one depends on the collector topology the launching environment provides, which NVRx cannot know. A deployment running a collector per node sets `all_ranks` to get per-node visibility.
 
@@ -206,7 +206,7 @@ sequenceDiagram
 
 Spans opened inside `ft_rendezvous_barrier.py` nest under the cycle context without reference passing, since `next_rendezvous()` is called synchronously from the launcher's main thread.
 
-`nv.nvrx.ftl.attribution` is the exception. It runs on the attribution poller's own daemon thread, and OTel context is per-thread, so no ambient context reaches it and it is emitted as a root span.
+`nv.nvrx.ftl.attribution` is the exception. It runs on the attribution poller's own daemon thread, and OTel context is per-thread, so no ambient context reaches it and it is emitted as a root span. It also explains a cycle that has usually already closed, so parenting it under the cycle running when the poller happens to fire would be wrong. `nv.nvrx.ftl.attribution.analyzed_cycle` carries the cycle it is actually about; it is recorded when terminal analysis is requested, since the poller itself only knows a log path.
 
 What identifies it comes from two places. Resource attributes are free — the poller is in the agent process, so it shares the agent's Resource and every span carries `service.instance.id`, `nv.nvrx.ftl.node`, and whatever the environment supplied. Anything that is a _span_ attribute on the agent has to be passed explicitly across the thread boundary: `node_id` is handed to `_start_get_profiling` when the span opens and retained as `_poll_node_id` for the close, and the cycle number must travel the same way, since a verdict can arrive cycles after the failure it describes. Only `_poll_once` drives the span, so the `ManualSpan` same-thread ordering contract holds without extra locking.
 
@@ -242,7 +242,7 @@ A hot spare produces one `await_round` / `rendezvous` pair per round, so volume 
 
 | Condition                                          | `cycle.outcome`                                    |
 | -------------------------------------------------- | -------------------------------------------------- |
-| `WorkerState.SUCCEEDED`                            | `succeeded`                                        |
+| `WorkerState.SUCCEEDED`                            | `completed`                                        |
 | Local failure, restart granted or budget exhausted | `failed`                                           |
 | Healthy node joins a peer restart                  | `peer_restart`                                     |
 | Health check exclusion (`UnhealthyNodeException`)  | `excluded`                                         |
@@ -251,6 +251,25 @@ A hot spare produces one `await_round` / `rendezvous` pair per round, so volume 
 | Signal                                             | _(no cycle span emitted; the marker stands alone)_ |
 
 The exclusion and standby handlers live in `_rendezvous`, so they cover the first rendezvous as well as every restart.
+
+`nv.nvrx.ftl.cycle.state` and `nv.nvrx.ftl.cycle.failures` accompany a `failed` outcome. The
+`WorkerState` name is on the cycle span rather than on `nv.nvrx.ftl.fault`, because it describes
+how the cycle ended, and a consumer reading cycle outcomes should not have to join to a second
+span to get it.
+
+### Placement and node budget
+
+The agent publishes four more keys into the worker Resource, all of them constant for a worker's
+life. `nv.nvrx.ftl.infra.rank` is the physical node ordinal, and also goes on the cycle span so a
+cycle can be read without joining to a worker. `nv.dl.launch.nnodes.active` and
+`nv.dl.launch.nnodes.spare` are the configured node budget — `min_nodes` and `max_nodes -
+min_nodes`, so a job with no spares reports `0` rather than omitting the key.
+
+`nv.nvrx.ftl.segment` and `nv.nvrx.ftl.infra.cluster_uuid` appear only when `--ft-segment` is
+configured. The ClusterUUID is parsed from `nvidia-smi` for segment-aware rank assignment and is
+cached on the rendezvous handler, so telemetry reuses that value and never shells out itself; when
+no segment is configured NVRx stores the placeholder `"none"`, which is not a domain and is not
+emitted.
 
 ### Span attributes
 
@@ -358,7 +377,7 @@ It identifies a **request**, not a checkpoint iteration: a save that also dumps 
 
 The persistent worker is spawned with `start_method="spawn"`. It inherits the environment but no in-memory state, so it calls `setup_telemetry("nvrx.ckpt_worker")` at the top of `async_process_target` — the kind of process, and nothing else.
 
-Its identity comes the other way. `_start_worker` wraps `Process.start()` in `publish_resource_attributes`, which sets `OTEL_RESOURCE_ATTRIBUTES` for the duration of the spawn and restores it after, adding `dl.rank` and a `service.instance.id` of `nvrx-ckpt<rank>` so the worker and the trainer it serves never claim the same identity. `multiprocessing.Process` has no `env` parameter, so this is not one option among several: the child inherits whatever `os.environ` held when `start()` ran, and there is no other channel. The same variable carries job and cycle context across the spawn with no code at all.
+Its identity comes the other way. `_start_worker` wraps `Process.start()` in `publish_resource_attributes`, which sets `OTEL_RESOURCE_ATTRIBUTES` for the duration of the spawn and restores it after, adding `nv.dl.rank` and a `service.instance.id` of `nvrx-ckpt<rank>` so the worker and the trainer it serves never claim the same identity. `multiprocessing.Process` has no `env` parameter, so this is not one option among several: the child inherits whatever `os.environ` held when `start()` ran, and there is no other channel. The same variable carries job and cycle context across the spawn with no code at all.
 
 Restoring it matters. Left set, it would describe the trainer itself — and every later child of it — as the process that was spawned there.
 

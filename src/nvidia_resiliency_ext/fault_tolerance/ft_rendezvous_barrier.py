@@ -1713,7 +1713,7 @@ class _RendezvousBarrierState:
             )
             return
 
-        self._attribution_service.request_terminal_analysis()
+        self._attribution_service.request_terminal_analysis(cycle=round_id)
         self._attribution_terminal_requested_cycle = round_id
 
     def _report_cycle_start_as_host(self, round_id: int) -> None:

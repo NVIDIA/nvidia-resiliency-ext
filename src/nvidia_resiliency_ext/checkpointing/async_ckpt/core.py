@@ -515,7 +515,7 @@ class PersistentAsyncCaller(AsyncCaller):
         # Propagate resource attributes for the background worker process
         # through the environment.
         with telemetry.publish_resource_attributes(
-            {"dl.rank": rank, "service.instance.id": f"nvrx-ckpt{rank}"}
+            {"nv.dl.rank": rank, "service.instance.id": f"nvrx-ckpt{rank}"}
         ):
             self.process.start()
         logger.debug(f"PersistentAsyncCaller: {rank}, Started Async Caller {self.process}")

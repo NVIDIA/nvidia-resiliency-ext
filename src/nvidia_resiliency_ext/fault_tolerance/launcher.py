@@ -699,7 +699,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     self._exit_barrier_timeout,
                 )
                 self._run_phase.close()
-                self._cycle_phase.close({CYCLE_OUTCOME: "succeeded"})
+                self._cycle_phase.close({CYCLE_OUTCOME: "completed"})
                 self._exit_barrier()
                 return run_result
 
@@ -747,14 +747,19 @@ class LocalElasticAgent(SimpleElasticAgent):
                     "nvrx.ft",
                     "nv.nvrx.ftl.fault",
                     {
-                        "nv.nvrx.ftl.cycle.state": state.name,
                         "nv.nvrx.ftl.cycle.failures": failures,
                         "nv.nvrx.ftl.node": self._node_id,
                     },
                 )
                 # Set now; the span stays open until the next rendezvous so teardown
                 # lands inside the cycle that failed.
-                self._cycle_phase.set({CYCLE_OUTCOME: "failed", "nv.nvrx.ftl.cycle.failures": failures})
+                self._cycle_phase.set(
+                    {
+                        CYCLE_OUTCOME: "failed",
+                        "nv.nvrx.ftl.cycle.state": state.name,
+                        "nv.nvrx.ftl.cycle.failures": failures,
+                    }
+                )
                 telemetry.flush()  # this node may be killed moments from here
 
                 log_msg = (
@@ -1135,13 +1140,12 @@ class LocalElasticAgent(SimpleElasticAgent):
             {"nv.nvrx.cycle.index": restart_count, "nv.nvrx.ftl.node": self._node_id}
         )
 
-        worker_resource_attrs = {"nv.nvrx.cycle.index": restart_count, "nv.nvrx.ftl.membership": "active"}
-        try:
-            worker_resource_attrs["nv.nvrx.ftl.infra.rank"] = get_infrastructure_rank(
-                skip_nodename_logic=True
-            )
-        except (ValueError, RuntimeError):
-            logger.debug("Infrastructure rank unavailable for worker env", exc_info=True)
+        worker_resource_attrs = {
+            "nv.nvrx.cycle.index": restart_count,
+            "nv.nvrx.ftl.membership": "active",
+            **self._infra_placement_attrs(),
+            **self._launch_budget_attrs(),
+        }
         cohort_env = {
             "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
                 worker_resource_attrs
@@ -1452,6 +1456,38 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _infra_placement_attrs(self) -> dict:
+        """Where this node sits in the fabric. A key is absent when its value is not known."""
+        attrs = {}
+        try:
+            attrs["nv.nvrx.ftl.infra.rank"] = get_infrastructure_rank(skip_nodename_logic=True)
+        except (ValueError, RuntimeError):
+            logger.debug("Infrastructure rank unavailable", exc_info=True)
+        settings = self._rdzv_settings()
+        if settings is not None and settings.segment is not None:
+            attrs["nv.nvrx.ftl.segment"] = settings.segment
+            # Parsed only when a segment is configured, and "none" is its placeholder for
+            # "not looked up" rather than a domain.
+            state = getattr(self._rdzv_handler, "_barrier_state", None)
+            domain = getattr(state, "_cached_domain_id", None)
+            if domain not in (None, "none"):
+                attrs["nv.nvrx.ftl.infra.cluster_uuid"] = domain
+        return attrs
+
+    def _rdzv_settings(self):
+        """Our handler's settings, or None under a rendezvous backend that is not ours."""
+        return getattr(self._rdzv_handler, "settings", None)
+
+    def _launch_budget_attrs(self) -> dict:
+        """The node budget the job was launched with, for the worker Resource."""
+        settings = self._rdzv_settings()
+        if settings is None:
+            return {}
+        return {
+            "nv.dl.launch.nnodes.active": settings.min_nodes,
+            "nv.dl.launch.nnodes.spare": settings.max_nodes - settings.min_nodes,
+        }
+
     def _joined_cycle_attrs(self, worker_group: WorkerGroup) -> dict:
         """Telemetry attributes describing the round this node just joined.
 
@@ -1470,6 +1506,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             "nv.nvrx.ftl.remaining_restarts": self._remaining_restarts,
         }
         attrs["nv.nvrx.ftl.rdzv.run_id"] = spec.rdzv_handler.get_run_id()
+        attrs.update(self._infra_placement_attrs())
         return attrs
 
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:

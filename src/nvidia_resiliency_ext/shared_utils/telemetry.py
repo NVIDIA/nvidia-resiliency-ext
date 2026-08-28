@@ -118,7 +118,7 @@ def setup_telemetry(
     which names the workload rather than these processes. ``instance_id`` becomes
     ``service.instance.id``; omit it when a parent published one through
     :func:`publish_resource_attributes`. One of the two must supply it -- nemo-lens
-    derives its own from ``dl.rank``, which no NVRx process has a usable value for.
+    derives its own from ``nv.dl.rank``, which no NVRx process has a usable value for.
     """
     if not _AVAILABLE:
         return _NoOpHandle()
