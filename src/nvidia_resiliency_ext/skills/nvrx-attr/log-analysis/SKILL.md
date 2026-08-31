@@ -2,115 +2,92 @@
 name: log-analysis
 description: >
   Analyze a SLURM job log file for failure root-cause attribution and restart decisions using
-  NVRxLogAnalyzer. Use when you have a SLURM training job log and need to determine why the
-  job failed and whether it should be restarted. Performs per-cycle chunking, fast-path pattern
-  matching, and LLM-based classification.
-compatibility: Requires LLM_API_KEY and nvidia-resiliency-ext[attribution] installed.
+  the packaged NVRx restart-agent. Use when you have a SLURM training job log and need to
+  determine why the job failed and whether it should be restarted. Performs deterministic
+  evidence extraction plus optional LLM enrichment.
+compatibility: Requires NVRx attribution support and LLM_API_KEY for L1 enrichment. Can run deterministic-only with --disable-l1.
 metadata:
-  entry-point: NVRxLogAnalyzer
-  script: scripts/nvrx_logsage.py
+  entry-point: RestartAgent
+  command: python -m nvidia_resiliency_ext.attribution.restart_agent.cli
 ---
 
 # Skill: log_analysis
 
-Analyze a SLURM job log file for failure root-cause attribution and restart decisions using `NVRxLogAnalyzer`.
+Analyze a SLURM job log file for failure root-cause attribution and restart decisions using `RestartAgent`.
 
-**Script:** [`scripts/nvrx_logsage.py`](./scripts/nvrx_logsage.py) → `attribution/log_analyzer/nvrx_logsage.py`
+**Command:** `python -m nvidia_resiliency_ext.attribution.restart_agent.cli`
 
 ---
 
 ## What it does
 
 1. Reads the log file (UTF-8, falls back to latin-1).
-2. Splits into per-cycle chunks using `chunk_logs_strict` (scans for `profiling.py:.*Cycle:\s*N` markers). Falls back to a single chunk when no markers are found.
-3. For each chunk, extracts application errors via `return_application_errors` (logsage).
-4. Classifies each chunk with fast-path pattern matching (training done, SLURM cancelled, preemption, time limit) or calls the LLM via `get_proposed_solution_cat`.
-5. Returns one result tuple per cycle.
+2. Builds deterministic L0 evidence from training progress, failure lines, checkpoint state, and known restart-policy signals.
+3. Optionally runs L1 model enrichment to explain the primary failure and related evidence.
+4. Applies the restart-agent retry/recovery policy and returns a structured `STOP` or `RESTART` decision.
 
 ---
 
 ## CLI
 
 ```bash
-python scripts/nvrx_logsage.py \
-    --log-path /path/to/job.log \
-    [--model MODEL] \
-    [--temperature 0.2] \
-    [--top_p 0.7] \
-    [--max_tokens 8192] \
-    [--exclude_nvrx_logs] \
-    [--is_per_cycle]
+python -m nvidia_resiliency_ext.attribution.restart_agent.cli \
+    /path/to/job.log \
+    [--job-id JOB_ID] \
+    [--cycle-id CYCLE_ID] \
+    [--config examples/attribution/restart_agent.json] \
+    [--llm-model MODEL] \
+    [--llm-base-url URL] \
+    [--llm-api-key-file PATH] \
+    [--disable-l1] \
+    [--summary]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--log-path` | required | Path to the job log file |
-| `--model` | `nvidia/nemotron-3-super-120b-a12b` | LLM model |
-| `--temperature` | `0.2` | Sampling temperature |
-| `--top_p` | `0.7` | Top-p nucleus sampling |
-| `--max_tokens` | `8192` | Max output tokens |
-| `--exclude_nvrx_logs` / `--no-exclude_nvrx_logs` | on | Strip `nvidia_resiliency_ext` / `[workload:]` lines before chunking (default on; use `--no-exclude_nvrx_logs` to disable) |
-| `--is_per_cycle` | off | Skip chunking — treat the whole file as a single pre-split cycle |
+| `log_path` | required | Path to the job log file |
+| `--job-id` | unset | Optional job id for request metadata and retry history |
+| `--cycle-id` | unset | Optional cycle id for retry history |
+| `--config` | unset | Versioned restart-agent config for configured model routes and retry policy |
+| `--llm-model` | environment/default config | L1 enrichment model when `--config` is not used |
+| `--llm-base-url` | environment/default config | OpenAI-compatible base URL when `--config` is not used |
+| `--llm-api-key-file` | environment/default config | File containing the L1 API key |
+| `--disable-l1` | off | Run deterministic-only analysis |
+| `--summary` | off | Emit a compact human-readable summary to stderr in addition to JSON stdout |
 
 ---
 
 ## Programmatic API
 
 ```python
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+from nvidia_resiliency_ext.attribution.restart_agent.l1 import LlmConfig, LlmEvidenceExtractor
+from nvidia_resiliency_ext.attribution.restart_agent.models import RestartAgentRequest
+from nvidia_resiliency_ext.attribution.restart_agent.pipeline import RestartAgent
 
-analyzer = NVRxLogAnalyzer({
-    "log_path": "/path/to/job.log",
-    "model": "nvidia/nemotron-3-super-120b-a12b",
-    "temperature": 0.2,
-    "top_p": 0.7,
-    "max_tokens": 8192,
-    "exclude_nvrx_logs": False,
-    "is_per_cycle": False,
-})
-results = analyzer.run_sync({"log_path": "/path/to/job.log"})
-# results: tuple[list[RawAnalysisResultItem], AttributionState]
+agent = RestartAgent(evidence_extractor=LlmEvidenceExtractor(LlmConfig.from_env()))
+run = agent.run(RestartAgentRequest(log_path="/path/to/job.log", job_id="12345"))
+result = run.result.to_payload()
 ```
-
-Run-time overrides take precedence over constructor config (see `base.effective_run_or_init_config`).
 
 ---
 
 ## Output
 
-Each returned `RawAnalysisResultItem` keeps `raw_text` with five fields joined by `\n`,
-but also carries the parsed fields directly so consumers do not reparse the text:
+The CLI prints one JSON object to stdout. Important fields include:
 
-```
-<restart_decision>      # "RESTART IMMEDIATE" | "STOP - DONT RESTART IMMEDIATE"
-<error_explanation>     # short string or ""
-<attribution_text>      # "Attribution: Primary issues: [...], Secondary issues: [...]"
-<additional_detail>     # extended text or ""
-<checkpoint_saved>      # "True" | "False"
-```
-
-The serialized cycle fields are `auto_resume`, `auto_resume_explanation`,
-`attribution_text`, `checkpoint_saved_flag`, `primary_issues`, and
-`secondary_issues`, plus the parsed cycle `action`. The overall client decision
-is emitted separately as `recommendation.action` / `recommendation.source`. The runner's internal
-`AttributionState.STOP` is set only when the parsed cycle action is `STOP`.
-
-### Fast-path decisions (no LLM call)
-
-| Detected condition | restart_decision | attribution_text |
-|--------------------|-----------------|-----------------|
-| Training complete | `STOP - DONT RESTART IMMEDIATE` | `TRAINING DONE` |
-| SLURM preemption | `RESTART IMMEDIATE` | `SLURM CANCELLED DUE TO PREEMPTION` |
-| SLURM step cancelled | `RESTART IMMEDIATE` | `SLURM STEP CANCELLED` |
-| SLURM job requeue | `RESTART IMMEDIATE` | `SLURM STEP CANCELLED JOB REQUEUE` |
-| Time-limit exceeded | `STOP - DONT RESTART IMMEDIATE` | status string |
-| Empty log | — | `NO LOGS` |
-| No errors found | — | `ERRORS NOT FOUND` |
-| LLM failure | — | `LLM FAILURE` |
+| Field | Meaning |
+|---|---|
+| `decision` | `RESTART` or `STOP` |
+| `decision_basis` | Policy reason for the decision |
+| `retry_policy` | Retry budget and selected rule details |
+| `primary_failure` | Primary failure evidence, when identified |
+| `secondary_failures` | Related or cascading failure evidence |
+| `evidence_coverage` | Which evidence sources were checked/found |
+| `justification` | Human-readable explanation for the final decision |
 
 ---
 
 ## Prerequisites
 
-- `LLM_API_KEY` set (env var, `LLM_API_KEY_FILE`, or `~/.llm_api_key`)
-- Package installed: `pip install 'nvidia-resiliency-ext[attribution]'` or `pip install -e '.[attribution]'` from repo root
+- `LLM_API_KEY` set (env var, `LLM_API_KEY_FILE`, or `~/.llm_api_key`) for L1 enrichment
+- Use `--disable-l1` when you want deterministic-only analysis without model access

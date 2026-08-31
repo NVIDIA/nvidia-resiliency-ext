@@ -18,7 +18,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from nvidia_resiliency_ext.attribution.analyzer import Analyzer
 from nvidia_resiliency_ext.attribution.api_keys import (
     llm_api_key_missing_message,
     load_llm_api_key,
@@ -29,6 +28,7 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     InflightResult,
     SubmittedResult,
 )
+from nvidia_resiliency_ext.attribution.legacy_logsage.analyzer import Analyzer
 from nvidia_resiliency_ext.attribution.orchestration.config import LogSageExecutionConfig
 from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TRACK_ONLY
 from nvidia_resiliency_ext.attribution.orchestration.types import (

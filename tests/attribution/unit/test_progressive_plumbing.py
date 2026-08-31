@@ -10,6 +10,7 @@ import types
 from typing import Any
 
 from nvidia_resiliency_ext.attribution.coalescing import LogAnalysisCoalesced
+from nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.tracked_jobs import TrackedJobs
 from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode, LogSageExecutionConfig
 from nvidia_resiliency_ext.attribution.orchestration.job import JobMode
 from nvidia_resiliency_ext.attribution.orchestration.progressive import (
@@ -20,7 +21,6 @@ from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ProgressiveLogAnalysisStartTool,
     ProgressiveStartResult,
 )
-from nvidia_resiliency_ext.attribution.orchestration.tracked_jobs import TrackedJobs
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     LogAnalyzerError,
     LogAnalyzerSubmitResult,
@@ -35,9 +35,9 @@ def _stub_module(monkeypatch, name: str):
 
 def _import_analyzer_with_optional_dependency_stubs(monkeypatch):
     for module_name in (
-        "nvidia_resiliency_ext.attribution.analyzer.engine",
-        "nvidia_resiliency_ext.attribution.orchestration.log_analyzer",
-        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage",
     ):
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
@@ -110,7 +110,9 @@ def _import_analyzer_with_optional_dependency_stubs(monkeypatch):
     httpx = _stub_module(monkeypatch, "httpx")
     httpx.post = lambda *args, **kwargs: types.SimpleNamespace(status_code=201, text="created")
 
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.analyzer.engine")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine"
+    )
     return module.Analyzer
 
 
@@ -295,7 +297,7 @@ def test_progressive_registration_skips_splitlog_detection(monkeypatch, tmp_path
         raise AssertionError("progressive submission attempted split-log detection")
 
     monkeypatch.setattr(
-        "nvidia_resiliency_ext.attribution.orchestration.tracked_jobs."
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.tracked_jobs."
         "read_and_parse_slurm_output",
         unexpected_detection,
     )
@@ -335,6 +337,129 @@ def test_non_progressive_registration_retains_splitlog_detection(tmp_path):
 
     assert result.mode == JobMode.SPLITLOG.value
     assert result.logs_dir == str(logs_dir)
+
+
+def test_splitlog_registration_accepts_logs_dir_under_allowed_root(tmp_path):
+    allowed_root = tmp_path / "allowed"
+    logs_dir = allowed_root / "logs"
+    logs_dir.mkdir(parents=True)
+    log_path = allowed_root / "slurm.out"
+    log_path.write_text(f"<< START PATHS >>\nLOGS_DIR={logs_dir}\n<< END PATHS >>\n")
+    tracked_paths: list[str] = []
+
+    async def track_submission(path: str) -> None:
+        tracked_paths.append(path)
+
+    tracked = TrackedJobs(
+        track_submission=track_submission,
+        allowed_root=str(allowed_root),
+    )
+    result = asyncio.run(
+        tracked.create_new_job(
+            str(log_path),
+            "alice",
+            "123",
+        )
+    )
+
+    assert result.mode == JobMode.SPLITLOG.value
+    assert result.logs_dir == str(logs_dir)
+    assert tracked.get_job(str(log_path)) is not None
+    assert tracked_paths == []
+
+
+def test_splitlog_registration_rejects_logs_dir_outside_allowed_root(tmp_path):
+    allowed_root = tmp_path / "allowed"
+    outside_root = tmp_path / "outside"
+    allowed_root.mkdir()
+    outside_root.mkdir()
+    log_path = allowed_root / "slurm.out"
+    log_path.write_text(f"<< START PATHS >>\nLOGS_DIR={outside_root}\n<< END PATHS >>\n")
+    tracked_paths: list[str] = []
+
+    async def track_submission(path: str) -> None:
+        tracked_paths.append(path)
+
+    tracked = TrackedJobs(
+        track_submission=track_submission,
+        allowed_root=str(allowed_root),
+    )
+    result = asyncio.run(
+        tracked.create_new_job(
+            str(log_path),
+            "alice",
+            "123",
+        )
+    )
+
+    assert isinstance(result, LogAnalyzerError)
+    assert result.error_code == ErrorCode.OUTSIDE_ROOT
+    assert tracked.get_job(str(log_path)) is None
+    assert tracked_paths == []
+
+
+def test_splitlog_registration_rejects_symlinked_logs_dir_outside_allowed_root(tmp_path):
+    allowed_root = tmp_path / "allowed"
+    outside_root = tmp_path / "outside"
+    allowed_root.mkdir()
+    outside_root.mkdir()
+    linked_logs = allowed_root / "linked-logs"
+    linked_logs.symlink_to(outside_root, target_is_directory=True)
+    log_path = allowed_root / "slurm.out"
+    log_path.write_text(f"<< START PATHS >>\nLOGS_DIR={linked_logs}\n<< END PATHS >>\n")
+
+    async def track_submission(_path: str) -> None:
+        raise AssertionError("rejected split-log registration should not track a single file")
+
+    tracked = TrackedJobs(
+        track_submission=track_submission,
+        allowed_root=str(allowed_root),
+    )
+    result = asyncio.run(
+        tracked.create_new_job(
+            str(log_path),
+            "alice",
+            "123",
+        )
+    )
+
+    assert isinstance(result, LogAnalyzerError)
+    assert result.error_code == ErrorCode.OUTSIDE_ROOT
+
+
+def test_pending_splitlog_rejects_late_logs_dir_outside_allowed_root(tmp_path):
+    allowed_root = tmp_path / "allowed"
+    outside_root = tmp_path / "outside"
+    allowed_root.mkdir()
+    outside_root.mkdir()
+    log_path = allowed_root / "slurm.out"
+    log_path.write_text("starting\n")
+    tracked_paths: list[str] = []
+
+    async def track_submission(path: str) -> None:
+        tracked_paths.append(path)
+
+    tracked = TrackedJobs(
+        track_submission=track_submission,
+        allowed_root=str(allowed_root),
+    )
+    result = asyncio.run(
+        tracked.create_new_job(
+            str(log_path),
+            "alice",
+            "123",
+        )
+    )
+    assert result.mode == JobMode.PENDING.value
+
+    log_path.write_text(f"<< START PATHS >>\nLOGS_DIR={outside_root}\n<< END PATHS >>\n")
+    tracked.check_pending_jobs()
+
+    job = tracked.get_job(str(log_path))
+    assert job is not None
+    assert job.mode == JobMode.SINGLE
+    assert job.logs_dir is None
+    assert tracked_paths == [str(log_path)]
 
 
 def test_terminal_submit_starts_final_analysis_that_get_can_join(monkeypatch, tmp_path):
@@ -486,7 +611,9 @@ def test_progressive_start_tool_returns_unsupported_without_final_result():
 
 def test_progressive_start_uses_mcp_loganalysis_tool(monkeypatch, tmp_path):
     _import_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     fake_client = FakeMcpClient(
         {
             "module": MODULE_LOG_ANALYZER_PROGRESSIVE_START,
@@ -528,7 +655,9 @@ def test_progressive_start_uses_mcp_loganalysis_tool(monkeypatch, tmp_path):
 
 def test_terminal_log_analyzer_mcp_uses_cycle_counter(monkeypatch, tmp_path):
     _import_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     fake_client = FakeMcpClient(
         {
             "module": "log_analyzer",

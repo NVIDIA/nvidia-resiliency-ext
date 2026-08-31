@@ -4,7 +4,7 @@ description: >
   Orchestration layer over nvidia_resiliency_ext attribution modules. Provides
   log-analysis, fr-analysis, and a Megatron-LM-oriented fault-injection feedback
   loop for benchmarking attribution quality on SLURM workloads.
-compatibility: Requires Python 3.10+, nvidia-resiliency-ext[attribution] installed, and LLM_API_KEY (env var, LLM_API_KEY_FILE, or ~/.llm_api_key). The fault-injection loop has only been validated with Megatron-LM workloads.
+compatibility: Requires Python 3.10+, NVRx attribution support, and LLM_API_KEY (env var, LLM_API_KEY_FILE, or ~/.llm_api_key) for L1 restart-agent enrichment. The fault-injection loop has only been validated with Megatron-LM workloads.
 metadata:
   author: nvidia
 ---
@@ -18,7 +18,7 @@ Each subdirectory is a self-contained skill with its own `SKILL.md` and helper s
 
 | Directory | Purpose | Entry point |
 |-----------|---------|------------|
-| [`log-analysis/`](./log-analysis/SKILL.md) | Analyze SLURM job logs for failure root-cause and restart decisions | `NVRxLogAnalyzer` (`nvrx_logsage.py`) |
+| [`log-analysis/`](./log-analysis/SKILL.md) | Analyze SLURM job logs for failure root-cause and restart decisions | `RestartAgent` (`python -m nvidia_resiliency_ext.attribution.restart_agent.cli`) |
 | [`fr-analysis/`](./fr-analysis/SKILL.md) | Analyze NCCL flight-recorder dumps for collective-hang root-cause | `CollectiveAnalyzer` (`fr_attribution.py`) |
 | [`fault-injection-loop/`](./fault-injection-loop/SKILL.md) | Run a batched SLURM fault-injection feedback loop and score attribution accuracy | `prepare_node_alloc.sh` / `watch_and_analyze.sh` |
 
@@ -27,10 +27,9 @@ Each subdirectory is a self-contained skill with its own `SKILL.md` and helper s
 ```
 src/nvidia_resiliency_ext/
 ├── attribution/
-│   ├── log_analyzer/nvrx_logsage.py      ← log-analysis implementation
+│   ├── restart_agent/                    ← log-analysis implementation
 │   ├── trace_analyzer/fr_attribution.py  ← fr-analysis implementation
-│   ├── analyzer/engine.py                ← combined orchestration entry point
-│   └── combined_log_fr/                  ← optional log + FR fusion
+│   └── mcp_integration/                  ← packaged restart-agent + FR MCP tools
 └── skills/
     └── nvrx-attr/                        ← this skill bundle
         ├── log-analysis/
@@ -38,15 +37,14 @@ src/nvidia_resiliency_ext/
         └── fault-injection-loop/
 ```
 
-The `Analyzer` (`analyzer/engine.py`) is the recommended entry point when you need
-request coalescing, result caching, or the combined `LOG_AND_TRACE` pipeline.
-Use the individual skills when you want to run one analysis type directly without the
-full coalescing stack.
+Use the packaged `restart_agent` and `trace_analyzer` entry points for current
+log and FR analysis. Legacy LogSage, SPLITLOG, and combined LogSage+FR tools live
+under `attribution/legacy_logsage/` for source-checkout workflows only.
 
 ## Common prerequisites
 
 - `LLM_API_KEY` environment variable, `LLM_API_KEY_FILE`, or `~/.llm_api_key`
-- Package installed: `pip install 'nvidia-resiliency-ext[attribution]'` or `pip install -e '.[attribution]'` from repo root
+- Source checkout or installed package with the attribution extra for restart-agent and FR analysis
 - The fault-injection loop has only been validated with Megatron-LM training scripts
 
 ## Fault-Loop Local Setup

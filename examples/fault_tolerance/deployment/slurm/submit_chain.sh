@@ -17,6 +17,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SBATCH_SCRIPT="${SCRIPT_DIR}/nvrx_singleton_array.sbatch"
+SEGMENT_HEALTH_PRODUCER="${SCRIPT_DIR}/scheduler_segment_health.sh"
 
 # Shape. Defaults form the smallest run that shows a hand-off: 1 training node + 1 hot
 # spare + 1 cold spare. Scale up for real training (see the README).
@@ -43,6 +44,8 @@ export NVRX_CONTAINER_IMAGE="${NVRX_CONTAINER_IMAGE:-}"
 # nothing". This export is what the sbatch actually sees, so the colon here would defeat
 # the matching fix in nvrx_singleton_array.sbatch no matter what that line says.
 export NVRX_CONTAINER_MOUNTS="${NVRX_CONTAINER_MOUNTS-/lustre:/lustre}"
+export NVRX_SEGMENT_HEALTH_CHECK_DIR="${NVRX_SEGMENT_HEALTH_CHECK_DIR:-}"
+export NVRX_CONTROL_LOOP_INTERVAL_SECONDS="${NVRX_CONTROL_LOOP_INTERVAL_SECONDS:-600}"
 
 ACTIVE_TASKS=$(( NVRX_TRAIN_TASKS + NVRX_HOT_SPARES ))
 TOTAL_TASKS=$(( ACTIVE_TASKS + NVRX_COLD_SPARES ))
@@ -96,6 +99,10 @@ RUN_SBATCH="${NVRX_WORK_DIR}/nvrx_singleton_array.sbatch"
 if [[ "${NVRX_DRY_RUN:-0}" != "1" ]]; then
     sed "s#^NVRX_WORK_DIR=.*#NVRX_WORK_DIR=\"${NVRX_WORK_DIR}\"#" "${SBATCH_SCRIPT}" > "${RUN_SBATCH}"
     chmod +x "${RUN_SBATCH}"
+    if [[ -n "${NVRX_SEGMENT_HEALTH_CHECK_DIR}" ]]; then
+        cp "${SEGMENT_HEALTH_PRODUCER}" "${NVRX_WORK_DIR}/scheduler_segment_health.sh"
+        chmod +x "${NVRX_WORK_DIR}/scheduler_segment_health.sh"
+    fi
 fi
 
 SBATCH_ARGS=(

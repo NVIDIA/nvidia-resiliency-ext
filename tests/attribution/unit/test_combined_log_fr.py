@@ -23,12 +23,12 @@ def _stub_module(monkeypatch, name):
 def _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch):
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr",
         raising=False,
     )
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage",
         raising=False,
     )
 
@@ -99,7 +99,7 @@ def _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch):
     utils.chunk_indices = lambda *args, **kwargs: []
 
     return importlib.import_module(
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr"
     )
 
 
@@ -141,11 +141,11 @@ def test_log_fr_mcp_path_collects_without_merge_by_default(monkeypatch):
     _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch)
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp",
         raising=False,
     )
     module = importlib.import_module(
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp"
     )
 
     raw_item = {
@@ -203,11 +203,11 @@ def test_log_fr_mcp_path_passes_cycle_counter_to_logsage(monkeypatch):
     _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch)
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp",
         raising=False,
     )
     module = importlib.import_module(
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp"
     )
 
     raw_item = {
@@ -271,11 +271,11 @@ def test_log_fr_mcp_path_reuses_logsage_analyzer_across_cycles(monkeypatch):
     _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch)
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp",
         raising=False,
     )
     module = importlib.import_module(
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp"
     )
 
     raw_item = {
@@ -350,11 +350,11 @@ def test_log_fr_mcp_path_state_ignores_fr_and_merge_stop_when_merge_enabled(monk
     _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch)
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp",
         raising=False,
     )
     module = importlib.import_module(
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp"
     )
 
     raw_item = {
@@ -418,11 +418,11 @@ def test_log_fr_mcp_path_merge_unwraps_logsage_result_for_llm(monkeypatch):
     _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch)
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp",
         raising=False,
     )
     module = importlib.import_module(
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp"
     )
 
     item = RawAnalysisResultItem(
@@ -490,11 +490,11 @@ def test_log_fr_mcp_skips_merge_when_fr_data_is_missing(monkeypatch):
     _import_combined_log_fr_with_optional_dependency_stubs(monkeypatch)
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp",
         raising=False,
     )
     module = importlib.import_module(
-        "nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr_mcp"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr_mcp"
     )
 
     raw_item = {

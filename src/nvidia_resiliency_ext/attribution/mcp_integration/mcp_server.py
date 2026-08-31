@@ -278,7 +278,7 @@ class NVRxMCPServer:
             )
         elif (
             isinstance(actual_result, dict)
-            and isinstance(actual_result.get("result"), list)
+            and "result" in actual_result
             and isinstance(actual_result.get("recommendation"), dict)
         ):
             response = dict(actual_result)

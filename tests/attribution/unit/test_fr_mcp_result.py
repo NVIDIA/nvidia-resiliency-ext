@@ -52,9 +52,6 @@ class TestFrResultFromMcpModuleResponse(unittest.TestCase):
                 "pattern": "_dump*",
                 "verbose": False,
                 "health_check": False,
-                "llm_analyze": False,
-                "model": None,
-                "base_url": None,
                 "threshold": None,
             }
         )
