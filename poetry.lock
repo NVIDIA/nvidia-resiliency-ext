@@ -3011,4 +3011,4 @@ attribution = ["mcp", "setproctitle", "slack-bolt", "slack-sdk"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "571a49e122734341dcf4d6f423bf01beba2a6dc61bc002f1297b8f4d812f6003"
+content-hash = "b63f502fae7e6e56d082a2cdbc4b2359a55cba7d5c6cfde39f9457beee2707a2"
