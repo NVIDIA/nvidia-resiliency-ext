@@ -38,6 +38,15 @@ class L1ResponseContract:
             "evidence",
         }
     )
+    optional_top_level_fields: frozenset[str] = frozenset({"category_selection"})
+    category_selection_fields: frozenset[str] = frozenset(
+        {"category_id", "category_confidence", "category_rationale"}
+    )
+    min_category_id: int = 0
+    max_category_id: int = 38
+    min_category_confidence: int = 0
+    max_category_confidence: int = 100
+    max_category_rationale_chars: int = 400
     primary_failure_fields: frozenset[str] = frozenset({"line", "causal_role", "failure_identity"})
     failure_identity_fields: frozenset[str] = frozenset(
         {"operation", "mechanism", "component", "artifact_path"}
@@ -150,12 +159,49 @@ class L1ResponseContract:
                 "failure_identity": failure_identity,
             },
         }
+        category_selection = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(self.category_selection_fields),
+            "description": (
+                "Optional curated failure-category selection used by L4 for a "
+                "category-lookup decision gate."
+            ),
+            "properties": {
+                "category_id": {
+                    "type": "integer",
+                    "minimum": self.min_category_id,
+                    "maximum": self.max_category_id,
+                    "description": (
+                        "Curated category id (1-38); use 0 when no category matches "
+                        "or when uncertain."
+                    ),
+                },
+                "category_confidence": {
+                    "type": "integer",
+                    "minimum": self.min_category_confidence,
+                    "maximum": self.max_category_confidence,
+                    "description": (
+                        "Confidence in the selected category on a 0..100 scale; "
+                        "must be 0 when category_id is 0."
+                    ),
+                },
+                "category_rationale": {
+                    "type": "string",
+                    "maxLength": self.max_category_rationale_chars,
+                    "description": (
+                        "Short (<= 400 chars) rationale grounded in current-log evidence."
+                    ),
+                },
+            },
+        }
         return {
             "type": "object",
             "additionalProperties": False,
             "required": sorted(self.top_level_fields),
             "properties": {
                 "schema_version": {"type": "string", "const": L1_EVIDENCE_SCHEMA_VERSION},
+                "category_selection": {"oneOf": [category_selection, {"type": "null"}]},
                 "analysis_status": {
                     "type": "string",
                     "enum": sorted(self.analysis_statuses),

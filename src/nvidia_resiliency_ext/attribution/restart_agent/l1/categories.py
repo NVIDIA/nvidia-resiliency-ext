@@ -1,0 +1,491 @@
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Static failure-category catalog used by the L1 category-selection field."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CategoryDef:
+    """One curated failure-category definition."""
+
+    id: int
+    name: str
+    description: str
+    decision: str  # STOP | RESTART | EXCLUDED
+    failure_domain: str  # workload | infrastructure | unknown | "" | "-"
+    retry_outlook: str  # may_recover | cannot_recover | "" | "-"
+
+
+CATEGORIES: tuple[CategoryDef, ...] = (
+    CategoryDef(
+        id=1,
+        name="SLURM step cancelled / drain / preemption",
+        description=(
+            "Clean external cancellation by the scheduler (scancel, drain, preemption); "
+            "no application fault."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=2,
+        name="NVLink / GPU error",
+        description=(
+            "Uncorrectable NVLink/GPU hardware error (Xid, ECC DBE, peer-access failure); "
+            "the device fault may be transient and clear on an in-place restart."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=3,
+        name="Node failure / SLURM externally terminated",
+        description=("SLURM 'CANCELLED DUE TO NODE FAILURE' or other external node termination."),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=4,
+        name="Early/startup NCCL init or checkpoint-load timeout",
+        description=(
+            "NCCL init / checkpoint-load collective timeout before the first completed "
+            "training iteration; true cause usually not in this log."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=5,
+        name="IB port flap / NCCL watchdog timeout",
+        description=(
+            "IB port error / RDMA retry exhaustion killing collectives; the port flap is "
+            "typically transient and clears on an in-place restart."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=6,
+        name="DataLoader worker I/O failure (Bus error, BrokenPipe, Lustre or NIC)",
+        description=(
+            "Transient data-path I/O failure inside a DataLoader worker: Bus error, "
+            "BrokenPipeError (Errno 108 transport endpoint shutdown) on Lustre-backed "
+            ".bin readinto, /dev/shm exhaustion, or fatal Lustre read. Distinguishes "
+            "from cat 13 by occurring in the DataLoader worker path."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=7,
+        name="Bad token / gradient Inf or NaN",
+        description=(
+            "Non-finite gradient/loss from a bad token or transient overflow; external "
+            "guidance is restart."
+        ),
+        decision="RESTART",
+        failure_domain="workload",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=8,
+        name="NCCL timeout mid-training",
+        description=(
+            "Watchdog collective timeout after at least one completed iteration; "
+            "consequence-class symptom, upstream cause often absent from the log."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=9,
+        name="Checkpoint failure / transient checkpoint I/O (load or async-write)",
+        description=(
+            "Transient checkpoint load/async-write I/O failure on a checkpoint path: "
+            "OSError Errno 5 (Input/output error), BrokenPipeError Errno 108, "
+            "filesystem_async. Prefer this over cat 13 whenever the failing path is "
+            "a checkpoint directory, even if the mechanism is generic filesystem I/O."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=10,
+        name="Distributed rendezvous / TCPStore socket timeout",
+        description=(
+            "c10d/TCPStore rendezvous socket timeout; startup/peer availability failure, "
+            "root cause not visible in log."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=11,
+        name="NCCL remote process exited / network error / bootstrap Message-truncated",
+        description=(
+            "NCCL Error 6 (remote peer exited); infrastructure/peer failure. Also covers "
+            "NCCL bootstrap/transport corruption ('Message truncated : received N bytes "
+            "instead of M') during any distributed-checkpoint gather_object communicator "
+            "setup - both LOAD-side startup and async-finalize save-side - where a "
+            "downstream rank0 Segmentation fault in the same stack is NOT the root."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=12,
+        name="Checkpoint failure / corrupt checkpoint metadata on load",
+        description=(
+            "Garbled checkpoint metadata buffer at load "
+            "(UnpicklingError/UnicodeDecodeError); transient corruption, checkpoint "
+            "likely reusable on healthy nodes."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=13,
+        name="Filesystem I/O error / Lustre or node-local FS / import visibility",
+        description=(
+            "Non-checkpoint storage error (Lustre stall, missing generated dataset "
+            "cache); transient storage / node-local FS issue. Also covers "
+            "ModuleNotFoundError or ImportError at startup where the failing import "
+            "path resolves under Lustre or a mounted network filesystem "
+            "(e.g. /lustre/.../code_ultra/...): the underlying cause is filesystem "
+            "visibility on a served code tree, not a workload code fault."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=14,
+        name="Post-checkpoint progress-log assertion",
+        description=(
+            "Assertion after checkpoint resume (progress-log bookkeeping); restart from "
+            "last committed checkpoint is appropriate."
+        ),
+        decision="RESTART",
+        failure_domain="workload",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=15,
+        name="OSError Errno 98 / port bind race",
+        description=(
+            "Fatal port-bind failure (EADDRINUSE) at the rendezvous master; startup "
+            "race, job died at bind with no progress."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=16,
+        name="Launch config or workload code deterministic error (TypeError/AttributeError)",
+        description=(
+            "Deterministic runtime error inside already-loaded workload code that will "
+            "recur on unchanged retry: TypeError/AttributeError on None value threaded "
+            "through model code (e.g. float(None) in moe_layer postprocess), missing "
+            "MASTER_ADDR, argparse error, or world-size mismatch. Excludes "
+            "ModuleNotFoundError / ImportError where the failing import path resolves "
+            "under Lustre or a mounted network filesystem - those are cat 13 "
+            "(filesystem visibility), not a workload code fault, even if no adjacent "
+            "FileNotFoundError is present on the same line."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=17,
+        name="Dataset missing indexed data files",
+        description=(
+            "Dataset .idx/.bin files missing at dataset init; deterministic against the "
+            "same config until dataset path/files are fixed."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=18,
+        name="PermissionError / dataset cache or filesystem permission",
+        description=(
+            "Deterministic permission-denied (EACCES/Errno 13) on dataset cache or "
+            "filesystem path."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=19,
+        name="Checkpoint failure / deterministic checkpoint format or shape mismatch",
+        description=(
+            "Checkpoint-load shape/key/TP-PP mismatch with zero completed iterations; "
+            "deterministic against same checkpoint + code/config."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=20,
+        name="Triton cubin / TorchInductor software toolchain error",
+        description=(
+            "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels "
+            "(idx 1311/1418/1420) + TorchInductor StaticCudaLauncher 'CUDA driver error: "
+            "file not found' at JIT warmup (idx 1417); clean Python exceptions, "
+            "multi-node, deterministic in-container."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=21,
+        name="CUDA illegal op in CUDA graph capture",
+        description=(
+            "Illegal CUDA operation during graph capture; deterministic code bug on the "
+            "same code path."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=22,
+        name="Checkpoint failure / missing checkpoint path",
+        description="Missing checkpoint path; cannot self-heal by restarting.",
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=23,
+        name="Checkpoint failure / async-save finalize code error",
+        description=(
+            "Deterministic code error (e.g. NoneType AttributeError) in the "
+            "post-training async-save FINALIZE path."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=24,
+        name="CPU OOM / Linux OOM killer",
+        description=(
+            "Host memory exhausted (oom_kill). Old STOP rested on a same-job/config "
+            "recurrence presumption, not on in-log evidence."
+        ),
+        decision="RESTART",
+        failure_domain="workload",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=25,
+        name="CUDA OOM",
+        description=(
+            "Device OOM at fixed batch/config. Old STOP rested on a same-job/config "
+            "determinism presumption, not on in-log evidence."
+        ),
+        decision="RESTART",
+        failure_domain="workload",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=26,
+        name="CUDA unspecified launch failure",
+        description=(
+            "cudaErrorLaunchFailure; a single log cannot separate transient "
+            "hardware/runtime state from a deterministic kernel/code bug."
+        ),
+        decision="RESTART",
+        failure_domain="unknown",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=27,
+        name="CUDA OOM during checkpoint async-save",
+        description=(
+            "CUDA OOM inside the async checkpoint-save path on a near-full GPU; "
+            "determinism evidence lives outside the log."
+        ),
+        decision="RESTART",
+        failure_domain="workload",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=28,
+        name="Suspected SDC / DP-replica weight-hash mismatch",
+        description=(
+            "DP-replica weight-hash mismatch (suspected silent data corruption); restart "
+            "from last good checkpoint is plausibly safe."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=29,
+        name="NVRx used (multi-cycle, deferred)",
+        description=(
+            "ft_launcher restarted the worker group in-job; one file concatenates "
+            "multiple training cycles with separate root causes."
+        ),
+        decision="EXCLUDED",
+        failure_domain="",
+        retry_outlook="",
+    ),
+    CategoryDef(
+        id=30,
+        name="Container / Pyxis setup failure",
+        description=(
+            "Container never started (pyxis couldn't start container / enroot failure); "
+            "transient node-local runtime vs bad image undecidable from one log."
+        ),
+        decision="EXCLUDED",
+        failure_domain="",
+        retry_outlook="",
+    ),
+    CategoryDef(
+        id=31,
+        name="Incomplete / truncated log",
+        description=(
+            "Whole-file scan finds no failure signal and the log has no clean ending; "
+            "likely a log-collection failure."
+        ),
+        decision="EXCLUDED",
+        failure_domain="",
+        retry_outlook="",
+    ),
+    CategoryDef(
+        id=32,
+        name="No failure observed / clean planned exit",
+        description=(
+            "Whole-file scan finds no failure: the run reached its exit_interval / final "
+            "iteration, saved the final checkpoint, logged training energy, and only "
+            "benign teardown (destroy_process_group / CudaIPC cleanup) follows. Includes "
+            "the reset_opt_norm 'Unexpected keys' benign-WARNING trap and "
+            "recovered-then-clean runs."
+        ),
+        decision="RESTART",
+        failure_domain="-",
+        retry_outlook="-",
+    ),
+    CategoryDef(
+        id=33,
+        name="Segmentation fault / native runtime crash",
+        description=(
+            "Single-rank (rank 608) SIGSEGV in torch's pinned host allocator during "
+            "GPTDataset index load, wild HIGH address (not 0x8), no self-reported "
+            "corruption guard and no HW signal; a single log genuinely cannot separate a "
+            "torch race from host-memory corruption."
+        ),
+        decision="RESTART",
+        failure_domain="unknown",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=34,
+        name="Node-local native SIGBUS (Triton/TE native kernel)",
+        description=(
+            "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT "
+            ".so dlopen/mmap at kernel load (idx 1006; driver.py "
+            "compile_module_from_src -> create_module; zero iterations); (b) mid-training "
+            "in the TE/Triton MoE permutation forward (idx 534; permutation.py; one "
+            "node's 4 ranks after ckpt 27600 while thousands of peers keep running). "
+            "Node-local hardware/memory fault."
+        ),
+        decision="RESTART",
+        failure_domain="infrastructure",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=35,
+        name="Startup native SIGSEGV / torch pin_memory host-allocator",
+        description=(
+            "Native SIGSEGV 'address not mapped to object at address 0x8' (null-ptr "
+            "deref) with a byte-identical backtrace through at::native::_pin_memory into "
+            "the libtorch_cuda CachingHostAllocator pinned-map operator[], fired at "
+            "[before the start of training step] with zero completed iterations. "
+            "pin_cpu_grads/pin_cpu_params=True forces the path in-log; crashing node "
+            "sets differ across jobs (rules out node-local hardware); reproduces every "
+            "rerun. 20 samples = 11 unique files (9 md5 mirror pairs)."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=36,
+        name="Checkpoint failure / save-path native crash (PyTorchStreamWriter)",
+        description=(
+            "Mass SIGSEGV across 20+ nodes inside PyTorchStreamWriter::writeRecord "
+            "(mz_zip_writer_add_mem_ex_v2) during the first torch_dist checkpoint save "
+            "right after iteration 250; structural (shape/config-determined) serializer "
+            "buffer overrun. 2 samples = 1 unique file (idx 107 = idx 381, byte-identical "
+            "mirror)."
+        ),
+        decision="STOP",
+        failure_domain="workload",
+        retry_outlook="cannot_recover",
+    ),
+    CategoryDef(
+        id=37,
+        name="Native heap corruption / glibc malloc abort",
+        description=(
+            "Single-rank glibc 'malloc(): unaligned tcache chunk detected' abort at "
+            "training start (pre-first-iter); self-reported in-process heap corruption = "
+            "definitively software."
+        ),
+        decision="RESTART",
+        failure_domain="workload",
+        retry_outlook="may_recover",
+    ),
+    CategoryDef(
+        id=38,
+        name="Off-file termination / external teardown (cause not in log)",
+        description=(
+            "Healthy training then an external-signal all-thread faulthandler dump (no "
+            "'Fatal Python error' / no 'Current thread 0x'), log truncated mid-dump; no "
+            "in-file CANCELLED / watchdog / IB / Xid / NVRx marker. A real termination "
+            "occurred but its cause is off-file (most likely a SLURM cancel/preempt/"
+            "timeout)."
+        ),
+        decision="RESTART",
+        failure_domain="unknown",
+        retry_outlook="may_recover",
+    ),
+)
+
+
+_BY_ID: dict[int, CategoryDef] = {entry.id: entry for entry in CATEGORIES}
+
+
+def category_by_id(cid: int) -> CategoryDef | None:
+    """Return the curated category for ``cid`` if known, else ``None``."""
+
+    if not isinstance(cid, int) or isinstance(cid, bool):
+        return None
+    return _BY_ID.get(cid)
+
+
+__all__ = ["CATEGORIES", "CategoryDef", "category_by_id"]

@@ -11,10 +11,229 @@ from ..models import L1_EVIDENCE_SCHEMA_VERSION, AssessmentStatus, L1AnalysisSta
 from .response_contract import L1_RESPONSE_CONTRACT
 
 
+def repair_biconditional_unknowns(payload: Any) -> list[str]:
+    """In-place fix: normalize model_recovery_assessment claim (value, status) pairs.
+
+    Contract rule: value == "unknown" iff status == "unknown". Some models
+    (observed: nemotron) mis-read `unknown` as "not fully committed" and pair
+    value=unknown with status=supported_but_unconfirmed / hypothesis_only. This
+    repair silently normalizes such pairs to value=unknown / status=unknown
+    (dropping any confidence hint on the claim to reflect the demotion), rather
+    than rejecting the entire L1 response.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    assessment = payload.get("model_recovery_assessment")
+    if not isinstance(assessment, dict):
+        return notes
+    for field in ("failure_domain", "retry_outlook_without_workload_change"):
+        claim = assessment.get(field)
+        if not isinstance(claim, dict):
+            continue
+        claim_value = claim.get("value")
+        claim_status = claim.get("status")
+        if (claim_value == "unknown") == (claim_status == AssessmentStatus.UNKNOWN.value):
+            continue
+        # Biconditional violated. Normalize both sides to unknown/unknown and
+        # keep the claim structurally valid so downstream validation passes.
+        claim["value"] = "unknown"
+        claim["status"] = AssessmentStatus.UNKNOWN.value
+        if "confidence" in claim and not (
+            isinstance(claim["confidence"], int) and not isinstance(claim["confidence"], bool)
+        ):
+            # keep confidence field valid; the model's number stays if it was a legal int
+            claim["confidence"] = L1_RESPONSE_CONTRACT.min_confidence
+        notes.append(
+            f"model_recovery_assessment.{field}: normalized "
+            f"(value={claim_value!r}, status={claim_status!r}) -> unknown/unknown"
+        )
+    return notes
+
+
+def repair_overlong_lists(payload: Any) -> list[str]:
+    """In-place fix: truncate over-long enumerable lists to their contract caps.
+
+    Some models return more items than the contract allows on
+    root_cause_assessment.plausible_causes, root_cause_assessment.missing_evidence,
+    or related_failures. Truncating (keep first N) preserves the strongest items
+    the model already ranked at the top rather than rejecting the whole response.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    root_cause = payload.get("root_cause_assessment")
+    if isinstance(root_cause, dict):
+        for field, cap in (
+            ("plausible_causes", L1_RESPONSE_CONTRACT.max_plausible_causes),
+            ("missing_evidence", L1_RESPONSE_CONTRACT.max_missing_evidence),
+        ):
+            items = root_cause.get(field)
+            if isinstance(items, list) and len(items) > cap:
+                root_cause[field] = items[:cap]
+                notes.append(
+                    f"root_cause_assessment.{field}: truncated {len(items)} -> {cap} items"
+                )
+    related = payload.get("related_failures")
+    if isinstance(related, list) and len(related) > L1_RESPONSE_CONTRACT.max_related_failures:
+        payload["related_failures"] = related[: L1_RESPONSE_CONTRACT.max_related_failures]
+        notes.append(
+            f"related_failures: truncated {len(related)} -> "
+            f"{L1_RESPONSE_CONTRACT.max_related_failures} items"
+        )
+    return notes
+
+
+def repair_invalid_evidence_supports(payload: Any) -> list[str]:
+    """In-place fix: drop unknown/invalid tags from evidence[N].supports arrays.
+
+    The contract restricts evidence.supports to four tags: primary_failure,
+    root_cause_assessment, failure_domain, retry_outlook_without_workload_change.
+    Some models (observed: nemotron) mistakenly use a section-name like
+    "related_failures" as a support tag. Rather than reject the whole response,
+    drop the invalid tags and keep the valid ones. If an item ends up with an
+    empty supports array after filtering, drop the item entirely.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, list):
+        return notes
+    valid_tags = L1_RESPONSE_CONTRACT.evidence_support_tags
+    kept: list[Any] = []
+    for index, item in enumerate(evidence):
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        supports = item.get("supports")
+        if not isinstance(supports, list):
+            kept.append(item)
+            continue
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for tag in supports:
+            if isinstance(tag, str) and tag in valid_tags and tag not in seen:
+                cleaned.append(tag)
+                seen.add(tag)
+        if cleaned == list(supports):
+            kept.append(item)
+            continue
+        dropped = [t for t in supports if t not in cleaned]
+        if not cleaned:
+            notes.append(
+                f"evidence[{index}]: dropped entirely (no valid supports left; "
+                f"originally {supports!r})"
+            )
+            continue
+        item["supports"] = cleaned
+        notes.append(f"evidence[{index}]: dropped invalid supports {dropped!r}, kept {cleaned!r}")
+        kept.append(item)
+    if len(kept) != len(evidence):
+        payload["evidence"] = kept
+    return notes
+
+
+def repair_overlong_category_rationale(payload: Any) -> list[str]:
+    """In-place fix: truncate category_selection.category_rationale to the contract cap.
+
+    Some models produce a rationale longer than max_category_rationale_chars (400).
+    Truncating preserves the leading, most-relevant content rather than rejecting
+    the whole response.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    selection = payload.get("category_selection")
+    if not isinstance(selection, dict):
+        return notes
+    rationale = selection.get("category_rationale")
+    max_chars = L1_RESPONSE_CONTRACT.max_category_rationale_chars
+    if isinstance(rationale, str) and len(rationale) > max_chars:
+        selection["category_rationale"] = rationale[:max_chars]
+        notes.append(
+            f"category_selection.category_rationale: truncated "
+            f"{len(rationale)} -> {max_chars} chars"
+        )
+    return notes
+
+
+def repair_schema_version(payload: Any) -> list[str]:
+    """In-place fix: normalize a similar-but-wrong schema_version string.
+
+    Some models (observed: gemini) hallucinate a schema version like
+    "restart_agent_decision_evidence.v1" instead of the expected
+    "restart_agent_evidence.v1" - the "decision" substring is bleed-through
+    from another schema name used elsewhere in the analyzer artifacts.
+
+    Only rewrites when the payload is otherwise shaped like this schema
+    (has an analysis_status field) and the current schema_version either
+    is missing or starts with "restart_agent". This prevents silently
+    accepting a truly foreign payload while forgiving cosmetic model errors.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    if payload.get("analysis_status") is None:
+        # Not obviously our schema; do not touch.
+        return notes
+    actual = payload.get("schema_version")
+    if actual == L1_EVIDENCE_SCHEMA_VERSION:
+        return notes
+    if actual is None:
+        payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
+        notes.append(f"schema_version: added missing field, set to {L1_EVIDENCE_SCHEMA_VERSION!r}")
+    elif isinstance(actual, str) and actual.startswith("restart_agent"):
+        payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
+        notes.append(
+            f"schema_version: normalized {actual!r} -> {L1_EVIDENCE_SCHEMA_VERSION!r} "
+            f"(model hallucinated similar version string)"
+        )
+    return notes
+
+
+def repair_model_evidence(payload: Any) -> list[str]:
+    """Aggregate all in-place repairs. Returns the concatenated repair notes."""
+
+    notes: list[str] = []
+    notes.extend(repair_schema_version(payload))
+    notes.extend(repair_biconditional_unknowns(payload))
+    notes.extend(repair_overlong_lists(payload))
+    notes.extend(repair_invalid_evidence_supports(payload))
+    notes.extend(repair_overlong_category_rationale(payload))
+    return notes
+
+
 def model_evidence_contract_errors(payload: Mapping[str, Any]) -> list[str]:
     """Return structural errors without applying semantic policy judgment."""
 
-    errors = _object_shape_errors(payload, L1_RESPONSE_CONTRACT.top_level_fields, "top-level")
+    errors = _object_shape_errors(
+        payload,
+        L1_RESPONSE_CONTRACT.top_level_fields,
+        "top-level",
+        optional=L1_RESPONSE_CONTRACT.optional_top_level_fields,
+    )
+    errors.extend(_category_selection_errors(payload.get("category_selection")))
     if payload.get("schema_version") != L1_EVIDENCE_SCHEMA_VERSION:
         errors.append(f"schema_version must be {L1_EVIDENCE_SCHEMA_VERSION}")
 
@@ -51,7 +270,24 @@ def model_evidence_contract_errors(payload: Mapping[str, Any]) -> list[str]:
     errors.extend(evidence_errors)
 
     if analysis_status == L1AnalysisStatus.PRIMARY_IDENTIFIED.value:
+        assessment = payload.get("model_recovery_assessment")
         for required_support in sorted(L1_RESPONSE_CONTRACT.required_primary_support_tags):
+            # For the two model_recovery_assessment claims (failure_domain and
+            # retry_outlook_without_workload_change), waive the citation requirement
+            # when the claim is unknown/unknown. A claim of unknown/unknown means
+            # "no informative evidence for this dimension", so requiring an evidence
+            # citation would be self-contradictory.
+            if required_support in {
+                "failure_domain",
+                "retry_outlook_without_workload_change",
+            } and isinstance(assessment, Mapping):
+                claim = assessment.get(required_support)
+                if (
+                    isinstance(claim, Mapping)
+                    and claim.get("value") == "unknown"
+                    and claim.get("status") == AssessmentStatus.UNKNOWN.value
+                ):
+                    continue
             if required_support not in support_tags:
                 errors.append(f"evidence must support {required_support}")
     elif analysis_status in {
@@ -66,14 +302,61 @@ def _object_shape_errors(
     value: Mapping[str, Any],
     expected: frozenset[str],
     field: str,
+    *,
+    optional: frozenset[str] = frozenset(),
 ) -> list[str]:
     errors: list[str] = []
     missing = sorted(expected.difference(value))
-    extra = sorted(set(value).difference(expected))
+    extra = sorted(set(value).difference(expected).difference(optional))
     if missing:
         errors.append(f"{field} missing fields: " + ", ".join(missing))
     if extra:
         errors.append(f"{field} has unsupported fields: " + ", ".join(extra))
+    return errors
+
+
+def _category_selection_errors(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, Mapping):
+        return ["category_selection must be an object or null"]
+    errors = _object_shape_errors(
+        value,
+        L1_RESPONSE_CONTRACT.category_selection_fields,
+        "category_selection",
+    )
+    cid = value.get("category_id")
+    if (
+        isinstance(cid, bool)
+        or not isinstance(cid, int)
+        or cid < L1_RESPONSE_CONTRACT.min_category_id
+        or cid > L1_RESPONSE_CONTRACT.max_category_id
+    ):
+        errors.append(
+            "category_selection.category_id must be an integer from "
+            f"{L1_RESPONSE_CONTRACT.min_category_id} to "
+            f"{L1_RESPONSE_CONTRACT.max_category_id}"
+        )
+    confidence = value.get("category_confidence")
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, int)
+        or confidence < L1_RESPONSE_CONTRACT.min_category_confidence
+        or confidence > L1_RESPONSE_CONTRACT.max_category_confidence
+    ):
+        errors.append(
+            "category_selection.category_confidence must be an integer from "
+            f"{L1_RESPONSE_CONTRACT.min_category_confidence} to "
+            f"{L1_RESPONSE_CONTRACT.max_category_confidence}"
+        )
+    rationale = value.get("category_rationale")
+    if not isinstance(rationale, str):
+        errors.append("category_selection.category_rationale must be a string")
+    elif len(rationale) > L1_RESPONSE_CONTRACT.max_category_rationale_chars:
+        errors.append(
+            "category_selection.category_rationale must be at most "
+            f"{L1_RESPONSE_CONTRACT.max_category_rationale_chars} characters"
+        )
     return errors
 
 

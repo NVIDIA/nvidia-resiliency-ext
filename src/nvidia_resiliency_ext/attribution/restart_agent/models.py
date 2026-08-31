@@ -37,6 +37,7 @@ class Decision(str, Enum):
 class DecisionBasis(str, Enum):
     LOG_UNAVAILABLE = "log_unavailable"
     WORKLOAD_UNRECOVERABLE = "workload_unrecoverable"
+    CATEGORY_CONFIRMED_STOP = "category_confirmed_stop"
     RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
     RETRY_RECOVERY_AVAILABLE = "retry_recovery_available"
     CONFIRMATION_RETRY_AVAILABLE = "confirmation_retry_available"
