@@ -8,10 +8,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
 from fr_attribution_test_utils import FRAttributionOutputParser
 
-from nvidia_resiliency_ext.attribution.orchestration.config import (
-    DEFAULT_LLM_BASE_URL,
-    DEFAULT_LLM_MODEL,
-)
 from nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution import CollectiveAnalyzer
 
 
@@ -109,9 +105,6 @@ class TestFRAttribution(unittest.TestCase):
             "pattern": "_dump*",
             "verbose": False,
             "health_check": False,
-            "llm_analyze": False,
-            "model": DEFAULT_LLM_MODEL,
-            "base_url": DEFAULT_LLM_BASE_URL,
             "debug": False,
             "threshold": None,
         }

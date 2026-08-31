@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """LLM-judge scorer for fault-injection attribution experiments.
 
-Uses the same ChatOpenAI / NVIDIA inference API setup as nvrx_logsage.py.
-Reads ground-truth fault parameters and the raw text outputs of nvrx_logsage
-and CollectiveAnalyzer, then asks a judge model to score each attribution
-dimension and return structured JSON.
+Uses an OpenAI-compatible chat-completions endpoint. Reads ground-truth fault
+parameters and the raw outputs of restart-agent and CollectiveAnalyzer, then
+asks a judge model to score each attribution dimension and return structured
+JSON.
 
 Usage (called by watch_and_analyze.sh):
     python3 score_attribution.py \
@@ -25,7 +25,7 @@ import os
 import re
 import sys
 
-from langchain_openai import ChatOpenAI
+import httpx
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[4]))
 from nvidia_resiliency_ext.attribution.api_keys import load_llm_api_key
@@ -42,28 +42,29 @@ INJECTION_MARKERS = (
 DEFAULT_JUDGE_MODEL = "qwen/qwen3.5-397b-a17b"
 DEFAULT_GPUS_PER_NODE = int(os.getenv("GPUS_PER_NODE", "4"))
 DEFAULT_FR_SEGMENT_SIZE = int(os.getenv("FR_SEGMENT_SIZE", os.getenv("FR_RACK_SIZE", "32")))
+DEFAULT_JUDGE_TIMEOUT_SECONDS = 120.0
 
 # Expected restart decision and rationale per fault type
 _RESTART_TABLE = {
-    "GPU_SLEEP": ("RESTART IMMEDIATE", "transient GPU hang, recoverable"),
-    "LOCK_GIL": ("RESTART IMMEDIATE", "transient Python GIL hang, recoverable"),
-    "SIGTERM": ("RESTART IMMEDIATE", "external termination signal, recoverable"),
-    "SIGINT": ("RESTART IMMEDIATE", "external interrupt signal, recoverable"),
-    "SIGSTOP": ("RESTART IMMEDIATE", "external stop signal, recoverable"),
-    "SIGNAL_EXC": ("RESTART IMMEDIATE", "signal-based exception, typically recoverable"),
-    "GPU_ERROR": ("STOP - DONT RESTART IMMEDIATE", "hardware GPU error, may be persistent"),
-    "SIGKILL": ("STOP - DONT RESTART IMMEDIATE", "hard kill, possible external pressure or OOM"),
+    "GPU_SLEEP": ("RESTART", "transient GPU hang, recoverable"),
+    "LOCK_GIL": ("RESTART", "transient Python GIL hang, recoverable"),
+    "SIGTERM": ("RESTART", "external termination signal, recoverable"),
+    "SIGINT": ("RESTART", "external interrupt signal, recoverable"),
+    "SIGSTOP": ("RESTART", "external stop signal, recoverable"),
+    "SIGNAL_EXC": ("RESTART", "signal-based exception, typically recoverable"),
+    "GPU_ERROR": ("STOP", "hardware GPU error, may be persistent"),
+    "SIGKILL": ("STOP", "hard kill, possible external pressure or OOM"),
     "SEGFAULT": (
-        "STOP - DONT RESTART IMMEDIATE",
+        "STOP",
         "segmentation fault, likely code or memory corruption",
     ),
     "OS_ABORT": (
-        "STOP - DONT RESTART IMMEDIATE",
+        "STOP",
         "OS abort, likely severe system or hardware fault",
     ),
-    "WORKLOAD_EXC": ("STOP - DONT RESTART IMMEDIATE", "application exception, likely a code bug"),
+    "WORKLOAD_EXC": ("STOP", "application exception, likely a code bug"),
     "ASYNC_EXC": (
-        "STOP - DONT RESTART IMMEDIATE",
+        "STOP",
         "async exception in workload, likely a code bug",
     ),
 }
@@ -72,7 +73,7 @@ _RESTART_TABLE = {
 def load_log_excerpt(log_path, max_lines=400):
     """Return up to max_lines from the log, keeping the tail (where errors appear).
 
-    Applies the same exclude_nvrx_logs filtering as nvrx_logsage.py:analyze_logs().
+    Applies the same broad NVRx/workload-line filtering used by the feedback loop.
     """
     if not log_path:
         return "(log file not provided)"
@@ -83,7 +84,6 @@ def load_log_excerpt(log_path, max_lines=400):
         except UnicodeDecodeError:
             with open(log_path, "r", encoding="latin-1") as f:
                 lines = f.readlines()
-        # Mirrors nvrx_logsage.py exclude_nvrx_logs logic exactly
         lines = [line for line in lines if "nvidia_resiliency_ext" not in line]
         lines = [line for line in lines if "[workload:" not in line or 'Cycle:' in line]
         # Strip fault-injection markers — the judge must not see which rank/fault was
@@ -94,6 +94,16 @@ def load_log_excerpt(log_path, max_lines=400):
         return "".join(lines).strip()
     except Exception as exc:
         return f"(could not read log file: {exc})"
+
+
+def render_log_output_for_judge(log_output: str) -> str:
+    stripped = log_output.strip()
+    if not stripped:
+        return "(no log output — analyzer produced no output)"
+    try:
+        return json.dumps(json.loads(stripped), indent=2, sort_keys=True)
+    except json.JSONDecodeError:
+        return stripped
 
 
 def parse_fr_missing_ranks(fr_output: str) -> set[int]:
@@ -192,6 +202,7 @@ def build_judge_prompt(
     )
 
     log_section = log_excerpt.strip() if log_excerpt.strip() else "(not provided)"
+    log_output_section = render_log_output_for_judge(log_output)
 
     return f"""You are evaluating the accuracy of an AI-based fault attribution system for \
 distributed ML training.
@@ -205,7 +216,7 @@ distributed ML training.
 - Cluster : {nodes} nodes × {gpus_per_node} GPUs = {total_ranks} total ranks
 
 ## Expected correct behavior
-- restart_decision should be : {expected_restart}
+- restart-agent `decision` should be : {expected_restart}
   Rationale: {restart_rationale}
 - Rank {rank} should appear in Primary issues as the root cause
 - FR scope scoring:
@@ -218,8 +229,8 @@ distributed ML training.
 ## Raw job log (filtered, last 400 lines)
 {log_section}
 
-## Log attribution output (from nvrx_logsage)
-{log_output if log_output.strip() else "(no log output — analyzer produced no output)"}
+## Log attribution output (from restart-agent)
+{log_output_section}
 
 ## FR (flight recorder) analysis output (from CollectiveAnalyzer)
 {fr_section}
@@ -261,6 +272,66 @@ Respond ONLY with a JSON object — no markdown, no explanation outside the JSON
 }}"""
 
 
+def _chat_completions_url(base_url: str) -> str:
+    url = base_url.rstrip("/")
+    if url.endswith("/chat/completions"):
+        return url
+    return f"{url}/chat/completions"
+
+
+def _message_content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "".join(parts)
+    return ""
+
+
+def _disable_thinking_for_request(model: str) -> bool:
+    return "qwen" in model.lower()
+
+
+def invoke_judge_model(prompt, *, model, api_key, base_url):
+    endpoint = _chat_completions_url(base_url)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "max_tokens": 512,
+    }
+    if _disable_thinking_for_request(model):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+    with httpx.Client(timeout=DEFAULT_JUDGE_TIMEOUT_SECONDS) as client:
+        response = client.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()
+        body = response.json()
+
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("judge response missing choices")
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        raise ValueError("judge response choice is not an object")
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        raise ValueError("judge response missing message")
+    text = _message_content_text(message.get("content")).strip()
+    if not text:
+        raise ValueError("judge response message content is empty")
+    return text
+
+
 def score(args):
     args.run_valid = args.run_valid.lower() == "true"
     api_key = os.getenv("JUDGE_API_KEY", "").strip()
@@ -282,14 +353,6 @@ def score(args):
 
     base_url = os.getenv("JUDGE_BASE_URL", "").strip() or args.base_url
 
-    llm = ChatOpenAI(
-        model=args.model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=0.0,
-        max_completion_tokens=512,
-    )
-
     log_excerpt = load_log_excerpt(args.log_path) if args.log_path else ""
 
     prompt_or_result = build_judge_prompt(
@@ -309,8 +372,12 @@ def score(args):
     if isinstance(prompt_or_result, dict):
         return prompt_or_result
 
-    response = llm.invoke(prompt_or_result)
-    text = response.content.strip()
+    text = invoke_judge_model(
+        prompt_or_result,
+        model=args.model,
+        api_key=api_key,
+        base_url=base_url,
+    )
 
     # Strip markdown code fences if present
     if text.startswith("```"):
@@ -342,7 +409,7 @@ def main():
         help="'true' if training reached the fault injection point, 'false' otherwise",
     )
     parser.add_argument("--log-path", default="", help="Path to the raw job log file")
-    parser.add_argument("--log-output", default="", help="Raw stdout from nvrx_logsage")
+    parser.add_argument("--log-output", default="", help="Raw JSON stdout from restart-agent")
     parser.add_argument("--fr-output", default="no_dumps", help="Raw text from CollectiveAnalyzer")
     parser.add_argument("--model", default=DEFAULT_JUDGE_MODEL, help="Judge LLM model")
     parser.add_argument("--base-url", default=DEFAULT_LLM_BASE_URL, help="API base URL")

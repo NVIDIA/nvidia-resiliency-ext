@@ -1,0 +1,6 @@
+# Source-checkout-only dependencies for legacy LogSage MCP tools.
+# Keep the MCP range aligned with the attribution extra in pyproject.toml.
+mcp>=1.15.0,<2.0.0
+langchain-core
+langchain-openai
+logsage

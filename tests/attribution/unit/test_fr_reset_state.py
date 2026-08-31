@@ -20,9 +20,6 @@ class TestCollectiveAnalyzerRunState(unittest.IsolatedAsyncioTestCase):
             "pattern": "_dump_*",
             "verbose": False,
             "health_check": False,
-            "llm_analyze": False,
-            "model": None,
-            "base_url": None,
             "threshold": None,
         }
 

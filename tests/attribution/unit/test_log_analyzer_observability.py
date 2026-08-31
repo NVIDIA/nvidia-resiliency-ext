@@ -24,12 +24,12 @@ def _stub_module(monkeypatch, name):
 def _import_log_analyzer_with_optional_dependency_stubs(monkeypatch):
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.orchestration.log_analyzer",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer",
         raising=False,
     )
     monkeypatch.delitem(
         sys.modules,
-        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage",
+        "nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage",
         raising=False,
     )
 
@@ -106,7 +106,9 @@ def _import_log_analyzer_with_optional_dependency_stubs(monkeypatch):
     httpx = _stub_module(monkeypatch, "httpx")
     httpx.post = lambda *args, **kwargs: types.SimpleNamespace(status_code=201, text="created")
 
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     return module.LogAnalyzer
 
 
@@ -199,7 +201,9 @@ def test_run_attribution_returns_before_observability_post_completes(tmp_path, m
 
 def test_log_sage_runner_omits_unset_llm_overrides(monkeypatch):
     _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=True))
     captured: dict[str, dict[str, Any]] = {}
 
@@ -231,7 +235,9 @@ def test_log_sage_runner_omits_unset_llm_overrides(monkeypatch):
 
 def test_log_sage_runner_preserves_explicit_llm_overrides(monkeypatch):
     _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     runner = module.LogSageRunner(
         LogSageExecutionConfig(
             use_lib_log_analysis=True,
@@ -270,7 +276,9 @@ def test_log_sage_runner_preserves_explicit_llm_overrides(monkeypatch):
 
 def test_log_sage_runner_lib_run_allows_coalescer_timeout(monkeypatch):
     _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=True))
     started = threading.Event()
     finished = threading.Event()
@@ -311,7 +319,9 @@ def test_log_sage_runner_lib_run_allows_coalescer_timeout(monkeypatch):
 
 def test_log_sage_runner_logs_worker_exception_after_timeout(monkeypatch, caplog):
     _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     runner = module.LogSageRunner(LogSageExecutionConfig(use_lib_log_analysis=True))
 
     class FailingFakeLogAnalyzer:
@@ -347,7 +357,9 @@ def test_log_sage_runner_logs_worker_exception_after_timeout(monkeypatch, caplog
 
 def test_log_fr_analyzer_mcp_uses_top_level_log_contract(monkeypatch):
     _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     runner = object.__new__(module.LogSageRunner)
     runner.config = LogSageExecutionConfig(use_lib_log_analysis=False)
     runner._log_analysis_lock = asyncio.Lock()
@@ -409,7 +421,9 @@ def test_log_fr_analyzer_mcp_uses_top_level_log_contract(monkeypatch):
 
 def test_log_fr_analyzer_mcp_uses_cycle_counter_for_per_cycle_log(monkeypatch):
     _import_log_analyzer_with_optional_dependency_stubs(monkeypatch)
-    module = importlib.import_module("nvidia_resiliency_ext.attribution.orchestration.log_analyzer")
+    module = importlib.import_module(
+        "nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer"
+    )
     runner = object.__new__(module.LogSageRunner)
     runner.config = LogSageExecutionConfig(use_lib_log_analysis=False)
     runner._log_analysis_lock = asyncio.Lock()

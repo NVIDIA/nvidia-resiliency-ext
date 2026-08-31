@@ -19,7 +19,7 @@ Terminology:
 
 Architecture notes:
 - SplitlogTracker does NOT own job storage; it uses callbacks to access Job
-  objects stored in :class:`~nvidia_resiliency_ext.attribution.orchestration.tracked_jobs.TrackedJobs`
+  objects stored in :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.tracked_jobs.TrackedJobs`
 - Analysis is triggered via fire-and-forget callback to avoid blocking the
   async event loop from the background polling thread
 - Results are stored in RequestCoalescer cache and retrieved via GET /logs
@@ -33,7 +33,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .config import (
+from nvidia_resiliency_ext.attribution.orchestration.config import (
     RESP_FILES_ANALYZED,
     RESP_LOGS_DIR,
     RESP_SCHED_RESTARTS,
@@ -48,8 +48,13 @@ from .config import (
     STATS_SCHED_RESTARTS,
     STATS_TERMINATED,
 )
-from .job import FileInfo, Job
-from .log_path_metadata import CYCLE_NUM_PATTERN, DATE_TIME_PATTERN
+from nvidia_resiliency_ext.attribution.orchestration.job import FileInfo, Job
+from nvidia_resiliency_ext.attribution.orchestration.log_path_metadata import (
+    CYCLE_NUM_PATTERN,
+    DATE_TIME_PATTERN,
+)
+from nvidia_resiliency_ext.attribution.path_utils import path_is_under_allowed_root
+
 from .slurm_parser import read_and_parse_slurm_output
 
 logger = logging.getLogger(__name__)
@@ -81,7 +86,7 @@ class SplitlogTracker:
 
     This class manages jobs that write separate log files to a LOGS_DIR for each
     scheduler restart. It does NOT own job storage - it uses callbacks to access
-    Job objects stored in :class:`~nvidia_resiliency_ext.attribution.orchestration.tracked_jobs.TrackedJobs`.
+    Job objects stored in :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.tracked_jobs.TrackedJobs`.
 
     Key responsibilities:
     - Background polling thread that runs every poll_interval seconds
@@ -94,7 +99,7 @@ class SplitlogTracker:
     - All job state access is protected by self._lock
     - Analysis is triggered via ThreadPoolExecutor to avoid blocking async event loop
 
-    Callbacks (set by :class:`~nvidia_resiliency_ext.attribution.orchestration.tracked_jobs.TrackedJobs`):
+    Callbacks (set by :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.tracked_jobs.TrackedJobs`):
     - set_analyze_callback: Called to trigger analysis (fire-and-forget)
     - set_pending_check_callback: Called each poll cycle to check pending jobs
     - set_get_splitlog_jobs_callback: Returns list of splitlog mode jobs
@@ -107,6 +112,7 @@ class SplitlogTracker:
         log_pattern: str = "*_{job_id}_*.log",
         terminated_job_ttl: float = DEFAULT_TERMINATED_JOB_TTL_SECONDS,
         max_job_age: float = DEFAULT_MAX_JOB_AGE_SECONDS,
+        allowed_root: Optional[str] = None,
     ):
         """
         Initialize the splitlog tracker.
@@ -125,6 +131,7 @@ class SplitlogTracker:
         self._log_pattern = log_pattern
         self._terminated_job_ttl = terminated_job_ttl
         self._max_job_age = max_job_age
+        self._allowed_root = os.path.realpath(allowed_root) if allowed_root else None
         self._poll_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._analyze_callback: Optional[Callable[[str, str, Optional[str]], None]] = None
@@ -134,6 +141,15 @@ class SplitlogTracker:
         self._jobs_cleaned: int = 0  # Counter for cleaned up jobs
         # Thread pool for non-blocking analysis (avoids blocking async event loop)
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="splitlog-analyze")
+
+    def set_allowed_root(self, allowed_root: str) -> None:
+        """Set the path policy root used to filter discovered splitlog files."""
+        self._allowed_root = os.path.realpath(allowed_root)
+
+    def _path_allowed(self, path: str) -> bool:
+        if self._allowed_root is None:
+            return True
+        return path_is_under_allowed_root(path, self._allowed_root)
 
     def set_analyze_callback(self, callback: Callable[[str, str, Optional[str]], None]) -> None:
         """
@@ -472,13 +488,30 @@ class SplitlogTracker:
             logger.debug(f"_find_log_files: logs_dir not a directory: {logs_dir}")
             return []
 
+        if not self._path_allowed(logs_dir):
+            logger.warning(
+                "_find_log_files: logs_dir outside allowed_root skipped: "
+                "logs_dir=%r allowed_root=%r",
+                logs_dir,
+                self._allowed_root,
+            )
+            return []
+
         escaped_id = _escape_glob(job_id)
         pattern = self._log_pattern.replace("{job_id}", escaped_id)
 
         scan_roots = [logs_dir]
         slurm_sub = os.path.join(logs_dir, "slurm")
         if os.path.isdir(slurm_sub):
-            scan_roots.append(slurm_sub)
+            if self._path_allowed(slurm_sub):
+                scan_roots.append(slurm_sub)
+            else:
+                logger.warning(
+                    "_find_log_files: slurm subdir outside allowed_root skipped: "
+                    "path=%r allowed_root=%r",
+                    slurm_sub,
+                    self._allowed_root,
+                )
 
         seen_real: set[str] = set()
         matches: List[str] = []
@@ -489,6 +522,15 @@ class SplitlogTracker:
                     continue
                 rp = os.path.realpath(f)
                 if rp in seen_real:
+                    continue
+                if not self._path_allowed(rp):
+                    logger.warning(
+                        "_find_log_files: log file outside allowed_root skipped: "
+                        "path=%r realpath=%r allowed_root=%r",
+                        f,
+                        rp,
+                        self._allowed_root,
+                    )
                     continue
                 seen_real.add(rp)
                 matches.append(f)

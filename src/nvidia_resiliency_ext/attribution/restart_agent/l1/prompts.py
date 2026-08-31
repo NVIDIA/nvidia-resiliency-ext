@@ -32,7 +32,7 @@ Evidence method:
   can be resolved unless get_evidence_objects is advertised as a tool.
 - Treat precomputed pattern matches, candidate labels, ordering, and frequency as
   retrieval aids, not causal conclusions.
-- Use chronology and complete traceback context to select the initiating failure.
+- Use chronology and complete traceback context to identify the initiating failure.
   Distinguish it from downstream cascades, wrappers, cleanup, and teardown failures.
 - Repeated rendering or multi-rank fanout within one causal episode is one event, not
   evidence of cross-attempt persistence.

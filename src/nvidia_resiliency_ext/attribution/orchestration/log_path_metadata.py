@@ -3,8 +3,8 @@
 
 """Regexes and helpers for job id / cycle id derived from log file paths.
 
-Used by :mod:`~nvidia_resiliency_ext.attribution.orchestration.splitlog` (cycle and date ordering),
-:mod:`~nvidia_resiliency_ext.attribution.analyzer.engine` (per-cycle path detection), and
+Used by :mod:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.splitlog` (cycle and date ordering),
+:mod:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine` (per-cycle path detection), and
 :func:`extract_job_metadata` when building dataflow fields alongside parsed LLM output.
 
 Job ID patterns are heuristics for paths where the id is not supplied out-of-band (e.g. MCP or HTTP).

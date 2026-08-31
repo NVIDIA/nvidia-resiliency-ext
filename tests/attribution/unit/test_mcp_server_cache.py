@@ -147,6 +147,18 @@ class FakeFrAnalyzer:
         )
 
 
+class FakeRestartAgent:
+    def __init__(self, _args):
+        pass
+
+    async def run(self, _arguments):
+        return {
+            "module": "restart_agent",
+            "result": {"decision": "RESTART", "decision_basis": "general_retry_available"},
+            "recommendation": {"action": "RESTART", "source": "restart_agent"},
+        }
+
+
 @unittest.skipUnless(
     PY310_PLUS,
     "MCP server cache tests require Python 3.10+",
@@ -165,6 +177,13 @@ class TestMCPServerCache(unittest.IsolatedAsyncioTestCase):
             name="fr_analyzer",
             module_class=FakeFrAnalyzer,
             description="fake fr analyzer",
+            input_schema={"type": "object", "properties": {}, "required": []},
+            output_schema={"type": "object"},
+        )
+        registry.register(
+            name="restart_agent",
+            module_class=FakeRestartAgent,
+            description="fake restart agent",
             input_schema={"type": "object", "properties": {}, "required": []},
             output_schema={"type": "object"},
         )
@@ -256,6 +275,19 @@ class TestMCPServerCache(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["module"], "fr_analyzer")
         self.assertEqual(response["recommendation"], {"action": "UNKNOWN", "source": "fr_analyzer"})
         self.assertEqual(response["result"]["hanging_ranks"], "hanging ranks: [1, 2]")
+        self.assertNotIn("state", response)
+
+    async def test_direct_restart_agent_response_uses_recommendation_envelope(self):
+        server = self._server()
+
+        content = await server._handle_module_execution("restart_agent", {"log_path": "/tmp/job"})
+        response = json.loads(content[0].text)
+
+        self.assertEqual(response["module"], "restart_agent")
+        self.assertEqual(
+            response["recommendation"], {"action": "RESTART", "source": "restart_agent"}
+        )
+        self.assertEqual(response["result"]["decision"], "RESTART")
         self.assertNotIn("state", response)
 
     async def test_progressive_start_response_is_not_cached_result(self):
