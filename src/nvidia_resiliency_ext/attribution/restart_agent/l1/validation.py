@@ -542,13 +542,20 @@ def repair_overlong_category_rationale(payload: Any) -> list[str]:
 
 
 def repair_model_evidence(payload: Any) -> list[str]:
-    """Aggregate all in-place repairs. Returns the concatenated repair notes."""
+    """Aggregate all in-place repairs. Returns the concatenated repair notes.
+
+    Note: repair_invalid_evidence_supports is intentionally NOT called here.
+    PR #400 already surfaces unknown/duplicate support tags as advisories
+    (evidence_support_tag_unknown, evidence_supports_contain_duplicates in
+    l1/advisories.py) without rejecting the response. Pre-emptively dropping
+    those tags in-place would suppress those advisories. The repair function
+    is kept in this module for reference and possible future use.
+    """
 
     notes: list[str] = []
     notes.extend(repair_schema_version(payload))
     notes.extend(repair_biconditional_unknowns(payload))
     notes.extend(repair_overlong_lists(payload))
-    notes.extend(repair_invalid_evidence_supports(payload))
     notes.extend(repair_overlong_category_rationale(payload))
     return notes
 

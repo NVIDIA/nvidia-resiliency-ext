@@ -85,6 +85,11 @@ def _observation_payload():
                 "supports": ["root_cause_assessment"],
             }
         ],
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
 

@@ -98,6 +98,11 @@ class _EvidenceExtractor:
                     ],
                 }
             ],
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
         }
         return L1EvidenceResult(
             semantic_payload=evidence,
