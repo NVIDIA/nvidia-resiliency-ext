@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deterministic retry-rule and concurrent retry-ledger policy."""
+"""Deterministic retry-rule selection and concurrent retry ledgers."""
 
 from __future__ import annotations
 
@@ -9,34 +9,45 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..models import (
+    CUDA_OOM_NO_RETRY_CONTEXT_ID,
+    PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID,
+    REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID,
     AffectedEntity,
     AssessmentStatus,
+    AttemptFailureFacts,
+    CycleHistoryComparison,
     Decision,
     DecisionBasis,
-    DeclaredRecoveryCapability,
+    FailureClassifier,
     FailureDomain,
     FailureEvidence,
+    FaultOutcome,
     HistoryMatchScope,
+    HistoryProgressRelation,
     HistorySummary,
     ModelRecoveryAssessment,
+    PolicyContextConfig,
     RetryOutlookWithoutWorkloadChange,
     RetryPolicyConfig,
     RetryPolicyRule,
 )
 
 GENERAL_ROOT_CEILING_ID = "general_root_ceiling"
-SELECTED_RULE_BUDGET_ID = "selected_rule_budget"
+SELECTED_POLICY_LEDGER_ID = "selected_policy_ledger"
+JOB_NO_PROGRESS_GUARD_ID = "job_no_progress_guard"
+JOB_UNKNOWN_PROGRESS_GUARD_ID = "job_unknown_progress_guard"
 
 
 @dataclass(frozen=True)
 class L4PolicyInput:
     primary: FailureEvidence | None
     history: HistorySummary
+    selected_observed_failure: FailureEvidence | None = None
+    current_failure_facts: AttemptFailureFacts | None = None
     current_affected_entity: AffectedEntity | None = None
     model_recovery_assessment: ModelRecoveryAssessment | None = None
-    assessment_grounded: bool = False
     retry_policy: RetryPolicyConfig = RetryPolicyConfig()
-    declared_recovery_capabilities: tuple[DeclaredRecoveryCapability, ...] = ()
+    policy_contexts: PolicyContextConfig = PolicyContextConfig()
 
     def __post_init__(self) -> None:
         if self.model_recovery_assessment is not None and not isinstance(
@@ -49,13 +60,33 @@ class L4PolicyInput:
             AffectedEntity,
         ):
             raise TypeError("L4 current_affected_entity must be typed")
+        if self.current_failure_facts is not None and not isinstance(
+            self.current_failure_facts,
+            AttemptFailureFacts,
+        ):
+            raise TypeError("L4 current_failure_facts must be typed")
         if not isinstance(self.retry_policy, RetryPolicyConfig):
             raise TypeError("L4 retry_policy must be typed")
-        if any(
-            not isinstance(capability, DeclaredRecoveryCapability)
-            for capability in self.declared_recovery_capabilities
-        ):
-            raise TypeError("L4 declared_recovery_capabilities must be typed")
+        if not isinstance(self.policy_contexts, PolicyContextConfig):
+            raise TypeError("L4 policy_contexts must be typed")
+
+
+@dataclass(frozen=True)
+class EffectiveRetryPolicy:
+    source: str
+    rule: str
+    history_match_scope: str | None
+    allowed_retries: int
+    policy_context_id: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "rule": self.rule,
+            "history_match_scope": self.history_match_scope,
+            "allowed_retries": self.allowed_retries,
+            "policy_context_id": self.policy_context_id,
+        }
 
 
 @dataclass(frozen=True)
@@ -65,7 +96,7 @@ class RetryLedgerEvaluation:
     rule: str
     history_match_scope: str
     allowed_retries: int | None
-    matching_prior_failures: int = 0
+    matching_prior_attempts: int = 0
     observed_advance: bool = False
     exhausted: bool = False
     inapplicable_reason: str | None = None
@@ -77,7 +108,7 @@ class RetryLedgerEvaluation:
             "rule": self.rule,
             "history_match_scope": self.history_match_scope,
             "allowed_retries": self.allowed_retries,
-            "matching_prior_failures": self.matching_prior_failures,
+            "matching_prior_attempts": self.matching_prior_attempts,
             "observed_advance": self.observed_advance,
             "exhausted": self.exhausted,
             "inapplicable_reason": self.inapplicable_reason,
@@ -87,11 +118,15 @@ class RetryLedgerEvaluation:
 @dataclass(frozen=True)
 class RetryPolicyEvaluation:
     policy_version: str
-    rule: str | None
+    base_rule: str | None
+    effective_policy: EffectiveRetryPolicy | None
+    applied_policy_context: Mapping[str, Any] | None
     retry_budget_exhausted: bool
     exhausted_by: tuple[str, ...]
     general_root_ceiling: RetryLedgerEvaluation
-    selected_rule_budget: RetryLedgerEvaluation | None
+    selected_policy_ledger: RetryLedgerEvaluation | None
+    job_no_progress_guard: RetryLedgerEvaluation
+    job_unknown_progress_guard: RetryLedgerEvaluation
     decision: str
     decision_basis: str
     failure_domain: str | None = None
@@ -100,34 +135,40 @@ class RetryPolicyEvaluation:
     retry_outlook_without_workload_change: str | None = None
     retry_outlook_status: str | None = None
     retry_outlook_confidence: int | None = None
-    recovery_assessment_policy_grounded: bool = False
     current_evidence_qualified: bool = False
     current_affected_entity: Mapping[str, Any] | None = None
     match_requirements: Mapping[str, str] | None = None
-    declared_recovery_capability_ids: tuple[str, ...] = ()
-    applied_recovery_capability: Mapping[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "policy_version": self.policy_version,
-            "rule": self.rule,
+            "base_rule": self.base_rule,
+            "effective_policy": (
+                self.effective_policy.to_payload() if self.effective_policy is not None else None
+            ),
+            "applied_policy_context": (
+                dict(self.applied_policy_context)
+                if self.applied_policy_context is not None
+                else None
+            ),
             "decision": self.decision,
             "decision_basis": self.decision_basis,
             "retry_budget_exhausted": self.retry_budget_exhausted,
             "exhausted_by": list(self.exhausted_by),
             "general_root_ceiling": self.general_root_ceiling.to_payload(),
-            "selected_rule_budget": (
-                self.selected_rule_budget.to_payload()
-                if self.selected_rule_budget is not None
+            "selected_policy_ledger": (
+                self.selected_policy_ledger.to_payload()
+                if self.selected_policy_ledger is not None
                 else None
             ),
+            "job_no_progress_guard": self.job_no_progress_guard.to_payload(),
+            "job_unknown_progress_guard": self.job_unknown_progress_guard.to_payload(),
             "failure_domain": self.failure_domain,
             "failure_domain_status": self.failure_domain_status,
             "failure_domain_confidence": self.failure_domain_confidence,
             "retry_outlook_without_workload_change": (self.retry_outlook_without_workload_change),
             "retry_outlook_status": self.retry_outlook_status,
             "retry_outlook_confidence": self.retry_outlook_confidence,
-            "recovery_assessment_policy_grounded": (self.recovery_assessment_policy_grounded),
             "current_evidence_qualified": self.current_evidence_qualified,
             "current_affected_entity": (
                 dict(self.current_affected_entity)
@@ -135,23 +176,61 @@ class RetryPolicyEvaluation:
                 else None
             ),
             "match_requirements": dict(self.match_requirements or {}),
-            "declared_recovery_capability_ids": list(self.declared_recovery_capability_ids),
-            "applied_recovery_capability": (
-                dict(self.applied_recovery_capability)
-                if self.applied_recovery_capability is not None
-                else None
-            ),
         }
 
 
 @dataclass(frozen=True)
 class L4PolicyOutcome:
     primary: FailureEvidence | None
+    selected_observed_failure: FailureEvidence | None
     retry_policy: RetryPolicyEvaluation
+    selected_failure_facts: AttemptFailureFacts | None = None
+    selected_history: HistorySummary | None = None
+    path_selection: "L4PathSelection | None" = None
+
+
+@dataclass(frozen=True)
+class L4PathSelection:
+    """The one evidence/history track selected for policy evaluation."""
+
+    path: str
+    route_id: str | None
+    reason: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "route_id": self.route_id,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class L4CyclePolicyInput:
+    """All independent current-cycle paths available to L4."""
+
+    deterministic_primary: FailureEvidence | None
+    deterministic_observation: FailureEvidence | None
+    deterministic_facts: AttemptFailureFacts
+    history: CycleHistoryComparison
+    route_id: str | None = None
+    grounded_primary: FailureEvidence | None = None
+    grounded_observation: FailureEvidence | None = None
+    primary_facts: AttemptFailureFacts | None = None
+    observation_facts: AttemptFailureFacts | None = None
+    model_recovery_assessment: ModelRecoveryAssessment | None = None
+    l1_primary_declared: bool = False
+    retry_policy: RetryPolicyConfig = RetryPolicyConfig()
+    policy_contexts: PolicyContextConfig = PolicyContextConfig()
+
+
+@dataclass(frozen=True)
+class _PolicyContextMatch:
+    effective_policy: EffectiveRetryPolicy
+    payload: Mapping[str, Any]
 
 
 def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
-    configured = policy_input.retry_policy
     assessment = policy_input.model_recovery_assessment
     domain = assessment.failure_domain.value.value if assessment is not None else None
     domain_status = assessment.failure_domain.status.value if assessment is not None else None
@@ -171,81 +250,102 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
         if assessment is not None
         else None
     )
-    current_evidence_qualified = _current_evidence_qualifies_for_immediate_stop(
+
+    current_evidence_qualified = _immediate_stop_qualified(
         primary=policy_input.primary,
-        assessment_grounded=policy_input.assessment_grounded,
         domain=domain,
         domain_status=domain_status,
         outlook=outlook,
         outlook_status=outlook_status,
     )
-    matching_capability = _matching_recovery_capability(
-        policy_input.primary,
-        policy_input.declared_recovery_capabilities,
-    )
-    applied_capability = (
-        matching_capability
-        if _capability_entity_matches(
-            matching_capability,
-            policy_input.current_affected_entity,
-        )
-        else None
-    )
-    rule = _select_rule(
+    base_rule = _select_base_rule(
         primary=policy_input.primary,
+        selected_observed_failure=policy_input.selected_observed_failure,
         current_affected_entity=policy_input.current_affected_entity,
-        matching_capability=matching_capability,
-        applied_capability=applied_capability,
-        assessment_grounded=policy_input.assessment_grounded,
-        outlook=outlook,
-        outlook_status=outlook_status,
+        domain=domain,
+        domain_status=domain_status,
         current_evidence_qualified=current_evidence_qualified,
+    )
+    base_effective_policy = _effective_policy(
+        base_rule,
+        policy_input.retry_policy,
+        observation_only=(
+            policy_input.primary is None and policy_input.selected_observed_failure is not None
+        ),
+    )
+    policy_context_match = _match_policy_context(
+        primary=policy_input.primary,
+        current_facts=policy_input.current_failure_facts,
+        configured=policy_input.policy_contexts,
+    )
+    effective_policy = (
+        policy_context_match.effective_policy
+        if policy_context_match is not None
+        else base_effective_policy
     )
 
     general_root_ceiling = _general_root_ceiling(
         primary=policy_input.primary,
-        rule=rule,
+        base_rule=base_rule,
         history=policy_input.history,
-        allowed_retries=configured.general_retry_allowed_retries,
+        allowed_retries=policy_input.retry_policy.general_retry_allowed_retries,
     )
-    selected_rule_budget = _selected_rule_budget(
-        rule=rule,
-        applied_capability=applied_capability,
+    selected_policy_ledger = _selected_policy_ledger(
+        effective_policy=effective_policy,
         history=policy_input.history,
-        confirmation_retries=configured.confirmation_retry_allowed_retries,
-        bounded_retries=configured.bounded_retry_allowed_retries,
-        general_retries=configured.general_retry_allowed_retries,
+        general_retries=policy_input.retry_policy.general_retry_allowed_retries,
+    )
+    job_no_progress_guard = _job_guard(
+        ledger_id=JOB_NO_PROGRESS_GUARD_ID,
+        scope=HistoryMatchScope.SAME_JOB_NO_PROGRESS,
+        history=policy_input.history,
+        allowed_retries=policy_input.retry_policy.job_no_progress_allowed_retries,
+    )
+    job_unknown_progress_guard = _job_guard(
+        ledger_id=JOB_UNKNOWN_PROGRESS_GUARD_ID,
+        scope=HistoryMatchScope.SAME_JOB_UNKNOWN_PROGRESS,
+        history=policy_input.history,
+        allowed_retries=policy_input.retry_policy.job_unknown_progress_allowed_retries,
+    )
+
+    ledgers = (
+        selected_policy_ledger,
+        general_root_ceiling,
+        job_no_progress_guard,
+        job_unknown_progress_guard,
     )
     exhausted_by = tuple(
-        ledger.ledger_id
-        for ledger in (general_root_ceiling, selected_rule_budget)
-        if ledger is not None and ledger.exhausted
+        ledger.ledger_id for ledger in ledgers if ledger is not None and ledger.exhausted
     )
-    retry_budget_exhausted = bool(exhausted_by)
     observed_advance = any(
-        ledger is not None and ledger.applicable and ledger.observed_advance
-        for ledger in (general_root_ceiling, selected_rule_budget)
+        ledger is not None and ledger.applicable and ledger.observed_advance for ledger in ledgers
     )
     decision, basis = _decision(
         primary=policy_input.primary,
-        rule=rule,
-        retry_budget_exhausted=retry_budget_exhausted,
+        selected_observed_failure=policy_input.selected_observed_failure,
+        effective_policy=effective_policy,
+        exhausted_by=exhausted_by,
         observed_advance=observed_advance,
     )
-    selected_scope = (
-        selected_rule_budget.history_match_scope
-        if selected_rule_budget is not None
-        else HistoryMatchScope.ROOT_ONLY.value
-    )
+    selected_scope = effective_policy.history_match_scope if effective_policy is not None else None
     return L4PolicyOutcome(
         primary=policy_input.primary,
+        selected_observed_failure=policy_input.selected_observed_failure,
+        selected_failure_facts=policy_input.current_failure_facts,
+        selected_history=policy_input.history,
         retry_policy=RetryPolicyEvaluation(
-            policy_version=configured.policy_version,
-            rule=rule,
-            retry_budget_exhausted=retry_budget_exhausted,
+            policy_version=policy_input.retry_policy.policy_version,
+            base_rule=base_rule,
+            effective_policy=effective_policy,
+            applied_policy_context=(
+                policy_context_match.payload if policy_context_match is not None else None
+            ),
+            retry_budget_exhausted=bool(exhausted_by),
             exhausted_by=exhausted_by,
             general_root_ceiling=general_root_ceiling,
-            selected_rule_budget=selected_rule_budget,
+            selected_policy_ledger=selected_policy_ledger,
+            job_no_progress_guard=job_no_progress_guard,
+            job_unknown_progress_guard=job_unknown_progress_guard,
             decision=decision,
             decision_basis=basis,
             failure_domain=domain,
@@ -254,7 +354,6 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
             retry_outlook_without_workload_change=outlook,
             retry_outlook_status=outlook_status,
             retry_outlook_confidence=outlook_confidence,
-            recovery_assessment_policy_grounded=policy_input.assessment_grounded,
             current_evidence_qualified=current_evidence_qualified,
             current_affected_entity=(
                 policy_input.current_affected_entity.to_payload()
@@ -264,28 +363,140 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
             match_requirements={
                 "job_id": "exact",
                 "root_fingerprint": ("exact" if policy_input.primary is not None else "missing"),
+                "selected_observation": (
+                    "grounded" if policy_input.selected_observed_failure is not None else "missing"
+                ),
                 "affected_entity": (
                     "exact"
                     if selected_scope == HistoryMatchScope.ROOT_AND_ENTITY.value
                     else "not_required"
                 ),
-                "progress": "no_observed_advance",
+                "rejected_iteration_signature": (
+                    "exact"
+                    if selected_scope == HistoryMatchScope.REJECTED_ITERATION_SIGNATURE.value
+                    else "not_required"
+                ),
+                "cuda_oom_signature": (
+                    "exact"
+                    if effective_policy is not None
+                    and effective_policy.policy_context_id == CUDA_OOM_NO_RETRY_CONTEXT_ID
+                    else "not_required"
+                ),
+                "port_bind_conflict_signature": (
+                    "exact"
+                    if effective_policy is not None
+                    and effective_policy.policy_context_id
+                    == PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID
+                    else "not_required"
+                ),
+                "progress": "ledger_specific",
             },
-            declared_recovery_capability_ids=tuple(
-                capability.capability_id.value
-                for capability in policy_input.declared_recovery_capabilities
-            ),
-            applied_recovery_capability=(
-                applied_capability.to_payload() if applied_capability is not None else None
-            ),
         ),
     )
 
 
-def _current_evidence_qualifies_for_immediate_stop(
+def evaluate_cycle_policy(policy_input: L4CyclePolicyInput) -> L4PolicyOutcome:
+    """Select one eligible track, then apply the deterministic retry policy."""
+
+    route_history = (
+        policy_input.history.route(policy_input.route_id)
+        if policy_input.route_id is not None
+        else None
+    )
+    if (
+        policy_input.grounded_primary is not None
+        and policy_input.primary_facts is not None
+        and route_history is not None
+        and route_history.primary is not None
+    ):
+        primary = policy_input.grounded_primary
+        observation = None
+        facts = policy_input.primary_facts
+        history = route_history.primary
+        assessment = policy_input.model_recovery_assessment
+        selection = L4PathSelection(
+            path="primary",
+            route_id=policy_input.route_id,
+            reason="grounded_primary_available",
+        )
+    elif (
+        policy_input.grounded_observation is not None
+        and policy_input.observation_facts is not None
+        and route_history is not None
+        and route_history.observation is not None
+    ):
+        primary = None
+        observation = policy_input.grounded_observation
+        facts = policy_input.observation_facts
+        history = route_history.observation
+        assessment = (
+            None if policy_input.l1_primary_declared else policy_input.model_recovery_assessment
+        )
+        selection = L4PathSelection(
+            path="observation",
+            route_id=policy_input.route_id,
+            reason=(
+                "grounded_observation_after_primary_unavailable"
+                if policy_input.l1_primary_declared
+                else "grounded_observation_without_primary"
+            ),
+        )
+    elif policy_input.deterministic_facts.history_identity_ready:
+        primary = (
+            policy_input.deterministic_primary
+            if policy_input.deterministic_facts.identity_kind == "root"
+            else None
+        )
+        observation = (
+            policy_input.deterministic_observation
+            if policy_input.deterministic_facts.identity_kind == "observation_only"
+            else None
+        )
+        facts = policy_input.deterministic_facts
+        history = policy_input.history.deterministic
+        assessment = None
+        selection = L4PathSelection(
+            path="deterministic",
+            route_id=None,
+            reason="deterministic_selected_after_enriched_unavailable",
+        )
+    else:
+        primary = None
+        observation = None
+        facts = policy_input.deterministic_facts
+        history = policy_input.history.deterministic
+        assessment = None
+        selection = L4PathSelection(
+            path="none",
+            route_id=None,
+            reason="no_usable_failure_identity",
+        )
+
+    outcome = evaluate_policy(
+        L4PolicyInput(
+            primary=primary,
+            selected_observed_failure=observation,
+            history=history,
+            current_failure_facts=facts,
+            current_affected_entity=facts.affected_entity,
+            model_recovery_assessment=assessment,
+            retry_policy=policy_input.retry_policy,
+            policy_contexts=policy_input.policy_contexts,
+        )
+    )
+    return L4PolicyOutcome(
+        primary=outcome.primary,
+        selected_observed_failure=outcome.selected_observed_failure,
+        retry_policy=outcome.retry_policy,
+        selected_failure_facts=facts,
+        selected_history=history,
+        path_selection=selection,
+    )
+
+
+def _immediate_stop_qualified(
     *,
     primary: FailureEvidence | None,
-    assessment_grounded: bool,
     domain: str | None,
     domain_status: str | None,
     outlook: str | None,
@@ -293,7 +504,7 @@ def _current_evidence_qualifies_for_immediate_stop(
 ) -> bool:
     return bool(
         primary is not None
-        and assessment_grounded
+        and primary.fault_outcome in {FaultOutcome.TERMINAL.value, FaultOutcome.UNRESOLVED.value}
         and domain == FailureDomain.WORKLOAD.value
         and domain_status == AssessmentStatus.ESTABLISHED_BY_CURRENT_LOG.value
         and outlook == RetryOutlookWithoutWorkloadChange.CANNOT_RECOVER.value
@@ -301,44 +512,175 @@ def _current_evidence_qualifies_for_immediate_stop(
     )
 
 
-def _select_rule(
+def _select_base_rule(
     *,
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     current_affected_entity: AffectedEntity | None,
-    matching_capability: DeclaredRecoveryCapability | None,
-    applied_capability: DeclaredRecoveryCapability | None,
-    assessment_grounded: bool,
-    outlook: str | None,
-    outlook_status: str | None,
+    domain: str | None,
+    domain_status: str | None,
     current_evidence_qualified: bool,
 ) -> str | None:
     if primary is None:
-        return None
-    if applied_capability is not None:
-        return RetryPolicyRule.WORKLOAD_MANAGED_RECOVERY.value
-    if matching_capability is not None:
-        return RetryPolicyRule.GENERAL_RETRY.value
+        return (
+            RetryPolicyRule.GENERAL_RETRY.value if selected_observed_failure is not None else None
+        )
     if current_evidence_qualified:
         return RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value
-    if current_affected_entity is not None:
-        return RetryPolicyRule.CONFIRMATION_RETRY.value
-    if (
-        assessment_grounded
-        and outlook == RetryOutlookWithoutWorkloadChange.MAY_RECOVER.value
-        and outlook_status
-        in {
-            AssessmentStatus.ESTABLISHED_BY_CURRENT_LOG.value,
-            AssessmentStatus.SUPPORTED_BUT_UNCONFIRMED.value,
-        }
-    ):
-        return RetryPolicyRule.BOUNDED_RETRY.value
+    if primary.root_fingerprint and current_affected_entity is not None:
+        return RetryPolicyRule.CONCRETE_CONFIRMATION_RETRY.value
+    if domain == FailureDomain.WORKLOAD.value and domain_status in {
+        AssessmentStatus.ESTABLISHED_BY_CURRENT_LOG.value,
+        AssessmentStatus.SUPPORTED_BUT_UNCONFIRMED.value,
+    }:
+        return RetryPolicyRule.WORKLOAD_CONFIRMATION_RETRY.value
     return RetryPolicyRule.GENERAL_RETRY.value
+
+
+def _effective_policy(
+    base_rule: str | None,
+    configured: RetryPolicyConfig,
+    *,
+    observation_only: bool = False,
+) -> EffectiveRetryPolicy | None:
+    if base_rule is None:
+        return None
+    if base_rule == RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value:
+        scope = None
+        allowed_retries = 0
+    elif base_rule == RetryPolicyRule.CONCRETE_CONFIRMATION_RETRY.value:
+        scope = HistoryMatchScope.ROOT_AND_ENTITY.value
+        allowed_retries = configured.concrete_confirmation_retry_allowed_retries
+    elif base_rule == RetryPolicyRule.WORKLOAD_CONFIRMATION_RETRY.value:
+        scope = HistoryMatchScope.ROOT_ONLY.value
+        allowed_retries = configured.workload_confirmation_retry_allowed_retries
+    else:
+        scope = (
+            HistoryMatchScope.SAME_JOB_NO_PROGRESS.value
+            if observation_only
+            else HistoryMatchScope.ROOT_ONLY.value
+        )
+        allowed_retries = configured.general_retry_allowed_retries
+    return EffectiveRetryPolicy(
+        source="base_rule",
+        rule=base_rule,
+        history_match_scope=scope,
+        allowed_retries=allowed_retries,
+    )
+
+
+def _match_policy_context(
+    *,
+    primary: FailureEvidence | None,
+    current_facts: AttemptFailureFacts | None,
+    configured: PolicyContextConfig,
+) -> _PolicyContextMatch | None:
+    cuda_oom = configured.cuda_oom_no_retry
+    if (
+        cuda_oom.enabled
+        and primary is not None
+        and current_facts is not None
+        and (
+            FailureClassifier.CUDA_OOM.value in current_facts.classifiers
+            or primary.failure_class == "cuda_oom"
+        )
+        and current_facts.fault_outcome
+        in {FaultOutcome.TERMINAL.value, FaultOutcome.UNRESOLVED.value}
+    ):
+        effective = EffectiveRetryPolicy(
+            source="policy_context",
+            rule=RetryPolicyRule.CUDA_OOM_NO_RETRY.value,
+            history_match_scope=None,
+            allowed_retries=0,
+            policy_context_id=CUDA_OOM_NO_RETRY_CONTEXT_ID,
+        )
+        return _PolicyContextMatch(
+            effective_policy=effective,
+            payload={
+                "policy_context_id": CUDA_OOM_NO_RETRY_CONTEXT_ID,
+                "matched": True,
+                "current_signature": {
+                    "classifiers": list(current_facts.classifiers),
+                    "failure_class": primary.failure_class,
+                    "fault_outcome": current_facts.fault_outcome,
+                },
+                "retry_policy": effective.to_payload(),
+            },
+        )
+
+    port_bind = configured.port_bind_confirmation_retry
+    if (
+        port_bind.enabled
+        and primary is not None
+        and current_facts is not None
+        and FailureClassifier.PORT_BIND_CONFLICT.value in current_facts.classifiers
+        and current_facts.root_fingerprint is not None
+        and current_facts.fault_outcome
+        in {FaultOutcome.TERMINAL.value, FaultOutcome.UNRESOLVED.value}
+    ):
+        effective = EffectiveRetryPolicy(
+            source="policy_context",
+            rule=RetryPolicyRule.PORT_BIND_CONFIRMATION_RETRY.value,
+            history_match_scope=HistoryMatchScope.ROOT_ONLY.value,
+            allowed_retries=port_bind.allowed_retries,
+            policy_context_id=PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID,
+        )
+        return _PolicyContextMatch(
+            effective_policy=effective,
+            payload={
+                "policy_context_id": PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID,
+                "matched": True,
+                "current_signature": {
+                    "classifiers": list(current_facts.classifiers),
+                    "failure_class": primary.failure_class,
+                    "fault_outcome": current_facts.fault_outcome,
+                },
+                "retry_policy": effective.to_payload(),
+            },
+        )
+
+    context = configured.rejected_iteration_retry_then_skip
+    if not context.enabled or primary is None or current_facts is None:
+        return None
+    if not current_facts.root_fingerprint or current_facts.failure_iteration is None:
+        return None
+    if FailureClassifier.REJECTED_NONFINITE_ITERATION.value not in current_facts.classifiers:
+        return None
+    observer_ranks = current_facts.root_observer_ranks
+    if observer_ranks is None or len(observer_ranks) != 1:
+        return None
+    if current_facts.unattributed_root_occurrence_count != 0:
+        return None
+
+    effective = EffectiveRetryPolicy(
+        source="policy_context",
+        rule=RetryPolicyRule.REJECTED_ITERATION_RETRY_THEN_SKIP.value,
+        history_match_scope=HistoryMatchScope.REJECTED_ITERATION_SIGNATURE.value,
+        allowed_retries=context.allowed_retries,
+        policy_context_id=REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID,
+    )
+    return _PolicyContextMatch(
+        effective_policy=effective,
+        payload={
+            "policy_context_id": REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID,
+            "matched": True,
+            "current_signature": {
+                "classifiers": list(current_facts.classifiers),
+                "failure_iteration": current_facts.failure_iteration,
+                "root_observer_count": len(observer_ranks),
+                "unattributed_root_occurrence_count": (
+                    current_facts.unattributed_root_occurrence_count
+                ),
+            },
+            "retry_policy": effective.to_payload(),
+        },
+    )
 
 
 def _general_root_ceiling(
     *,
     primary: FailureEvidence | None,
-    rule: str | None,
+    base_rule: str | None,
     history: HistorySummary,
     allowed_retries: int,
 ) -> RetryLedgerEvaluation:
@@ -348,15 +690,17 @@ def _general_root_ceiling(
             rule=RetryPolicyRule.GENERAL_RETRY.value,
             scope=HistoryMatchScope.ROOT_ONLY,
             reason="missing_primary",
+            allowed_retries=allowed_retries,
         )
-    if rule == RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value:
+    if base_rule == RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value:
         return _inapplicable_ledger(
             ledger_id=GENERAL_ROOT_CEILING_ID,
             rule=RetryPolicyRule.GENERAL_RETRY.value,
             scope=HistoryMatchScope.ROOT_ONLY,
             reason="immediate_unrecoverable",
+            allowed_retries=allowed_retries,
         )
-    return _evaluate_ledger(
+    return _evaluate_root_ledger(
         ledger_id=GENERAL_ROOT_CEILING_ID,
         rule=RetryPolicyRule.GENERAL_RETRY.value,
         scope=HistoryMatchScope.ROOT_ONLY,
@@ -365,39 +709,111 @@ def _general_root_ceiling(
     )
 
 
-def _selected_rule_budget(
+def _selected_policy_ledger(
     *,
-    rule: str | None,
-    applied_capability: DeclaredRecoveryCapability | None,
+    effective_policy: EffectiveRetryPolicy | None,
     history: HistorySummary,
-    confirmation_retries: int,
-    bounded_retries: int,
     general_retries: int,
 ) -> RetryLedgerEvaluation | None:
-    if rule == RetryPolicyRule.WORKLOAD_MANAGED_RECOVERY.value:
-        assert applied_capability is not None
-        allowed_retries = applied_capability.allowed_retries
-        scope = applied_capability.history_match_scope
-    elif rule == RetryPolicyRule.CONFIRMATION_RETRY.value:
-        allowed_retries = confirmation_retries
-        scope = HistoryMatchScope.ROOT_AND_ENTITY
-    elif rule == RetryPolicyRule.BOUNDED_RETRY.value:
-        allowed_retries = bounded_retries
-        scope = HistoryMatchScope.ROOT_ONLY
-    else:
+    if effective_policy is None:
         return None
-    if allowed_retries >= general_retries:
+    if effective_policy.rule in {
+        RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value,
+        RetryPolicyRule.CUDA_OOM_NO_RETRY.value,
+    }:
         return None
-    return _evaluate_ledger(
-        ledger_id=SELECTED_RULE_BUDGET_ID,
-        rule=rule,
-        scope=scope,
-        allowed_retries=allowed_retries,
+    if effective_policy.rule == RetryPolicyRule.GENERAL_RETRY.value:
+        if effective_policy.history_match_scope != HistoryMatchScope.SAME_JOB_NO_PROGRESS.value:
+            return None
+        return _job_guard(
+            ledger_id=SELECTED_POLICY_LEDGER_ID,
+            scope=HistoryMatchScope.SAME_JOB_NO_PROGRESS,
+            history=history,
+            allowed_retries=effective_policy.allowed_retries,
+            rule=effective_policy.rule,
+        )
+    if effective_policy.rule == RetryPolicyRule.REJECTED_ITERATION_RETRY_THEN_SKIP.value:
+        return _evaluate_rejected_iteration_ledger(
+            effective_policy=effective_policy,
+            history=history,
+        )
+    if effective_policy.allowed_retries >= general_retries:
+        return None
+    assert effective_policy.history_match_scope is not None
+    return _evaluate_root_ledger(
+        ledger_id=SELECTED_POLICY_LEDGER_ID,
+        rule=effective_policy.rule,
+        scope=HistoryMatchScope(effective_policy.history_match_scope),
+        allowed_retries=effective_policy.allowed_retries,
         history=history,
     )
 
 
-def _evaluate_ledger(
+def _evaluate_rejected_iteration_ledger(
+    *,
+    effective_policy: EffectiveRetryPolicy,
+    history: HistorySummary,
+) -> RetryLedgerEvaluation:
+    scope = HistoryMatchScope.REJECTED_ITERATION_SIGNATURE
+    allowed_retries = effective_policy.allowed_retries
+    if allowed_retries == 0:
+        return RetryLedgerEvaluation(
+            ledger_id=SELECTED_POLICY_LEDGER_ID,
+            applicable=True,
+            rule=effective_policy.rule,
+            history_match_scope=scope.value,
+            allowed_retries=0,
+            exhausted=True,
+        )
+    if not history.available:
+        return _inapplicable_ledger(
+            ledger_id=SELECTED_POLICY_LEDGER_ID,
+            rule=effective_policy.rule,
+            scope=scope,
+            reason="history_unavailable",
+            allowed_retries=allowed_retries,
+        )
+
+    matching = 0
+    observed_advance = False
+    no_advance_boundary = history.consecutive_same_root_no_advance_attempts
+    for comparison in reversed(history.comparisons):
+        if not (
+            comparison.same_failure_iteration
+            and comparison.same_root_observer_count
+            and comparison.same_unattributed_root_occurrence_count
+        ):
+            break
+        if comparison.prior_fault_outcome not in {
+            FaultOutcome.TERMINAL.value,
+            FaultOutcome.UNRESOLVED.value,
+        }:
+            break
+        if comparison.relation == HistoryProgressRelation.ADVANCED.value:
+            observed_advance = matching == 0
+            break
+        if comparison.relation not in {
+            HistoryProgressRelation.SAME.value,
+            HistoryProgressRelation.REGRESSED.value,
+        }:
+            break
+        if matching >= no_advance_boundary:
+            break
+        matching += 1
+
+    return RetryLedgerEvaluation(
+        ledger_id=SELECTED_POLICY_LEDGER_ID,
+        applicable=True,
+        rule=effective_policy.rule,
+        history_match_scope=scope.value,
+        allowed_retries=allowed_retries,
+        matching_prior_attempts=matching,
+        observed_advance=observed_advance,
+        exhausted=(not observed_advance and matching >= allowed_retries),
+    )
+
+
+def _evaluate_root_ledger(
     *,
     ledger_id: str,
     rule: str,
@@ -405,6 +821,16 @@ def _evaluate_ledger(
     allowed_retries: int,
     history: HistorySummary,
 ) -> RetryLedgerEvaluation:
+    if allowed_retries == 0:
+        return RetryLedgerEvaluation(
+            ledger_id=ledger_id,
+            applicable=True,
+            rule=rule,
+            history_match_scope=scope.value,
+            allowed_retries=0,
+            matching_prior_attempts=0,
+            exhausted=True,
+        )
     if not history.available:
         return _inapplicable_ledger(
             ledger_id=ledger_id,
@@ -413,16 +839,55 @@ def _evaluate_ledger(
             reason="history_unavailable",
             allowed_retries=allowed_retries,
         )
-    matching_prior_failures, observed_advance = _history_measurements(history, scope)
+    if scope == HistoryMatchScope.ROOT_AND_ENTITY:
+        matching = history.consecutive_same_root_and_entity_no_advance_attempts
+        observed_advance = history.advanced_beyond_all_same_entity_comparable_attempts
+    else:
+        matching = history.consecutive_same_root_no_advance_attempts
+        observed_advance = history.advanced_beyond_all_comparable_attempts
     return RetryLedgerEvaluation(
         ledger_id=ledger_id,
         applicable=True,
         rule=rule,
         history_match_scope=scope.value,
         allowed_retries=allowed_retries,
-        matching_prior_failures=matching_prior_failures,
+        matching_prior_attempts=matching,
         observed_advance=observed_advance,
-        exhausted=(not observed_advance and matching_prior_failures >= allowed_retries),
+        exhausted=(not observed_advance and matching >= allowed_retries),
+    )
+
+
+def _job_guard(
+    *,
+    ledger_id: str,
+    scope: HistoryMatchScope,
+    history: HistorySummary,
+    allowed_retries: int,
+    rule: str | None = None,
+) -> RetryLedgerEvaluation:
+    if not history.job_history_available:
+        return _inapplicable_ledger(
+            ledger_id=ledger_id,
+            rule=rule or ledger_id,
+            scope=scope,
+            reason=history.job_history_availability_reason,
+            allowed_retries=allowed_retries,
+        )
+    matching = (
+        history.consecutive_same_job_no_advance_attempts
+        if scope == HistoryMatchScope.SAME_JOB_NO_PROGRESS
+        else history.consecutive_same_job_unknown_progress_attempts
+    )
+    observed_advance = history.job_progress_advanced
+    return RetryLedgerEvaluation(
+        ledger_id=ledger_id,
+        applicable=True,
+        rule=rule or ledger_id,
+        history_match_scope=scope.value,
+        allowed_retries=allowed_retries,
+        matching_prior_attempts=matching,
+        observed_advance=observed_advance,
+        exhausted=(not observed_advance and matching >= allowed_retries),
     )
 
 
@@ -444,69 +909,45 @@ def _inapplicable_ledger(
     )
 
 
-def _matching_recovery_capability(
-    primary: FailureEvidence | None,
-    capabilities: tuple[DeclaredRecoveryCapability, ...],
-) -> DeclaredRecoveryCapability | None:
-    if primary is None:
-        return None
-    primary_classifiers = {primary.registry_id, primary.failure_class}
-    for capability in capabilities:
-        if primary.recovery_behavior != capability.behavior.value:
-            continue
-        if primary_classifiers.intersection(capability.applies_to):
-            return capability
-    return None
-
-
-def _capability_entity_matches(
-    capability: DeclaredRecoveryCapability | None,
-    affected_entity: AffectedEntity | None,
-) -> bool:
-    return bool(
-        capability is not None
-        and affected_entity is not None
-        and affected_entity.kind == capability.required_entity_kind
-    )
-
-
-def _history_measurements(
-    history: HistorySummary,
-    scope: HistoryMatchScope,
-) -> tuple[int, bool]:
-    if scope == HistoryMatchScope.ROOT_AND_ENTITY:
-        return (
-            history.consecutive_same_root_and_entity_no_advance_attempts,
-            history.advanced_beyond_all_same_entity_comparable_attempts,
-        )
-    return (
-        history.consecutive_same_root_no_advance_attempts,
-        history.advanced_beyond_all_comparable_attempts,
-    )
-
-
 def _decision(
     *,
     primary: FailureEvidence | None,
-    rule: str | None,
-    retry_budget_exhausted: bool,
+    selected_observed_failure: FailureEvidence | None,
+    effective_policy: EffectiveRetryPolicy | None,
+    exhausted_by: tuple[str, ...],
     observed_advance: bool,
 ) -> tuple[str, str]:
-    if primary is None:
-        return Decision.RESTART.value, DecisionBasis.NO_PRIMARY_FAILURE.value
-    if rule == RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value:
-        return Decision.STOP.value, DecisionBasis.WORKLOAD_UNRECOVERABLE.value
-    if retry_budget_exhausted:
+    if effective_policy is not None and effective_policy.allowed_retries == 0:
+        if effective_policy.rule == RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value:
+            return Decision.STOP.value, DecisionBasis.WORKLOAD_UNRECOVERABLE.value
+        if effective_policy.source == "policy_context":
+            return Decision.STOP.value, DecisionBasis.POLICY_CONTEXT_NO_RETRY.value
         return Decision.STOP.value, DecisionBasis.RETRY_BUDGET_EXHAUSTED.value
     if observed_advance:
         return Decision.RESTART.value, DecisionBasis.OBSERVED_ADVANCE.value
-    if rule == RetryPolicyRule.WORKLOAD_MANAGED_RECOVERY.value:
+    if JOB_NO_PROGRESS_GUARD_ID in exhausted_by:
+        return Decision.STOP.value, DecisionBasis.JOB_NO_PROGRESS_BUDGET_EXHAUSTED.value
+    if JOB_UNKNOWN_PROGRESS_GUARD_ID in exhausted_by:
+        return (
+            Decision.STOP.value,
+            DecisionBasis.PROGRESS_UNVERIFIABLE_BUDGET_EXHAUSTED.value,
+        )
+    if exhausted_by:
+        return Decision.STOP.value, DecisionBasis.RETRY_BUDGET_EXHAUSTED.value
+    if primary is None and selected_observed_failure is None:
+        return Decision.RESTART.value, DecisionBasis.NO_PRIMARY_FAILURE.value
+    if effective_policy is None:
+        return Decision.RESTART.value, DecisionBasis.GENERAL_RETRY_AVAILABLE.value
+    if effective_policy.rule == RetryPolicyRule.CONCRETE_CONFIRMATION_RETRY.value:
         return (
             Decision.RESTART.value,
-            DecisionBasis.WORKLOAD_MANAGED_RECOVERY_AVAILABLE.value,
+            DecisionBasis.CONCRETE_CONFIRMATION_RETRY_AVAILABLE.value,
         )
-    if rule == RetryPolicyRule.BOUNDED_RETRY.value:
-        return Decision.RESTART.value, DecisionBasis.RETRY_RECOVERY_AVAILABLE.value
-    if rule == RetryPolicyRule.CONFIRMATION_RETRY.value:
-        return Decision.RESTART.value, DecisionBasis.CONFIRMATION_RETRY_AVAILABLE.value
+    if effective_policy.rule == RetryPolicyRule.WORKLOAD_CONFIRMATION_RETRY.value:
+        return (
+            Decision.RESTART.value,
+            DecisionBasis.WORKLOAD_CONFIRMATION_RETRY_AVAILABLE.value,
+        )
+    if effective_policy.source == "policy_context":
+        return Decision.RESTART.value, DecisionBasis.POLICY_CONTEXT_RETRY_AVAILABLE.value
     return Decision.RESTART.value, DecisionBasis.GENERAL_RETRY_AVAILABLE.value

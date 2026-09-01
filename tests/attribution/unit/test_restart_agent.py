@@ -5,6 +5,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -46,6 +47,7 @@ from nvidia_resiliency_ext.attribution.restart_agent.infrastructure.route_publis
 )
 from nvidia_resiliency_ext.attribution.restart_agent.l0 import assembly as l0_assembly
 from nvidia_resiliency_ext.attribution.restart_agent.l0 import build_l0_bundle
+from nvidia_resiliency_ext.attribution.restart_agent.l0 import decision as l0_decision
 from nvidia_resiliency_ext.attribution.restart_agent.l0.codec import read_l0_bundle, write_l0_bundle
 from nvidia_resiliency_ext.attribution.restart_agent.l0.decision import (
     build_decision_evidence,
@@ -55,17 +57,29 @@ from nvidia_resiliency_ext.attribution.restart_agent.l0.projection import _windo
 from nvidia_resiliency_ext.attribution.restart_agent.l0.projection import (
     build_l0_model_facing_view as _build_l0_model_facing_view,
 )
+from nvidia_resiliency_ext.attribution.restart_agent.l1.advisories import (
+    model_evidence_contract_advisories,
+)
+from nvidia_resiliency_ext.attribution.restart_agent.l1.cluster_context import (
+    DEFAULT_CLUSTER_EXECUTION_CONTEXT,
+    render_cluster_execution_context,
+)
+from nvidia_resiliency_ext.attribution.restart_agent.l1.execution import assess_execution
 from nvidia_resiliency_ext.attribution.restart_agent.l1.openai_compatible import (
     L1EvidenceResult,
     LlmCallError,
     LlmConfig,
     LlmEvidenceExtractor,
+    ModelEvidenceContractError,
+    ModelEvidenceParseError,
     OpenAICompatibleTransport,
     RetryingChatTransport,
     _execute_tool_call,
+    _httpx_timeout_kind,
     _initial_user_message,
     _is_context_window_exceeded_error,
     _is_http_timeout_status,
+    _parse_model_evidence,
     _provider_reported_timing,
     _request_context_budget,
     _tool_loop_profile,
@@ -83,6 +97,11 @@ from nvidia_resiliency_ext.attribution.restart_agent.l1.tools import (
 from nvidia_resiliency_ext.attribution.restart_agent.l1.validation import (
     model_evidence_contract_errors,
 )
+from nvidia_resiliency_ext.attribution.restart_agent.l2 import (
+    L2GroundingInput,
+    ground_and_audit_model_evidence,
+)
+from nvidia_resiliency_ext.attribution.restart_agent.l2.audit import _abbreviated_quote_matches
 from nvidia_resiliency_ext.attribution.restart_agent.l2.grounding import (
     model_visible_line_numbers,
     model_visible_line_texts,
@@ -103,20 +122,25 @@ from nvidia_resiliency_ext.attribution.restart_agent.models import (
     AttemptRecord,
     CausalRole,
     ContextWindow,
+    DistributedFailureIncident,
+    FailureClassifier,
     FailureDomain,
     FailureDomainAssessment,
+    FailureEpisode,
     FailureEvidence,
     HistorySummary,
     L0Bundle,
     LogLine,
     ModelRecoveryAssessment,
     NormalizedOccurrenceGroup,
+    OperationArtifactComparisonEvidence,
     PriorAttemptView,
     ProgressFacts,
     RetryOutlookAssessment,
     RetryOutlookWithoutWorkloadChange,
     RetryPolicyConfig,
     RetryPolicyRule,
+    RunProgressSummary,
     normalize_attempt_records,
 )
 from nvidia_resiliency_ext.attribution.restart_agent.observability.trace_builder import (
@@ -198,6 +222,8 @@ def _attempt_record_fixture(value):
             root_fingerprint=value.get("root_fingerprint"),
             root_fingerprint_source=value.get("root_fingerprint_source", "test_fixture"),
             fault_outcome=value.get("primary_fault_outcome", "terminal"),
+            identity_kind=("root" if value.get("root_fingerprint") else "none"),
+            primary_line=(1 if value.get("root_fingerprint") else None),
             failure_iteration=value.get("failure_iteration"),
             affected_entity=_affected_entity_fixture(value),
             faulting_rank=value.get("faulting_rank"),
@@ -209,14 +235,7 @@ def _attempt_record_fixture(value):
 
 
 def _affected_entity_fixture(value):
-    data_position = value.get("data_position_fingerprint")
     artifact_path = value.get("artifact_path")
-    if data_position:
-        return AffectedEntity(
-            kind=AffectedEntityKind.DATA_POSITION,
-            identity=data_position,
-            fingerprint=f"test:data_position:{data_position}",
-        )
     if artifact_path:
         return AffectedEntity(
             kind=AffectedEntityKind.ARTIFACT,
@@ -267,11 +286,9 @@ def _attempt_facts_and_progress(
         root_fingerprint=primary.root_fingerprint,
         root_fingerprint_source=primary.root_fingerprint_source,
         fault_outcome=primary.fault_outcome,
-        primary_line=primary.line,
+        primary_line=primary.line or 1,
         failure_iteration=primary.failure_iteration,
-        affected_entity=_affected_entity_fixture(
-            {"data_position_fingerprint": primary.data_position_fingerprint}
-        ),
+        affected_entity=primary.affected_entity,
         faulting_rank=primary.rank,
         faulting_node=primary.node,
         faulting_gpu=primary.gpu,
@@ -342,7 +359,8 @@ def _current_evidence(value):
                 "operation": identity.get("operation"),
                 "mechanism": identity.get("mechanism") or old_primary.get("failure_class"),
                 "component": identity.get("component"),
-                "artifact_path": identity.get("artifact_path"),
+                "direct_failure_object_path": identity.get("direct_failure_object_path"),
+                "affected_artifact_path": identity.get("affected_artifact_path"),
             },
         }
     related = []
@@ -390,6 +408,8 @@ def _current_evidence(value):
             "schema_version": "restart_agent_evidence.v1",
             "analysis_status": analysis_status,
             "primary_failure": None,
+            "observed_failures": [],
+            "selected_observed_failure_id": None,
             "root_cause_assessment": {
                 "summary": summary,
                 "status": "unknown",
@@ -483,6 +503,8 @@ def _current_evidence(value):
         "schema_version": "restart_agent_evidence.v1",
         "analysis_status": analysis_status,
         "primary_failure": primary,
+        "observed_failures": [],
+        "selected_observed_failure_id": None,
         "root_cause_assessment": root_cause,
         "model_recovery_assessment": {
             "failure_domain": domain_mapping
@@ -530,7 +552,7 @@ class _FakeEvidenceExtractor:
     def extract_evidence(self, context, *, deadline_monotonic=None):
         self.model_view = context.model_view
         return L1EvidenceResult(
-            evidence=self.evidence,
+            semantic_payload=self.evidence,
             model="fake-model",
             raw_model_output=json.dumps(self.evidence),
             success=self.success,
@@ -703,6 +725,125 @@ class _ContractRepairEvidenceExtractor(LlmEvidenceExtractor):
         )
 
 
+class _RetryThenContractRepairEvidenceExtractor(LlmEvidenceExtractor):
+    def __init__(self, complete_evidence):
+        super().__init__(
+            LlmConfig(
+                api_key="test-key",
+                max_retries=1,
+                retry_backoff_seconds=0.0,
+                tools_enabled=False,
+            )
+        )
+        self.complete_evidence = _current_evidence(complete_evidence)
+        self.calls = 0
+
+    def _call_model(
+        self,
+        *,
+        api_key,
+        messages,
+        include_tools,
+        model_turn,
+        attempt=1,
+        max_retries=None,
+        deadline_monotonic=None,
+    ):
+        self.calls += 1
+        if self.calls == 1:
+            raise LlmCallError(
+                "HTTP 503: unavailable",
+                {
+                    "layer": "L1",
+                    "model": self._config.model,
+                    "model_turn": model_turn,
+                    "attempt": attempt,
+                    "max_retries": max_retries,
+                    "success": False,
+                    "latency_s": 0.01,
+                    "finish_reason": None,
+                    "usage": None,
+                    "tools_advertised": include_tools,
+                    "error_type": "http_error",
+                    "error": "HTTP 503",
+                    "http_status": 503,
+                    "response_body": "unavailable",
+                    "retryable": True,
+                    "retry_scheduled": False,
+                    "timeout": False,
+                },
+            )
+        content = (
+            json.dumps(
+                {
+                    "primary_failure": self.complete_evidence["primary_failure"],
+                    "related_failures": [],
+                }
+            )
+            if self.calls == 2
+            else json.dumps(self.complete_evidence)
+        )
+        return (
+            {
+                "choices": [{"finish_reason": "stop", "message": {"content": content}}],
+                "usage": {"total_tokens": 100},
+            },
+            {
+                "layer": "L1",
+                "model": self._config.model,
+                "model_turn": model_turn,
+                "attempt": attempt,
+                "max_retries": max_retries,
+                "success": True,
+                "latency_s": 0.01,
+                "finish_reason": "stop",
+                "usage": {"total_tokens": 100},
+                "tools_advertised": include_tools,
+            },
+        )
+
+
+class _OutputLimitEvidenceExtractor(LlmEvidenceExtractor):
+    def __init__(self, complete_evidence):
+        super().__init__(
+            LlmConfig(
+                api_key="test-key",
+                max_retries=0,
+                tools_enabled=False,
+            )
+        )
+        self.complete_evidence = _current_evidence(complete_evidence)
+        self.calls = 0
+
+    def _call_model(self, **kwargs):
+        self.calls += 1
+        finish_reason = "length" if self.calls == 1 else "stop"
+        content = "{\"schema_version\":" if self.calls == 1 else json.dumps(self.complete_evidence)
+        return (
+            {
+                "choices": [
+                    {
+                        "finish_reason": finish_reason,
+                        "message": {"content": content},
+                    }
+                ],
+                "usage": {"total_tokens": 100},
+            },
+            {
+                "layer": "L1",
+                "model": self._config.model,
+                "model_turn": kwargs["model_turn"],
+                "attempt": kwargs["attempt"],
+                "max_retries": kwargs["max_retries"],
+                "success": True,
+                "latency_s": 0.01,
+                "finish_reason": finish_reason,
+                "usage": {"total_tokens": 100},
+                "tools_advertised": kwargs["include_tools"],
+            },
+        )
+
+
 class _SingleResponseEvidenceExtractor(LlmEvidenceExtractor):
     def __init__(self, evidence):
         super().__init__(
@@ -750,6 +891,178 @@ class _SingleResponseEvidenceExtractor(LlmEvidenceExtractor):
                 "tools_advertised": include_tools,
             },
         )
+
+
+def test_l1_model_response_strips_unknown_fields_and_records_one_advisory(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_line = "PermissionError: [Errno 13] Permission denied: '/cache/dataset.lock'"
+    log_path.write_text(log_line + "\n", encoding="utf-8")
+    extractor = _SingleResponseEvidenceExtractor(
+        {
+            "primary_failure": {
+                "line": 1,
+                "failure_class": "permission_denied",
+                "causal_role": "initiating",
+            },
+            "evidence": [{"line": 1, "quote": log_line}],
+        }
+    )
+    extractor.evidence["decision"] = "STOP"
+    extractor.evidence["model_recovery_assessment"]["rationale_extra"] = None
+    bundle = build_l0_bundle(str(log_path))
+
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        )
+    )
+
+    assert result.success is True
+    assert extractor.calls == 1
+    raw_payload = json.loads(result.raw_model_output)
+    assert raw_payload["decision"] == "STOP"
+    assert raw_payload["model_recovery_assessment"]["rationale_extra"] is None
+    assert "decision" not in result.semantic_payload
+    assert "rationale_extra" not in result.semantic_payload["model_recovery_assessment"]
+    assert result.anomalies["contract_advisories"] == [
+        {
+            "code": "unknown_response_fields_ignored",
+            "field": "model_response",
+            "message": "unknown response fields are ignored by the L1 semantic contract",
+            "observational_only": True,
+            "field_paths": ["decision", "model_recovery_assessment.rationale_extra"],
+        },
+    ]
+    validation_events = [
+        event
+        for event in result.transcript_events
+        if event.get("event_type") == "model_response_validation"
+    ]
+    assert len(validation_events) == 1
+    assert validation_events[0]["parse_status"] == "valid_with_advisories"
+
+
+def test_l1_preserves_plausible_cause_overflow_as_an_advisory(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_line = "PermissionError: [Errno 13] Permission denied: '/cache/dataset.lock'"
+    log_path.write_text(log_line + "\n", encoding="utf-8")
+    plausible_causes = [
+        "persistent permission mismatch",
+        "stale cache lock",
+        "storage authorization failure",
+        "incorrect cache namespace",
+    ]
+    extractor = _SingleResponseEvidenceExtractor(
+        {
+            "primary_failure": {
+                "line": 1,
+                "failure_class": "permission_denied",
+                "causal_role": "initiating",
+            },
+            "root_cause_assessment": {
+                "summary": "The workload could not acquire its dataset cache lock.",
+                "status": "established_by_current_log",
+                "plausible_causes": plausible_causes,
+                "missing_evidence": [],
+            },
+            "evidence": [{"line": 1, "quote": log_line}],
+        }
+    )
+    bundle = build_l0_bundle(str(log_path))
+
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        )
+    )
+
+    assert result.success is True
+    assert extractor.calls == 1
+    assert result.semantic_payload["root_cause_assessment"]["plausible_causes"] == (
+        plausible_causes
+    )
+    assert result.anomalies["contract_advisories"] == [
+        {
+            "code": "plausible_causes_exceeds_recommended_limit",
+            "field": "root_cause_assessment.plausible_causes",
+            "message": "plausible_causes contains 4 items; the recommended maximum is 3",
+            "observed_count": 4,
+            "recommended_maximum": 3,
+            "observational_only": True,
+        }
+    ]
+    validation_event = next(
+        event
+        for event in result.transcript_events
+        if event.get("event_type") == "model_response_validation"
+    )
+    assert validation_event["parse_status"] == "valid_with_advisories"
+    assert result.anomalies.get("final_evidence_turn") is None
+
+
+def test_l1_preserves_unknown_evidence_support_tag_as_an_advisory(tmp_path):
+    log_path = tmp_path / "job.log"
+    primary_line = "AssertionError: missing progress-log entry"
+    cascade_line = "TCPStore connection closed after the primary failure"
+    log_path.write_text(f"{primary_line}\n{cascade_line}\n", encoding="utf-8")
+    extractor = _SingleResponseEvidenceExtractor(
+        {
+            "primary_failure": {
+                "line": 1,
+                "failure_class": "assertion_error",
+                "causal_role": "initiating",
+            },
+            "root_cause_assessment": {
+                "summary": "The progress-log assertion terminated the workload.",
+                "status": "established_by_current_log",
+                "plausible_causes": ["missing progress-log state"],
+                "missing_evidence": [],
+            },
+            "evidence": [{"line": 1, "quote": primary_line}],
+        }
+    )
+    extractor.evidence["evidence"].append(
+        {
+            "id": "downstream-store-failure",
+            "line": 2,
+            "quote": cascade_line,
+            "supports": ["related_failures"],
+        }
+    )
+    bundle = build_l0_bundle(str(log_path))
+
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        )
+    )
+
+    assert result.success is True
+    assert extractor.calls == 1
+    assert result.semantic_payload["evidence"][1]["supports"] == ["related_failures"]
+    assert result.anomalies["contract_advisories"] == [
+        {
+            "code": "evidence_support_tag_unknown",
+            "field": "evidence[].supports",
+            "message": ("unknown evidence support tags are ignored for claim-support accounting"),
+            "item_indexes": [1],
+            "unknown_tags": ["related_failures"],
+            "observational_only": True,
+        }
+    ]
+    validation_event = next(
+        event
+        for event in result.transcript_events
+        if event.get("event_type") == "model_response_validation"
+    )
+    assert validation_event["parse_status"] == "valid_with_advisories"
+    assert result.anomalies.get("final_evidence_turn") is None
 
 
 def test_l0_terminal_episode_does_not_claim_unobserved_prior_progress(tmp_path):
@@ -833,6 +1146,32 @@ def test_llm_default_output_ceiling_is_64k():
     assert LlmConfig().max_output_tokens == 64_000
 
 
+def test_cluster_execution_context_has_one_canonical_static_rendering():
+    context = DEFAULT_CLUSTER_EXECUTION_CONTEXT
+
+    assert context.to_payload() == {
+        "allocation_model": "homogeneous_node_pool",
+        "workload_isolation": "exclusive",
+        "replacement_hardware_bom": "equivalent",
+        "replacement_software_bom": "equivalent",
+        "replacement_resource_capacity": "equivalent",
+        "replacement_resource_limits": "unchanged",
+        "replacement_storage_access": "equivalent",
+        "dependency_paths": [
+            "compute_node",
+            "scale_up_fabric",
+            "scale_out_fabric",
+            "distributed_storage",
+            "service_control",
+        ],
+        "faulty_resource_handling": "independent_detection_and_quarantine",
+    }
+    assert render_cluster_execution_context(context) in SYSTEM_PROMPT
+
+    with pytest.raises(ValueError, match="unsupported cluster execution context"):
+        render_cluster_execution_context(replace(context, workload_isolation="shared"))
+
+
 def test_prompt_exposes_exactly_two_l1_recovery_concepts(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text("OSError: address already in use\n", encoding="utf-8")
@@ -840,13 +1179,14 @@ def test_prompt_exposes_exactly_two_l1_recovery_concepts(tmp_path):
     model_view = build_l0_model_facing_view(bundle)
     user_payload = json.loads(_initial_user_message(model_view))
     normalized_system_prompt = " ".join(SYSTEM_PROMPT.split())
+    normalized_system_prompt_lower = normalized_system_prompt.lower()
 
     assert "Return exactly these two current-attempt recovery claims" in SYSTEM_PROMPT
     assert "retry_outlook_without_workload_change" in SYSTEM_PROMPT
     assert "current_attempt_persistence_evidence" not in SYSTEM_PROMPT
     assert "recovery_requirement" not in SYSTEM_PROMPT
     assert "fixed request" in SYSTEM_PROMPT
-    assert "missing cleanup message" in SYSTEM_PROMPT
+    assert "missing cleanup message" in normalized_system_prompt
     assert "Confidence is a 1..99 calibration signal" in SYSTEM_PROMPT
     assert "multi-rank fanout" in SYSTEM_PROMPT
     assert "Durable remediation" in SYSTEM_PROMPT
@@ -865,18 +1205,79 @@ def test_prompt_exposes_exactly_two_l1_recovery_concepts(tmp_path):
     assert "Replay distance and failure position do not establish" in normalized_system_prompt
     assert "Later aggregate progress" in normalized_system_prompt
     assert "Inspect supplied context before calling tools" in normalized_system_prompt
-    assert "under these product guarantees" in normalized_system_prompt
-    assert "the workload is unchanged" in normalized_system_prompt
-    assert "process state is recreated" in normalized_system_prompt
-    assert "normal restart delay applies" in normalized_system_prompt
-    assert "hardware allocation may change" in normalized_system_prompt
-    assert "external-service state may change" in normalized_system_prompt
+    assert "under this declared cluster execution context" in normalized_system_prompt
+    assert "exclusive allocation" in normalized_system_prompt_lower
+    assert "homogeneous node pool" in normalized_system_prompt_lower
+    assert "eligible nodes and devices are fungible" in normalized_system_prompt_lower
+    assert "unrelated user workloads do not share" in normalized_system_prompt_lower
+    assert "workload code, data, configuration" in normalized_system_prompt_lower
+    assert "workload identity, credentials, environment, configured paths" in (
+        normalized_system_prompt_lower
+    )
+    assert "persistent filesystem permissions" in normalized_system_prompt_lower
+    assert "operator or administrator remediation is not part" in (normalized_system_prompt_lower)
+    assert "failed process state is recreated" in normalized_system_prompt_lower
+    assert "normal restart delay applies" in normalized_system_prompt_lower
+    assert "physical nodes or devices may be replaced" in normalized_system_prompt_lower
+    assert "preserves the hardware and software bom" in normalized_system_prompt_lower
+    assert "resource capacity and limits" in normalized_system_prompt_lower
+    assert "allocation resource envelope is invariant" in normalized_system_prompt_lower
+    assert "storage access" in normalized_system_prompt_lower
+    assert "layered compute-node, scale-up-fabric, scale-out-fabric" in (
+        normalized_system_prompt_lower
+    )
+    assert "distributed-storage, and service/control paths" in normalized_system_prompt_lower
+    assert "failed operation depends on that path" in normalized_system_prompt_lower
+    assert "proposed cause can produce the observed failure mechanism" in (
+        normalized_system_prompt_lower
+    )
+    assert "exact failed physical component need not be identified" in (
+        normalized_system_prompt_lower
+    )
+    assert "generic possibility that hardware, services, or workload code can fail" in (
+        normalized_system_prompt_lower
+    )
+    assert "separate health mechanism may detect and quarantine" in normalized_system_prompt_lower
+    assert "cleanup or reinitialization" in normalized_system_prompt_lower
+    assert "node replacement does not by itself repair" in normalized_system_prompt_lower
+    assert "failure_domain=unknown may pair" in normalized_system_prompt_lower
+    assert "retry_outlook_without_workload_change=may_recover" in (normalized_system_prompt_lower)
+    assert "unrelated speculation in either direction" in normalized_system_prompt_lower
+    assert "are not current-log evidence" in normalized_system_prompt_lower
+    assert "assess this claim under the product restart transition defined above" in (
+        normalized_system_prompt_lower
+    )
+    assert "observed failure is determined by unchanged workload inputs" in (
+        normalized_system_prompt_lower
+    )
+    assert "exact root cause may remain unconfirmed" in normalized_system_prompt_lower
+    assert "theoretical transient unsupported by the log" in normalized_system_prompt_lower
+    assert "affected_artifact_path means" in normalized_system_prompt_lower
+    assert "source-code location" in normalized_system_prompt_lower
+    assert "diagnostic callsite" in normalized_system_prompt_lower
+    assert "internal sub-operation" in normalized_system_prompt_lower
+    assert "records context, not artifact fault" in normalized_system_prompt_lower
+    assert "nccl timeout during checkpoint loading" in normalized_system_prompt_lower
+    assert "file=permute.cu,line=535" in normalized_system_prompt_lower
+    assert "possible hardware reallocation" not in normalized_system_prompt_lower
+    assert "infiniband" not in normalized_system_prompt_lower
+    assert " roce " not in f" {normalized_system_prompt_lower} "
+    assert "lustre" not in normalized_system_prompt_lower
+    assert normalized_system_prompt_lower.count("allocation resource envelope is invariant") == 1
     assert set(user_payload) == {
         "attempt_execution_context",
-        "decision_evidence",
+        "decision_evidence_view",
         "evidence_bundle",
+        "failure_narrative",
         "response_schema",
     }
+    assert list(user_payload) == [
+        "failure_narrative",
+        "decision_evidence_view",
+        "attempt_execution_context",
+        "evidence_bundle",
+        "response_schema",
+    ]
     assert user_payload["evidence_bundle"] == model_view.evidence_bundle
     assert "l0_bundle" not in user_payload
     assert "interpretation_constraints" not in user_payload["attempt_execution_context"]
@@ -887,9 +1288,16 @@ def test_prompt_exposes_exactly_two_l1_recovery_concepts(tmp_path):
     assert "restart_environment_context" not in user_payload
     response_schema = user_payload["response_schema"]
     assessment_schema = response_schema["properties"]["model_recovery_assessment"]["properties"]
+    plausible_causes_schema = response_schema["properties"]["root_cause_assessment"]["properties"][
+        "plausible_causes"
+    ]
     assert response_schema["additionalProperties"] is False
-    assert response_schema["properties"]["evidence"]["maxItems"] == 12
-    assert response_schema["properties"]["related_failures"]["maxItems"] == 3
+    assert "maxItems" not in response_schema["properties"]["evidence"]
+    assert "Prefer at most 12" in response_schema["properties"]["evidence"]["description"]
+    assert "maxItems" not in response_schema["properties"]["related_failures"]
+    assert "Prefer at most 3" in response_schema["properties"]["related_failures"]["description"]
+    assert "maxItems" not in plausible_causes_schema
+    assert "Prefer at most 3" in plausible_causes_schema["description"]
     assert (
         response_schema["semanticConstraints"]["no_failure_observed"]["recovery_claims"]
         == "unknown value, unknown status, confidence 1"
@@ -916,9 +1324,14 @@ def test_l1_response_contract_single_sources_advertised_validation_constraints()
     properties = schema["properties"]
     evidence = properties["evidence"]
     claim = properties["model_recovery_assessment"]["properties"]["failure_domain"]
+    identity = properties["primary_failure"]["oneOf"][0]["properties"]["failure_identity"]
 
     assert set(schema["required"]) == L1_RESPONSE_CONTRACT.top_level_fields
-    assert evidence["maxItems"] == L1_RESPONSE_CONTRACT.max_evidence_items
+    assert "maxItems" not in evidence
+    assert (
+        f"Prefer at most {L1_RESPONSE_CONTRACT.recommended_max_evidence_items}"
+        in evidence["description"]
+    )
     assert set(evidence["items"]["properties"]["supports"]["items"]["enum"]) == (
         L1_RESPONSE_CONTRACT.evidence_support_tags
     )
@@ -926,12 +1339,152 @@ def test_l1_response_contract_single_sources_advertised_validation_constraints()
         "type": "integer",
         "minimum": L1_RESPONSE_CONTRACT.min_confidence,
         "maximum": L1_RESPONSE_CONTRACT.max_confidence,
-        "description": "Calibration-only confidence in this claim.",
+        "description": (
+            "Calibration-only confidence in a substantive claim; "
+            "unknown and non-primary placeholders are excluded from calibration."
+        ),
     }
     assert claim["semanticConstraint"] == (
         "value=unknown if and only if status=unknown; otherwise neither is unknown"
     )
-    assert schema["semanticConstraints"]["evidence_ids"] == "unique non-empty strings"
+    assert schema["semanticConstraints"]["evidence_ids"] == (
+        "object ids and observation references are non-empty strings; uniqueness "
+        "is preferred and duplicate or dangling references are audited"
+    )
+    assert schema["semanticConstraints"]["selected_observed_failure_id"] == (
+        "prefer null or an id resolving to exactly one observed failure; zero or "
+        "multiple matches make only the observation track unavailable"
+    )
+    assert set(properties["primary_failure"]["oneOf"][0]["properties"]["causal_role"]["enum"]) == {
+        "initiating",
+        "unknown",
+    }
+    assert set(identity["properties"]) == {
+        "affected_artifact_path",
+        "component",
+        "direct_failure_object_path",
+        "mechanism",
+        "operation",
+    }
+    assert identity["properties"]["affected_artifact_path"]["description"] == (
+        L1_RESPONSE_CONTRACT.affected_artifact_path_description
+    )
+    assert identity["properties"]["direct_failure_object_path"]["description"] == (
+        L1_RESPONSE_CONTRACT.direct_failure_object_path_description
+    )
+
+
+@pytest.mark.parametrize("causal_role", ["initiating", "unknown"])
+def test_l1_primary_contract_accepts_primary_causal_roles(causal_role):
+    payload = _current_evidence(
+        {
+            "primary_failure": {
+                "line": 1,
+                "causal_role": causal_role,
+                "failure_class": "observed_exception",
+            },
+            "evidence": [
+                {
+                    "line": 1,
+                    "quote": "RuntimeError: observed failure",
+                    "supports": "primary_failure",
+                }
+            ],
+        }
+    )
+
+    assert model_evidence_contract_errors(payload) == []
+
+
+def test_l1_primary_contract_rejects_missing_canonical_artifact_path_field():
+    payload = _current_evidence(
+        {
+            "primary_failure": {
+                "line": 1,
+                "causal_role": "initiating",
+                "failure_class": "checkpoint_read_failure",
+            },
+            "evidence": [
+                {
+                    "line": 1,
+                    "quote": "RuntimeError: checkpoint read failed",
+                    "supports": "primary_failure",
+                }
+            ],
+        }
+    )
+    identity = payload["primary_failure"]["failure_identity"]
+    identity["artifact_path"] = identity.pop("affected_artifact_path")
+
+    assert model_evidence_contract_errors(payload) == [
+        "primary_failure.failure_identity missing fields: affected_artifact_path",
+    ]
+    advisory = model_evidence_contract_advisories(payload)[0]
+    assert advisory["code"] == "unknown_response_fields_ignored"
+    assert advisory["field_paths"] == ["primary_failure.failure_identity.artifact_path"]
+
+
+def test_l1_contract_allows_unknown_domain_with_may_recover_outlook():
+    payload = _current_evidence(
+        {
+            "primary_failure": {
+                "line": 1,
+                "causal_role": "initiating",
+                "failure_class": "collective_timeout",
+            },
+            "model_recovery_assessment": {
+                "failure_domain": {
+                    "value": "unknown",
+                    "status": "unknown",
+                    "confidence": 1,
+                },
+                "retry_outlook_without_workload_change": {
+                    "value": "may_recover",
+                    "status": "supported_but_unconfirmed",
+                    "confidence": 70,
+                },
+                "rationale": (
+                    "The timeout does not identify ownership, while restart can reset "
+                    "the affected communication path."
+                ),
+            },
+            "evidence": [
+                {
+                    "line": 1,
+                    "quote": "Watchdog caught collective operation timeout",
+                    "supports": [
+                        "primary_failure",
+                        "root_cause_assessment",
+                        "retry_outlook_without_workload_change",
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert model_evidence_contract_errors(payload) == []
+
+
+@pytest.mark.parametrize("causal_role", ["cascade", "teardown"])
+def test_l1_primary_contract_rejects_known_non_primary_causal_roles(causal_role):
+    payload = _current_evidence(
+        {
+            "primary_failure": {
+                "line": 1,
+                "causal_role": causal_role,
+                "failure_class": "observed_exception",
+            },
+            "evidence": [
+                {
+                    "line": 1,
+                    "quote": "RuntimeError: observed failure",
+                    "supports": "primary_failure",
+                }
+            ],
+        }
+    )
+
+    assert model_evidence_contract_errors(payload) == ["primary_failure.causal_role is invalid"]
 
 
 @pytest.mark.parametrize("analysis_status", ["no_failure_observed", "insufficient_evidence"])
@@ -960,25 +1513,29 @@ def test_l1_non_primary_contract_has_canonical_unknown_semantics(analysis_status
     assert payload["evidence"] == []
 
 
-def test_l1_non_primary_contract_rejects_noncanonical_recovery_claim():
+def test_l1_non_primary_contract_advises_on_noncanonical_confidence():
     payload = _current_evidence({"analysis_status": "no_failure_observed"})
     payload["model_recovery_assessment"]["failure_domain"]["confidence"] = 80
 
-    assert model_evidence_contract_errors(payload) == [
-        "non-primary failure_domain.confidence must be 1"
+    assert model_evidence_contract_errors(payload) == []
+    assert [item["code"] for item in model_evidence_contract_advisories(payload)] == [
+        "non_primary_confidence_not_canonical"
     ]
+    advisory = model_evidence_contract_advisories(payload)[0]
+    assert advisory["field"] == "model_recovery_assessment.failure_domain.confidence"
+    assert advisory["observed_value"] == 80
+    assert advisory["recommended_value"] == 1
 
 
-def test_l1_non_primary_contract_rejects_free_form_summary_and_rationale():
+def test_l1_non_primary_contract_advises_on_free_form_summary_and_rationale():
     payload = _current_evidence({"analysis_status": "no_failure_observed"})
     payload["root_cause_assessment"]["summary"] = "This is probably a workload bug."
     payload["model_recovery_assessment"]["rationale"] = "Stop the workload."
 
-    assert model_evidence_contract_errors(payload) == [
-        "non-primary root_cause_assessment.summary must be "
-        f"{L1_RESPONSE_CONTRACT.no_failure_summary!r}",
-        "non-primary model_recovery_assessment.rationale must be "
-        f"{L1_RESPONSE_CONTRACT.no_failure_rationale!r}",
+    assert model_evidence_contract_errors(payload) == []
+    assert [item["code"] for item in model_evidence_contract_advisories(payload)] == [
+        "non_primary_summary_not_canonical",
+        "non_primary_recovery_rationale_not_canonical",
     ]
 
 
@@ -988,7 +1545,7 @@ def test_l2_visibility_uses_exact_full_model_visible_payload(tmp_path):
     log_path.write_text(failure_line + "\n", encoding="utf-8")
     model_view = build_l0_model_facing_view(build_l0_bundle(str(log_path)))
     result = L1EvidenceResult(
-        evidence=None,
+        semantic_payload=None,
         model="test-model",
         transcript_events=(
             {
@@ -1038,7 +1595,45 @@ def test_decision_evidence_references_are_explicitly_provenance_only(tmp_path):
     assert set(model_view.attempt_execution_context) == {"scope", "terminal_timing"}
 
 
-def test_l1_contract_rejects_retired_recovery_fields():
+@pytest.mark.parametrize(
+    ("summary", "expected_status"),
+    (
+        (RunProgressSummary(), "not_applicable"),
+        (RunProgressSummary(first_terminal_incident_line=10), "unavailable"),
+        (
+            RunProgressSummary(
+                first_terminal_incident_line=10,
+                incident_configured_timeout_seconds=600.0,
+            ),
+            "partial",
+        ),
+        (
+            RunProgressSummary(
+                first_terminal_incident_line=10,
+                incident_configured_timeout_seconds=600.0,
+                seconds_from_last_progress_to_terminal_incident=605.0,
+                terminal_detection_lag_seconds=5.0,
+            ),
+            "complete",
+        ),
+    ),
+)
+def test_l0b_terminal_timing_reports_coverage_status(summary, expected_status):
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=0,
+        line_count=0,
+        run_progress_summary=summary,
+    )
+
+    terminal_timing = build_l0_model_facing_view(bundle).attempt_execution_context[
+        "terminal_timing"
+    ]
+
+    assert terminal_timing["coverage_status"] == expected_status
+
+
+def test_l1_contract_ignores_retired_recovery_fields():
     payload = _current_evidence(
         {
             "primary_failure": {
@@ -1061,8 +1656,11 @@ def test_l1_contract_rejects_retired_recovery_fields():
     )
     payload["model_recovery_assessment"]["current_attempt_persistence_evidence"] = "affirmative"
 
-    assert model_evidence_contract_errors(payload) == [
-        "model_recovery_assessment has unsupported fields: " "current_attempt_persistence_evidence"
+    assert model_evidence_contract_errors(payload) == []
+    advisory = model_evidence_contract_advisories(payload)[0]
+    assert advisory["code"] == "unknown_response_fields_ignored"
+    assert advisory["field_paths"] == [
+        "model_recovery_assessment.current_attempt_persistence_evidence"
     ]
 
 
@@ -1079,6 +1677,8 @@ def test_decision_evidence_is_shared_with_l0b_and_trace(tmp_path):
         encoding="utf-8",
     )
     bundle = build_l0_bundle(str(log_path))
+    assert bundle.deterministic_primary_candidate is not None
+    assert bundle.deterministic_primary_candidate.line == 2
     decision_evidence = build_decision_evidence(bundle)
     model_view = _build_l0_model_facing_view(bundle, decision_evidence)
 
@@ -1092,7 +1692,18 @@ def test_decision_evidence_is_shared_with_l0b_and_trace(tmp_path):
         "log_rescanned": False,
         "model_used": False,
     }
-    assert model_view.prompt_payload()["decision_evidence"] == decision_evidence.to_payload()
+    prompt_payload = model_view.prompt_payload()
+    assert list(prompt_payload) == [
+        "failure_narrative",
+        "decision_evidence_view",
+        "attempt_execution_context",
+        "evidence_bundle",
+    ]
+    assert "decision_evidence" not in prompt_payload
+    assert prompt_payload["decision_evidence_view"]["canonical_observed_identity"] == (
+        decision_evidence.to_payload()["canonical_observed_identity"]
+    )
+    assert prompt_payload["failure_narrative"]["identity_kind"] == "primary"
     assert model_view.prompt_payload()["evidence_bundle"] == model_view.evidence_bundle
     assert "l0_bundle" not in model_view.prompt_payload()
 
@@ -1105,9 +1716,10 @@ def test_decision_evidence_is_shared_with_l0b_and_trace(tmp_path):
     assert analyzer.last_model_view is not None
     assert analyzer.last_model_view.decision_evidence is analyzer.last_decision_evidence
     assert analyzer.last_trace["decision_evidence"] == decision_evidence.to_payload()
+    assert "decision_evidence" not in analyzer.last_trace["l0_model_view"]
     assert (
-        analyzer.last_trace["l0_model_view"]["decision_evidence"]
-        == analyzer.last_trace["decision_evidence"]
+        analyzer.last_trace["l0_model_view"]["decision_evidence_view"]
+        == model_view.to_payload()["decision_evidence_view"]
     )
     assert (
         analyzer.last_trace["layers"]["L0"]["sub_stages"]["DecisionEvidence"]["status"]
@@ -1164,6 +1776,92 @@ def test_l0_records_path_namespace_mismatch_and_distributed_exception_fanout(tmp
     prompt_incident = prompt_bundle["distributed_failure_incidents"][0]
     assert prompt_incident["sample_lines"] == [5, 6]
     assert "member_event_lines" not in prompt_incident
+
+
+def test_l0_attaches_unique_explicit_missing_path_to_selected_primary(tmp_path):
+    log_path = tmp_path / "job.log"
+    missing_path = "/checkpoints/run/iter_0000042"
+    log_path.write_text(
+        "\n".join(
+            [
+                "8: [rank8]: Traceback (most recent call last):",
+                (
+                    "8: [rank8]: FileNotFoundError: [Errno 2] No such file or "
+                    f"directory: '{missing_path}'"
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    failed_path = next(item for item in bundle.path_access_facts if item["role"] == "failed_access")
+    assert failed_path == {
+        "line": 2,
+        "path": missing_path,
+        "role": "failed_access",
+        "access_intent": "unknown",
+        "source": "missing_path_exception",
+        "user_namespace": None,
+    }
+    primary = bundle.deterministic_primary_candidate
+    assert primary is not None
+    assert primary.line == 2
+    assert primary.affected_entity is not None
+    assert primary.affected_entity.identity == missing_path
+    assert primary.affected_entity.evidence_line == 2
+
+
+def test_l0_failed_path_does_not_override_later_progress_aware_primary(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "8: [rank8]: FileNotFoundError: No such file or directory: '/tmp/cache/item'",
+                ("0: [2026-02-18 08:19:00.000000] iteration 49/ 100 | " "consumed samples: 4900 |"),
+                "7: [rank7]: RuntimeError: CUDA out of memory",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    assert any(item["path"] == "/tmp/cache/item" for item in bundle.path_access_facts)
+    primary = bundle.deterministic_primary_candidate
+    assert primary is not None
+    assert primary.line == 3
+    assert primary.failure_class == "cuda_oom"
+    assert primary.affected_entity is None
+
+
+def test_l0_recovered_cuda_oom_does_not_override_later_terminal_failure(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "7: [rank7]: torch.AcceleratorError: CUDA error: out of memory",
+                "0: [2026-02-18 08:19:00.000000] iteration 49/100 | consumed samples: 4900 |",
+                "8: [rank8]: FileNotFoundError: No such file or directory: '/tmp/input.bin'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    primary = bundle.deterministic_primary_candidate
+    assert primary is not None
+    assert primary.line == 3
+    assert primary.failure_class == "artifact_or_path_not_found"
+    decision_evidence = build_decision_evidence(bundle)
+    assert FailureClassifier.CUDA_OOM.value not in (
+        decision_evidence.canonical_observed_identity["classifiers"]
+    )
 
 
 def test_observed_collective_identity_ignores_c10d_severity_date_prefix():
@@ -1239,7 +1937,6 @@ def test_l0_links_timeout_aligned_precursor_to_terminal_episode(tmp_path):
                 "proposed_root_fingerprint": None,
                 "fault_outcome": "terminal",
                 "causal_role": "initiating",
-                "data_position_fingerprint": None,
                 "line": line,
                 "rank": None,
                 "phase": "steady_mid",
@@ -1266,7 +1963,7 @@ def test_l0_links_timeout_aligned_precursor_to_terminal_episode(tmp_path):
 
     precursor_analyzer = RestartAgent(
         evidence_extractor=_FakeEvidenceExtractor(
-            evidence(2, log_path.read_text().splitlines()[1], "ib_port_error")
+            evidence(2, log_path.read_text().splitlines()[1], "rdma_port_error")
         )
     )
     timeout_analyzer = RestartAgent(
@@ -1284,7 +1981,9 @@ def test_l0_links_timeout_aligned_precursor_to_terminal_episode(tmp_path):
     assert precursor_result["primary_failure"]["root_fingerprint"] == (
         timeout_result["primary_failure"]["root_fingerprint"]
     )
-    assert "transport_net_ib" in precursor_result["primary_failure"]["root_fingerprint"]
+    assert precursor_result["primary_failure"]["root_fingerprint"] == (
+        "nccl_rdma_port_error_event:async_port_error"
+    )
     assert precursor_analyzer.last_trace["l2_audit"]["stable_identity_anchor_line"] == 2
     assert timeout_analyzer.last_trace["l2_audit"]["stable_identity_anchor_line"] == 2
     assert timeout_result["primary_failure"]["affected_entity"] is None
@@ -1313,7 +2012,6 @@ def test_l2_accepts_abbreviated_quote_without_treating_same_event_fanout_as_pers
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": "0",
             "phase": "steady_mid",
@@ -1321,7 +2019,8 @@ def test_l2_accepts_abbreviated_quote_without_treating_same_event_fanout_as_pers
                 "operation": "allgather",
                 "mechanism": "collective_timeout",
                 "component": "nccl",
-                "artifact_path": None,
+                "direct_failure_object_path": None,
+                "affected_artifact_path": None,
             },
         },
         "root_cause_assessment": {
@@ -1387,14 +2086,88 @@ def test_l2_accepts_abbreviated_quote_without_treating_same_event_fanout_as_pers
     assert analyzer.last_trace["selected_failure_facts"]["history_identity_ready"] is True
     assert analyzer.last_trace["layers"]["L3"]["selected_failure_facts_source"] == ("l2_grounded")
     assert audit["citation_audits"][0]["status"] == "abbreviated_exact"
-    assert audit["model_recovery_assessment"]["failure_domain"]["value"] == ("infrastructure")
-    assert (
-        audit["model_recovery_assessment"]["retry_outlook_without_workload_change"]["value"]
-        == "may_recover"
-    )
+    assert audit["audit_status"] == "resolved"
+    assessment = result["l1_assessment"]["model_recovery_assessment"]
+    assert assessment["failure_domain"]["value"] == "infrastructure"
+    assert assessment["retry_outlook_without_workload_change"]["value"] == "may_recover"
     assert audit["recovery_field_audits"] == []
     assert audit.get("grounding_adjustments", []) == []
     assert all("persistence" not in item["code"] for item in audit["findings"])
+
+
+def test_l2_abbreviated_quote_requires_two_substantial_ordered_fragments():
+    source = (
+        "Watchdog caught collective operation timeout: "
+        "WorkNCCL(SeqNum=7, OpType=ALLGATHER, NumelIn=10, NumelOut=20, "
+        "Timeout(ms)=600000)"
+    )
+
+    assert _abbreviated_quote_matches(
+        source,
+        "Watchdog caught collective operation timeout: WorkNCCL(SeqNum=7, ... "
+        "Timeout(ms)=600000)",
+    )
+    assert not _abbreviated_quote_matches(source, "Watchdog caught collective timeout...")
+    assert not _abbreviated_quote_matches(source, "Watchdog...Timeout")
+    assert not _abbreviated_quote_matches(
+        source,
+        "Timeout(ms)=600000)...Watchdog caught collective operation timeout",
+    )
+
+
+def test_l2_abbreviated_quote_cannot_repair_to_a_nearby_line(tmp_path):
+    log_path = tmp_path / "job.log"
+    source_line = (
+        "Watchdog caught collective operation timeout: "
+        "WorkNCCL(SeqNum=7, OpType=ALLGATHER, Timeout(ms)=600000)"
+    )
+    downstream_line = "RuntimeError: downstream wrapper reported failure"
+    log_path.write_text(f"{source_line}\n{downstream_line}\n", encoding="utf-8")
+    evidence = _current_evidence(
+        {
+            "primary_failure": {
+                "line": 2,
+                "causal_role": "initiating",
+                "failure_class": "collective_timeout",
+            },
+            "evidence": [
+                {
+                    "line": 2,
+                    "quote": (
+                        "Watchdog caught collective operation timeout..." "Timeout(ms)=600000)"
+                    ),
+                    "supports": "primary_failure",
+                }
+            ],
+        }
+    )
+    extractor = _FakeEvidenceExtractor(
+        evidence,
+        transcript_events=(
+            {
+                "event_type": "bundle_snapshot",
+                "model_visible_payload": {
+                    "evidence_bundle": {
+                        "lines": [
+                            {"line": 1, "text": source_line},
+                            {"line": 2, "text": downstream_line},
+                        ]
+                    }
+                },
+            },
+        ),
+    )
+
+    analyzer = RestartAgent(evidence_extractor=extractor)
+    analyzer.analyze({"log_path": str(log_path)})
+    audit = analyzer.last_trace["l2_audit"]
+
+    assert audit["citation_audits"][0]["original_line"] == 2
+    assert audit["citation_audits"][0]["resolved_line"] is None
+    assert audit["citation_audits"][0]["status"] == "not_model_visible"
+    assert not any(
+        item.get("field") == "evidence[0].line" for item in audit.get("grounding_adjustments", [])
+    )
 
 
 def test_l2_does_not_create_history_identity_from_an_ungrounded_model_line(tmp_path):
@@ -1410,7 +2183,6 @@ def test_l2_does_not_create_history_identity_from_an_ungrounded_model_line(tmp_p
             "proposed_root_fingerprint": "model:checkpoint_metadata_decode_error",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 999,
             "rank": None,
             "phase": "steady_mid",
@@ -1448,26 +2220,30 @@ def test_l2_does_not_create_history_identity_from_an_ungrounded_model_line(tmp_p
     current = analyzer.last_trace["selected_failure_facts"]
     assert l2["grounding_status"] == "unavailable"
     assert l2["root_fingerprint_available"] is False
-    assert current["source"] == "l2_grounded"
-    assert current["root_fingerprint"] is None
-    assert current["history_identity_ready"] is False
-    assert analyzer.last_trace["l3_history"]["matching_root_attempts"] == 0
+    assert l2["history_identity_ready"] is False
+    assert current["source"] == "l0_deterministic"
+    assert current["root_fingerprint"] == l0_identity["root_fingerprint"]
+    assert current["history_identity_ready"] is True
+    assert analyzer.last_trace["layers"]["L3"]["selected_failure_facts_source"] == (
+        "l0_deterministic"
+    )
+    assert analyzer.last_trace["l3_history"]["deterministic"]["matching_root_attempts"] == 1
 
 
 @pytest.mark.parametrize(
-    ("model_artifact_path", "expected_entity"),
+    ("model_affected_artifact_path", "expected_source_field"),
     [
         (
             "/checkpoints/job-1/iter_5000/metadata",
-            "/checkpoints/job-1/iter_5000/metadata",
+            "affected_artifact_path",
         ),
-        ("/checkpoints/invented/metadata", None),
+        ("/checkpoints/invented/metadata", "direct_failure_object_path"),
     ],
 )
-def test_l2_promotes_only_source_grounded_artifact_paths(
+def test_l2_selects_only_source_grounded_entity_paths(
     tmp_path,
-    model_artifact_path,
-    expected_entity,
+    model_affected_artifact_path,
+    expected_source_field,
 ):
     log_path = tmp_path / "job.log"
     artifact_path = "/checkpoints/job-1/iter_5000/metadata"
@@ -1490,7 +2266,8 @@ def test_l2_promotes_only_source_grounded_artifact_paths(
                 "operation": "checkpoint_load",
                 "mechanism": "metadata_deserialization",
                 "component": "torch.distributed.checkpoint",
-                "artifact_path": model_artifact_path,
+                "direct_failure_object_path": artifact_path,
+                "affected_artifact_path": model_affected_artifact_path,
             },
         },
         "evidence": [{"line": 2, "quote": failure_line, "supports": "primary_failure"}],
@@ -1500,14 +2277,21 @@ def test_l2_promotes_only_source_grounded_artifact_paths(
 
     result = analyzer.analyze({"log_path": str(log_path)}, l0_bundle=bundle).to_payload()
 
+    identity_grounding = result["l2_grounding"]["grounded_failure_identities"]["primary"]
+    assert identity_grounding["direct_failure_object_path"]["grounded_value"] == artifact_path
+    assert identity_grounding["direct_failure_object_path"]["status"] == "grounded"
     entity = result["primary_failure"]["affected_entity"]
-    if expected_entity is None:
-        assert entity is None
-        assert analyzer.last_trace["layers"]["L2"]["affected_entity"] is None
-        return
+    if expected_source_field == "direct_failure_object_path":
+        assert identity_grounding["affected_artifact_path"]["status"] == "unavailable"
+    else:
+        assert identity_grounding["affected_artifact_path"]["grounded_value"] == artifact_path
     assert entity["kind"] == "artifact"
-    assert entity["identity"] == expected_entity
-    assert entity["evidence_line"] == 2
+    assert entity["identity"] == artifact_path
+    assert entity["evidence_line"] == 1
+    assert result["l2_grounding"]["affected_entity_selection"]["source_field"] == (
+        expected_source_field
+    )
+    assert result["retry_policy"]["base_rule"] == "concrete_confirmation_retry"
     assert analyzer.last_trace["selected_failure_facts"]["affected_entity"] == entity
 
 
@@ -1522,6 +2306,7 @@ def test_qwen_context_budget_reduces_only_the_effective_output_cap():
     assert budget["estimation_multiplier"] == 1.15
     assert budget["configured_max_output_tokens"] == 64_000
     assert budget["effective_max_output_tokens"] < 64_000
+    assert budget["context_budget_exceeded"] is False
     assert budget["adjusted"] is True
     assert (
         budget["estimated_input_tokens"]
@@ -1529,6 +2314,69 @@ def test_qwen_context_budget_reduces_only_the_effective_output_cap():
         + budget["safety_tokens"]
         <= budget["context_window_tokens"]
     )
+
+
+def test_unknown_model_without_context_cap_records_uncapped_preflight():
+    config = LlmConfig(model="provider/unknown-model", max_output_tokens=64_000)
+    messages = [{"role": "user", "content": "x" * 10_000}]
+
+    budget = _request_context_budget(config, messages, include_tools=False)
+
+    assert config.resolved_context_window_tokens() is None
+    assert budget["context_window_tokens"] is None
+    assert budget["estimated_input_tokens"] > 0
+    assert budget["available_output_tokens"] is None
+    assert budget["effective_max_output_tokens"] == 64_000
+    assert budget["context_budget_exceeded"] is False
+    assert budget["adjusted"] is False
+
+
+def test_l1_context_preflight_skips_http_when_input_exceeds_route_window(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: failed\n", encoding="utf-8")
+    snapshot = LogSnapshot.read(log_path)
+    bundle = build_l0_bundle(str(log_path), source_log=snapshot)
+    decision_evidence = build_decision_evidence(bundle)
+    model_view = _build_l0_model_facing_view(bundle, decision_evidence)
+    context = build_l1_evidence_context(bundle, model_view, snapshot)
+    called = False
+
+    def handler(_request):
+        nonlocal called
+        called = True
+        raise AssertionError("provider request must not start after context preflight failure")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    config = LlmConfig(
+        api_key="test-key",
+        context_window_tokens=100,
+        context_safety_tokens=10,
+        max_retries=5,
+        tools_enabled=False,
+    )
+    extractor = LlmEvidenceExtractor(
+        config,
+        transport=OpenAICompatibleTransport(config, http_client=client),
+    )
+
+    try:
+        result = extractor.extract_evidence(context)
+    finally:
+        client.close()
+
+    assert called is False
+    assert result.success is False
+    assert result.anomalies["context_budget_exceeded"] is True
+    assert len(result.model_calls) == 1
+    call = result.model_calls[0]
+    assert call["error_type"] == "context_budget_exceeded"
+    assert call["retryable"] is False
+    assert call["retry_scheduled"] is False
+    assert call["context_budget"]["available_output_tokens"] < 1
+    assert call["context_budget"]["context_budget_exceeded"] is True
+    token_limit = l1_token_limit_summary(result.model_calls)
+    assert token_limit["hit"] is True
+    assert token_limit["hit_calls"][0]["limit_kind"] == "client_context_budget"
 
 
 def test_qwen397b_context_window_is_known():
@@ -1576,15 +2424,25 @@ def test_one_tool_round_profile_allows_two_model_turns():
     assert "tools-disabled final turn" in profile["meaning"]
 
 
-def test_default_tool_profile_does_not_advertise_evidence_object_lookup():
+def test_default_tool_profile_advertises_source_and_structured_evidence_lookup_tools():
     config = LlmConfig()
+    schemas = _tool_schemas(config)
 
-    assert config.resolved_advertised_tools() == ("overview", "grep_log", "read_window")
-    assert [schema["function"]["name"] for schema in _tool_schemas(config)] == [
-        "overview",
+    assert config.resolved_advertised_tools() == (
         "grep_log",
         "read_window",
+        "get_evidence_objects",
+    )
+    assert [schema["function"]["name"] for schema in schemas] == [
+        "grep_log",
+        "read_window",
+        "get_evidence_objects",
     ]
+    evidence_object_description = schemas[-1]["function"]["description"]
+    assert "decision_evidence_view.selected_evidence_references" in evidence_object_description
+    assert "before grep_log" in evidence_object_description
+    assert "do not convert source_lines" in evidence_object_description
+    assert "does not read external files" in evidence_object_description
 
 
 def test_evidence_object_lookup_requires_explicit_tool_profile_opt_in():
@@ -1702,9 +2560,11 @@ def test_unadvertised_evidence_object_call_is_rejected_before_dispatch():
         LogTools(bundle, LogSnapshot(path=bundle.log_path, lines=(), byte_size=0)),
         tool_call,
         model_turn=1,
+        advertised_tools=("grep_log", "read_window"),
     )
 
-    assert result["error"] == "tool_not_advertised"
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "tool_not_advertised"
     assert record["error"] == "tool_not_advertised"
     assert unsupported["rejection_reason"] == "tool_not_advertised"
 
@@ -1715,7 +2575,8 @@ def test_unadvertised_evidence_object_call_is_rejected_before_dispatch():
         advertised_tools=("get_evidence_objects",),
     )
 
-    assert result["objects"][0]["ref"] == "w-1"
+    assert result["status"] == "ok"
+    assert result["data"]["objects"][0]["ref"] == "w-1"
     assert record["result_lines"] == 1
     assert unsupported is None
 
@@ -1744,6 +2605,8 @@ def test_model_primary_lines_in_same_episode_share_history_and_client_identity(t
         encoding="utf-8",
     )
     bundle = build_l0_bundle(str(log_path))
+    assert bundle.deterministic_primary_candidate is not None
+    assert bundle.deterministic_primary_candidate.line == 2
 
     def evidence(line, quote):
         return {
@@ -1754,7 +2617,6 @@ def test_model_primary_lines_in_same_episode_share_history_and_client_identity(t
                 "proposed_root_fingerprint": None,
                 "fault_outcome": "terminal",
                 "causal_role": "initiating",
-                "data_position_fingerprint": None,
                 "line": line,
                 "rank": "0",
                 "phase": "setup",
@@ -1795,11 +2657,15 @@ def test_model_primary_lines_in_same_episode_share_history_and_client_identity(t
 
     assert summary_result["primary_failure"]["line"] == 2
     assert terminal_result["primary_failure"]["line"] == 5
+    assert terminal_result["primary_failure"]["failure_class"] == (
+        bundle.deterministic_primary_candidate.failure_class
+    )
     assert summary_result["primary_failure"]["root_fingerprint"] == (
         terminal_result["primary_failure"]["root_fingerprint"]
     )
     assert summary_result["primary_failure"]["failure_iteration"] == 71
     assert terminal_result["primary_failure"]["failure_iteration"] == 71
+    assert terminal_analyzer.last_trace["selected_failure_facts"]["source"] == "l2_grounded"
     assert summary_result["primary_failure"]["root_fingerprint"] == ("cuda_oom:allocation_failure")
     assert summary_result["primary_failure"]["affected_entity"] is None
     assert terminal_result["primary_failure"]["affected_entity"] is None
@@ -1811,6 +2677,123 @@ def test_model_primary_lines_in_same_episode_share_history_and_client_identity(t
     assert terminal_analyzer.last_trace["l2_audit"]["stable_identity_anchor_reason"] == (
         "failure_episode_identity_anchor:nearby_high_signal_error_precedes_failure_episode"
     )
+    assert terminal_analyzer.last_trace["l2_audit"]["identity_lineage"] == {
+        "model_selected_line": 5,
+        "l0_primary_line": 2,
+        "canonical_identity_anchor_line": 2,
+        "relationship_to_l0": "same_canonical_incident",
+        "client_identity_source": "l0_canonical_identity",
+    }
+    assert terminal_analyzer.last_trace["layers"]["L2"]["identity_lineage"] == (
+        terminal_analyzer.last_trace["l2_audit"]["identity_lineage"]
+    )
+
+
+def test_l2_uses_source_identity_for_different_unmatched_grounded_incident(tmp_path):
+    log_path = tmp_path / "job.log"
+    lines = (
+        LogLine(line=1, text="7: [rank7]: RuntimeError: deterministic primary"),
+        LogLine(line=2, text="3: [rank3]: opaque subsystem halted unexpectedly"),
+    )
+    log_path.write_text("\n".join(item.text for item in lines), encoding="utf-8")
+    l0_primary = FailureEvidence(
+        failure_class="observed_exception",
+        signature=lines[0].text,
+        root_fingerprint="observed:runtimeerror:deterministic_primary",
+        root_fingerprint_source="observed_exception",
+        fault_outcome="terminal",
+        causal_role="initiating",
+        line=1,
+        quote=lines[0].text,
+        rank="7",
+        role="root_candidate",
+    )
+    bundle = L0Bundle(
+        log_path=str(log_path),
+        byte_size=log_path.stat().st_size,
+        line_count=2,
+        deterministic_primary_candidate=l0_primary,
+        context_windows=(
+            ContextWindow(
+                window_id="w-1",
+                selected_by="test",
+                start_line=1,
+                end_line=2,
+                lines=lines,
+            ),
+        ),
+    )
+    evidence = _current_evidence(
+        {
+            "primary_failure": {
+                "line": 2,
+                "causal_role": "initiating",
+                "failure_identity": {
+                    "operation": "custom_operation",
+                    "mechanism": "model_invented_mechanism",
+                    "component": "custom_component",
+                    "direct_failure_object_path": None,
+                    "affected_artifact_path": None,
+                },
+            },
+            "evidence": [
+                {
+                    "line": 2,
+                    "quote": lines[1].text,
+                    "supports": "primary_failure",
+                }
+            ],
+        }
+    )
+    model_view = build_l0_model_facing_view(bundle)
+    model_view = replace(
+        model_view,
+        decision_evidence=replace(
+            model_view.decision_evidence,
+            locality={
+                **model_view.decision_evidence.locality,
+                "root_observer_ranks": ["7"],
+                "unattributed_root_occurrence_count": 0,
+            },
+        ),
+    )
+    result = ground_and_audit_model_evidence(
+        L2GroundingInput(
+            bundle=bundle,
+            model_view=model_view,
+            l1_result=L1EvidenceResult(
+                semantic_payload=evidence,
+                model="test-model",
+                success=True,
+                transcript_events=(
+                    {
+                        "event_type": "bundle_snapshot",
+                        "model_visible_payload": {
+                            "evidence_bundle": {"lines": [{"line": 2, "text": lines[1].text}]}
+                        },
+                    },
+                ),
+            ),
+            source_log=LogSnapshot.read(log_path),
+        )
+    )
+    payload = result.to_payload()
+
+    assert result.primary is not None
+    assert result.primary.failure_class == "observed_failure"
+    assert result.primary.failure_class != "model_invented_mechanism"
+    assert result.primary.root_fingerprint_source == "observed_exception"
+    assert result.primary.rank == "3"
+    assert result.primary_failure_facts is not None
+    assert result.primary_failure_facts.root_observer_ranks is None
+    assert result.primary_failure_facts.unattributed_root_occurrence_count is None
+    assert payload["identity_lineage"] == {
+        "model_selected_line": 2,
+        "l0_primary_line": 1,
+        "canonical_identity_anchor_line": 2,
+        "relationship_to_l0": "different_grounded_incident",
+        "client_identity_source": "l2_source_grounding",
+    }
 
 
 def test_logger_error_name_does_not_create_failure_episode(tmp_path):
@@ -1874,6 +2857,38 @@ def test_l0_bundle_json_round_trip_is_replayable(tmp_path):
     assert analyzer.last_trace["timing"]["l0_reused"] is True
 
 
+def test_direct_l0_bundle_replay_rejects_stale_source_dimensions(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: terminal failure\n", encoding="utf-8")
+    bundle = build_l0_bundle(str(log_path))
+    analyzer = RestartAgent()
+
+    with pytest.raises(ValueError, match="byte_size does not match captured source"):
+        analyzer.analyze(
+            {"log_path": str(log_path)},
+            l0_bundle=replace(bundle, byte_size=bundle.byte_size + 1),
+        )
+
+    with pytest.raises(ValueError, match="line_count does not match captured source"):
+        analyzer.analyze(
+            {"log_path": str(log_path)},
+            l0_bundle=replace(bundle, line_count=bundle.line_count + 1),
+        )
+
+
+def test_l0_bundle_json_replay_rejects_inconsistent_embedded_source(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: terminal failure\n", encoding="utf-8")
+    bundle_path = tmp_path / "bundle.json"
+    write_l0_bundle(bundle_path, build_l0_bundle(str(log_path)))
+    payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+    payload["bundle"]["byte_size"] += 1
+    bundle_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="embedded L0 bundle byte_size"):
+        read_l0_bundle(bundle_path, expected_log_path=str(log_path))
+
+
 def test_l1_overlay_rebuilds_related_failures_and_cascades_from_validated_primary(
     tmp_path,
 ):
@@ -1900,7 +2915,6 @@ def test_l1_overlay_rebuilds_related_failures_and_cascades_from_validated_primar
             "proposed_root_fingerprint": "model:free_form",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": "7",
             "phase": "setup",
@@ -1934,12 +2948,11 @@ def test_l1_overlay_rebuilds_related_failures_and_cascades_from_validated_primar
 
     assert payload["primary_failure"]["line"] == 2
     assert payload["primary_failure"]["root_fingerprint"] != "model:free_form"
-    assert payload["root_cause_assessment"]["plausible_causes"]
-    assert payload["model_recovery_assessment"]["failure_domain"]["value"] == "unknown"
-    assert payload["model_recovery_assessment"]["retry_outlook_without_workload_change"][
-        "value"
-    ] == ("unknown")
-    assert payload["model_recovery_assessment"]["failure_domain"]["confidence"] == 85
+    assert payload["l1_assessment"]["root_cause_assessment"]["plausible_causes"]
+    assessment = payload["l1_assessment"]["model_recovery_assessment"]
+    assert assessment["failure_domain"]["value"] == "unknown"
+    assert assessment["retry_outlook_without_workload_change"]["value"] == ("unknown")
+    assert assessment["failure_domain"]["confidence"] == 85
     assert payload["secondary_failures"] == []
     cascades_by_line = {item["first_line"]: item for item in payload["cascades"]}
     assert cascades_by_line[3]["causal_role"] == "cascade"
@@ -1963,7 +2976,6 @@ def test_l1_only_cascade_is_retained_in_public_result(tmp_path):
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "setup",
@@ -2012,6 +3024,84 @@ def test_l1_only_cascade_is_retained_in_public_result(tmp_path):
     ]
 
 
+def test_l2_chronology_finding_is_observational_only(tmp_path):
+    log_path = tmp_path / "mixed.log"
+    killed_line = "slurmstepd: error: Detected 1 oom_kill event in StepId=1.batch"
+    confirmation_line = "slurmstepd: error: Exceeded step memory limit at some point"
+    log_path.write_text(
+        f"{killed_line}\nprocesses terminated\n{confirmation_line}\n",
+        encoding="utf-8",
+    )
+    evidence = {
+        "schema_version": "restart_agent_evidence.v1",
+        "analysis_status": "primary_identified",
+        "primary_failure": {
+            "line": 3,
+            "causal_role": "initiating",
+            "failure_identity": {
+                "operation": "workload_execution",
+                "mechanism": "host_memory_limit_exceeded",
+                "component": "slurm_step",
+                "direct_failure_object_path": None,
+                "affected_artifact_path": None,
+            },
+        },
+        "root_cause_assessment": {
+            "summary": "Slurm confirmed that the step exceeded its memory limit.",
+            "status": "established_by_current_log",
+            "plausible_causes": ["host memory exhaustion"],
+            "missing_evidence": [],
+        },
+        "model_recovery_assessment": {
+            "failure_domain": {
+                "value": "workload",
+                "status": "supported_but_unconfirmed",
+                "confidence": 80,
+            },
+            "retry_outlook_without_workload_change": {
+                "value": "may_recover",
+                "status": "supported_but_unconfirmed",
+                "confidence": 60,
+            },
+            "rationale": "The current attempt exceeded its memory limit.",
+        },
+        "related_failures": [
+            {
+                "line": 1,
+                "causal_role": "cascade",
+                "rationale": "The earlier kill report is part of the confirmed OOM event.",
+            }
+        ],
+        "evidence": [
+            {
+                "id": "primary",
+                "line": 3,
+                "quote": confirmation_line,
+                "supports": [
+                    "primary_failure",
+                    "root_cause_assessment",
+                    "failure_domain",
+                    "retry_outlook_without_workload_change",
+                ],
+            }
+        ],
+    }
+
+    analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
+    payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
+    audit = analyzer.last_trace["l2_audit"]
+
+    assert audit["field_finding_codes"]["related_failures"] == [
+        "related_failure_impossible_chronology"
+    ]
+    assert audit["audited_related_failures"][0]["line"] == 1
+    assert audit["findings"][0]["observational_only"] is True
+    assert payload["cascades"][0]["first_line"] == 1
+    assert payload["result_provenance"]["model_contribution"] == "attempted_used"
+    assert payload["result_provenance"]["result_quality"] == "normal"
+    assert payload["result_provenance"]["nvrx_use"] == "eligible"
+
+
 def test_l2_uses_canonical_evidence_tags_for_recovery_support(tmp_path):
     log_path = tmp_path / "job.log"
     load_line = "loading distributed checkpoint at iteration 622125"
@@ -2028,7 +3118,6 @@ def test_l2_uses_canonical_evidence_tags_for_recovery_support(tmp_path):
             "proposed_root_fingerprint": "model:checkpoint_decode",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 3,
             "rank": "7",
             "phase": "setup",
@@ -2056,13 +3145,16 @@ def test_l2_uses_canonical_evidence_tags_for_recovery_support(tmp_path):
     validation = analyzer.last_trace["l2_audit"]
 
     assert validation["audit_status"] == "clean"
-    assert validation["recovery_assessment_used"] is True
+    assert validation["recovery_assessment_audited"] is True
     assert validation["failure_domain_supporting_lines"] == [3]
     assert validation["retry_outlook_supporting_lines"] == [3]
-    assert validation["field_audits"]["model_recovery_assessment"]["status"] == "available"
-    assert analyzer.last_trace["l1"]["parsed_evidence"] == _current_evidence(evidence)
+    assert validation["field_audits"]["model_recovery_assessment"]["status"] == "audited"
+    assert analyzer.last_trace["l1"]["semantic_payload"] == _current_evidence(evidence)
     assert payload["primary_failure"]["line"] == 3
-    assert payload["model_recovery_assessment"]["failure_domain"]["value"] == "unknown"
+    assert (
+        payload["l1_assessment"]["model_recovery_assessment"]["failure_domain"]["value"]
+        == "unknown"
+    )
 
 
 def test_l2_resolves_unique_nearby_citation_without_discarding_l1(tmp_path):
@@ -2082,7 +3174,6 @@ def test_l2_resolves_unique_nearby_citation_without_discarding_l1(tmp_path):
             "proposed_root_fingerprint": "checkpoint_metadata_corruption:unpickle_failure",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 4,
             "rank": "4175",
             "phase": "setup",
@@ -2122,9 +3213,7 @@ def test_l2_resolves_unique_nearby_citation_without_discarding_l1(tmp_path):
     assert audit["citation_audits"][1]["status"] == "nearby_resolved"
     assert payload["primary_failure"]["line"] == 4
     assert payload["decision"] == Decision.RESTART.value
-    assert payload["result_provenance"]["model_contribution"] == (
-        "attempted_used_with_resolved_findings"
-    )
+    assert payload["result_provenance"]["model_contribution"] == ("attempted_used")
     assert payload["result_provenance"]["result_quality"] == "normal"
 
 
@@ -2142,7 +3231,6 @@ def test_l2_accepts_exact_model_visible_truncated_rendering(tmp_path):
             "proposed_root_fingerprint": "checkpoint:write",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "checkpointing",
@@ -2192,12 +3280,61 @@ def test_l2_accepts_exact_model_visible_truncated_rendering(tmp_path):
     ]
     assert audit["field_findings"] == {}
     assert audit["audit_status"] == "resolved"
-    assert payload["result_provenance"]["model_contribution"] == (
-        "attempted_used_with_resolved_findings"
+    assert payload["result_provenance"]["model_contribution"] == ("attempted_used")
+
+
+def test_l2_does_not_ground_trace_reference_without_visible_source_text(tmp_path):
+    log_path = tmp_path / "job.log"
+    failure_line = "RuntimeError: checkpoint write failed"
+    log_path.write_text(f"iteration 10 completed\n{failure_line}\n", encoding="utf-8")
+    evidence = {
+        "primary_failure": {
+            "line": 2,
+            "failure_class": "checkpoint_write_failure",
+            "causal_role": "initiating",
+        },
+        "evidence": [{"line": 2, "quote": failure_line}],
+        "justification": "The checkpoint write failed.",
+    }
+    extractor = _FakeEvidenceExtractor(
+        evidence,
+        transcript_events=(
+            {
+                "event_type": "bundle_snapshot",
+                "model_visible_payload": {
+                    "decision_evidence": {
+                        "selected_evidence_references": {
+                            "semantics": "provenance_only",
+                            "source_lines": [2],
+                        }
+                    },
+                    "context": [{"line": 1, "text": "iteration 10 completed"}],
+                },
+            },
+        ),
     )
 
+    analyzer = RestartAgent(evidence_extractor=extractor)
+    payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
+    audit = analyzer.last_trace["l2_audit"]
 
-def test_l2_does_not_ground_exact_source_quote_that_was_not_model_visible(tmp_path):
+    assert audit["citation_audits"][0]["status"] == "not_model_visible"
+    assert "evidence_not_model_visible" in audit["field_finding_codes"]["evidence"]
+    assert "primary_evidence_not_model_visible" in audit["field_finding_codes"]["primary_failure"]
+    assert audit["source_line_available"] is True
+    assert audit["primary_model_visible_support"] is False
+    assert audit["grounding_status"] == "unavailable"
+    assert audit["grounding_method"] == "unavailable"
+    assert audit["used"] is False
+    assert audit["primary_used"] is False
+    assert audit["history_identity_ready"] is False
+    assert audit["enriched_failure_tracks"] == {"primary": None, "observation": None}
+    assert audit["audit_influence"] == "observational_only"
+    assert analyzer.last_trace["selected_failure_facts"]["source"] == "l0_deterministic"
+    assert payload["result_provenance"]["model_contribution"] == ("attempted_not_used_ungrounded")
+
+
+def test_l2_grounds_primary_text_returned_by_successful_tool(tmp_path):
     log_path = tmp_path / "job.log"
     failure_line = "RuntimeError: checkpoint write failed"
     log_path.write_text(f"iteration 10 completed\n{failure_line}\n", encoding="utf-8")
@@ -2219,6 +3356,18 @@ def test_l2_does_not_ground_exact_source_quote_that_was_not_model_visible(tmp_pa
                     "context": [{"line": 1, "text": "iteration 10 completed"}]
                 },
             },
+            {
+                "event_type": "tool_result",
+                "result": {
+                    "status": "ok",
+                    "data": {
+                        "start_line": 2,
+                        "end_line": 2,
+                        "lines": [{"line": 2, "text": failure_line}],
+                        "truncated": False,
+                    },
+                },
+            },
         ),
     )
 
@@ -2226,9 +3375,14 @@ def test_l2_does_not_ground_exact_source_quote_that_was_not_model_visible(tmp_pa
     analyzer.analyze({"log_path": str(log_path)})
     audit = analyzer.last_trace["l2_audit"]
 
-    assert audit["citation_audits"][0]["status"] == "not_model_visible"
-    assert "evidence_not_model_visible" in audit["field_finding_codes"]["evidence"]
-    assert audit["recovery_assessment_policy_grounded"] is False
+    assert audit["citation_audits"][0]["status"] == "exact"
+    assert audit["source_line_available"] is True
+    assert audit["primary_model_visible_support"] is True
+    assert audit["grounding_status"] == "grounded"
+    assert audit["used"] is True
+    assert audit["history_identity_ready"] is True
+    assert audit["enriched_failure_tracks"]["primary"] is not None
+    assert analyzer.last_trace["selected_failure_facts"]["source"] == "l2_grounded"
 
 
 def test_invalid_related_role_is_l1_contract_failure(tmp_path):
@@ -2244,7 +3398,6 @@ def test_invalid_related_role_is_l1_contract_failure(tmp_path):
             "proposed_root_fingerprint": "checkpoint:write",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "checkpointing",
@@ -2326,7 +3479,13 @@ def test_l2_rejects_related_failure_line_not_visible_to_model(tmp_path):
             {
                 "event_type": "bundle_snapshot",
                 "model_visible_payload": {
-                    "evidence_bundle": {"lines": [{"line": 1, "text": primary_line}]}
+                    "decision_evidence": {
+                        "selected_evidence_references": {
+                            "semantics": "provenance_only",
+                            "source_lines": [2],
+                        }
+                    },
+                    "evidence_bundle": {"lines": [{"line": 1, "text": primary_line}]},
                 },
             },
         ),
@@ -2356,7 +3515,6 @@ def test_l2_uses_canonical_evidence_tags_instead_of_removed_supporting_line_fiel
             "proposed_root_fingerprint": "model:checkpoint_decode",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": "7",
             "phase": "setup",
@@ -2393,17 +3551,80 @@ def test_l2_uses_canonical_evidence_tags_instead_of_removed_supporting_line_fiel
 
     assert validation["audit_status"] == "clean"
     assert validation["primary_used"] is True
-    assert validation["recovery_assessment_used"] is True
+    assert validation["recovery_assessment_audited"] is True
     assert validation["failure_domain_supporting_lines"] == [1]
     assert validation["retry_outlook_supporting_lines"] == [1]
     assert payload["primary_failure"]["line"] == 1
-    assert payload["model_recovery_assessment"]["failure_domain"]["value"] == "workload"
-    assert "recovery_requirement" not in payload["model_recovery_assessment"]
-    assert validation["recovery_assessment_policy_grounded"] is True
-    assert payload["retry_policy"]["recovery_assessment_policy_grounded"] is True
+    assessment = payload["l1_assessment"]["model_recovery_assessment"]
+    assert assessment["failure_domain"]["value"] == "workload"
+    assert "recovery_requirement" not in assessment
+    assert validation["audit_influence"] == "observational_only"
     assert payload["decision"] == Decision.STOP.value
     assert payload["result_provenance"]["model_contribution"] == "attempted_used"
     assert payload["result_provenance"]["result_quality"] == "normal"
+
+
+def test_l2_preserves_workload_domain_independently_of_unknown_root_cause(tmp_path):
+    log_path = tmp_path / "job.log"
+    failure_line = "[rank58]: KeyError: Parameter containing:"
+    log_path.write_text(f"{failure_line}\n", encoding="utf-8")
+    evidence = {
+        "schema_version": "restart_agent_evidence.v1",
+        "analysis_status": "primary_identified",
+        "primary_failure": {
+            "line": 1,
+            "causal_role": "initiating",
+            "failure_identity": {
+                "operation": "optimizer setup",
+                "mechanism": "parameter lookup KeyError",
+                "component": "distributed optimizer",
+                "direct_failure_object_path": None,
+                "affected_artifact_path": None,
+            },
+        },
+        "root_cause_assessment": {
+            "summary": "Optimizer setup could not find a parameter in its group map.",
+            "status": "unknown",
+            "plausible_causes": ["optimizer parameter-map inconsistency"],
+            "missing_evidence": ["parameter-map construction diagnostics"],
+        },
+        "model_recovery_assessment": {
+            "failure_domain": {
+                "value": "workload",
+                "status": "established_by_current_log",
+                "confidence": 86,
+            },
+            "retry_outlook_without_workload_change": {
+                "value": "unknown",
+                "status": "unknown",
+                "confidence": 1,
+            },
+            "rationale": (
+                "The failure is in workload optimizer setup, but the current log does "
+                "not establish whether process recreation can recover."
+            ),
+        },
+        "related_failures": [],
+        "evidence": [
+            {
+                "id": "e1",
+                "line": 1,
+                "quote": failure_line,
+                "supports": ["primary_failure", "failure_domain"],
+            }
+        ],
+    }
+
+    analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
+    payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
+    audit = analyzer.last_trace["l2_audit"]
+
+    assert audit["model_root_cause_status"] == "unknown"
+    assert audit["failure_domain_supporting_lines"] == [1]
+    assert audit["audit_influence"] == "observational_only"
+    assert payload["retry_policy"]["base_rule"] == "workload_confirmation_retry"
+    assert payload["retry_policy"]["effective_policy"]["allowed_retries"] == 1
+    assert payload["decision"] == Decision.RESTART.value
 
 
 def test_trace_exposes_distinct_l0_through_l4_layers(tmp_path):
@@ -2451,7 +3672,7 @@ def test_trace_exposes_distinct_l0_through_l4_layers(tmp_path):
     assert layers["L3"]["history_identity_ready"] is True
     assert layers["L4"]["name"] == "policy_decision"
     assert "operational_policy_mapping" not in analyzer.last_trace["l3_history"]
-    assert analyzer.last_trace["l4_policy"]["retry_policy"]["rule"] == ("general_retry")
+    assert analyzer.last_trace["l4_policy"]["retry_policy"]["base_rule"] == ("general_retry")
     assert analyzer.last_trace["latency_measurement"] == {
         "mode": "terminal_request_to_result",
         "terminal_total_wall_clock_s": analyzer.last_trace["timing"]["total_wall_clock_s"],
@@ -2467,7 +3688,8 @@ def test_log_unavailable_returns_restart(tmp_path):
     assert payload["decision"] == Decision.RESTART.value
     assert payload["decision_basis"] == DecisionBasis.LOG_UNAVAILABLE.value
     assert payload["primary_failure"] is None
-    assert payload["evidence"] == []
+    assert payload["l1_assessment"] is None
+    assert payload["l2_grounding"]["grounded_evidence"] == []
     assert payload["result_provenance"]["evidence_source"] == "log_unavailable"
     assert payload["result_provenance"]["result_quality"] == "unusable"
     assert payload["result_provenance"]["nvrx_use"] == "fallback_to_nvrx_default"
@@ -2784,7 +4006,7 @@ def test_l0_structural_candidate_does_not_stop_without_l1(tmp_path):
 
     assert payload["decision"] == Decision.RESTART.value
     assert payload["decision_basis"] == DecisionBasis.GENERAL_RETRY_AVAILABLE.value
-    assert payload["primary_failure"]["failure_class"] == "observed_exception"
+    assert payload["primary_failure"]["failure_class"] == "artifact_or_path_not_found"
     assert "policy_class" not in payload["primary_failure"]
     assert all("policy_class" not in item for item in payload["secondary_failures"])
     assert payload["result_provenance"]["evidence_source"] == "l0_deterministic"
@@ -2793,7 +4015,7 @@ def test_l0_structural_candidate_does_not_stop_without_l1(tmp_path):
     assert (
         "policy_class" not in analyzer.last_trace["l0_summary"]["deterministic_primary_candidate"]
     )
-    assert analyzer.last_trace["l2_grounded_semantics"] is None
+    assert analyzer.last_trace["l2_grounding"] is None
     assert "policy_class" not in analyzer.last_trace["external_output"]["primary_failure"]
 
 
@@ -2826,7 +4048,6 @@ def test_l1_runs_for_l0_structural_candidate(tmp_path):
             "root_fingerprint": "python_user_exception:valueerror",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "setup",
@@ -2849,16 +4070,21 @@ def test_l1_runs_for_l0_structural_candidate(tmp_path):
 
     assert payload["decision"] == Decision.STOP.value
     assert payload["decision_basis"] == DecisionBasis.WORKLOAD_UNRECOVERABLE.value
-    assert payload["result_provenance"]["evidence_source"] == "l1_model_audited"
+    assert payload["result_provenance"]["evidence_source"] == "l1_model_grounded"
     assert payload["result_provenance"]["model_contribution"] == "attempted_used"
     assert analyzer.last_trace["timing"]["l1_model_calls"] == 1
     assert analyzer.last_trace["l2_audit"]["used"] is True
     assert not analyzer.last_trace["l2_audit"].get("l0_policy_downgraded")
-    assert payload["evidence"] == _current_evidence(evidence)["evidence"]
-    assert payload["justification"] == evidence["justification"]
+    assert payload["l1_assessment"] == _current_evidence(evidence)
+    assert payload["l2_grounding"]["grounded_evidence"] == _current_evidence(evidence)["evidence"]
+    assert payload["l2_grounding"]["grounded_primary_failure"]["line"] == 2
+    assert "root_cause_assessment" not in payload
+    assert "model_recovery_assessment" not in payload
+    assert "evidence" not in payload
+    assert payload["justification"].startswith("Line 2 is the L2-grounded primary failure")
 
 
-def test_incomplete_l1_contract_is_rejected_without_manufactured_evidence(tmp_path):
+def test_missing_l1_citations_are_advisory_without_manufactured_evidence(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text(
         "ValueError: invalid config option tensor_model_parallel_size\n",
@@ -2889,19 +4115,22 @@ def test_incomplete_l1_contract_is_rejected_without_manufactured_evidence(tmp_pa
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(incomplete))
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
-    assert payload["decision"] == Decision.RESTART.value
-    assert payload["result_provenance"]["model_contribution"] == "attempted_not_used_malformed"
-    assert analyzer.last_trace["l2_audit"]["used"] is False
-    assert analyzer.last_trace["l2_audit"]["audit_status"] == "not_run"
-    assert analyzer.last_trace["layers"]["L1"]["output_status"] == "contract_invalid"
-    assert any(
-        "evidence must support primary_failure" in error
-        for error in analyzer.last_trace["layers"]["L1"]["output_errors"]
-    )
+    assert payload["decision"] == Decision.STOP.value
+    assert payload["result_provenance"]["model_contribution"] == "attempted_used"
+    assert analyzer.last_trace["l2_audit"]["used"] is True
+    assert analyzer.last_trace["layers"]["L1"]["output_status"] == "usable"
+    advisory_codes = [
+        item["code"] for item in analyzer.last_trace["anomalies"]["l1_contract_advisories"]
+    ]
+    assert advisory_codes == [
+        "primary_failure_support_missing",
+        "root_cause_assessment_support_missing",
+    ]
+    assert payload["result_provenance"]["notes"][-2:] == advisory_codes
     assert payload["justification"] != ""
 
 
-def test_l2_reports_suspect_primary_role_without_discarding_l1(tmp_path):
+def test_l2_defensively_withholds_primary_with_known_non_primary_role(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text(
         "FileNotFoundError: [Errno 2] No such file or directory\n",
@@ -2925,7 +4154,6 @@ def test_l2_reports_suspect_primary_role_without_discarding_l1(tmp_path):
             "root_fingerprint": "multiprocessing_cleanup:filenotfounderror",
             "fault_outcome": "terminal",
             "causal_role": "teardown",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "teardown",
@@ -2942,14 +4170,49 @@ def test_l2_reports_suspect_primary_role_without_discarding_l1(tmp_path):
         "justification": "This exception occurred during teardown.",
     }
 
-    analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
-    analyzer.analyze({"log_path": str(log_path)})
+    bundle = build_l0_bundle(str(log_path))
+    model_view = build_l0_model_facing_view(bundle)
+    semantic_payload = _current_evidence(evidence)
+    l1_result = L1EvidenceResult(
+        semantic_payload=semantic_payload,
+        model="test-model",
+        success=True,
+        transcript_events=(
+            {
+                "event_type": "bundle_snapshot",
+                "model_visible_payload": {
+                    "evidence_bundle": {
+                        "lines": [
+                            {
+                                "line": 1,
+                                "text": "FileNotFoundError: [Errno 2] No such file or directory",
+                            }
+                        ]
+                    }
+                },
+            },
+        ),
+    )
 
-    validation = analyzer.last_trace["l2_audit"]
-    assert validation["used"] is True
-    assert validation["audit_status"] == "findings"
-    assert validation["field_audits"]["primary_failure"]["finding_classes"] == [
-        "primary_causal_role_suspect"
+    result = ground_and_audit_model_evidence(
+        L2GroundingInput(
+            bundle=bundle,
+            model_view=model_view,
+            l1_result=l1_result,
+            source_log=LogSnapshot.read(log_path),
+        )
+    )
+    validation = result.to_payload()
+
+    assert validation["source_line_available"] is True
+    assert validation["primary_model_visible_support"] is True
+    assert validation["primary_causal_role_eligible"] is False
+    assert validation["grounding_status"] == "unavailable"
+    assert validation["used"] is False
+    assert validation["history_identity_ready"] is False
+    assert validation["enriched_failure_tracks"] == {"primary": None, "observation": None}
+    assert validation["field_finding_codes"]["primary_failure"] == [
+        "primary_causal_role_ineligible"
     ]
 
 
@@ -2986,16 +4249,31 @@ def test_llm_prompt_and_tools_do_not_expose_path_labels(tmp_path):
     )
 
     bundle = build_l0_bundle(str(log_path))
-    prompt_payload = build_l0_model_facing_view(bundle).evidence_bundle
+    model_view = build_l0_model_facing_view(bundle)
+    decision_evidence_payload = model_view.decision_evidence.to_payload()
+    prompt_payload = model_view.prompt_payload()
     overview_payload = LogTools(bundle, LogSnapshot.read(log_path)).overview()
 
     assert "cuda_oom_logs" in bundle.path_hints
-    for payload in (prompt_payload, overview_payload):
+    for payload in (decision_evidence_payload, prompt_payload, overview_payload):
         serialized = json.dumps(payload, sort_keys=True)
         assert "cuda_oom_logs" not in serialized
         assert "observed_label_user_failure" not in serialized
         assert "misleading_user_failure_name.log" not in serialized
         assert str(log_path) not in serialized
+
+
+def test_decision_evidence_rejects_non_model_safe_provenance_fields():
+    with pytest.raises(
+        ValueError,
+        match="Decision Evidence provenance contains non-model-safe fields: log_path",
+    ):
+        l0_decision._validate_model_safe_provenance(
+            {
+                "source": "l0a_deterministic_selection",
+                "log_path": "/private/eval/cuda_oom_logs/case.log",
+            }
+        )
 
 
 def test_context_preview_preserves_high_signal_lines_between_head_seed_and_tail():
@@ -3088,6 +4366,14 @@ def test_bundle_prompt_uses_bounded_excerpts_for_top_context_windows():
     assert model_view.schema_version == "restart_agent_l0_model_view.v1"
     assert metrics["view_size"]["compact_json_characters"] > 0
     assert metrics["view_size"]["estimated_tokens"] > 0
+    assert set(metrics["view_size"]["sections"]) == {
+        "failure_narrative",
+        "decision_evidence_view",
+        "attempt_execution_context",
+        "evidence_bundle",
+    }
+    assert metrics["narrative"]["status"] == "available"
+    assert metrics["narrative"]["event_count"] >= 1
     assert metrics["budget_utilization"]["context_window_slots"] == {
         "used": 3,
         "limit": 4,
@@ -3104,6 +4390,138 @@ def test_bundle_prompt_uses_bounded_excerpts_for_top_context_windows():
     assert metrics["compaction_counts"]["context_windows_omitted"] == 0
     assert metrics["projection_integrity"]["status"] == "ok"
     assert metrics["projection_integrity"]["checks"]["decision_evidence_references_resolve"]
+    assert metrics["projection_integrity"]["checks"]["failure_narrative_references_resolve"]
+    assert metrics["projection_integrity"]["checks"]["decision_evidence_view_consistent"]
+    assert prompt_bundle["selection_coverage"]["status"] == "complete"
+    assert prompt_bundle["selection_coverage"]["collections"]["context_windows"] == {
+        "available": 3,
+        "included": 2,
+        "omitted": 0,
+        "selected_before_merge": 3,
+        "merged": 1,
+        "truncated": 0,
+        "truncated_lines": 0,
+    }
+
+
+def test_l0b_reserves_primary_line_during_excerpt_compaction():
+    primary_line = 280
+    window = ContextWindow(
+        window_id="w-primary",
+        selected_by="failure_episode",
+        start_line=1,
+        end_line=300,
+        seed_lines=(primary_line,),
+        lines=tuple(
+            LogLine(
+                line=line,
+                text=(
+                    "RuntimeError: primary failure"
+                    if line == primary_line
+                    else f"INFO ordinary line {line}"
+                ),
+            )
+            for line in range(1, 301)
+        ),
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=1,
+        line_count=300,
+        context_windows=(window,),
+        deterministic_primary_candidate=FailureEvidence(
+            failure_class="observed_failure",
+            signature="RuntimeError: primary failure",
+            root_fingerprint="observed_failure:runtimeerror:primary_failure",
+            fault_outcome="terminal",
+            line=primary_line,
+        ),
+    )
+
+    model_view = build_l0_model_facing_view(bundle)
+    projected_lines = {
+        line["line"]
+        for projected_window in model_view.evidence_bundle["context_windows"]
+        for line in projected_window["lines"]
+    }
+
+    assert primary_line in projected_lines
+    assert model_view.evidence_bundle["selection_coverage"]["required_primary_support"] == {
+        "status": "included",
+        "primary_line": primary_line,
+    }
+
+
+def test_l0b_records_unavailable_primary_support_without_covering_window():
+    window = ContextWindow(
+        window_id="w-other",
+        selected_by="high_signal",
+        start_line=1,
+        end_line=10,
+        seed_lines=(5,),
+        lines=tuple(LogLine(line=line, text=f"INFO line {line}") for line in range(1, 11)),
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=1,
+        line_count=20,
+        context_windows=(window,),
+        deterministic_primary_candidate=FailureEvidence(
+            failure_class="observed_failure",
+            signature="RuntimeError: primary failure",
+            root_fingerprint="observed_failure:runtimeerror:primary_failure",
+            fault_outcome="terminal",
+            line=20,
+        ),
+    )
+
+    model_view = build_l0_model_facing_view(bundle)
+
+    assert model_view.evidence_bundle["selection_coverage"]["required_primary_support"] == {
+        "status": "unavailable",
+        "primary_line": 20,
+    }
+
+
+def test_l0b_exposes_collection_omissions_to_model():
+    occurrence_groups = tuple(
+        NormalizedOccurrenceGroup(
+            occurrence_group_id=f"og-{index}",
+            normalized_shape=f"failure shape {index}",
+            first_line=index,
+            count=1,
+        )
+        for index in range(1, 32)
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=31,
+        line_count=31,
+        occurrence_groups=occurrence_groups,
+    )
+
+    model_view = build_l0_model_facing_view(bundle)
+    user_payload = json.loads(_initial_user_message(model_view))
+    coverage = user_payload["evidence_bundle"]["selection_coverage"]
+
+    assert coverage["status"] == "bounded"
+    assert coverage["semantics"] == "initial_model_view_selection"
+    assert coverage["collections"]["occurrence_groups"] == {
+        "available": 31,
+        "included": 30,
+        "omitted": 1,
+    }
+    assert coverage["required_primary_support"] == {
+        "status": "not_applicable",
+        "primary_line": None,
+    }
+    assert model_view.projection_metrics["selection_counts"]["occurrence_groups"] == {
+        "available": 31,
+        "selected": 30,
+        "omitted": 1,
+        "limit": 30,
+    }
+    assert "projection_metrics" not in user_payload
 
 
 def test_candidate_anchors_include_high_signal_line_without_registry_match(tmp_path):
@@ -3190,7 +4608,6 @@ def test_l4_maps_established_unrecoverable_workload_failure_to_stop(tmp_path):
             "root_fingerprint": "runtime_assertion:device_side_assert_terminal",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -3220,7 +4637,7 @@ def test_l4_maps_established_unrecoverable_workload_failure_to_stop(tmp_path):
     assert payload["decision_basis"] == DecisionBasis.WORKLOAD_UNRECOVERABLE.value
     assert payload["primary_failure"]["failure_class"] == "observed_exception"
     assert payload["primary_failure"]["root_fingerprint"].startswith("observed:runtimeerror:")
-    assert payload["result_provenance"]["evidence_source"] == "l1_model_audited"
+    assert payload["result_provenance"]["evidence_source"] == "l1_model_grounded"
     assert payload["result_provenance"]["model_contribution"] == "attempted_used"
     assert payload["result_provenance"]["result_quality"] == "normal"
     assert payload["result_provenance"]["nvrx_use"] == "eligible"
@@ -3232,7 +4649,9 @@ def test_l4_maps_established_unrecoverable_workload_failure_to_stop(tmp_path):
         analyzer.last_trace["l2_audit"]["model_retry_outlook_without_workload_change"]
         == "cannot_recover"
     )
-    assert analyzer.last_trace["l4_policy"]["retry_policy"]["rule"] == ("workload_unrecoverable")
+    assert analyzer.last_trace["l4_policy"]["retry_policy"]["base_rule"] == (
+        "workload_unrecoverable"
+    )
     assert (
         analyzer.last_trace["l4_policy"]["retry_policy"]["general_root_ceiling"][
             "inapplicable_reason"
@@ -3271,7 +4690,6 @@ def test_deterministic_is_ready_while_l1_is_pending(tmp_path):
             "root_fingerprint": "runtime_assertion:device_side_assert_terminal",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -3339,7 +4757,7 @@ def test_deterministic_is_ready_while_l1_is_pending(tmp_path):
     )
 
 
-def test_deterministic_can_apply_history_before_l1_finishes(tmp_path):
+def test_enriched_route_does_not_inherit_deterministic_history(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text(
         (
@@ -3411,12 +4829,15 @@ def test_deterministic_can_apply_history_before_l1_finishes(tmp_path):
         on_deterministic_ready=on_deterministic_ready,
     )
 
-    assert observed[0].result.decision == Decision.RESTART.value
-    assert observed[0].result.decision_basis == DecisionBasis.GENERAL_RETRY_AVAILABLE.value
-    assert observed[0].result.result_provenance["history_contribution"] == ("checked_no_effect")
+    assert observed[0].result.decision == Decision.STOP.value
+    assert observed[0].result.decision_basis == DecisionBasis.RETRY_BUDGET_EXHAUSTED.value
+    assert observed[0].result.result_provenance["history_contribution"] == (
+        "retry_budget_exhausted"
+    )
     assert observed[0].result.result_provenance["result_quality"] == "degraded"
     assert result.decision == Decision.RESTART.value
-    assert result.decision_basis == DecisionBasis.GENERAL_RETRY_AVAILABLE.value
+    assert result.result_provenance["selected_evidence_path"] == "primary"
+    assert result.result_provenance["history_contribution"] == "checked_no_effect"
 
 
 def test_l4_keeps_retryable_port_with_wait_precondition_ambiguous(tmp_path):
@@ -3431,7 +4852,6 @@ def test_l4_keeps_retryable_port_with_wait_precondition_ambiguous(tmp_path):
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "setup",
@@ -3460,10 +4880,12 @@ def test_l4_keeps_retryable_port_with_wait_precondition_ambiguous(tmp_path):
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
     assert payload["decision"] == Decision.RESTART.value
-    assert payload["decision_basis"] == DecisionBasis.RETRY_RECOVERY_AVAILABLE.value
-    assert "recovery_requirement" not in payload["model_recovery_assessment"]
+    assert payload["decision_basis"] == DecisionBasis.POLICY_CONTEXT_RETRY_AVAILABLE.value
+    assert "recovery_requirement" not in payload["l1_assessment"]["model_recovery_assessment"]
     assert "model_recovery_requirement" not in analyzer.last_trace["l2_audit"]
-    assert analyzer.last_trace["l4_policy"]["retry_policy"]["rule"] == "bounded_retry"
+    retry_policy = analyzer.last_trace["l4_policy"]["retry_policy"]
+    assert retry_policy["base_rule"] == "workload_confirmation_retry"
+    assert retry_policy["effective_policy"]["rule"] == "port_bind_confirmation_retry"
 
 
 def test_model_recovery_confidence_is_preserved_without_recurrence_score(tmp_path):
@@ -3478,7 +4900,6 @@ def test_model_recovery_confidence_is_preserved_without_recurrence_score(tmp_pat
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "setup",
@@ -3511,11 +4932,12 @@ def test_model_recovery_confidence_is_preserved_without_recurrence_score(tmp_pat
     assert payload["result_provenance"]["model_contribution"] == "attempted_used"
     assert payload["result_provenance"]["result_quality"] == "normal"
     assert payload["result_provenance"]["nvrx_use"] == "eligible"
-    assert payload["model_recovery_assessment"]["failure_domain"]["confidence"] == 80
-    assert "recurrence_confidence" not in payload["model_recovery_assessment"]
+    assessment = payload["l1_assessment"]["model_recovery_assessment"]
+    assert assessment["failure_domain"]["confidence"] == 80
+    assert "recurrence_confidence" not in assessment
     audit = analyzer.last_trace["l2_audit"]
     assert audit["field_findings"] == {}
-    assert analyzer.last_trace["layers"]["L2"]["material_finding_count"] == 0
+    assert analyzer.last_trace["layers"]["L2"]["observational_finding_count"] == 0
 
 
 @pytest.mark.parametrize(
@@ -3526,7 +4948,11 @@ def test_model_recovery_confidence_is_preserved_without_recurrence_score(tmp_pat
             Decision.STOP.value,
             "workload_unrecoverable",
         ),
-        ("circumstantial", Decision.RESTART.value, "general_retry"),
+        (
+            "circumstantial",
+            Decision.RESTART.value,
+            "workload_confirmation_retry",
+        ),
     ],
 )
 def test_immediate_stop_requires_affirmative_grounded_persistence_evidence(
@@ -3546,7 +4972,6 @@ def test_immediate_stop_requires_affirmative_grounded_persistence_evidence(
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "setup",
@@ -3576,8 +5001,7 @@ def test_immediate_stop_requires_affirmative_grounded_persistence_evidence(
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
     assert payload["decision"] == expected_decision
-    assert payload["retry_policy"]["rule"] == expected_rule
-    assert payload["retry_policy"]["recovery_assessment_policy_grounded"] is True
+    assert payload["retry_policy"]["base_rule"] == expected_rule
 
 
 def test_l2_flags_unverified_path_owner_without_treating_rank_fanout_as_persistence(
@@ -3605,7 +5029,6 @@ def test_l2_flags_unverified_path_owner_without_treating_rank_fanout_as_persiste
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 3,
             "rank": "80",
             "phase": "setup",
@@ -3641,10 +5064,10 @@ def test_l2_flags_unverified_path_owner_without_treating_rank_fanout_as_persiste
     audit = analyzer.last_trace["l2_audit"]
 
     assert payload["decision"] == Decision.STOP.value
-    assert payload["model_recovery_assessment"]["failure_domain"]["status"] == (
+    assert payload["l1_assessment"]["model_recovery_assessment"]["failure_domain"]["status"] == (
         "established_by_current_log"
     )
-    assert payload["retry_policy"]["rule"] == "workload_unrecoverable"
+    assert payload["retry_policy"]["base_rule"] == "workload_unrecoverable"
     assert "model_recovery_assessment" not in audit["field_finding_codes"]
     assert audit["field_finding_codes"]["root_cause_assessment"] == [
         "path_namespace_identity_unverified"
@@ -3665,7 +5088,6 @@ def test_l4_stops_for_established_unrecoverable_workload_claims(tmp_path):
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": "0",
             "phase": "setup",
@@ -3697,17 +5119,19 @@ def test_l4_stops_for_established_unrecoverable_workload_claims(tmp_path):
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
     assert payload["decision"] == Decision.STOP.value
-    assessment = payload["model_recovery_assessment"]
+    assessment = payload["l1_assessment"]["model_recovery_assessment"]
     assert assessment["retry_outlook_without_workload_change"]["value"] == "cannot_recover"
     assert assessment["retry_outlook_without_workload_change"]["status"] == (
         "established_by_current_log"
     )
     assert "recovery_requirement" not in assessment
-    assert payload["retry_policy"]["rule"] == "workload_unrecoverable"
+    assert payload["retry_policy"]["base_rule"] == "workload_unrecoverable"
     assert payload["retry_policy"]["general_root_ceiling"]["applicable"] is False
 
 
-def test_l4_does_not_stop_on_circumstantial_persistence_hypothesis(tmp_path):
+def test_l4_uses_workload_confirmation_when_domain_support_outlives_cause_hypothesis(
+    tmp_path,
+):
     log_path = tmp_path / "job.log"
     failure_line = (
         "RuntimeError: worker was killed. It is possible that shared memory is exhausted."
@@ -3721,7 +5145,6 @@ def test_l4_does_not_stop_on_circumstantial_persistence_hypothesis(tmp_path):
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": "0",
             "phase": "steady_mid",
@@ -3753,10 +5176,10 @@ def test_l4_does_not_stop_on_circumstantial_persistence_hypothesis(tmp_path):
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
     assert payload["decision"] == Decision.RESTART.value
-    assert payload["retry_policy"]["rule"] == "general_retry"
+    assert payload["retry_policy"]["base_rule"] == "workload_confirmation_retry"
 
 
-def test_l4_preserves_retry_recovery_for_ordinary_retry_recovery_path(tmp_path):
+def test_cuda_oom_policy_overrides_action_without_mutating_l1_assessment(tmp_path):
     log_path = tmp_path / "job.log"
     failure_line = "torch.OutOfMemoryError: CUDA out of memory"
     log_path.write_text(f"{failure_line}\n", encoding="utf-8")
@@ -3768,7 +5191,6 @@ def test_l4_preserves_retry_recovery_for_ordinary_retry_recovery_path(tmp_path):
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": "0",
             "phase": "setup",
@@ -3800,10 +5222,13 @@ def test_l4_preserves_retry_recovery_for_ordinary_retry_recovery_path(tmp_path):
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
-    assert payload["decision"] == Decision.RESTART.value
-    assert payload["decision_basis"] == DecisionBasis.RETRY_RECOVERY_AVAILABLE.value
-    assert "recovery_requirement" not in payload["model_recovery_assessment"]
-    assert payload["retry_policy"]["rule"] == "bounded_retry"
+    assert payload["decision"] == Decision.STOP.value
+    assert payload["decision_basis"] == DecisionBasis.POLICY_CONTEXT_NO_RETRY.value
+    assessment = payload["l1_assessment"]["model_recovery_assessment"]
+    assert assessment["retry_outlook_without_workload_change"]["value"] == "may_recover"
+    assert "recovery_requirement" not in assessment
+    assert payload["retry_policy"]["base_rule"] == "workload_confirmation_retry"
+    assert payload["retry_policy"]["effective_policy"]["rule"] == "cuda_oom_no_retry"
 
 
 def test_l4_keeps_retry_recoverable_workload_failure_restartable(tmp_path):
@@ -3825,7 +5250,6 @@ def test_l4_keeps_retry_recoverable_workload_failure_restartable(tmp_path):
             "proposed_root_fingerprint": "runtime_assertion:device_side_assert_terminal",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -3866,14 +5290,13 @@ def test_l4_keeps_retry_recoverable_workload_failure_restartable(tmp_path):
     payload = result.to_payload()
 
     assert payload["decision"] == Decision.RESTART.value
-    assert payload["decision_basis"] == DecisionBasis.RETRY_RECOVERY_AVAILABLE.value
+    assert payload["decision_basis"] == (DecisionBasis.WORKLOAD_CONFIRMATION_RETRY_AVAILABLE.value)
     assert payload["primary_failure"]["failure_class"] == "observed_exception"
     assert analyzer.last_trace["l2_audit"]["used"] is True
-    assert payload["model_recovery_assessment"]["retry_outlook_without_workload_change"][
-        "value"
-    ] == ("may_recover")
-    assert "recovery_requirement" not in payload["model_recovery_assessment"]
-    assert payload["retry_policy"]["rule"] == "bounded_retry"
+    assessment = payload["l1_assessment"]["model_recovery_assessment"]
+    assert assessment["retry_outlook_without_workload_change"]["value"] == ("may_recover")
+    assert "recovery_requirement" not in assessment
+    assert payload["retry_policy"]["base_rule"] == "workload_confirmation_retry"
     assert "workload_managed_retry_grace" not in json.dumps(payload, sort_keys=True)
 
 
@@ -3889,7 +5312,6 @@ def test_l4_maps_infrastructure_domain_to_restart(tmp_path):
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "steady_mid",
@@ -3921,7 +5343,7 @@ def test_l4_maps_infrastructure_domain_to_restart(tmp_path):
     )
 
     assert payload["decision"] == Decision.RESTART.value
-    assert payload["retry_policy"]["rule"] == "bounded_retry"
+    assert payload["retry_policy"]["base_rule"] == "general_retry"
 
 
 def test_l4_does_not_immediately_stop_established_infrastructure_failure(
@@ -3937,7 +5359,6 @@ def test_l4_does_not_immediately_stop_established_infrastructure_failure(
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "steady_mid",
@@ -3965,12 +5386,12 @@ def test_l4_does_not_immediately_stop_established_infrastructure_failure(
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
     assert payload["decision"] == Decision.RESTART.value
-    assert payload["model_recovery_assessment"]["failure_domain"] == {
+    assert payload["l1_assessment"]["model_recovery_assessment"]["failure_domain"] == {
         "value": "infrastructure",
         "status": "established_by_current_log",
         "confidence": 90,
     }
-    assert payload["retry_policy"]["rule"] == "general_retry"
+    assert payload["retry_policy"]["base_rule"] == "general_retry"
     assert analyzer.last_trace["l2_audit"]["recovery_field_audits"] == []
 
 
@@ -3985,7 +5406,6 @@ def test_l4_uses_general_retry_for_single_immutable_infrastructure_failure(tmp_p
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "steady_mid",
@@ -4013,11 +5433,10 @@ def test_l4_uses_general_retry_for_single_immutable_infrastructure_failure(tmp_p
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
 
     assert payload["decision"] == Decision.RESTART.value
-    assert payload["decision_basis"] == DecisionBasis.GENERAL_RETRY_AVAILABLE.value
-    assert payload["retry_policy"]["rule"] == "general_retry"
+    assert payload["retry_policy"]["base_rule"] == "general_retry"
 
 
-def test_history_can_stop_repeated_infrastructure_failure_without_progress(tmp_path):
+def test_enriched_infrastructure_route_requires_same_route_history(tmp_path):
     log_path = tmp_path / "job.log"
     failure_line = "RuntimeError: GPU has fallen off the bus"
     log_path.write_text(
@@ -4037,7 +5456,6 @@ def test_history_can_stop_repeated_infrastructure_failure_without_progress(tmp_p
             "proposed_root_fingerprint": current.root_fingerprint,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -4091,17 +5509,40 @@ def test_history_can_stop_repeated_infrastructure_failure_without_progress(tmp_p
         .to_payload()
     )
 
-    assert payload["decision"] == Decision.STOP.value
-    assert payload["decision_basis"] == DecisionBasis.RETRY_BUDGET_EXHAUSTED.value
-    assert payload["retry_policy"]["rule"] == "bounded_retry"
-    assert payload["result_provenance"]["history_contribution"] == ("retry_budget_exhausted")
+    assert payload["decision"] == Decision.RESTART.value
+    assert payload["retry_policy"]["base_rule"] == "general_retry"
+    assert payload["result_provenance"]["selected_evidence_path"] == "primary"
+    assert payload["result_provenance"]["history_contribution"] == "checked_no_effect"
 
 
-def test_l1_recovery_assessment_drives_policy(tmp_path):
+@pytest.mark.parametrize(
+    ("failure_text", "expected_decision", "expected_basis", "effective_rule"),
+    (
+        (
+            "found Inf in local grad norm",
+            Decision.STOP.value,
+            DecisionBasis.WORKLOAD_UNRECOVERABLE.value,
+            "workload_unrecoverable",
+        ),
+        (
+            "Unexpected result inf",
+            Decision.RESTART.value,
+            DecisionBasis.POLICY_CONTEXT_RETRY_AVAILABLE.value,
+            "rejected_iteration_retry_then_skip",
+        ),
+    ),
+)
+def test_l1_recovery_assessment_and_policy_context_precedence(
+    tmp_path,
+    failure_text,
+    expected_decision,
+    expected_basis,
+    effective_rule,
+):
     log_path = tmp_path / "job.log"
     failure_line = (
         "180: [rank180]: RuntimeError: Rank 180, node nvl72005-T14, "
-        "device 0, iteration 670314: Unexpected result inf "
+        f"device 0, iteration 670314: {failure_text} "
         "(message='found Inf in local grad norm for bucket #0 in "
         "backward pass before data-parallel communication collective')"
     )
@@ -4132,7 +5573,6 @@ def test_l1_recovery_assessment_drives_policy(tmp_path):
             "root_fingerprint": "numeric_instability:inf_in_grad_norm",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": "180",
             "phase": "steady_mid",
@@ -4153,8 +5593,8 @@ def test_l1_recovery_assessment_drives_policy(tmp_path):
     result = analyzer.analyze({"log_path": str(log_path), "job_id": "job-1"})
     payload = result.to_payload()
 
-    assert payload["decision"] == Decision.STOP.value
-    assert payload["decision_basis"] == DecisionBasis.WORKLOAD_UNRECOVERABLE.value
+    assert payload["decision"] == expected_decision
+    assert payload["decision_basis"] == expected_basis
     assert payload["primary_failure"]["failure_class"] == "observed_exception"
     assert payload["primary_failure"]["root_fingerprint"].startswith("observed:runtimeerror:")
     assert payload["primary_failure"]["root_fingerprint_source"] == ("observed_exception")
@@ -4164,7 +5604,13 @@ def test_l1_recovery_assessment_drives_policy(tmp_path):
     )
     assert analyzer.last_trace["l2_audit"]["used"] is True
     assert analyzer.last_trace["l2_audit"]["model_failure_domain"] == "workload"
-    assert analyzer.last_trace["l4_policy"]["retry_policy"]["rule"] == ("workload_unrecoverable")
+    assert analyzer.last_trace["l4_policy"]["retry_policy"]["base_rule"] == (
+        "workload_unrecoverable"
+    )
+    assert (
+        analyzer.last_trace["l4_policy"]["retry_policy"]["effective_policy"]["rule"]
+        == effective_rule
+    )
 
 
 def test_l1_retries_retryable_provider_failure_then_uses_valid_evidence(tmp_path):
@@ -4196,7 +5642,6 @@ def test_l1_retries_retryable_provider_failure_then_uses_valid_evidence(tmp_path
             "root_fingerprint": "python_user_exception:ValueError:",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "setup",
@@ -4252,6 +5697,48 @@ def test_l1_retries_retryable_provider_failure_then_uses_valid_evidence(tmp_path
     assert request_events[0]["payload_bytes"] > 0
     assert request_events[0]["truncated"] is False
     assert "test-key" not in json.dumps(request_events, sort_keys=True)
+
+
+def test_l1_provider_retry_does_not_increment_contract_repair_model_turn(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_line = "ValueError: invalid config option tensor_model_parallel_size"
+    log_path.write_text(log_line + "\n", encoding="utf-8")
+    extractor = _RetryThenContractRepairEvidenceExtractor(
+        {
+            "primary_failure": {
+                "line": 1,
+                "failure_class": "python_user_exception",
+                "causal_role": "initiating",
+            },
+            "evidence": [{"line": 1, "quote": log_line}],
+        }
+    )
+    bundle = build_l0_bundle(str(log_path))
+
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        )
+    )
+
+    assert result.success is True
+    assert extractor.calls == 3
+    assert [call["model_turn"] for call in result.model_calls] == [1, 1, 2]
+    assert [call["attempt"] for call in result.model_calls] == [1, 2, 1]
+    response_turns = [
+        event["model_turn"]
+        for event in result.transcript_events
+        if event.get("event_type") == "model_response"
+    ]
+    assert response_turns == [1, 2]
+    validation_event = next(
+        event
+        for event in result.transcript_events
+        if event.get("event_type") == "model_response_validation"
+    )
+    assert validation_event["model_turn"] == 1
 
 
 def test_http_504_is_classified_as_endpoint_timeout():
@@ -4327,6 +5814,105 @@ def test_l1_http_timeout_is_clamped_to_remaining_analysis_budget():
     }
 
 
+def test_l1_deadline_clamped_http_timeout_preserves_prepared_request_metadata():
+    class _Clock:
+        current = 0.0
+
+        def monotonic(self):
+            return self.current
+
+    class _HttpClient:
+        def __init__(self, clock):
+            self.clock = clock
+            self.timeout = None
+
+        def post(self, url, *, content, headers, timeout):
+            del content, headers
+            self.timeout = timeout
+            self.clock.current = 5.0
+            raise httpx.ReadTimeout(
+                "analysis budget elapsed during provider read",
+                request=httpx.Request("POST", url),
+            )
+
+        def close(self):
+            pass
+
+    clock = _Clock()
+    client = _HttpClient(clock)
+    config = LlmConfig(api_key="test-key", timeout_seconds=120, tools_enabled=True)
+    transport = OpenAICompatibleTransport(config, http_client=client, clock=clock)
+
+    with pytest.raises(LlmCallError) as error:
+        transport.call(
+            api_key="test-key",
+            messages=[{"role": "user", "content": "test"}],
+            include_tools=True,
+            model_turn=1,
+            deadline_monotonic=5.0,
+        )
+
+    record = error.value.call_record
+    assert client.timeout == 5.0
+    assert record["error_type"] == "analysis_deadline_exceeded"
+    assert record["deadline_reason"] == "during_http_request"
+    assert record["deadline_exceeded"] is True
+    assert record["timeout"] is True
+    assert record["timeout_kind"] == "read"
+    assert record["tools_advertised"] is True
+    assert record["context_budget"]["estimated_input_tokens"] > 0
+    assert record["retryable"] is False
+    assert record["configured_request_timeout_seconds"] == 120
+    assert record["effective_request_timeout_seconds"] == 5.0
+    assert record["remaining_analysis_budget_before_call_s"] == 5.0
+
+
+def test_l1_provider_timeout_remains_endpoint_failure_when_analysis_time_remains():
+    class _Clock:
+        current = 0.0
+
+        def monotonic(self):
+            return self.current
+
+    class _HttpClient:
+        def __init__(self, clock):
+            self.clock = clock
+
+        def post(self, url, *, content, headers, timeout):
+            del content, headers
+            assert timeout == 2.0
+            self.clock.current = 2.0
+            raise httpx.ReadTimeout(
+                "provider read timed out",
+                request=httpx.Request("POST", url),
+            )
+
+        def close(self):
+            pass
+
+    clock = _Clock()
+    config = LlmConfig(api_key="test-key", timeout_seconds=2, tools_enabled=False)
+    transport = OpenAICompatibleTransport(
+        config,
+        http_client=_HttpClient(clock),
+        clock=clock,
+    )
+
+    with pytest.raises(LlmCallError) as error:
+        transport.call(
+            api_key="test-key",
+            messages=[{"role": "user", "content": "test"}],
+            include_tools=False,
+            model_turn=1,
+            deadline_monotonic=10.0,
+        )
+
+    assert error.value.call_record["error_type"] == "timeout"
+    assert error.value.call_record["timeout"] is True
+    assert error.value.call_record["timeout_kind"] == "read"
+    assert error.value.call_record["retryable"] is True
+
+
 def test_l1_does_not_start_provider_call_after_analysis_deadline():
     called = False
 
@@ -4357,6 +5943,8 @@ def test_l1_does_not_start_provider_call_after_analysis_deadline():
     assert called is False
     assert error.value.call_record["error_type"] == "analysis_deadline_exceeded"
     assert error.value.call_record["retryable"] is False
+    assert error.value.call_record["timeout"] is False
+    assert error.value.call_record["context_budget"]["estimated_input_tokens"] > 0
 
 
 def test_l1_deadline_prevents_retry_after_slow_provider_failure(tmp_path):
@@ -4479,7 +6067,9 @@ def test_l1_tool_loop_stops_at_configured_round_limit(tmp_path):
     assert extractor.calls == 3
     assert len(result.tool_calls) == 2
     assert result.success is False
-    assert result.anomalies["forced_final_evidence_call"] is True
+    assert result.anomalies["final_evidence_turn"] is True
+    assert result.anomalies["final_evidence_reason"] == ("forced_final_after_tool_exhaustion")
+    assert "contract_repair_requested" not in result.anomalies
 
 
 def test_l1_repairs_incomplete_contract_once_without_tools(tmp_path):
@@ -4504,7 +6094,6 @@ def test_l1_repairs_incomplete_contract_once_without_tools(tmp_path):
             "root_fingerprint": "python_user_exception:valueerror",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "setup",
@@ -4527,7 +6116,8 @@ def test_l1_repairs_incomplete_contract_once_without_tools(tmp_path):
 
     assert result.success is True
     assert extractor.calls == 2
-    assert result.anomalies["contract_repair_requested"] is True
+    assert result.anomalies["final_evidence_turn"] is True
+    assert result.anomalies["final_evidence_reason"] == "contract_repair"
     assert len(result.model_calls) == 2
     request_events = [
         event for event in result.transcript_events if event.get("event_type") == "model_request"
@@ -4538,9 +6128,324 @@ def test_l1_repairs_incomplete_contract_once_without_tools(tmp_path):
     assert repair_messages[-1]["role"] == "user"
     assert "could not be accepted" in repair_messages[-1]["content"]
     assert request_events[1]["advertised_tool_schemas"] == []
+    validation_events = [
+        event
+        for event in result.transcript_events
+        if event.get("event_type") == "model_response_validation"
+    ]
+    assert len(validation_events) == 1
+    assert validation_events[0]["parse_status"] == "contract_invalid"
+    assert validation_events[0]["parsed_payload"] == {
+        "primary_failure": extractor.complete_evidence["primary_failure"],
+        "related_failures": [],
+    }
+    assert validation_events[0]["contract_errors"]
 
 
-def test_l1_prohibited_action_field_is_rejected_by_closed_contract(tmp_path):
+def test_l1_deadline_before_contract_repair_preserves_final_turn_reason(tmp_path):
+    class _Clock:
+        current = 0.0
+
+        def monotonic(self):
+            return self.current
+
+    class _DeadlineAfterInvalidExtractor(_ContractRepairEvidenceExtractor):
+        def __init__(self, complete_evidence, clock):
+            super().__init__(complete_evidence)
+            self._clock = clock
+
+        def _call_model(self, **kwargs):
+            response = super()._call_model(**kwargs)
+            self._clock.current = 5.0
+            return response
+
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+    clock = _Clock()
+    extractor = _DeadlineAfterInvalidExtractor({}, clock)
+    bundle = build_l0_bundle(str(log_path))
+
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        ),
+        deadline_monotonic=5.0,
+    )
+    assessment = assess_execution(configured=True, result=result).to_payload()
+
+    assert result.success is False
+    assert result.anomalies["deadline_exceeded"] is True
+    assert result.anomalies["final_evidence_reason"] == "contract_repair"
+    assert assessment["unusable_reason"] == "analysis_deadline_exceeded"
+    assert assessment["final_evidence_reason"] == "contract_repair"
+
+
+def test_l1_output_limit_gets_one_distinct_tools_disabled_final_turn(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_line = "ValueError: invalid config option tensor_model_parallel_size"
+    log_path.write_text(log_line + "\n", encoding="utf-8")
+    extractor = _OutputLimitEvidenceExtractor(
+        {
+            "schema_version": "restart_agent_evidence.v1",
+            "analysis_status": "insufficient_evidence",
+        }
+    )
+    bundle = build_l0_bundle(str(log_path))
+
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        )
+    )
+
+    assert result.success is True
+    assert extractor.calls == 2
+    assert result.anomalies["final_evidence_reason"] == ("forced_final_after_output_limit")
+    assert result.anomalies["prior_output_truncated"] is True
+    request_events = [
+        event for event in result.transcript_events if event.get("event_type") == "model_request"
+    ]
+    assert request_events[1]["advertised_tool_schemas"] == []
+    assert (
+        "reached its output limit" in request_events[1]["request_body"]["messages"][-1]["content"]
+    )
+
+
+@pytest.mark.parametrize("wrapper", ["fence", "python_literal"])
+def test_l1_parser_accepts_unambiguous_json_formatting_variations(wrapper):
+    evidence = _current_evidence({})
+    text = (
+        f"Model analysis follows:\n```json\n{json.dumps(evidence)}\n```"
+        if wrapper == "fence"
+        else repr(evidence)
+    )
+
+    assert _parse_model_evidence(text) == evidence
+
+
+def test_l1_parser_reports_json_and_literal_syntax_errors():
+    with pytest.raises(ModelEvidenceParseError) as error:
+        _parse_model_evidence('{"schema_version":')
+
+    message = str(error.value)
+    assert "JSON error:" in message
+    assert "line 1, column" in message
+    assert "Python literal error:" in message
+
+
+def test_l1_parser_accepts_unknown_fields_for_boundary_normalization():
+    evidence = _current_evidence({})
+    evidence["model_recovery_assessment"]["rationale_extra"] = None
+
+    assert _parse_model_evidence(json.dumps(evidence)) == evidence
+
+
+def test_l1_parser_distinguishes_missing_required_fields_from_syntax_errors():
+    evidence = _current_evidence({})
+    del evidence["model_recovery_assessment"]["rationale"]
+
+    with pytest.raises(ModelEvidenceContractError) as error:
+        _parse_model_evidence(json.dumps(evidence))
+
+    assert error.value.payload == evidence
+    assert error.value.contract_errors == (
+        "model_recovery_assessment missing fields: rationale",
+        "model_recovery_assessment.rationale must be a non-empty string",
+    )
+
+
+def test_l1_parser_rejects_multiple_json_objects():
+    evidence = _current_evidence({})
+
+    with pytest.raises(ModelEvidenceParseError, match="multiple JSON objects"):
+        _parse_model_evidence(f"{json.dumps(evidence)}\n{json.dumps(evidence)}")
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        '{"second": true}',
+        '```json\n{"second": true}\n```',
+    ],
+)
+def test_l1_parser_rejects_json_after_a_fenced_object(suffix):
+    evidence = _current_evidence({})
+    response = f"```json\n{json.dumps(evidence)}\n```\n{suffix}"
+
+    with pytest.raises(ModelEvidenceParseError, match="multiple JSON objects"):
+        _parse_model_evidence(response)
+
+
+def test_l1_final_contract_invalid_output_retains_payload_and_validation_errors(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+    extractor = _ContractRepairEvidenceExtractor({})
+    del extractor.complete_evidence["model_recovery_assessment"]["rationale"]
+    bundle = build_l0_bundle(str(log_path))
+
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        )
+    )
+    assessment = assess_execution(configured=True, result=result).to_payload()
+
+    assert result.success is False
+    assert result.malformed is False
+    assert "rationale" not in result.semantic_payload["model_recovery_assessment"]
+    assert result.errors == (
+        "model_recovery_assessment missing fields: rationale",
+        "model_recovery_assessment.rationale must be a non-empty string",
+    )
+    assert result.anomalies["contract_invalid_model_evidence"] is True
+    assert assessment["parse_status"] == "contract_invalid"
+    assert assessment["unusable_reason"] == "contract_invalid"
+    assert assessment["final_evidence_reason"] == "contract_repair"
+
+
+@pytest.mark.parametrize(
+    ("trigger", "expected_reason"),
+    [
+        ("contract_repair", "contract_repair"),
+        ("tool_exhaustion", "forced_final_after_tool_exhaustion"),
+        ("output_limit", "forced_final_after_output_limit"),
+    ],
+)
+def test_l1_final_provider_failure_preserves_final_turn_reason(
+    tmp_path,
+    trigger,
+    expected_reason,
+):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    class _FinalTurnProviderFailureExtractor(LlmEvidenceExtractor):
+        def __init__(self):
+            tools_enabled = trigger == "tool_exhaustion"
+            super().__init__(
+                LlmConfig(
+                    api_key="test-key",
+                    max_retries=0,
+                    max_tool_rounds=1 if tools_enabled else 0,
+                    tools_enabled=tools_enabled,
+                    advertised_tools=("overview",),
+                )
+            )
+            self.calls = 0
+
+        def _call_model(self, **kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise LlmCallError(
+                    "LLM request timed out",
+                    {
+                        "layer": "L1",
+                        "model": self._config.model,
+                        "model_turn": kwargs["model_turn"],
+                        "attempt": kwargs["attempt"],
+                        "max_retries": kwargs["max_retries"],
+                        "success": False,
+                        "latency_s": 0.01,
+                        "finish_reason": None,
+                        "usage": None,
+                        "tools_advertised": kwargs["include_tools"],
+                        "error_type": "timeout",
+                        "error": "request timed out",
+                        "http_status": None,
+                        "retryable": True,
+                        "retry_scheduled": False,
+                        "timeout": True,
+                    },
+                )
+            if trigger == "tool_exhaustion":
+                response = {
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "tool-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "overview",
+                                            "arguments": "{}",
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                }
+                finish_reason = "tool_calls"
+                content = ""
+            elif trigger == "output_limit":
+                response = {
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": '{"schema_version":'},
+                        }
+                    ]
+                }
+                finish_reason = "length"
+                content = '{"schema_version":'
+            else:
+                response = {
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"content": "{}"},
+                        }
+                    ]
+                }
+                finish_reason = "stop"
+                content = "{}"
+            return (
+                response,
+                {
+                    "layer": "L1",
+                    "model": self._config.model,
+                    "model_turn": kwargs["model_turn"],
+                    "attempt": kwargs["attempt"],
+                    "max_retries": kwargs["max_retries"],
+                    "success": True,
+                    "latency_s": 0.01,
+                    "finish_reason": finish_reason,
+                    "usage": {"total_tokens": 10},
+                    "tools_advertised": kwargs["include_tools"],
+                    "raw_model_output": content,
+                },
+            )
+
+    extractor = _FinalTurnProviderFailureExtractor()
+    bundle = build_l0_bundle(str(log_path))
+    result = extractor.extract_evidence(
+        build_l1_evidence_context(
+            bundle,
+            build_l0_model_facing_view(bundle),
+            LogSnapshot.read(log_path),
+        )
+    )
+    assessment = assess_execution(configured=True, result=result).to_payload()
+
+    assert extractor.calls == 2
+    assert result.success is False
+    assert result.anomalies["final_evidence_turn"] is True
+    assert result.anomalies["final_evidence_reason"] == expected_reason
+    assert assessment["final_evidence_reason"] == expected_reason
+    assert assessment["unusable_reason"] == "provider_timeout"
+    assert assessment["usable"] is False
+
+
+def test_l1_unknown_fields_are_ignored_without_affecting_policy(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text(
         "\n".join(
@@ -4570,7 +6475,6 @@ def test_l1_prohibited_action_field_is_rejected_by_closed_contract(tmp_path):
             "root_fingerprint": "cuda_device_assert:device_side_assert",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -4588,9 +6492,31 @@ def test_l1_prohibited_action_field_is_rejected_by_closed_contract(tmp_path):
     }
 
     current = _current_evidence(evidence)
-    current["decision"] = "STOP"
+    current["decision"] = "RESTART"
+    current["model_recovery_assessment"]["rationale_extra"] = None
 
-    assert model_evidence_contract_errors(current) == ["top-level has unsupported fields: decision"]
+    assert model_evidence_contract_errors(current) == []
+
+    extractor = _FakeEvidenceExtractor(evidence)
+    extractor.evidence["decision"] = "RESTART"
+    extractor.evidence["model_recovery_assessment"]["rationale_extra"] = None
+    analyzer = RestartAgent(evidence_extractor=extractor)
+
+    payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
+
+    assert payload["decision"] == Decision.STOP.value
+    assert payload["result_provenance"]["model_contribution"] == "attempted_used"
+    assert "decision" not in payload["l1_assessment"]
+    assert "rationale_extra" not in payload["l1_assessment"]["model_recovery_assessment"]
+    assert analyzer.last_trace["layers"]["L1"]["output_status"] == "usable"
+    assert analyzer.last_trace["layers"]["L2"]["grounding_status"] == "grounded"
+    advisories = analyzer.last_trace["anomalies"]["l1_contract_advisories"]
+    assert advisories[0]["code"] == "unknown_response_fields_ignored"
+    assert advisories[0]["field_paths"] == [
+        "decision",
+        "model_recovery_assessment.rationale_extra",
+    ]
+    assert "unknown_response_fields_ignored" in payload["result_provenance"]["notes"]
 
 
 def test_l1_provider_timeout_is_not_trusted_even_with_evidence(tmp_path):
@@ -4622,7 +6548,6 @@ def test_l1_provider_timeout_is_not_trusted_even_with_evidence(tmp_path):
             "root_fingerprint": "cuda_device_assert:device_side_assert",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -4696,7 +6621,6 @@ def test_l1_truncated_output_is_not_trusted_even_with_evidence(tmp_path):
             "root_fingerprint": "cuda_device_assert:device_side_assert",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -4763,7 +6687,6 @@ def test_l1_token_limit_hit_is_reported_from_finish_reason_length(tmp_path):
             "root_fingerprint": "cuda_device_assert:device_side_assert",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 2,
             "rank": None,
             "phase": "steady_mid",
@@ -4793,7 +6716,7 @@ def test_l1_token_limit_hit_is_reported_from_finish_reason_length(tmp_path):
     assert analyzer.last_trace["anomalies"]["token_limit_hit"] is True
 
 
-def test_same_root_no_progress_history_waits_for_general_retry_budget(tmp_path):
+def test_same_root_no_progress_history_stops_at_general_retry_budget(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text(
         "\n".join(
@@ -4836,10 +6759,10 @@ def test_same_root_no_progress_history_waits_for_general_retry_budget(tmp_path):
     )
     payload = result.to_payload()
 
-    assert payload["decision"] == Decision.RESTART.value
-    assert payload["decision_basis"] == DecisionBasis.GENERAL_RETRY_AVAILABLE.value
-    assert payload["result_provenance"]["evidence_source"] == "l0_deterministic"
-    assert payload["result_provenance"]["history_contribution"] == "checked_no_effect"
+    assert payload["decision"] == Decision.STOP.value
+    assert payload["decision_basis"] == DecisionBasis.RETRY_BUDGET_EXHAUSTED.value
+    assert payload["result_provenance"]["evidence_source"] == "history_over_l0"
+    assert payload["result_provenance"]["history_contribution"] == ("retry_budget_exhausted")
     assert payload["result_provenance"]["nvrx_use"] == "eligible"
 
 
@@ -4995,7 +6918,7 @@ def test_l4_history_thresholds_are_not_owned_by_l3():
         fault_outcome="terminal",
     )
 
-    bounded_once = evaluate_policy(
+    general_once = evaluate_policy(
         L4PolicyInput(
             primary=primary,
             history=HistorySummary(
@@ -5007,18 +6930,14 @@ def test_l4_history_thresholds_are_not_owned_by_l3():
                 domain="unknown",
                 outlook="may_recover",
             ),
-            assessment_grounded=True,
         )
     ).retry_policy
-    assert bounded_once.decision == Decision.STOP.value
-    assert bounded_once.rule == "bounded_retry"
-    assert bounded_once.general_root_ceiling.matching_prior_failures == 1
-    assert bounded_once.general_root_ceiling.allowed_retries == 3
-    assert bounded_once.selected_rule_budget is not None
-    assert bounded_once.selected_rule_budget.matching_prior_failures == 1
-    assert bounded_once.selected_rule_budget.allowed_retries == 1
-    assert bounded_once.retry_budget_exhausted is True
-    assert bounded_once.exhausted_by == ("selected_rule_budget",)
+    assert general_once.decision == Decision.RESTART.value
+    assert general_once.base_rule == "general_retry"
+    assert general_once.general_root_ceiling.matching_prior_attempts == 1
+    assert general_once.general_root_ceiling.allowed_retries == 2
+    assert general_once.selected_policy_ledger is None
+    assert general_once.retry_budget_exhausted is False
 
     general_twice = evaluate_policy(
         L4PolicyInput(
@@ -5032,27 +6951,25 @@ def test_l4_history_thresholds_are_not_owned_by_l3():
                 domain="unknown",
                 outlook="unknown",
             ),
-            assessment_grounded=True,
         )
     ).retry_policy
-    assert general_twice.decision == Decision.RESTART.value
-    assert general_twice.general_root_ceiling.allowed_retries == 3
-    assert general_twice.selected_rule_budget is None
-    assert general_twice.retry_budget_exhausted is False
+    assert general_twice.decision == Decision.STOP.value
+    assert general_twice.general_root_ceiling.allowed_retries == 2
+    assert general_twice.selected_policy_ledger is None
+    assert general_twice.retry_budget_exhausted is True
 
     general_exhausted = evaluate_policy(
         L4PolicyInput(
             primary=primary,
             history=HistorySummary(
                 available=True,
-                matching_root_attempts=3,
-                consecutive_same_root_no_advance_attempts=3,
+                matching_root_attempts=2,
+                consecutive_same_root_no_advance_attempts=2,
             ),
             model_recovery_assessment=_recovery_assessment(
                 domain="unknown",
                 outlook="unknown",
             ),
-            assessment_grounded=True,
         )
     ).retry_policy
     assert general_exhausted.decision == Decision.STOP.value
@@ -5071,12 +6988,12 @@ def test_l4_missing_primary_is_a_degraded_result_not_a_retry_rule():
         )
     ).retry_policy
 
-    assert policy.rule is None
+    assert policy.base_rule is None
     assert policy.decision == Decision.RESTART.value
     assert policy.decision_basis == DecisionBasis.NO_PRIMARY_FAILURE.value
     assert policy.general_root_ceiling.applicable is False
     assert policy.general_root_ceiling.inapplicable_reason == "missing_primary"
-    assert policy.selected_rule_budget is None
+    assert policy.selected_policy_ledger is None
 
 
 def test_l4_time_limit_uses_ordinary_root_retry_policy():
@@ -5092,40 +7009,40 @@ def test_l4_time_limit_uses_ordinary_root_retry_policy():
             primary=primary,
             history=HistorySummary(
                 available=True,
-                consecutive_same_root_no_advance_attempts=3,
+                consecutive_same_root_no_advance_attempts=2,
             ),
         )
     ).retry_policy
 
-    assert policy.rule == RetryPolicyRule.GENERAL_RETRY.value
+    assert policy.base_rule == RetryPolicyRule.GENERAL_RETRY.value
     assert policy.general_root_ceiling.exhausted is True
     assert policy.exhausted_by == ("general_root_ceiling",)
     assert policy.decision == Decision.STOP.value
 
 
-def test_retry_policy_rejects_bounded_budget_above_general_ceiling():
+def test_retry_policy_rejects_workload_confirmation_above_general_ceiling():
     with pytest.raises(
         ValueError,
-        match="bounded_retry_allowed_retries must not exceed",
+        match="workload_confirmation_retry_allowed_retries must not exceed",
     ):
         RetryPolicyConfig(
-            bounded_retry_allowed_retries=4,
+            workload_confirmation_retry_allowed_retries=4,
             general_retry_allowed_retries=3,
         )
 
 
-def test_retry_policy_rejects_confirmation_budget_above_general_ceiling():
+def test_retry_policy_rejects_concrete_confirmation_above_general_ceiling():
     with pytest.raises(
         ValueError,
-        match="confirmation_retry_allowed_retries must not exceed",
+        match="concrete_confirmation_retry_allowed_retries must not exceed",
     ):
         RetryPolicyConfig(
-            confirmation_retry_allowed_retries=4,
+            concrete_confirmation_retry_allowed_retries=4,
             general_retry_allowed_retries=3,
         )
 
 
-def test_l4_stops_for_grounded_unrecoverable_workload_evidence():
+def test_l4_stops_for_established_unrecoverable_workload_evidence():
     primary = FailureEvidence(
         failure_class="code_failure",
         signature="deterministic code failure",
@@ -5139,29 +7056,17 @@ def test_l4_stops_for_grounded_unrecoverable_workload_evidence():
         outlook_status="established_by_current_log",
     )
 
-    grounded = evaluate_policy(
+    policy = evaluate_policy(
         L4PolicyInput(
             primary=primary,
             history=HistorySummary(available=False),
             model_recovery_assessment=assessment,
-            assessment_grounded=True,
         )
     ).retry_policy
-    assert grounded.decision == Decision.STOP.value
-    assert grounded.rule == "workload_unrecoverable"
-    assert grounded.general_root_ceiling.applicable is False
-    assert grounded.general_root_ceiling.inapplicable_reason == "immediate_unrecoverable"
-
-    ungrounded = evaluate_policy(
-        L4PolicyInput(
-            primary=primary,
-            history=HistorySummary(available=False),
-            model_recovery_assessment=assessment,
-            assessment_grounded=False,
-        )
-    ).retry_policy
-    assert ungrounded.decision == Decision.RESTART.value
-    assert ungrounded.rule == "general_retry"
+    assert policy.decision == Decision.STOP.value
+    assert policy.base_rule == "workload_unrecoverable"
+    assert policy.general_root_ceiling.applicable is False
+    assert policy.general_root_ceiling.inapplicable_reason == "immediate_unrecoverable"
 
 
 @pytest.mark.parametrize(
@@ -5216,7 +7121,6 @@ def test_l4_does_not_stop_for_incomplete_current_evidence_predicate(
                 domain_status=domain_status,
                 outlook_status=outlook_status,
             ),
-            assessment_grounded=True,
         )
     ).retry_policy
 
@@ -5224,7 +7128,7 @@ def test_l4_does_not_stop_for_incomplete_current_evidence_predicate(
     assert policy.current_evidence_qualified is False
 
 
-def test_l4_uses_general_retry_when_recovery_assessment_is_not_grounded():
+def test_l4_uses_general_retry_when_recovery_assessment_is_unknown():
     primary = FailureEvidence(
         failure_class="observed_failure",
         signature="observed failure",
@@ -5240,13 +7144,12 @@ def test_l4_uses_general_retry_when_recovery_assessment_is_not_grounded():
                 domain="unknown",
                 outlook="may_recover",
             ),
-            assessment_grounded=False,
         )
     ).retry_policy
 
-    assert policy.rule == "general_retry"
-    assert policy.general_root_ceiling.allowed_retries == 3
-    assert policy.selected_rule_budget is None
+    assert policy.base_rule == "general_retry"
+    assert policy.general_root_ceiling.allowed_retries == 2
+    assert policy.selected_policy_ledger is None
 
 
 def test_l4_observed_advance_does_not_exhaust_retry_budget():
@@ -5377,6 +7280,7 @@ def test_history_revalidates_typed_records_at_runtime_boundary():
                         root_fingerprint="observed:runtimeerror:validate_result",
                         root_fingerprint_source="test_fixture",
                         fault_outcome="terminal",
+                        primary_line=1,
                     ),
                 ),
             )
@@ -5702,6 +7606,51 @@ def test_failure_episode_uses_progress_then_terminal_exception(tmp_path):
     assert "first_cancellation_line" not in prompt_episode
 
 
+def test_interleaved_rank_traceback_selects_same_rank_terminal_exception(tmp_path):
+    log_path = tmp_path / "job.log"
+    lines = [
+        "0: iteration 656370/993410 | consumed samples: 2016368640 |",
+        "261: [rank261]: Traceback (most recent call last):",
+        '261: [rank261]:   File "/workspace/training.py", line 569, in parse_progress',
+    ]
+    lines.extend(
+        f'{rank}: [rank{rank}]:   File "/workspace/training.py", line 100, in train'
+        for rank in range(1000, 1130)
+    )
+    lines.append('261: [rank261]:   File "/workspace/training.py", line 569, in parse_progress')
+    lines.append(
+        "261: [rank261]: AssertionError: Should have seen at least one "
+        "'Starting job' entry with same world_size"
+    )
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+
+    assert primary is not None
+    assert primary.line == len(lines)
+    assert primary.failure_class == "observed_exception"
+    assert primary.root_fingerprint == (
+        "observed:assertionerror:parse_progress:"
+        "assertionerror_should_have_seen_at_least_one_starting_job_entry_with_same_world_size"
+    )
+    assert bundle.failure_episodes[0].start_line == 2
+    assert bundle.failure_episodes[0].terminal_exception_line == len(lines)
+    assert bundle.failure_episodes[0].identity_anchor_line == len(lines)
+
+
+def test_ranked_traceback_does_not_cross_next_same_rank_traceback():
+    observations = l0_assembly.L0ObservationAccumulator()
+    observations.append_text("7: [rank7]: Traceback (most recent call last):")
+    observations.append_text('7: [rank7]:   File "/workspace/first.py", line 1')
+    observations.append_text("7: [rank7]: Traceback (most recent call last):")
+    observations.append_text('7: [rank7]:   File "/workspace/second.py", line 2')
+    observations.append_text("7: [rank7]: ValueError: second failure")
+
+    assert l0_assembly._terminal_exception_line(observations, 1) == 1
+    assert l0_assembly._terminal_exception_line(observations, 3) == 5
+
+
 def test_l0_promotes_nearby_specific_error_ahead_of_distributed_wrapper_fanout(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text(
@@ -5831,7 +7780,6 @@ def test_different_checkpoint_success_is_structured_without_overriding_l1(
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 12,
             "rank": "261",
             "phase": "checkpoint",
@@ -5864,10 +7812,12 @@ def test_different_checkpoint_success_is_structured_without_overriding_l1(
 
     assert payload["decision"] == Decision.STOP.value
     assert (
-        payload["model_recovery_assessment"]["retry_outlook_without_workload_change"]["status"]
+        payload["l1_assessment"]["model_recovery_assessment"][
+            "retry_outlook_without_workload_change"
+        ]["status"]
         == "established_by_current_log"
     )
-    assert payload["retry_policy"]["rule"] == "workload_unrecoverable"
+    assert payload["retry_policy"]["base_rule"] == "workload_unrecoverable"
     assert "model_recovery_assessment" not in audit["field_finding_codes"]
     assert audit["grounding_adjustments"] == []
     assert audit["recovery_field_audits"] == []
@@ -5918,6 +7868,89 @@ def test_checkpoint_load_fanout_preserves_shard_uncertainty(tmp_path):
     assert primary.affected_entity is not None
     assert primary.affected_entity.kind == AffectedEntityKind.ARTIFACT
     assert primary.affected_entity.identity == ("/checkpoints/model#checkpoint_iteration=42")
+    model_payload = build_l0_model_facing_view(bundle).prompt_payload()
+    serialized_model_payload = json.dumps(model_payload, sort_keys=True)
+    assert "/checkpoints/model#checkpoint_iteration=42" in serialized_model_payload
+    assert str(log_path) not in serialized_model_payload
+
+
+def test_l0_completed_operation_does_not_inherit_failure_after_later_progress(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                (
+                    "0: [rank0]: loading distributed checkpoint from "
+                    "/checkpoints/model/ at iteration 40"
+                ),
+                (
+                    "0: [rank0]: successfully loaded checkpoint from "
+                    "/checkpoints/model/ at iteration 40"
+                ),
+                ("0: [2026-02-18 08:19:00.000000] iteration 49/ 100 | " "consumed samples: 4900 |"),
+                "0: saving checkpoint at iteration 50 to /checkpoints/model/ in torch_dist format",
+                (
+                    "7: [rank7]: RuntimeError: checkpoint.filesystem_async "
+                    "unexpected pos 704 vs 598"
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    load = next(
+        item
+        for item in bundle.operation_artifact_comparisons
+        if item.operation == "checkpoint_load"
+    )
+    save = next(
+        item
+        for item in bundle.operation_artifact_comparisons
+        if item.operation == "checkpoint_save"
+    )
+    assert load.current_outcome == "completed"
+    assert load.failure_line is None
+    assert load.failed_observer_ranks == ()
+    assert save.current_outcome == "started_not_completed"
+    assert save.failure_line == 5
+    primary = bundle.deterministic_primary_candidate
+    assert primary is not None
+    assert primary.affected_entity is not None
+    assert primary.affected_entity.identity == ("/checkpoints/model#checkpoint_iteration=50")
+
+
+def test_l0_leaves_entity_unknown_for_multiple_unfinished_operations(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: saving checkpoint at iteration 50 to /checkpoints/a/ in torch_dist format",
+                "0: saving checkpoint at iteration 50 to /checkpoints/b/ in torch_dist format",
+                "7: [rank7]: RuntimeError: checkpoint operation failed",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    assert (
+        len(
+            [
+                item
+                for item in bundle.operation_artifact_comparisons
+                if item.failure_line == 3 and item.current_outcome == "started_not_completed"
+            ]
+        )
+        == 2
+    )
+    primary = bundle.deterministic_primary_candidate
+    assert primary is not None
+    assert primary.affected_entity is None
 
 
 def test_checkpoint_entity_ignores_buffer_local_decode_position(tmp_path):
@@ -6127,6 +8160,574 @@ def test_l0_links_late_explicit_oom_confirmation_to_abrupt_kill_episode(tmp_path
     write_l0_bundle(bundle_path, bundle)
     replayed = read_l0_bundle(bundle_path, expected_log_path=str(log_path))
     assert replayed.failure_episodes[0].cause_confirmations[0].line == 5
+
+
+def test_l0_keeps_concrete_episode_identity_when_late_confirmation_is_attached(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-02-16 11:35:00] iteration 41/100 | consumed samples: 1024 |",
+                "7: [rank7]: Traceback (most recent call last):",
+                "7: [rank7]: RuntimeError: CUDA out of memory",
+                "7: Killed",
+                (
+                    "7: slurmstepd: error: Detected 1 oom_kill events in StepId=1.0. "
+                    "Some of the step tasks have been OOM Killed."
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+    episode = bundle.failure_episodes[0]
+
+    assert bundle.deterministic_primary_candidate is not None
+    assert bundle.deterministic_primary_candidate.line == 3
+    assert bundle.deterministic_primary_candidate.failure_class == "cuda_oom"
+    assert bundle.selection_summary["primary_selection_basis"] == (
+        "registry_root_confirmed_by_failure_episode"
+    )
+    assert episode.identity_anchor_line == 3
+    assert episode.identity_anchor_reason == "terminal_exception"
+    assert [item.line for item in episode.cause_confirmations] == [5]
+
+
+def test_l0_does_not_link_confirmation_across_observed_progress(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-02-16 11:35:00] iteration 41/100 | consumed samples: 1024 |",
+                "7: Killed",
+                "0: [2026-02-16 11:36:00] iteration 42/100 | consumed samples: 2048 |",
+                (
+                    "7: slurmstepd: error: Detected 1 oom_kill events in StepId=1.0. "
+                    "Some of the step tasks have been OOM Killed."
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    assert bundle.deterministic_primary_candidate is None
+    assert bundle.failure_episodes[0].status == "progressed_after"
+    assert bundle.failure_episodes[0].cause_confirmations == ()
+    assert bundle.cause_confirmations[0].line == 4
+
+
+def test_l0_excludes_progressed_root_from_deterministic_primary(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "7: [rank7]: RuntimeError: CUDA out of memory",
+                "0: [2026-02-16 11:36:00] iteration 1/100 | consumed samples: 1024 |",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    assert bundle.deterministic_primary_candidate is None
+    assert bundle.failure_episodes[0].status == "progressed_after"
+
+
+def test_l0_retains_teardown_only_exception_without_promoting_primary(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "Traceback (most recent call last):",
+                '  File "multiprocessing/util.py", line 300, in _run_finalizers',
+                "FileNotFoundError: [Errno 2] No such file or directory",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    assert bundle.deterministic_primary_candidate is None
+    assert bundle.selection_summary["primary_selection_basis"] == "not_available"
+    assert len(bundle.failure_episodes) == 1
+    assert bundle.failure_episodes[0].terminal_exception_causal_role_hint == "teardown"
+    assert [(match.line, match.causal_role, match.role) for match in bundle.registry_matches] == [
+        (3, "teardown", "cascade_candidate")
+    ]
+
+    analyzer = RestartAgent(
+        evidence_extractor=_FakeEvidenceExtractor(
+            {
+                "analysis_status": "insufficient_evidence",
+                "root_cause_assessment": {
+                    "missing_evidence": ["initiating failure is absent from the available log"]
+                },
+            }
+        )
+    )
+    payload = analyzer.analyze({"log_path": str(log_path)}, l0_bundle=bundle).to_payload()
+
+    assert payload["decision"] == "RESTART"
+    assert payload["decision_basis"] == "no_primary_failure"
+    assert payload["primary_failure"] is None
+    assert analyzer.last_trace["layers"]["L1"]["output_status"] == "usable"
+    assert analyzer.last_trace["layers"]["L2"]["grounding_status"] == "unavailable"
+    assert analyzer.last_trace["layers"]["L2"]["enriched_tracks_available"] == {
+        "primary": False,
+        "observation": False,
+    }
+
+
+@pytest.mark.parametrize("causal_role", ["cascade", "teardown"])
+def test_l0_primary_selection_rejects_known_non_primary_roles(causal_role):
+    match = FailureEvidence(
+        failure_class="downstream_failure",
+        signature="downstream failure",
+        root_fingerprint="downstream:failure",
+        fault_outcome="terminal",
+        causal_role=causal_role,
+        line=10,
+        registry_id="downstream_failure",
+        role="root_candidate",
+    )
+
+    assert l0_assembly._select_primary_candidate((match,)) is None
+
+
+def test_l0_keeps_episode_with_earlier_identity_before_teardown_terminal():
+    episode = FailureEpisode(
+        episode_id="fe-1",
+        status="terminal",
+        start_line=1,
+        end_line=3,
+        first_exception_line=1,
+        terminal_exception_line=3,
+        terminal_exception_quote="FileNotFoundError during cleanup",
+        terminal_exception_causal_role_hint="teardown",
+        identity_anchor_line=1,
+        identity_anchor_reason="nearby_high_signal_error_precedes_failure_episode",
+    )
+
+    assert l0_assembly._episode_is_primary_eligible(episode) is True
+
+
+def test_l0_primary_tie_break_is_stable_for_same_source_line():
+    first = FailureEvidence(
+        failure_class="z_failure",
+        signature="same source line",
+        root_fingerprint="root:z",
+        fault_outcome="terminal",
+        line=10,
+        registry_id="z_registry",
+        role="root_candidate",
+    )
+    second = FailureEvidence(
+        failure_class="a_failure",
+        signature="same source line",
+        root_fingerprint="root:a",
+        fault_outcome="terminal",
+        line=10,
+        registry_id="a_registry",
+        role="root_candidate",
+    )
+
+    assert l0_assembly._select_primary_candidate((first, second)) is second
+    assert l0_assembly._select_primary_candidate((second, first)) is second
+
+
+def test_l0_primary_tie_break_prefers_specific_registry_over_generic_observation():
+    generic = FailureEvidence(
+        failure_class="observed_failure",
+        signature="RuntimeError: CUDA out of memory",
+        root_fingerprint="observed:runtimeerror:cuda_out_of_memory",
+        fault_outcome="terminal",
+        line=10,
+        registry_id="observed_exception",
+        role="root_candidate",
+    )
+    specific = FailureEvidence(
+        failure_class="resource_exhaustion",
+        signature="CUDA out of memory",
+        root_fingerprint="resource_exhaustion:cuda_out_of_memory",
+        fault_outcome="terminal",
+        line=10,
+        registry_id="resource_exhaustion",
+        role="root_candidate",
+    )
+
+    assert l0_assembly._select_primary_candidate((generic, specific)) is specific
+    assert l0_assembly._select_primary_candidate((specific, generic)) is specific
+
+
+def test_l0_exact_line_tie_prefers_episode_identity_role():
+    root = FailureEvidence(
+        failure_class="observed_failure",
+        signature="process terminated",
+        root_fingerprint="observed:process_terminated",
+        fault_outcome="terminal",
+        line=10,
+        registry_id="process_termination",
+        role="root_candidate",
+    )
+    confirmation = FailureEvidence(
+        failure_class="host_oom_kill",
+        signature="slurmstepd detected oom_kill",
+        root_fingerprint="host_oom_kill",
+        fault_outcome="terminal",
+        line=10,
+        registry_id="host_oom_kill",
+        role="cause_confirmation",
+    )
+    episode = FailureEpisode(
+        episode_id="fe-1",
+        status="terminal",
+        start_line=10,
+        end_line=10,
+        first_exception_line=10,
+        terminal_exception_line=10,
+        terminal_exception_quote="process terminated",
+        identity_anchor_line=10,
+        identity_anchor_reason="explicit_cause_confirmation",
+    )
+
+    assert (
+        l0_assembly._identity_match_for_episode((root, confirmation), episode, 10) is confirmation
+    )
+    assert (
+        l0_assembly._identity_match_for_episode((confirmation, root), episode, 10) is confirmation
+    )
+
+
+def test_l0_selects_earliest_eligible_episode_before_later_registry_root():
+    lines = (
+        LogLine(line=1, text="RuntimeError: first terminal failure"),
+        LogLine(line=2, text="INFO: intervening diagnostic"),
+        LogLine(line=3, text="UnicodeDecodeError: later registered failure"),
+    )
+    first_episode = FailureEpisode(
+        episode_id="fe-1",
+        status="terminal",
+        start_line=1,
+        end_line=1,
+        first_exception_line=1,
+        terminal_exception_line=1,
+        terminal_exception_quote=lines[0].text,
+        identity_anchor_line=1,
+        identity_anchor_reason="terminal_exception",
+    )
+    second_episode = FailureEpisode(
+        episode_id="fe-2",
+        status="terminal",
+        start_line=3,
+        end_line=3,
+        first_exception_line=3,
+        terminal_exception_line=3,
+        terminal_exception_quote=lines[2].text,
+        identity_anchor_line=3,
+        identity_anchor_reason="terminal_exception",
+    )
+    later_registry_root = FailureEvidence(
+        failure_class="checkpoint_metadata_decode_error",
+        signature=lines[2].text,
+        root_fingerprint="checkpoint_metadata_decode_error",
+        fault_outcome="terminal",
+        line=3,
+        quote=lines[2].text,
+        registry_id="checkpoint_metadata_decode_error",
+        role="root_candidate",
+    )
+
+    selected = l0_assembly._canonicalize_episode_primary(
+        later_registry_root,
+        (later_registry_root,),
+        (second_episode, first_episode),
+        lines,
+        ProgressFacts(),
+    )
+
+    assert selected is not None
+    assert selected.line == 1
+    assert selected.failure_class == "observed_failure"
+
+
+def test_l0_records_primary_episode_selection_basis(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: CUDA out of memory\n", encoding="utf-8")
+
+    bundle = build_l0_bundle(str(log_path))
+
+    assert bundle.selection_summary["primary_episode_id"] == "fe-1"
+    assert (
+        bundle.selection_summary["primary_episode_selection_basis"]
+        == "earliest_eligible_initiating_episode"
+    )
+
+
+def test_l0b_compacts_exhaustive_root_observers_without_mutating_decision_evidence():
+    primary = FailureEvidence(
+        failure_class="distributed_failure",
+        signature="terminal distributed failure",
+        root_fingerprint="distributed_failure:terminal",
+        fault_outcome="terminal",
+        line=100,
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=10_000,
+        line_count=2_000,
+        deterministic_primary_candidate=primary,
+        distributed_failure_incidents=(
+            DistributedFailureIncident(
+                incident_id="di-1",
+                incident_kind="distributed_fanout",
+                incident_type="distributed_failure_fanout",
+                status="terminal",
+                first_observed_line=100,
+                last_observed_line=1_641,
+                primary_observed_line=100,
+                primary_observed_quote="terminal distributed failure",
+                member_event_lines=(100,),
+                sample_lines=(100, 101, 102),
+                event_count=1_542,
+                observed_rank_count=1_542,
+                rank_spread=tuple(str(rank) for rank in range(1_542)),
+            ),
+        ),
+    )
+    exact = build_decision_evidence(bundle)
+    ranks = tuple(str(rank) for rank in range(1_542))
+    exact = replace(
+        exact,
+        locality={
+            **exact.locality,
+            "root_observer_ranks": ranks,
+            "rank_spread": ranks,
+            "unattributed_root_occurrence_count": 0,
+        },
+    )
+
+    model_view = _build_l0_model_facing_view(bundle, exact)
+    compact_locality = model_view.decision_evidence_view["locality"]
+
+    assert len(model_view.decision_evidence.locality["root_observer_ranks"]) == 1_542
+    assert compact_locality["root_observer_count"] == 1_542
+    assert len(compact_locality["root_observer_rank_samples"]) == 8
+    assert compact_locality["rank_spread_count"] == 1_542
+    assert len(compact_locality["rank_spread_samples"]) == 8
+    assert (
+        len(model_view.evidence_bundle["distributed_failure_incidents"][0]["rank_spread_sample"])
+        == 8
+    )
+    assert "1541" not in json.dumps(model_view.prompt_payload())
+    assert (
+        model_view.projection_metrics["compaction_counts"][
+            "decision_evidence_root_observers_compacted"
+        ]
+        == 1_534
+    )
+    assert (
+        model_view.projection_metrics["compaction_counts"]["supporting_incident_ranks_compacted"]
+        == 1_534
+    )
+
+
+def test_l0b_failure_narrative_orders_typed_current_attempt_facts():
+    primary = FailureEvidence(
+        failure_class="observed_exception",
+        signature="AssertionError:",
+        root_fingerprint="assertion_error:terminal",
+        fault_outcome="terminal",
+        line=100,
+    )
+    episode = FailureEpisode(
+        episode_id="fe-1",
+        status="terminal",
+        start_line=90,
+        end_line=110,
+        first_exception_line=90,
+        terminal_exception_line=100,
+        first_teardown_line=105,
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=1_000,
+        line_count=120,
+        deterministic_primary_candidate=primary,
+        failure_episodes=(episode,),
+        progress=ProgressFacts(highest_completed_step=418, last_progress_line=80),
+        run_progress_summary=RunProgressSummary(progress_after_failure_episode=False),
+        operation_artifact_comparisons=(
+            OperationArtifactComparisonEvidence(
+                operation="checkpoint_save",
+                success_count=2,
+                success_lines=(40, 60),
+                current_start_line=85,
+                current_outcome="failed",
+                failure_line=100,
+            ),
+        ),
+    )
+
+    narrative = build_l0_model_facing_view(bundle).failure_narrative
+
+    assert [event["kind"] for event in narrative["events"]] == [
+        "prior_operation_success",
+        "last_progress",
+        "current_operation_start",
+        "fault_observation",
+        "primary_failure",
+        "teardown_summary",
+        "later_progress_outcome",
+    ]
+    assert [event["sequence"] for event in narrative["events"]] == list(range(1, 8))
+    assert narrative["events"][4]["summary"] == "AssertionError was selected at line 100"
+    assert narrative["status"] == "available"
+
+
+@pytest.mark.parametrize(
+    ("line", "expected_ranks", "expected_unattributed_count"),
+    [
+        ("7: [rank7]: RuntimeError: CUDA out of memory", ["7"], 0),
+        ("RuntimeError: CUDA out of memory", [], 1),
+    ],
+)
+def test_l0_root_observer_facts_are_complete_for_associated_occurrence_group(
+    tmp_path,
+    line,
+    expected_ranks,
+    expected_unattributed_count,
+):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(line + "\n", encoding="utf-8")
+
+    decision_evidence = build_decision_evidence(build_l0_bundle(str(log_path)))
+
+    assert decision_evidence.locality["root_observer_ranks"] == expected_ranks
+    assert (
+        decision_evidence.locality["unattributed_root_occurrence_count"]
+        == expected_unattributed_count
+    )
+    assert decision_evidence.coverage_lossiness["root_observer_facts"] == {
+        "status": "complete",
+        "reason": "root_occurrence_group_associated",
+        "source": "complete_l0_occurrence_groups",
+        "projection_caps_applied": False,
+    }
+
+
+def test_l0_root_observer_facts_exclude_same_registry_teardown_group():
+    primary = FailureEvidence(
+        failure_class="observed_exception",
+        signature="RuntimeError: Unexpected result inf",
+        root_fingerprint="observed:runtimeerror:unexpected_result_inf",
+        fault_outcome="terminal",
+        line=10,
+        registry_id="observed_exception",
+        role="root_candidate",
+    )
+    root_group = NormalizedOccurrenceGroup(
+        occurrence_group_id="og-root",
+        normalized_shape="runtimeerror unexpected result inf",
+        first_line=10,
+        count=2,
+        sample_lines=(10, 20),
+        rank_spread=("404", "405"),
+        registry_id="observed_exception",
+    )
+    teardown_group = NormalizedOccurrenceGroup(
+        occurrence_group_id="og-teardown",
+        normalized_shape="filenotfounderror multiprocessing listener",
+        first_line=30,
+        count=4,
+        sample_lines=(30, 31, 32, 33),
+        rank_spread=("10", "11", "12", "13"),
+        registry_id="observed_exception",
+        classification="cascade",
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=100,
+        line_count=33,
+        deterministic_primary_candidate=primary,
+        occurrence_groups=(root_group, teardown_group),
+    )
+
+    decision_evidence = build_decision_evidence(bundle)
+
+    assert decision_evidence.selected_evidence_references["occurrence_group_ids"] == [
+        "og-root",
+        "og-teardown",
+    ]
+    assert decision_evidence.locality["root_observer_ranks"] == ["404", "405"]
+    assert decision_evidence.locality["unattributed_root_occurrence_count"] == 0
+
+
+def test_l0_root_observer_facts_do_not_fall_back_to_same_registry_group():
+    primary = FailureEvidence(
+        failure_class="observed_exception",
+        signature="unassociated terminal failure",
+        root_fingerprint="observed:unassociated",
+        fault_outcome="terminal",
+        line=1,
+        registry_id="observed_exception",
+        role="root_candidate",
+    )
+    unrelated_group = NormalizedOccurrenceGroup(
+        occurrence_group_id="og-unrelated",
+        normalized_shape="later teardown exception",
+        first_line=2,
+        count=1,
+        sample_lines=(2,),
+        rank_spread=("7",),
+        registry_id="observed_exception",
+        classification="cascade",
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=50,
+        line_count=2,
+        deterministic_primary_candidate=primary,
+        occurrence_groups=(unrelated_group,),
+    )
+
+    decision_evidence = build_decision_evidence(bundle)
+
+    assert decision_evidence.locality["root_observer_ranks"] is None
+    assert decision_evidence.locality["unattributed_root_occurrence_count"] is None
+    assert decision_evidence.coverage_lossiness["root_observer_facts"]["status"] == ("unavailable")
+
+
+def test_l0_root_observer_facts_are_unavailable_without_group_association():
+    primary = FailureEvidence(
+        failure_class="observed_failure",
+        signature="unassociated terminal failure",
+        root_fingerprint="observed:unassociated",
+        fault_outcome="terminal",
+        line=1,
+        role="root_candidate",
+    )
+    bundle = L0Bundle(
+        log_path="/tmp/job.log",
+        byte_size=30,
+        line_count=1,
+        deterministic_primary_candidate=primary,
+    )
+
+    decision_evidence = build_decision_evidence(bundle)
+
+    assert decision_evidence.locality["root_observer_ranks"] is None
+    assert decision_evidence.locality["unattributed_root_occurrence_count"] is None
+    assert decision_evidence.coverage_lossiness["root_observer_facts"] == {
+        "status": "unavailable",
+        "reason": "root_occurrence_group_not_associated",
+        "source": "complete_l0_occurrence_groups",
+        "projection_caps_applied": False,
+    }
 
 
 def test_bare_killed_does_not_infer_oom_without_confirmation(tmp_path):
@@ -6341,7 +8942,6 @@ def test_l2_does_not_treat_current_attempt_fanout_as_cross_attempt_persistence(t
             "proposed_root_fingerprint": None,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 3,
             "rank": "404",
             "phase": "steady_mid",
@@ -6380,11 +8980,13 @@ def test_l2_does_not_treat_current_attempt_fanout_as_cross_attempt_persistence(t
 
     assert payload["decision"] == Decision.RESTART.value
     assert (
-        payload["model_recovery_assessment"]["retry_outlook_without_workload_change"]["status"]
+        payload["l1_assessment"]["model_recovery_assessment"][
+            "retry_outlook_without_workload_change"
+        ]["status"]
         == "supported_but_unconfirmed"
     )
     assert "model_recovery_assessment" not in audit["field_finding_codes"]
-    assert analyzer.last_trace["layers"]["L2"]["material_finding_count"] == 0
+    assert analyzer.last_trace["layers"]["L2"]["observational_finding_count"] == 0
     assert audit["grounding_adjustments"] == []
     assert audit["recovery_field_audits"] == []
 
@@ -6445,6 +9047,114 @@ def test_l0_compacts_rank_fanout_and_preserves_timeout_episode_context(tmp_path)
     assert bundle.run_progress_summary.checkpoint_load_iteration == 635000
     assert bundle.run_progress_summary.checkpoint_load_line == 4
     assert bundle.run_progress_summary.last_setup_marker_type == "checkpoint_load_start"
+
+
+def test_l0_accounts_for_context_window_seed_omissions(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "RuntimeError: alpha failure",
+                "ValueError: beta failure",
+                "KeyError: gamma failure",
+                "TypeError: delta failure",
+                "IndexError: epsilon failure",
+                "AssertionError: zeta failure",
+                "UnicodeDecodeError: eta failure",
+                "FileNotFoundError: theta failure",
+                "PermissionError: iota failure",
+                "OSError: kappa failure",
+                "MemoryError: lambda failure",
+                "EOFError: mu failure",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+
+    assert bundle.selection_summary["context_window_selection"] == {
+        "rule": "episode_cause_signal_registry",
+        "eligible_seed_count": 12,
+        "selected_seed_count": 8,
+        "omitted_seed_count": 4,
+        "limit": 8,
+        "cap_hit": True,
+    }
+    assert len(bundle.context_windows) == 8
+    assert "context_window_seeds" in bundle.selection_summary["caps_hit"]
+
+
+def test_l0_context_window_seed_priority_is_deterministic():
+    lines = tuple(
+        LogLine(line=line_no, text=f"RuntimeError: failure at line {line_no}")
+        for line_no in range(1, 301)
+    )
+    registry_matches = tuple(
+        FailureEvidence(
+            failure_class=f"registry_failure_{line_no}",
+            signature=f"registry failure at line {line_no}",
+            root_fingerprint=f"registry:{line_no}",
+            fault_outcome="terminal",
+            line=line_no,
+            registry_id=f"registry_{line_no}",
+            role="root_candidate",
+        )
+        for line_no in (190, 230)
+    )
+
+    selection = l0_assembly._build_context_windows(
+        lines,
+        (),
+        registry_matches,
+        high_signal_lines=(70, 110, 150),
+        failure_episode_lines=(10, 20, 30, 40),
+        cause_confirmation_lines=(50, 60),
+    )
+
+    assert selection.rule == "episode_cause_signal_registry"
+    assert [window.seed_lines[0] for window in selection.windows] == [
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        110,
+    ]
+    assert [window.selected_by for window in selection.windows] == [
+        "failure_episode",
+        "failure_episode",
+        "failure_episode",
+        "failure_episode",
+        "cause_confirmation",
+        "cause_confirmation",
+        "high_signal",
+        "high_signal",
+    ]
+    assert selection.eligible_seed_count == 11
+    assert selection.omitted_seed_count == 3
+
+
+def test_l0_rejects_inconsistent_context_window_accounting(tmp_path, monkeypatch):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+    original_to_payload = l0_assembly._ContextWindowSelection.to_payload
+
+    def inconsistent_payload(selection):
+        payload = original_to_payload(selection)
+        payload["omitted_seed_count"] += 1
+        return payload
+
+    monkeypatch.setattr(
+        l0_assembly._ContextWindowSelection,
+        "to_payload",
+        inconsistent_payload,
+    )
+
+    with pytest.raises(ValueError, match="selection accounting does not reconcile"):
+        build_l0_bundle(str(log_path))
 
 
 def test_single_rank_ordinary_failure_is_episode_only(tmp_path):
@@ -6573,10 +9283,17 @@ def test_distributed_timeout_incident_groups_operations_and_has_order_invariant_
         == second_bundle.deterministic_primary_candidate.root_fingerprint
     )
     assert first_bundle.run_progress_summary.first_terminal_incident_line == 2
+    assert first_bundle.run_progress_summary.incident_configured_timeout_seconds == 600.0
     assert first_bundle.run_progress_summary.terminal_detection_lag_seconds == pytest.approx(
         5.886,
         abs=0.001,
     )
+    terminal_timing = build_l0_model_facing_view(first_bundle).attempt_execution_context[
+        "terminal_timing"
+    ]
+    assert terminal_timing["coverage_status"] == "complete"
+    assert terminal_timing["incident_configured_timeout_seconds"] == 600.0
+    assert "configured_terminal_timeout_seconds" not in terminal_timing
 
     evidence = {
         "schema_version": "restart_agent_evidence.v1",
@@ -6586,7 +9303,6 @@ def test_distributed_timeout_incident_groups_operations_and_has_order_invariant_
             "proposed_root_fingerprint": "model:operation_specific",
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 4,
             "rank": "7",
             "phase": "steady_mid",
@@ -6712,7 +9428,6 @@ def test_analyze_many_runs_routes_in_parallel_over_shared_l0(tmp_path):
             "signature": failure_line,
             "fault_outcome": "terminal",
             "causal_role": "initiating",
-            "data_position_fingerprint": None,
             "line": 1,
             "rank": None,
             "phase": "setup",
@@ -7151,7 +9866,8 @@ def test_analyze_many_returns_deterministic_when_route_exceeds_deadline(tmp_path
 
     route_result = result.model_results[0]
     assert elapsed < 0.5
-    assert route_result.execution_status == "deadline_exceeded"
+    assert route_result.execution_status == "failed"
+    assert route_result.l1_execution_assessment["unusable_reason"] == ("analysis_deadline_exceeded")
     assert route_result.l1_usable is False
     assert route_result.analysis_result == result.deterministic_result
     assert result.shared_analysis["analysis_timeout_seconds"] == 0.05
@@ -7178,13 +9894,39 @@ def test_analyze_many_isolates_route_orchestration_failure(tmp_path):
     )
 
     route_result = result.model_results[0]
-    assert route_result.execution_status == "provider_error"
+    assert route_result.execution_status == "failed"
+    assert route_result.l1_execution_assessment["unusable_reason"] == ("provider_error")
     assert route_result.l1_usable is False
     assert route_result.error == "RuntimeError: route failed"
     assert route_result.analysis_result.decision == result.deterministic_result.decision
     assert route_result.analysis_result.result_provenance["model_contribution"] == (
         "attempted_not_used_provider_error"
     )
+
+
+def test_analyze_many_keeps_context_budget_failure_out_of_route_lifecycle_status(tmp_path):
+    log_path = tmp_path / "job.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+    extractor = _FakeEvidenceExtractor(
+        {"analysis_status": "insufficient_evidence"},
+        success=False,
+        errors=("request exceeds configured context budget",),
+        anomalies={
+            "provider_error": True,
+            "provider_error_type": "context_budget_exceeded",
+            "context_budget_exceeded": True,
+        },
+    )
+
+    result = RestartAgent().analyze_many(
+        RestartAgentRequest(log_path=str(log_path)),
+        (ModelRoute(route_id="oversized", evidence_extractor=extractor),),
+    )
+
+    route_result = result.model_results[0]
+    assert route_result.execution_status == "failed"
+    assert route_result.l1_execution_assessment["unusable_reason"] == ("context_budget_exceeded")
+    assert "provider_error" not in route_result.execution_status
 
 
 def test_restart_agent_config_resolves_defaults_overrides_and_credentials(tmp_path, monkeypatch):
@@ -7211,14 +9953,15 @@ def test_restart_agent_config_resolves_defaults_overrides_and_credentials(tmp_pa
                     }
                 },
                 "retry_policy": {
-                    "bounded_retry_allowed_retries": 2,
+                    "workload_confirmation_retry_allowed_retries": 2,
                     "general_retry_allowed_retries": 4,
+                    "job_no_progress_allowed_retries": 5,
                 },
                 "model_defaults": {
                     "base_url": "https://shared.example/v1",
                     "credential_ref": "PRIMARY_ROUTE_KEY",
                     "request": {"temperature": 0, "top_p": 1},
-                    "tools": {"enabled": False, "max_rounds": 0},
+                    "tools": {"enabled": True, "max_rounds": 0},
                     "reasoning": {"thinking_mode": "disable"},
                 },
                 "model_routes": [
@@ -7267,21 +10010,23 @@ def test_restart_agent_config_resolves_defaults_overrides_and_credentials(tmp_pa
     configured_source = build_log_source_factory(config)(str(tmp_path / "unused.log"))
     assert configured_source.chunk_reader.read_mode == "single_snapshot"
     assert configured_source.chunk_reader.chunk_bytes == 4096
-    assert config.retry_policy["confirmation_retry_allowed_retries"] == 1
-    assert config.retry_policy["bounded_retry_allowed_retries"] == 2
+    assert config.retry_policy["concrete_confirmation_retry_allowed_retries"] == 1
+    assert config.retry_policy["workload_confirmation_retry_allowed_retries"] == 2
     assert config.retry_policy["general_retry_allowed_retries"] == 4
+    assert config.retry_policy["job_no_progress_allowed_retries"] == 5
+    assert config.retry_policy["job_unknown_progress_allowed_retries"] == 3
     assert "policy_version" not in config.retry_policy
     assert "policy_version" not in config.effective_config["retry_policy"]
     assert config.config_fingerprint.startswith("sha256:")
     effective_routes = config.effective_config["model_routes"]
     assert effective_routes[0]["request"]["temperature"] == 0.0
     assert effective_routes[0]["tools"] == {
-        "enabled": False,
+        "enabled": True,
         "advertisement": {
-            "overview": True,
+            "overview": False,
             "grep_log": True,
             "read_window": True,
-            "get_evidence_objects": False,
+            "get_evidence_objects": True,
         },
         "effective_advertised": [],
         "max_rounds": 0,
@@ -7471,7 +10216,7 @@ def test_cli_collect_all_writes_batch_result_and_trace_for_unavailable_log(
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
     assert rc == 0
     assert result["schema_version"] == "restart_agent_collect_all.v1"
-    assert result["model_results"][0]["execution_status"] == ("not_run_log_unavailable")
+    assert result["model_results"][0]["execution_status"] == "not_run"
     assert trace["schema_version"] == "restart_agent_cli_collect_all_trace.v1"
     assert json.loads(result_path.read_text(encoding="utf-8")) == result
     assert trace["analyzer_trace"]["routing_mode"] == "collect_all"
@@ -7488,9 +10233,15 @@ def test_cli_collect_all_writes_batch_result_and_trace_for_unavailable_log(
     ]
     assert live_status["status"] == "completed"
     assert live_status["deterministic"]["status"] == "not_published"
-    assert live_status["routes"]["model-a"]["status"] == "not_run_log_unavailable"
+    assert live_status["routes"]["model-a"]["status"] == "not_run"
     assert route_result_path.is_file()
     assert route_trace_path.is_file()
+    route_trace = json.loads(route_trace_path.read_text(encoding="utf-8"))
+    assert route_trace["collect_all_context"]["execution_status"] == "not_run"
+    assert (
+        route_trace["collect_all_context"]["l1_execution_assessment"]["execution_status"]
+        == "not_run"
+    )
     assert not (live_dir / "routes").exists()
     assert [event["event"] for event in live_events] == [
         "run_started",
@@ -7549,12 +10300,12 @@ def test_public_request_requires_exact_schema_and_rejects_internal_fields(tmp_pa
                 "job_id": 123,
             }
         )
-    with pytest.raises(ValueError, match="unsupported analysis_mode"):
+    with pytest.raises(ValueError, match="unsupported restart-agent request fields: analysis_mode"):
         analyzer.run(
             {
                 "schema_version": "restart_agent_request.v1",
                 "log_path": str(log_path),
-                "analysis_mode": "eventually",
+                "analysis_mode": "terminal",
             }
         )
 
@@ -7901,6 +10652,26 @@ def test_openai_transport_classifies_http_and_network_failures():
     assert connect.value.call_record["retryable"] is True
     assert timeout.value.call_record["error_type"] == "timeout"
     assert timeout.value.call_record["timeout"] is True
+    assert timeout.value.call_record["timeout_kind"] == "read"
+
+
+@pytest.mark.parametrize(
+    ("error_class", "expected_kind"),
+    [
+        (httpx.ConnectTimeout, "connect"),
+        (httpx.PoolTimeout, "pool"),
+        (httpx.WriteTimeout, "write"),
+        (httpx.ReadTimeout, "read"),
+        (httpx.TimeoutException, "unknown"),
+    ],
+)
+def test_httpx_timeout_kind_is_bounded(error_class, expected_kind):
+    error = error_class(
+        "timed out",
+        request=httpx.Request("POST", "https://provider.example/v1/chat/completions"),
+    )
+
+    assert _httpx_timeout_kind(error) == expected_kind
 
 
 def test_retry_transport_uses_injected_sleeper():

@@ -29,6 +29,8 @@ from ..models import (
     PostFaultSummary,
     ProgressFacts,
     ProgressMarker,
+    RetryLifecycle,
+    RetryLifecycleState,
     RunProgressSummary,
 )
 
@@ -64,7 +66,12 @@ def read_l0_bundle(path: str | Path, *, expected_log_path: str) -> L0Bundle:
         raise ValueError("source log byte size changed after L0 bundle construction")
     if int(source.get("mtime_ns", -1)) != stat.st_mtime_ns:
         raise ValueError("source log mtime changed after L0 bundle construction")
-    return _bundle(_mapping(payload.get("bundle"), "bundle"))
+    bundle = _bundle(_mapping(payload.get("bundle"), "bundle"))
+    if bundle.log_path != expected_log_path:
+        raise ValueError("embedded L0 bundle log_path does not match source metadata")
+    if bundle.byte_size != stat.st_size:
+        raise ValueError("embedded L0 bundle byte_size does not match source metadata")
+    return bundle
 
 
 def _bundle(value: Mapping[str, Any]) -> L0Bundle:
@@ -87,6 +94,11 @@ def _bundle(value: Mapping[str, Any]) -> L0Bundle:
         deterministic_primary_candidate=(
             _failure(value["deterministic_primary_candidate"])
             if value.get("deterministic_primary_candidate")
+            else None
+        ),
+        selected_observed_failure=(
+            _failure(value["selected_observed_failure"])
+            if value.get("selected_observed_failure")
             else None
         ),
         cascades=tuple(_cascade(item) for item in value.get("cascades") or ()),
@@ -121,6 +133,18 @@ def _bundle(value: Mapping[str, Any]) -> L0Bundle:
 
 def _failure(value: Any) -> FailureEvidence:
     payload = dict(_mapping(value, "failure"))
+    retry_lifecycle = payload.get("retry_lifecycle")
+    if retry_lifecycle is not None:
+        lifecycle = _mapping(retry_lifecycle, "failure.retry_lifecycle")
+        payload["retry_lifecycle"] = RetryLifecycle(
+            state=RetryLifecycleState(str(lifecycle["state"])),
+            attempt=(int(lifecycle["attempt"]) if lifecycle.get("attempt") is not None else None),
+            max_attempts=(
+                int(lifecycle["max_attempts"])
+                if lifecycle.get("max_attempts") is not None
+                else None
+            ),
+        )
     affected_entity = payload.get("affected_entity")
     if affected_entity is not None:
         entity = _mapping(affected_entity, "failure.affected_entity")
@@ -196,6 +220,11 @@ def _episode(value: Any) -> FailureEpisode:
     )
     payload["context_window_ids"] = tuple(payload.get("context_window_ids") or ())
     for field in (
+        "lifecycle_source_dialects",
+        "lifecycle_entities",
+        "lifecycle_fault_lines",
+        "recovery_attempt_lines",
+        "recovery_confirmation_lines",
         "precursor_lines",
         "exception_chain_lines",
         "duplicate_rendering_lines",

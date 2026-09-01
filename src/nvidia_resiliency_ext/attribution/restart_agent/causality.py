@@ -57,7 +57,13 @@ def build_result_cascades(
         covered_audited_lines.update(
             int(item["line"]) for item in audited_roles if item.get("line") in member_lines
         )
-        result.append(_cascade_payload(replace(cascade, relationship_rationales=rationales)))
+        payload = _cascade_payload(replace(cascade, relationship_rationales=rationales))
+        payload["source"] = (
+            "l0_deterministic_with_l1_relationship_l2_grounded"
+            if rationales
+            else "l0_deterministic"
+        )
+        result.append(payload)
 
     for item in audited_roles:
         line = item.get("line")
@@ -77,7 +83,8 @@ def build_result_cascades(
                 "rank_spread": _optional_singleton(failure.get("rank")),
                 "node_spread": _optional_singleton(failure.get("node")),
                 "gpu_spread": _optional_singleton(failure.get("gpu")),
-                "reason": f"L2-grounded {role} related to primary failure",
+                "source": "l1_proposed_l2_grounded",
+                "reason": f"{role} related to primary failure",
                 "relationship_rationales": [str(item.get("rationale"))],
             }
         )

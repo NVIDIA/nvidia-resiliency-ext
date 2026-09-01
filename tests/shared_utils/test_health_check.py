@@ -1129,6 +1129,34 @@ class TestAttributionService(unittest.TestCase):
         self.assertFalse(should_stop)
 
     @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_completed_analysis_failure_releases_terminal_slot(self, mock_client):
+        """A terminal backend failure must not leave the FCFS slot pending forever."""
+        client = mock_client.return_value.__enter__.return_value
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "{}"
+        response.json.return_value = {
+            "status": "completed",
+            "result": {
+                "analysis_outcome": "failed",
+                "error": "RuntimeError: provider unavailable",
+            },
+            "recommendation": {
+                "action": "UNKNOWN",
+                "reason": "analysis_failed",
+                "source": "restart_agent",
+            },
+        }
+        client.get.return_value = response
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/train.log"
+
+        service._poll_once()
+
+        self.assertIsNone(service._terminal_pending)
+        self.assertFalse(service.stop_requested())
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
     def test_get_results_treats_non_completed_status_as_not_ready(self, mock_client):
         client = mock_client.return_value.__enter__.return_value
         response = MagicMock()

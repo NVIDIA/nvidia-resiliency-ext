@@ -147,6 +147,9 @@ class LiveArtifactWriter:
             route_state.update(
                 {
                     "status": route_result.get("execution_status"),
+                    "l1_unusable_reason": _mapping(route_result.get("l1_execution_assessment")).get(
+                        "unusable_reason"
+                    ),
                     "l1_usable": route_result.get("l1_usable"),
                     "decision": analysis_result.get("decision"),
                     "error": route_result.get("error"),

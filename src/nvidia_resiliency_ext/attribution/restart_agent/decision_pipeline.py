@@ -10,10 +10,11 @@ from typing import Any, Mapping
 
 from .attempt_records import AttemptRecordAssembler
 from .causality import build_result_cascades
-from .l1 import L1EvidenceResult, execution_status
-from .l2 import L2Result, build_attempt_failure_facts
-from .l3 import DETERMINISTIC_FACT_SELECTOR, HistoryEvaluationInput, evaluate_history
-from .l4 import L4PolicyInput, RetryPolicyEvaluation, evaluate_policy
+from .current_failure_facts import build_attempt_failure_facts
+from .l1 import L1EvidenceResult, l1_contract_advisories
+from .l2 import L2Result
+from .l3 import evaluate_cycle_history
+from .l4 import L4CyclePolicyInput, L4PathSelection, RetryPolicyEvaluation, evaluate_cycle_policy
 from .models import (
     AnalysisExecutionContext,
     AnalysisResult,
@@ -22,13 +23,17 @@ from .models import (
     AttemptRecord,
     CausalRole,
     CoverageStatus,
+    CycleHistoryComparison,
     Decision,
     DecisionBasis,
     DecisionEvidence,
     FailureEvidence,
     HistorySummary,
+    JobProgressHistory,
     L0Bundle,
+    ModelRecoveryAssessment,
     RetryPolicyConfig,
+    RouteHistorySummary,
 )
 from .runtime import SYSTEM_CLOCK, Clock
 
@@ -40,8 +45,11 @@ class DecisionOutcome:
     result: AnalysisResult
     primary: FailureEvidence | None
     l2_primary: FailureEvidence | None
+    selected_observed_failure: FailureEvidence | None
     l2_audit: Mapping[str, Any]
     history: HistorySummary
+    cycle_history: CycleHistoryComparison
+    path_selection: L4PathSelection
     retry_policy: RetryPolicyEvaluation
     attempt_record: AttemptRecord | None
     deterministic_failure_facts: AttemptFailureFacts
@@ -54,8 +62,9 @@ class DecisionOutcome:
 class _ResolvedFailure:
     audit: Mapping[str, Any]
     l2_primary: FailureEvidence | None
-    primary: FailureEvidence | None
-    enriched_failure_facts: AttemptFailureFacts | None
+    l2_observation: FailureEvidence | None
+    primary_failure_facts: AttemptFailureFacts | None
+    observation_failure_facts: AttemptFailureFacts | None
 
 
 def build_decision_outcome(
@@ -72,62 +81,71 @@ def build_decision_outcome(
     route_id: str = "single",
     clock: Clock = SYSTEM_CLOCK,
 ) -> DecisionOutcome:
-    resolved = _resolve_attempt_failure_facts(
-        decision_evidence=decision_evidence,
-        l2_result=l2_result,
-    )
+    resolved = _resolve_attempt_failure_facts(l2_result)
 
     deterministic_facts = build_attempt_failure_facts(
         decision_evidence.deterministic_primary_candidate,
         decision_evidence,
         source=AttemptFailureFactsSource.L0_DETERMINISTIC,
+        selected_observation=decision_evidence.selected_observed_failure,
     )
     attempt_record = _attempt_record(
         bundle=bundle,
         decision_evidence=decision_evidence,
         execution_context=execution_context,
-        enriched_failure_facts=resolved.enriched_failure_facts if l2_result.used else None,
+        primary_failure_facts=resolved.primary_failure_facts,
+        observation_failure_facts=resolved.observation_failure_facts,
         route_id=route_id,
     )
-    fact_selector = (
-        route_id
-        if l2_result.used and resolved.enriched_failure_facts is not None
-        else DETERMINISTIC_FACT_SELECTOR
-    )
-    selected_failure_facts = resolved.enriched_failure_facts or deterministic_facts
 
     l3_started = clock.monotonic()
     if attempt_record is None:
-        history = HistorySummary(
-            available=False,
+        cycle_history = _unavailable_cycle_history(
             availability_reason=execution_context.prior_attempts.availability_reason,
+            route_id=route_id,
+            primary_available=resolved.primary_failure_facts is not None,
+            observation_available=resolved.observation_failure_facts is not None,
         )
     else:
-        history = evaluate_history(
-            HistoryEvaluationInput(
-                current_record=attempt_record,
-                fact_selector=fact_selector,
-                prior_attempts=execution_context.prior_attempts,
-            )
+        cycle_history = evaluate_cycle_history(
+            current_record=attempt_record,
+            prior_attempts=execution_context.prior_attempts,
         )
     l3_wall_clock_s = round(clock.monotonic() - l3_started, 3)
 
     l4_started = clock.monotonic()
-    l4_outcome = evaluate_policy(
-        L4PolicyInput(
-            primary=resolved.primary,
-            history=history,
-            current_affected_entity=selected_failure_facts.affected_entity,
-            model_recovery_assessment=l2_result.model_recovery_assessment,
-            assessment_grounded=l2_result.recovery_assessment_policy_grounded,
+    l4_outcome = evaluate_cycle_policy(
+        L4CyclePolicyInput(
+            deterministic_primary=decision_evidence.deterministic_primary_candidate,
+            deterministic_observation=decision_evidence.selected_observed_failure,
+            deterministic_facts=deterministic_facts,
+            history=cycle_history,
+            route_id=route_id,
+            grounded_primary=resolved.l2_primary,
+            grounded_observation=resolved.l2_observation,
+            primary_facts=resolved.primary_failure_facts,
+            observation_facts=resolved.observation_failure_facts,
+            model_recovery_assessment=_typed_l1_recovery_assessment(
+                l1_result,
+                selected_evidence_grounded=l2_result.used,
+            ),
+            l1_primary_declared=_l1_primary_declared(l1_result),
             retry_policy=RetryPolicyConfig.from_mapping(execution_context.retry_policy),
-            declared_recovery_capabilities=(execution_context.declared_recovery_capabilities),
+            policy_contexts=execution_context.policy_contexts,
         )
     )
+    assert l4_outcome.selected_failure_facts is not None
+    assert l4_outcome.selected_history is not None
+    assert l4_outcome.path_selection is not None
     primary = l4_outcome.primary
+    selected_observed_failure = l4_outcome.selected_observed_failure
+    selected_failure_facts = l4_outcome.selected_failure_facts
+    history = l4_outcome.selected_history
+    path_selection = l4_outcome.path_selection
     retry_policy = l4_outcome.retry_policy
     result_provenance = _candidate_provenance(
         primary=primary,
+        selected_observed_failure=selected_observed_failure,
         retry_policy=retry_policy,
         l1_configured=l1_configured,
         l1_result=l1_result,
@@ -136,15 +154,19 @@ def build_decision_outcome(
         history=history,
         candidate_kind=candidate_kind,
         l1_pending=l1_pending,
+        path_selection=path_selection,
     )
     result = _assemble_analysis_result(
         bundle=bundle,
         primary=primary,
+        selected_observed_failure=selected_observed_failure,
         retry_policy=retry_policy,
         result_provenance=result_provenance,
         l1_result=l1_result,
         l1_output_health=l1_output_health,
         l2_audit=resolved.audit,
+        l2_primary=resolved.l2_primary,
+        l2_observation=resolved.l2_observation,
         history=history,
         l1_configured=l1_configured,
         candidate_kind=candidate_kind,
@@ -154,10 +176,13 @@ def build_decision_outcome(
         result=result,
         primary=primary,
         l2_primary=resolved.l2_primary,
+        selected_observed_failure=selected_observed_failure,
         l2_audit=resolved.audit,
         attempt_record=attempt_record,
         selected_failure_facts=selected_failure_facts,
         history=history,
+        cycle_history=cycle_history,
+        path_selection=path_selection,
         retry_policy=retry_policy,
         deterministic_failure_facts=deterministic_facts,
         l3_wall_clock_s=l3_wall_clock_s,
@@ -165,21 +190,14 @@ def build_decision_outcome(
     )
 
 
-def _resolve_attempt_failure_facts(
-    *,
-    decision_evidence: DecisionEvidence,
-    l2_result: L2Result,
-) -> _ResolvedFailure:
+def _resolve_attempt_failure_facts(l2_result: L2Result) -> _ResolvedFailure:
     audit = l2_result.to_payload()
-    l2_primary = l2_result.primary if l2_result.used else None
-    primary = (
-        l2_primary if l2_primary is not None else decision_evidence.deterministic_primary_candidate
-    )
     return _ResolvedFailure(
         audit=audit,
-        l2_primary=l2_primary,
-        primary=primary,
-        enriched_failure_facts=l2_result.enriched_failure_facts,
+        l2_primary=l2_result.primary,
+        l2_observation=l2_result.selected_observed_failure,
+        primary_failure_facts=l2_result.primary_failure_facts,
+        observation_failure_facts=l2_result.observation_failure_facts,
     )
 
 
@@ -188,7 +206,8 @@ def _attempt_record(
     bundle: L0Bundle,
     decision_evidence: DecisionEvidence,
     execution_context: AnalysisExecutionContext,
-    enriched_failure_facts: AttemptFailureFacts | None,
+    primary_failure_facts: AttemptFailureFacts | None,
+    observation_failure_facts: AttemptFailureFacts | None,
     route_id: str,
 ) -> AttemptRecord | None:
     if execution_context.job_id is None or execution_context.cycle_id is None:
@@ -200,18 +219,48 @@ def _attempt_record(
         bundle=bundle,
         decision_evidence=decision_evidence,
     )
-    if enriched_failure_facts is not None:
+    if primary_failure_facts is not None or observation_failure_facts is not None:
         record = assembler.with_enriched(
             record,
             route_id=route_id,
-            facts=enriched_failure_facts,
+            primary=primary_failure_facts,
+            observation=observation_failure_facts,
         )
     return record
+
+
+def _unavailable_cycle_history(
+    *,
+    availability_reason: str,
+    route_id: str,
+    primary_available: bool,
+    observation_available: bool,
+) -> CycleHistoryComparison:
+    unavailable = HistorySummary(
+        available=False,
+        availability_reason=availability_reason,
+        job_history_available=False,
+        job_history_availability_reason=availability_reason,
+    )
+    route = RouteHistorySummary(
+        route_id=route_id,
+        primary=unavailable if primary_available else None,
+        observation=unavailable if observation_available else None,
+    )
+    return CycleHistoryComparison(
+        job_progress=JobProgressHistory(
+            available=False,
+            availability_reason=availability_reason,
+        ),
+        deterministic=unavailable,
+        routes=(route,),
+    )
 
 
 def _candidate_provenance(
     *,
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     retry_policy: RetryPolicyEvaluation,
     l1_configured: bool,
     l1_result: L1EvidenceResult,
@@ -220,9 +269,11 @@ def _candidate_provenance(
     history: HistorySummary,
     candidate_kind: str,
     l1_pending: bool,
+    path_selection: L4PathSelection,
 ) -> dict[str, Any]:
     provenance = _result_provenance(
         primary=primary,
+        selected_observed_failure=selected_observed_failure,
         decision_basis=retry_policy.decision_basis,
         l1_configured=l1_configured,
         l1_result=l1_result,
@@ -232,6 +283,9 @@ def _candidate_provenance(
         retry_policy=retry_policy,
     )
     provenance["candidate_kind"] = candidate_kind
+    provenance["selected_evidence_path"] = path_selection.path
+    provenance["selected_route_id"] = path_selection.route_id
+    provenance["path_selection_reason"] = path_selection.reason
     if not l1_pending:
         return provenance
     provenance["model_contribution"] = "pending_not_used"
@@ -251,18 +305,27 @@ def _assemble_analysis_result(
     *,
     bundle: L0Bundle,
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     retry_policy: RetryPolicyEvaluation,
     result_provenance: Mapping[str, Any],
     l1_result: L1EvidenceResult,
     l1_output_health: Mapping[str, Any],
     l2_audit: Mapping[str, Any],
+    l2_primary: FailureEvidence | None,
+    l2_observation: FailureEvidence | None,
     history: HistorySummary,
     l1_configured: bool,
     candidate_kind: str,
 ) -> AnalysisResult:
-    if primary is None and not l1_output_health["usable"] and l1_result.model:
+    if (
+        primary is None
+        and selected_observed_failure is None
+        and not l1_output_health["usable"]
+        and l1_result.model
+    ):
         malformed_provenance = _result_provenance(
             primary=None,
+            selected_observed_failure=None,
             decision_basis=DecisionBasis.MALFORMED_MODEL_OUTPUT.value,
             l1_configured=l1_configured,
             l1_result=l1_result,
@@ -278,11 +341,16 @@ def _assemble_analysis_result(
             retry_policy=retry_policy.to_payload(),
             failure_domain=retry_policy.failure_domain,
             result_provenance=malformed_provenance,
+            l1_assessment=_l1_assessment(l1_result),
+            l2_grounding=_public_l2_grounding(
+                l2_audit, primary=l2_primary, selected_observed_failure=l2_observation
+            ),
             primary_failure=None,
+            observed_failures=(),
+            selected_observed_failure=None,
             secondary_failures=(),
             cascades=(),
             evidence_coverage=_coverage_with_history(bundle.evidence_coverage, history.available),
-            evidence=(),
             justification="L1 model evidence was malformed and no L0 primary was available.",
         )
     return AnalysisResult(
@@ -291,9 +359,23 @@ def _assemble_analysis_result(
         retry_policy=retry_policy.to_payload(),
         failure_domain=retry_policy.failure_domain,
         result_provenance=result_provenance,
+        l1_assessment=_l1_assessment(l1_result),
+        l2_grounding=_public_l2_grounding(
+            l2_audit,
+            primary=l2_primary,
+            selected_observed_failure=l2_observation,
+        ),
         primary_failure=primary.to_failure_payload() if primary is not None else None,
-        root_cause_assessment=_assessment(l2_audit, "root_cause_assessment"),
-        model_recovery_assessment=_assessment(l2_audit, "model_recovery_assessment"),
+        observed_failures=(
+            ((l2_observation or selected_observed_failure).to_failure_payload(),)
+            if l2_observation is not None or selected_observed_failure is not None
+            else ()
+        ),
+        selected_observed_failure=(
+            selected_observed_failure.to_failure_payload()
+            if selected_observed_failure is not None
+            else None
+        ),
         secondary_failures=_secondary_failures(
             bundle,
             primary,
@@ -301,8 +383,12 @@ def _assemble_analysis_result(
         ),
         cascades=build_result_cascades(bundle, primary, l2_audit),
         evidence_coverage=_coverage_with_history(bundle.evidence_coverage, history.available),
-        evidence=_evidence(primary, l2_audit),
-        justification=_justification(primary, retry_policy.decision_basis, l2_audit),
+        justification=_justification(
+            primary,
+            selected_observed_failure,
+            retry_policy.decision_basis,
+            l2_audit,
+        ),
     )
 
 
@@ -356,16 +442,156 @@ def _primary_episode_chain_lines(bundle: L0Bundle, primary_line: int | None) -> 
     return set()
 
 
-def _assessment(
-    l2_audit: Mapping[str, Any],
-    field: str,
-) -> Mapping[str, Any] | None:
-    if not l2_audit.get("used"):
-        return None
-    if field == "model_recovery_assessment" and not l2_audit.get("recovery_assessment_used"):
-        return None
-    value = l2_audit.get(field)
+def _l1_assessment(l1_result: L1EvidenceResult) -> Mapping[str, Any] | None:
+    """Return the exact parsed L1 semantic object without downstream edits."""
+
+    value = l1_result.semantic_payload
     return dict(value) if isinstance(value, Mapping) else None
+
+
+def _typed_l1_recovery_assessment(
+    l1_result: L1EvidenceResult,
+    *,
+    selected_evidence_grounded: bool,
+) -> ModelRecoveryAssessment | None:
+    """Return exact typed L1 recovery semantics after mechanical primary grounding."""
+
+    if not selected_evidence_grounded or not isinstance(l1_result.semantic_payload, Mapping):
+        return None
+    value = l1_result.semantic_payload.get("model_recovery_assessment")
+    return ModelRecoveryAssessment.from_mapping(value) if isinstance(value, Mapping) else None
+
+
+def _l1_primary_declared(l1_result: L1EvidenceResult) -> bool:
+    payload = l1_result.semantic_payload
+    return isinstance(payload, Mapping) and isinstance(payload.get("primary_failure"), Mapping)
+
+
+def _public_l2_grounding(
+    l2_audit: Mapping[str, Any],
+    *,
+    primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
+) -> Mapping[str, Any]:
+    """Project compact L2 output without repeating or rewriting L1 semantics."""
+
+    used = bool(l2_audit.get("used"))
+    related = l2_audit.get("audited_related_failures")
+    grounded_evidence = l2_audit.get("grounded_evidence")
+    adjustments = l2_audit.get("grounding_adjustments")
+    findings = l2_audit.get("findings")
+    enriched_tracks = dict(l2_audit.get("enriched_failure_tracks") or {})
+    primary_track = enriched_tracks.get("primary")
+    observation_track = enriched_tracks.get("observation")
+    observation_grounding = l2_audit.get("observation_grounding")
+    observation_identity_grounding = (
+        observation_grounding.get("failure_identity_grounding")
+        if isinstance(observation_grounding, Mapping)
+        else None
+    )
+    if isinstance(observation_grounding, Mapping):
+        primary_findings = [dict(item) for item in findings or () if isinstance(item, Mapping)]
+        observation_findings = [
+            dict(item)
+            for item in observation_grounding.get("findings") or ()
+            if isinstance(item, Mapping)
+        ]
+    else:
+        primary_findings = []
+        observation_findings = [dict(item) for item in findings or () if isinstance(item, Mapping)]
+    all_findings = [
+        {**item, "track": track}
+        for track, track_items in (
+            ("primary", primary_findings),
+            ("observation", observation_findings),
+        )
+        for item in track_items
+    ]
+    return {
+        "used": used,
+        "track_grounding": dict(l2_audit.get("track_grounding") or {}),
+        "enriched_failure_tracks": enriched_tracks,
+        "grounding_status": str(l2_audit.get("grounding_status") or "not_run"),
+        "audit_status": str(l2_audit.get("audit_status") or "not_run"),
+        "not_run_reason": l2_audit.get("not_run_reason"),
+        "grounded_primary_failure": (
+            primary.to_failure_payload() if used and primary is not None else None
+        ),
+        "grounded_observed_failures": (
+            [selected_observed_failure.to_failure_payload()]
+            if used and selected_observed_failure is not None
+            else []
+        ),
+        "grounded_selected_observation": (
+            selected_observed_failure.to_failure_payload()
+            if used and selected_observed_failure is not None
+            else None
+        ),
+        "grounded_related_failures": [
+            dict(item) for item in related or () if isinstance(item, Mapping)
+        ],
+        "grounded_evidence": [
+            dict(item) for item in grounded_evidence or () if isinstance(item, Mapping)
+        ],
+        "audit_influence": "observational_only",
+        "grounded_failure_identities": {
+            "primary": _grounded_failure_identity_projection(
+                l2_audit.get("failure_identity_grounding"),
+                published=primary_track is not None,
+            ),
+            "observation": _grounded_failure_identity_projection(
+                observation_identity_grounding,
+                published=observation_track is not None,
+            ),
+        },
+        "affected_entity_selection": (
+            dict(l2_audit["affected_entity_selection"])
+            if primary_track is not None
+            and isinstance(l2_audit.get("affected_entity_selection"), Mapping)
+            else None
+        ),
+        "history_identities": {
+            "primary": _history_identity_projection(primary_track),
+            "observation": _history_identity_projection(observation_track),
+        },
+        "grounding_adjustments": [
+            dict(item) for item in adjustments or () if isinstance(item, Mapping)
+        ],
+        "track_findings": {
+            "primary": primary_findings,
+            "observation": observation_findings,
+        },
+        "findings": all_findings,
+    }
+
+
+def _grounded_failure_identity_projection(
+    value: Any,
+    *,
+    published: bool,
+) -> Mapping[str, Any] | None:
+    if not published or not isinstance(value, Mapping):
+        return None
+    return {
+        str(field): dict(grounding)
+        for field, grounding in value.items()
+        if isinstance(grounding, Mapping)
+    }
+
+
+def _history_identity_projection(value: Any) -> Mapping[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        "ready": bool(value.get("history_identity_ready")),
+        "identity_kind": value.get("identity_kind"),
+        "anchor_line": value.get("identity_anchor_line"),
+        "anchor_reason": value.get("identity_anchor_reason"),
+        "root_fingerprint": value.get("root_fingerprint"),
+        "root_fingerprint_source": value.get("root_fingerprint_source"),
+        "observation_fingerprint": value.get("observation_fingerprint"),
+        "observation_fingerprint_source": value.get("observation_fingerprint_source"),
+    }
 
 
 def _coverage_with_history(coverage: Mapping[str, str], available: bool) -> dict[str, str]:
@@ -376,43 +602,24 @@ def _coverage_with_history(coverage: Mapping[str, str], available: bool) -> dict
     return result
 
 
-def _evidence(
-    primary: FailureEvidence | None,
-    l2_audit: Mapping[str, Any],
-) -> tuple[Mapping[str, Any], ...]:
-    if l2_audit.get("used"):
-        grounded = l2_audit.get("grounded_evidence")
-        if isinstance(grounded, (list, tuple)):
-            return tuple(item for item in grounded if isinstance(item, Mapping))
-    if primary is None or primary.line is None or primary.quote is None:
-        return ()
-    return (
-        {
-            "line": primary.line,
-            "quote": primary.quote,
-            "supports": ["primary_failure"],
-        },
-    )
-
-
 def _justification(
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     decision_basis: str,
     l2_audit: Mapping[str, Any],
 ) -> str:
     if primary is None:
+        if selected_observed_failure is not None:
+            return (
+                f"Line {selected_observed_failure.line} is a grounded terminal failure "
+                f"surface without an identified primary; L4 policy basis is {decision_basis}."
+            )
         return "No actionable failure signature was found in the available log."
     if l2_audit.get("used"):
-        recovery = l2_audit.get("model_recovery_assessment")
-        if isinstance(recovery, Mapping):
-            rationale = recovery.get("rationale")
-            if isinstance(rationale, str) and rationale.strip():
-                return rationale
-        root_cause = l2_audit.get("root_cause_assessment")
-        if isinstance(root_cause, Mapping):
-            summary = root_cause.get("summary")
-            if isinstance(summary, str) and summary.strip():
-                return summary
+        return (
+            f"Line {primary.line} is the L2-grounded primary failure; "
+            f"L4 policy basis is {decision_basis}."
+        )
     return (
         f"Line {primary.line} matched failure class {primary.failure_class}; "
         f"policy basis is {decision_basis}."
@@ -438,6 +645,7 @@ def _optional_int(value: Any) -> int | None:
 def _result_provenance(
     *,
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     decision_basis: str,
     l1_configured: bool,
     l1_result: L1EvidenceResult,
@@ -455,35 +663,40 @@ def _result_provenance(
     history_contribution = _history_contribution(history, retry_policy)
     evidence_source = _evidence_source(
         primary=primary,
+        selected_observed_failure=selected_observed_failure,
         decision_basis=decision_basis,
         model_used=bool(l2_audit.get("used")),
         history_contribution=history_contribution,
     )
     result_quality = _result_quality(
         primary=primary,
+        selected_observed_failure=selected_observed_failure,
         evidence_source=evidence_source,
         model_contribution=model_contribution,
-        l2_audit=l2_audit,
     )
     notes = _result_provenance_notes(
         model_contribution=model_contribution,
         l1_result=l1_result,
         l1_output_health=l1_output_health,
-        l2_audit=l2_audit,
     )
-    l1_execution = execution_status(
-        configured=l1_configured,
-        result=l1_result,
-        health=l1_output_health,
-    )
+    l1_execution = l1_output_health.get("execution_assessment") or {}
+    l1_result_quality = l1_execution.get("result_quality")
+    if l1_result_quality == "not_applicable":
+        l1_execution_status = "not_run"
+    elif l1_result_quality == "usable":
+        l1_execution_status = "ok"
+    elif l1_result_quality == "degraded":
+        l1_execution_status = "degraded"
+    else:
+        l1_execution_status = "failed"
     return {
         "evidence_source": evidence_source,
         "model_contribution": model_contribution,
         "history_contribution": history_contribution,
         "result_quality": result_quality,
         "nvrx_use": _nvrx_use(result_quality),
-        "l1_execution_status": l1_execution["status"],
-        "l1_execution_issues": l1_execution["issues"],
+        "l1_execution_status": l1_execution_status,
+        "l1_execution_issues": list(l1_execution.get("reason_codes") or []),
         "notes": notes,
     }
 
@@ -491,6 +704,7 @@ def _result_provenance(
 def _evidence_source(
     *,
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     decision_basis: str,
     model_used: bool,
     history_contribution: str,
@@ -502,9 +716,15 @@ def _evidence_source(
     if history_contribution in {"retry_budget_exhausted", "observed_advance"}:
         return "history_over_l1" if model_used else "history_over_l0"
     if model_used:
-        return "l1_model_audited"
+        return (
+            "l1_model_grounded_observation"
+            if primary is None and selected_observed_failure is not None
+            else "l1_model_grounded"
+        )
     if primary is not None:
         return "l0_deterministic"
+    if selected_observed_failure is not None:
+        return "l0_observation_only"
     return "no_primary"
 
 
@@ -516,10 +736,6 @@ def _model_contribution(
     l2_audit: Mapping[str, Any],
 ) -> str:
     if l2_audit.get("used"):
-        if l2_audit.get("audit_status") == "findings":
-            return "attempted_used_with_findings"
-        if l2_audit.get("audit_status") == "resolved":
-            return "attempted_used_with_resolved_findings"
         return "attempted_used"
     if not l1_configured:
         return "not_enabled"
@@ -531,8 +747,12 @@ def _model_contribution(
         return "attempted_not_used_truncated"
     if l1_result.anomalies.get("provider_error"):
         return "attempted_not_used_provider_error"
-    if l1_output_health.get("status") in {"contract_invalid", "malformed"}:
+    if l1_output_health.get("status") == "contract_invalid":
+        return "attempted_not_used_contract_invalid"
+    if l1_output_health.get("status") == "malformed":
         return "attempted_not_used_malformed"
+    if l2_audit.get("grounding_status") == "unavailable":
+        return "attempted_not_used_ungrounded"
     return "not_needed_l0"
 
 
@@ -540,15 +760,17 @@ def _history_contribution(
     history: HistorySummary,
     retry_policy: RetryPolicyEvaluation,
 ) -> str:
-    if not history.available:
+    if not history.available and not history.job_history_available:
         return "not_available"
-    if retry_policy.decision_basis == DecisionBasis.RETRY_BUDGET_EXHAUSTED.value:
+    if retry_policy.retry_budget_exhausted:
         return "retry_budget_exhausted"
     if any(
         ledger is not None and ledger.applicable and ledger.observed_advance
         for ledger in (
             retry_policy.general_root_ceiling,
-            retry_policy.selected_rule_budget,
+            retry_policy.selected_policy_ledger,
+            retry_policy.job_no_progress_guard,
+            retry_policy.job_unknown_progress_guard,
         )
     ):
         return "observed_advance"
@@ -558,31 +780,20 @@ def _history_contribution(
 def _result_quality(
     *,
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     evidence_source: str,
     model_contribution: str,
-    l2_audit: Mapping[str, Any],
 ) -> str:
     if evidence_source in {
         "log_unavailable",
         "malformed_model_output",
     }:
         return "unusable"
-    if primary is None:
+    if primary is None and selected_observed_failure is None:
         return "unusable"
-    if model_contribution.startswith("attempted_not_used") or (
-        model_contribution == "attempted_used_with_findings"
-        and _l2_material_finding_count(l2_audit) > 0
-    ):
+    if model_contribution.startswith("attempted_not_used"):
         return "degraded"
     return "normal"
-
-
-def _l2_material_finding_count(audit: Mapping[str, Any]) -> int:
-    return sum(
-        1
-        for finding in audit.get("findings") or []
-        if isinstance(finding, Mapping) and finding.get("policy_material") is True
-    )
 
 
 def _nvrx_use(result_quality: str) -> str:
@@ -598,27 +809,17 @@ def _result_provenance_notes(
     model_contribution: str,
     l1_result: L1EvidenceResult,
     l1_output_health: Mapping[str, Any],
-    l2_audit: Mapping[str, Any],
 ) -> list[str]:
     notes: list[str] = []
     if model_contribution.startswith("attempted_not_used"):
         notes.append(model_contribution.removeprefix("attempted_not_used_"))
-    if model_contribution == "attempted_used_with_findings":
-        notes.append(
-            "l2_audit_material_findings"
-            if _l2_material_finding_count(l2_audit)
-            else "l2_audit_non_material_findings"
-        )
-    if model_contribution == "attempted_used_with_resolved_findings":
-        notes.append("l2_audit_findings_resolved")
-    if l2_audit.get("l0_policy_downgraded"):
-        notes.append("l0_semantic_stop_downgraded")
     if l1_result.unsupported_tool_requests:
         notes.append("unsupported_tool_request")
-    if l1_result.anomalies.get("forced_final_evidence_call"):
-        notes.append("forced_final_evidence_call")
-    if l1_result.anomalies.get("contract_repair_requested"):
-        notes.append("contract_repair_requested")
+    if l1_result.anomalies.get("final_evidence_turn"):
+        notes.append(str(l1_result.anomalies.get("final_evidence_reason") or "final_evidence_turn"))
     if l1_output_health.get("status") == "contract_invalid":
         notes.append("l1_contract_invalid")
+    notes.extend(
+        str(item.get("code")) for item in l1_contract_advisories(l1_result) if item.get("code")
+    )
     return notes

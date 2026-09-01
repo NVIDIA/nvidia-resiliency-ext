@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Mapping, Protocol, Sequence
 
 from ..immutable import freeze_json_value
@@ -14,8 +15,113 @@ from ..models import L0ModelFacingView
 DEFAULT_ANALYSIS_TIMEOUT_SECONDS = 240.0
 
 
+class L1ExecutionStatus(str, Enum):
+    """Closed lifecycle state for one L1 route invocation."""
+
+    NOT_RUN = "not_run"
+    IN_FLIGHT = "in_flight"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class L1ResultQuality(str, Enum):
+    """Whether L1 produced semantics that L2 may consume."""
+
+    NOT_APPLICABLE = "not_applicable"
+    USABLE = "usable"
+    DEGRADED = "degraded"
+    UNUSABLE = "unusable"
+
+
+class L1ParseStatus(str, Enum):
+    """Closed parsing and response-contract state for model output."""
+
+    NOT_RUN = "not_run"
+    NOT_AVAILABLE = "not_available"
+    VALID = "valid"
+    MALFORMED = "malformed"
+    CONTRACT_INVALID = "contract_invalid"
+
+
+class L1FinalEvidenceReason(str, Enum):
+    """Closed reasons for the one optional tools-disabled final turn."""
+
+    CONTRACT_REPAIR = "contract_repair"
+    FORCED_FINAL_AFTER_TOOL_EXHAUSTION = "forced_final_after_tool_exhaustion"
+    FORCED_FINAL_AFTER_OUTPUT_LIMIT = "forced_final_after_output_limit"
+
+
+class L1ExecutionReason(str, Enum):
+    """Closed diagnostic reasons for degraded or unusable L1 execution."""
+
+    ANALYSIS_DEADLINE_EXCEEDED = "analysis_deadline_exceeded"
+    CONTEXT_BUDGET_EXCEEDED = "context_budget_exceeded"
+    CONTEXT_WINDOW_EXCEEDED = "context_window_exceeded"
+    PROVIDER_TIMEOUT = "provider_timeout"
+    PROVIDER_ERROR = "provider_error"
+    PROVIDER_HTTP_ERROR = "provider_http_error"
+    OUTPUT_TRUNCATED = "output_truncated"
+    MALFORMED_OUTPUT = "malformed_output"
+    CONTRACT_INVALID = "contract_invalid"
+    NO_VALID_EVIDENCE = "no_valid_evidence"
+    MODEL_CALL_FAILED = "model_call_failed"
+    RETRY_USED = "retry_used"
+    UNSUPPORTED_TOOL_REQUEST = "unsupported_tool_request"
+    TOOL_ROUND_EXHAUSTED = "tool_round_exhausted"
+    CONTRACT_REPAIR = "contract_repair"
+    ORCHESTRATION_ERROR = "orchestration_error"
+
+
+@dataclass(frozen=True)
+class L1ExecutionAssessment:
+    """Provider-neutral execution envelope consumed by downstream stages."""
+
+    execution_status: L1ExecutionStatus
+    result_quality: L1ResultQuality
+    parse_status: L1ParseStatus
+    evidence_present: bool
+    final_evidence_reason: L1FinalEvidenceReason | None = None
+    reason_codes: tuple[L1ExecutionReason, ...] = ()
+    errors: tuple[str, ...] = ()
+
+    @property
+    def usable(self) -> bool:
+        return self.result_quality in (L1ResultQuality.USABLE, L1ResultQuality.DEGRADED)
+
+    @property
+    def degraded(self) -> bool:
+        return self.result_quality is L1ResultQuality.DEGRADED
+
+    @property
+    def unusable_reason(self) -> L1ExecutionReason | None:
+        if self.result_quality is not L1ResultQuality.UNUSABLE or not self.reason_codes:
+            return None
+        return self.reason_codes[0]
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "execution_status": self.execution_status.value,
+            "result_quality": self.result_quality.value,
+            "parse_status": self.parse_status.value,
+            "usable": self.usable,
+            "degraded": self.degraded,
+            "evidence_present": self.evidence_present,
+            "final_evidence_reason": (
+                self.final_evidence_reason.value if self.final_evidence_reason is not None else None
+            ),
+            "reason_codes": [reason.value for reason in self.reason_codes],
+            "unusable_reason": (
+                self.unusable_reason.value if self.unusable_reason is not None else None
+            ),
+            "errors": list(self.errors),
+        }
+
+
 class EvidenceTools(Protocol):
     """Read-only evidence expansion capabilities available to L1 adapters."""
+
+    @property
+    def line_count(self) -> int: ...
 
     def overview(self) -> dict[str, Any]: ...
 
@@ -25,6 +131,7 @@ class EvidenceTools(Protocol):
         *,
         ignore_case: bool = True,
         max_matches: int = 50,
+        result_mode: str = "compact",
     ) -> dict[str, Any]: ...
 
     def read_window(
@@ -42,7 +149,7 @@ class EvidenceTools(Protocol):
 class L1EvidenceResult:
     """Raw, provider-neutral result returned by one L1 evidence extractor."""
 
-    evidence: Mapping[str, Any] | None
+    semantic_payload: Mapping[str, Any] | None
     model: str
     raw_model_output: str | None = None
     success: bool = False
@@ -55,8 +162,12 @@ class L1EvidenceResult:
     anomalies: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.evidence is not None:
-            object.__setattr__(self, "evidence", freeze_json_value(self.evidence))
+        if self.semantic_payload is not None:
+            object.__setattr__(
+                self,
+                "semantic_payload",
+                freeze_json_value(self.semantic_payload),
+            )
         for name in (
             "model_calls",
             "tool_calls",
@@ -73,7 +184,7 @@ class L1EvidenceResult:
     @classmethod
     def disabled(cls) -> "L1EvidenceResult":
         return cls(
-            evidence=None,
+            semantic_payload=None,
             model="",
             success=False,
             anomalies={"l1_enabled": False},
@@ -87,7 +198,9 @@ class L1EvidenceResult:
             "malformed": self.malformed,
             "errors": list(self.errors),
             "raw_model_output": self.raw_model_output,
-            "parsed_evidence": dict(self.evidence) if self.evidence is not None else None,
+            "semantic_payload": (
+                dict(self.semantic_payload) if self.semantic_payload is not None else None
+            ),
             "model_calls": [dict(item) for item in self.model_calls],
             "tool_calls": [dict(item) for item in self.tool_calls],
             "unsupported_tool_requests": [dict(item) for item in self.unsupported_tool_requests],

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
 
 from ..l1.contracts import L1EvidenceResult
@@ -27,7 +28,9 @@ def model_visible_line_numbers(
                 saw_model_payload = True
                 visible.update(_line_references(model_payload))
         elif event_type == "tool_result":
-            visible.update(_line_references(event.get("result")))
+            tool_data = _successful_tool_data(event)
+            if tool_data is not None:
+                visible.update(_line_references(tool_data))
     if not saw_model_payload:
         visible.update(_line_references(model_view.prompt_payload()))
     return visible
@@ -49,10 +52,57 @@ def model_visible_line_texts(
                 saw_model_payload = True
                 _collect_line_texts(model_payload, visible)
         elif event_type == "tool_result":
-            _collect_line_texts(event.get("result"), visible)
+            tool_data = _successful_tool_data(event)
+            if tool_data is not None:
+                _collect_line_texts(tool_data, visible)
     if not saw_model_payload:
         _collect_line_texts(model_view.prompt_payload(), visible)
     return visible
+
+
+def model_visible_value_line_numbers(
+    model_view: L0ModelFacingView,
+    result: L1EvidenceResult,
+    value: str,
+) -> set[int]:
+    """Return source lines where an exact model-visible value was rendered."""
+
+    visible: set[int] = set()
+    saw_model_payload = False
+    for event in result.transcript_events:
+        event_type = event.get("event_type")
+        if event_type == "bundle_snapshot":
+            model_payload = event.get("model_visible_payload")
+            if isinstance(model_payload, Mapping):
+                saw_model_payload = True
+                _collect_value_line_numbers(model_payload, value, visible)
+        elif event_type == "tool_result":
+            tool_data = _successful_tool_data(event)
+            if tool_data is not None:
+                _collect_value_line_numbers(tool_data, value, visible)
+    if not saw_model_payload:
+        _collect_value_line_numbers(model_view.prompt_payload(), value, visible)
+    return visible
+
+
+def text_contains_exact_value(text: str, value: str) -> bool:
+    """Return whether a rendered value appears as a complete token."""
+
+    return (
+        re.search(
+            rf"(?<![A-Za-z0-9._/-]){re.escape(value)}(?![A-Za-z0-9._/-])",
+            text,
+        )
+        is not None
+    )
+
+
+def _successful_tool_data(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    result = event.get("result")
+    if not isinstance(result, Mapping) or result.get("status") != "ok":
+        return None
+    data = result.get("data")
+    return data if isinstance(data, Mapping) else None
 
 
 def _collect_line_texts(value: Any, result: dict[int, set[str]]) -> None:
@@ -69,6 +119,22 @@ def _collect_line_texts(value: Any, result: dict[int, set[str]]) -> None:
     elif isinstance(value, (list, tuple)):
         for item in value:
             _collect_line_texts(item, result)
+
+
+def _collect_value_line_numbers(value: Any, candidate: str, result: set[int]) -> None:
+    if isinstance(value, Mapping):
+        local_lines = {int(item) for field, item in value.items() if _is_line_field(field, item)}
+        if local_lines and any(
+            isinstance(item, str)
+            and (item == candidate or text_contains_exact_value(item, candidate))
+            for item in value.values()
+        ):
+            result.update(local_lines)
+        for item in value.values():
+            _collect_value_line_numbers(item, candidate, result)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_value_line_numbers(item, candidate, result)
 
 
 def _is_line_field(field: Any, value: Any) -> bool:

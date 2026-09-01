@@ -203,8 +203,15 @@ Restart Agent model-route timeout.
 - `pending`: registered but terminal analysis has not started;
 - `in_flight`: analysis is running, optionally with a deterministic candidate;
 - `completed`: the configured route has completed, or no better result can be
-  produced within the Restart Agent analysis deadline;
-- `failed`: service execution failed without a valid candidate.
+  produced within the Restart Agent analysis deadline. This is a request
+  lifecycle status, so terminal execution failure is also `completed`.
+
+When execution fails without a valid candidate, the internal registry retains
+`failed` for diagnostics and metrics. The public terminal response projects it
+as `status=completed`, sets `result.analysis_outcome=failed`, and returns an
+`UNKNOWN` recommendation with reason `analysis_failed`. This lets an existing
+consumer finish the request without mistaking a permanent failure for work
+still in flight.
 
 The top-level response retains `status`, `result`, `recommendation`, and
 `candidate_recommendation`. The full Restart Agent response is stored under
@@ -255,6 +262,53 @@ No Restart Agent configuration file is required for the managed NVRx path.
 
 ## Observability
 
+### Service Log Contract
+
+The `lib` backend emits stable single-line key/value events to the managed
+attrsvc stdout/stderr log. Every Restart Agent event includes `event`,
+`job_id`, `cycle_id`, and `log_path`; route-dependent events also include
+`candidate_kind` and `route_id`. Durations use numeric seconds with an `_s`
+suffix. An unavailable value is logged as `unknown`, not inferred.
+
+Attrsvc initialization has one outer diagnostic boundary. A configuration,
+endpoint, or adapter-construction failure emits
+`event=attrsvc.startup.failed` with `phase` and the complete chained traceback,
+then exits nonzero. Path validators and config-file loading include the
+offending filesystem path in their exception. Paths may be logged, but
+credential contents and file contents must never be logged. Uvicorn retains
+ownership of backend-lifespan startup failures.
+
+INFO records lifecycle and stage-completion milestones:
+
+| Event | Meaning |
+| --- | --- |
+| `restart_agent.request.accepted` | Attrsvc registered an explicit progressive or terminal request. |
+| `restart_agent.progressive.registered` | Pre-end L0A work was scheduled or explicitly disabled. |
+| `restart_agent.terminal.started` | Authoritative terminal drain and analysis began. |
+| `restart_agent.terminal.drain_completed` | The bounded live-log convergence wait ended. |
+| `restart_agent.candidate.ready` | A deterministic or route-enriched recommendation became available. |
+| `restart_agent.analysis.completed` | The attempt reached its compact final service result. |
+
+`L0A.md` through `L4.md` own the stage-specific INFO events and fields.
+`PROGRESSIVE.md` owns progressive refresh and terminal-drain fields. ERROR or
+WARNING records execution failures, provider degradation, precompute errors,
+and max-wait convergence. DEBUG records substage and individual model/tool-call
+timing. INFO and DEBUG must not contain credentials, prompts, raw model
+responses, tool output, raw log excerpts, or complete evidence objects.
+
+Route-stage `candidate_kind` comes from canonical result provenance, not from
+whether L1 merely returned a structurally usable response.
+
+Every operational emission crosses a best-effort isolation boundary. A log
+projection or handler failure may produce a bounded
+`restart_agent.observability.failed` warning, but it cannot prevent worker
+submission, change an attempt state, alter a recommendation, or stall the
+progressive scheduler.
+
+The service log is operational observability, not a replacement for the
+detailed trace. FT-managed execution does not persist detailed trace artifacts
+by default.
+
 Attrsvc health and stats for `lib` report:
 
 - backend name and effective config fingerprint;
@@ -281,10 +335,11 @@ The integration requires tests for:
 - cycle zero, positive cycle, and missing-cycle identity;
 - progressive submission before file creation;
 - duplicate progressive and terminal requests;
-- nonblocking pending, deterministic, completed, and failed GET responses;
+- nonblocking pending, deterministic, completed, and terminal-failure GET responses;
 - attrsvc publishing completed and candidate recommendations independently;
 - NVRx ignoring in-flight candidates and consuming only a completed
   recommendation;
+- NVRx releasing its terminal request slot after a completed analysis failure;
 - missing/empty logs and log-convergence bounds;
 - late route completion updating history;
 - execution-registry eviction and clean shutdown; and

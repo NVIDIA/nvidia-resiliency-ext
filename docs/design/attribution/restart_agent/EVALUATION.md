@@ -45,7 +45,7 @@ A production-comparable run MUST use the same product version and resolved
 restart-agent configuration, or explicitly record their differences. Product
 version covers prompt, schema, evidence-selection, and stage algorithms. The
 configuration fingerprint covers model routes, provider requests, reasoning,
-tools, retries, deadlines, history bounds, recovery capabilities, and retry
+tools, retries, deadlines, history bounds, policy contexts, and retry
 policy.
 
 Gold labels, expected actions, case names, source-directory labels, and review

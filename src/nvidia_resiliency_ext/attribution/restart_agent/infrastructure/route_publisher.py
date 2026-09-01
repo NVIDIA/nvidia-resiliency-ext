@@ -128,6 +128,7 @@ class RouteArtifactPublisher:
                 "collect_all_context": {
                     "route_id": route_result.route_id,
                     "execution_status": route_result.execution_status,
+                    "l1_execution_assessment": dict(route_result.l1_execution_assessment),
                     "publication": "route_complete",
                     "batch_trace": self._batch_trace_path,
                 },

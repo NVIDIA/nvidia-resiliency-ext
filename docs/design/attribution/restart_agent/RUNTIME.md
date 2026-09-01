@@ -127,8 +127,8 @@ receives ready-to-use dependencies plus non-secret effective-configuration
 metadata for tracing.
 
 Actual attempt records are runtime state, not configuration. Product
-configuration controls route execution, retry budgets, declared recovery
-capabilities, and record retention. The restart transition is an immutable
+configuration controls route execution, retry budgets, declared policy
+contexts, and record retention. The restart transition is an immutable
 product guarantee encoded in the L1 system prompt. For example,
 runtime history and L0 source configuration are:
 
@@ -198,11 +198,12 @@ The MVP store is `InMemoryAttemptRecordStore`. It has these semantics:
 - idempotent upsert by `(job_id, cycle_id)`;
 - replacement rather than recurrence inflation when a cycle is reanalyzed;
 - retention of one shared L0 progress summary, one required deterministic
-  failure-facts block, and a compact enriched-facts list; each fact block owns
-  its mechanism root and optional exact affected entity;
+  failure-facts block, and a compact enriched-route list; each route has
+  independently optional primary and observation fact blocks;
 - at most one enriched entry per `route_id`; a repeated route update replaces
-  that entry rather than appending a duplicate;
-- deterministic facts remain the only history-comparison source in MVP;
+  both track slots atomically rather than appending a duplicate;
+- deterministic, route-primary, and route-observation tracks remain separate
+  history-comparison sources;
 - independent state for different jobs;
 - thread-safe view and update operations;
 - oldest-cycle eviction after `max_attempts_per_job` records for one job; and
@@ -280,17 +281,16 @@ Selecting a `PriorAttemptView` requires all of:
 - integer `cycle_id` supplied by the caller.
 
 The runtime can select prior records before L0 knows the current fingerprint.
-L3 additionally requires a non-empty fingerprint in the deterministic or
-selected enriched facts before it can compare roots. An `AttemptRecord` upsert
-requires a non-empty deterministic L0 fingerprint because the deterministic
-block is mandatory in MVP.
+L3 requires a non-empty fingerprint only for the particular identity track it
+compares. `AttemptRecord` upsert does not require a root fingerprint because
+identity-none attempts still contribute to shared same-job progress guards.
 
 If store, request, or fingerprint eligibility is absent, analysis continues
 without recurrence evidence. Trace state reports one of `history_disabled`,
 `missing_job_id`, `missing_cycle_id`, or `missing_root_fingerprint`. Missing
 identity is not an error in the public analysis request. Missing job/cycle
-prevents prior selection and record upsert; missing deterministic fingerprint
-prevents record upsert and makes L3 unavailable for that branch.
+prevents prior selection and record upsert; missing track fingerprints make
+only those identity comparisons unavailable.
 
 An eligible lookup that finds no prior records is available-but-empty, not
 unavailable. L3 receives an empty immutable view with
@@ -299,11 +299,11 @@ history or missing identity.
 
 ## Attempt Progress Construction
 
-L0 constructs one immutable `AttemptProgressSummary` from deterministic log
-facts. `AttemptRecordAssembler` places that summary at the top level of the
-record so deterministic and enriched routes share it. Rank-duplicated marker
-lines are deduplicated into logical observations before values or counts are
-computed.
+`AttemptRecordAssembler` constructs one immutable `AttemptProgressSummary` from
+the authoritative progress and coverage facts in L0A outputs. It places that
+summary at the top level of the record so deterministic and enriched routes
+share it. Rank-duplicated marker lines are deduplicated into logical
+observations before values or counts are computed.
 
 - Training progress uses completed application iteration/step markers. Setup,
   started-but-not-completed operations, traceback copies, and raw rank fanout do
@@ -344,40 +344,59 @@ For one request, the runtime performs:
 validate request
   -> take immutable PriorAttemptView for exact job and earlier cycles
   -> construct invocation context
-  -> L0 builds progress and deterministic failure facts
+  -> L0A builds L0Bundle and DecisionEvidence
+  -> AttemptRecordAssembler derives progress and deterministic failure facts
   -> assemble current AttemptRecord(enriched=[]); upsert when eligible
   -> run deterministic L3/L4
   -> publish deterministic recommendation candidate
   -> start configured model routes
-  -> each completed L2 route atomically adds/replaces enriched[route_id]
-  -> run that enriched route through L3/L4 using the same PriorAttemptView
+  -> each completed L2 route atomically adds/replaces its primary/observation tracks
+  -> L3 compares all available tracks using the same PriorAttemptView
+  -> L4 selects the route path for that candidate
   -> close record updates at completion or analysis timeout
   -> return invocation-owned results and artifacts
 ```
 
+### Publication Callbacks
+
+The library exposes bounded, failure-isolated publication callbacks at three
+runtime boundaries:
+
+| Callback | Publication point |
+| --- | --- |
+| `on_l0_ready` | After L0A and Decision Evidence are frozen; model-backed runs also include L0B before route fanout. |
+| `on_deterministic_ready` | After deterministic L3/L4 completes and before waiting for enriched routes. |
+| `on_route_complete` | Once for each route when that route reaches a terminal execution status. |
+
+Callbacks receive immutable objects and cannot change analysis semantics. They
+must perform bounded work or hand off immediately. Callback failures are
+traced but do not alter candidates; stale, superseded, or post-timeout updates
+cannot mutate a closed attempt record. `SCHEMA.md` owns canonical artifact
+paths, write ordering, and completion-marker semantics.
+
 The record has one contract throughout its lifetime. Immutable replacements
 represent the current `AttemptRecord` during analysis; its final value appears
 unchanged in a later cycle's `PriorAttemptView`. There is no conversion to a
-differently named history record. L0 supplies shared progress and deterministic
-facts, including the root and optional affected entity, and L2 supplies each
-enriched fact block under the same contract.
+differently named history record. L0A supplies the authoritative evidence from
+which `AttemptRecordAssembler` derives shared progress and deterministic facts,
+including the root and optional affected entity. L2 supplies each enriched fact
+track under the same contract.
 `AttemptRecordAssembler` creates the immutable replacements and the runtime
-commits them. L3 and L4 read the selected block and prior view but do not mutate
-the record.
+commits them. L3 reads every available track and the prior view; L4 selects one
+path for a candidate. Neither stage mutates the record.
 
-The deterministic block is the sole policy-active history-comparison source
-for MVP `collect_all`. Enriched entries are retained for observability and
-future design but ignored by later L3 comparisons. Model-route completion order
-therefore cannot affect MVP policy. Future route selection may choose enriched
-facts only after its authority and migration semantics are specified.
+Each route candidate uses its own grounded primary/observation tracks and the
+shared deterministic fallback. `collect_all` still returns route candidates
+independently; it does not vote or choose a winner. Model-route completion order
+therefore cannot become implicit route preference.
 
-Attempt progress is not route-selected semantic output. The runtime constructs
-`AttemptProgressSummary` from deterministic current-log L0 facts and stores it
-once alongside the deterministic failure block. This prevents two model routes
-from creating different claims about whether the same cycle reached training,
-checkpointed, or progressed after the fault.
+Attempt progress is not route-selected semantic output. The runtime assembler
+constructs `AttemptProgressSummary` from deterministic current-log facts in
+L0A outputs and stores it once alongside the deterministic failure block. This
+prevents two model routes from creating different claims about whether the same
+cycle reached training, checkpointed, or progressed after the fault.
 
-An enriched entry contains only compact L2-grounded current-attempt failure
+An enriched entry contains only compact L2-grounded primary and observation
 facts plus `route_id`. It does not contain model transcripts, citations, tool
 payloads, token metrics, `HistorySummary`, or `L4PolicyOutcome`. Copying L3 into
 the record would recursively embed prior history; copying L4 would make the
@@ -460,6 +479,30 @@ does not own attempt-record or history-comparison semantics. If attrsvc
 hydration is designed later, it may build on the same typed store boundary.
 No MCP history endpoint, hydration protocol, or restart-surviving persistence
 is required for MVP.
+
+Core stages return typed results, timings, and callbacks; they do not write
+service logs directly. The attrsvc adapter translates those outputs into the
+logging contracts owned by `L0A.md` through `L4.md`, `PROGRESSIVE.md`, and
+`ATTRSVC_INTEGRATION.md`. This keeps logging infrastructure outside the
+stateless analysis logic and ensures CLI/library callers are not forced to
+install log handlers.
+
+Runtime lifecycle INFO events are:
+
+| Event | Required fields beyond the common identity |
+| --- | --- |
+| `restart_agent.candidate.ready` | `candidate_kind`, optional `route_id`, `decision`, `decision_basis`, `terminal_to_ready_s` |
+| `restart_agent.analysis.completed` | `status`, `decision`, `decision_basis`, `source`, `terminal_total_s`, `route_count` |
+
+Candidate timing is measured from the terminal request at the service boundary;
+stage timing remains the value returned by the stage itself. Logging callbacks
+and lifecycle event handlers must not prevent worker submission, delay
+publication, stall progressive scheduling, or change candidate selection.
+
+For route events, `candidate_kind` is the candidate actually selected in the
+result provenance: `deterministic` or `l1_enriched`. The decision trace records
+the same value. L1 structural usability alone does not establish that the
+enriched candidate was selected.
 
 ## Verification
 
