@@ -45,7 +45,7 @@ Evidence method:
   teardown events in related_failures only after a primary has been identified. If the
   log contains only downstream or teardown evidence, use insufficient_evidence rather
   than promoting that evidence to primary. Preserve up to three visible failure surfaces
-  in observed_failures. Select exactly one only when it is the unique terminal surface
+  in observed_failures. Choose exactly one only when it is the unique terminal surface
   after excluding retry-pending, recovered, progressed-after, and diagnostic-only
   observations; independent tied surfaces leave selected_observed_failure_id null.
 - Repeated rendering or multi-rank fanout within one causal episode is one event, not
