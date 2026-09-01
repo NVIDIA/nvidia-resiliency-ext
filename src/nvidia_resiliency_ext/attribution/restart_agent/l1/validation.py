@@ -359,6 +359,8 @@ def _category_selection_errors(value: Any) -> list[str]:
             f"{L1_RESPONSE_CONTRACT.max_category_rationale_chars} characters"
         )
     return errors
+
+
 def repair_schema_version(payload: Any) -> list[str]:
     """In-place fix: normalize a similar-but-wrong schema_version string.
 
@@ -395,7 +397,6 @@ def repair_schema_version(payload: Any) -> list[str]:
             f"(model hallucinated similar version string)"
         )
     return notes
-
 
 
 def repair_biconditional_unknowns(payload: Any) -> list[str]:
@@ -442,76 +443,6 @@ def repair_biconditional_unknowns(payload: Any) -> list[str]:
     return notes
 
 
-
-def repair_overlong_lists(payload: Any) -> list[str]:
-    """No-op under PR #400: over-long lists are advisory, not rejected.
-
-    PR #390 rejected responses whose plausible_causes / missing_evidence /
-    related_failures exceeded fixed caps. PR #400 downgraded these to
-    "recommended" limits (L1 contract advisories) and does NOT reject the
-    response for exceeding them. This repair therefore has nothing to do
-    under PR #400 and returns an empty note list.
-    """
-
-    return []
-
-
-
-def repair_invalid_evidence_supports(payload: Any) -> list[str]:
-    """In-place fix: drop unknown/invalid tags from evidence[N].supports arrays.
-
-    The contract restricts evidence.supports to four tags: primary_failure,
-    root_cause_assessment, failure_domain, retry_outlook_without_workload_change.
-    Some models (observed: nemotron) mistakenly use a section-name like
-    "related_failures" as a support tag. Rather than reject the whole response,
-    drop the invalid tags and keep the valid ones. If an item ends up with an
-    empty supports array after filtering, drop the item entirely.
-
-    Returns a list of repair notes for observability. Empty list means no
-    repair was applied.
-    """
-
-    notes: list[str] = []
-    if not isinstance(payload, dict):
-        return notes
-    evidence = payload.get("evidence")
-    if not isinstance(evidence, list):
-        return notes
-    valid_tags = L1_RESPONSE_CONTRACT.evidence_support_tags
-    kept: list[Any] = []
-    for index, item in enumerate(evidence):
-        if not isinstance(item, dict):
-            kept.append(item)
-            continue
-        supports = item.get("supports")
-        if not isinstance(supports, list):
-            kept.append(item)
-            continue
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for tag in supports:
-            if isinstance(tag, str) and tag in valid_tags and tag not in seen:
-                cleaned.append(tag)
-                seen.add(tag)
-        if cleaned == list(supports):
-            kept.append(item)
-            continue
-        dropped = [t for t in supports if t not in cleaned]
-        if not cleaned:
-            notes.append(
-                f"evidence[{index}]: dropped entirely (no valid supports left; "
-                f"originally {supports!r})"
-            )
-            continue
-        item["supports"] = cleaned
-        notes.append(f"evidence[{index}]: dropped invalid supports {dropped!r}, kept {cleaned!r}")
-        kept.append(item)
-    if len(kept) != len(evidence):
-        payload["evidence"] = kept
-    return notes
-
-
-
 def repair_overlong_category_rationale(payload: Any) -> list[str]:
     """In-place fix: truncate category_selection.category_rationale to the contract cap.
 
@@ -540,23 +471,11 @@ def repair_overlong_category_rationale(payload: Any) -> list[str]:
     return notes
 
 
-
 def repair_model_evidence(payload: Any) -> list[str]:
-    """Aggregate all in-place repairs. Returns the concatenated repair notes.
-
-    Note: repair_invalid_evidence_supports is intentionally NOT called here.
-    PR #400 already surfaces unknown/duplicate support tags as advisories
-    (evidence_support_tag_unknown, evidence_supports_contain_duplicates in
-    l1/advisories.py) without rejecting the response. Pre-emptively dropping
-    those tags in-place would suppress those advisories. The repair function
-    is kept in this module for reference and possible future use.
-    """
+    """Aggregate all in-place repairs. Returns the concatenated repair notes."""
 
     notes: list[str] = []
     notes.extend(repair_schema_version(payload))
     notes.extend(repair_biconditional_unknowns(payload))
-    notes.extend(repair_overlong_lists(payload))
     notes.extend(repair_overlong_category_rationale(payload))
     return notes
-
-

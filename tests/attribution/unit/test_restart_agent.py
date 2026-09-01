@@ -433,11 +433,11 @@ def _current_evidence(value):
             },
             "related_failures": [],
             "evidence": [],
-        "category_selection": {
-            "category_id": 0,
-            "category_confidence": 0,
-            "category_rationale": "not applicable",
-        },
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
     persistence = existing_assessment.get(
         "current_attempt_persistence_evidence",
@@ -1974,11 +1974,11 @@ def test_l0_links_timeout_aligned_precursor_to_terminal_episode(tmp_path):
             "related_failures": [],
             "evidence": [{"line": line, "quote": quote, "supports": "primary_failure"}],
             "justification": "The transport event precedes the collective timeout.",
-        "category_selection": {
-            "category_id": 0,
-            "category_confidence": 0,
-            "category_rationale": "not applicable",
-        },
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
 
     precursor_analyzer = RestartAgent(
@@ -2665,11 +2665,11 @@ def test_model_primary_lines_in_same_episode_share_history_and_client_identity(t
             "related_failures": [],
             "evidence": [{"line": line, "quote": quote, "supports": "primary_failure"}],
             "justification": "The OOM is the initiating failure.",
-        "category_selection": {
-            "category_id": 0,
-            "category_confidence": 0,
-            "category_rationale": "not applicable",
-        },
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
 
     summary_analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence(2, summary)))
@@ -6350,11 +6350,11 @@ def test_l1_output_limit_gets_one_distinct_tools_disabled_final_turn(tmp_path):
         {
             "schema_version": "restart_agent_evidence.v1",
             "analysis_status": "insufficient_evidence",
-        "category_selection": {
-            "category_id": 0,
-            "category_confidence": 0,
-            "category_rationale": "not applicable",
-        },
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
     )
     bundle = build_l0_bundle(str(log_path))
