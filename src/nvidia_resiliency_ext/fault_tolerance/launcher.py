@@ -3255,6 +3255,48 @@ def _grpc_log_path(log_prefix: str, suffix: str) -> str:
     return log_prefix + suffix
 
 
+def _resolve_grpc_log_allowed_roots(args: Any) -> List[str]:
+    """
+    Directories the gRPC log servers are allowed to write into.
+
+    The servers bind an unauthenticated port and write to a path chosen by each client, so
+    they are given exactly the directories that gRPC clients actually target: the per-cycle
+    application log prefix and the launcher log. Per-cycle files (``<prefix>_cycleN.log``)
+    stay in the prefix's directory, so the dirname covers every cycle.
+
+    ``--ft-log-server-log-prefix`` is deliberately excluded: the servers' own ``_root.log`` /
+    ``_leaf_N.log`` are written by the launcher redirecting each subprocess's stdout/stderr
+    (see ``_open_log``), never through a ``LogChunk``, so allowing that directory would widen
+    the boundary for no reason.
+
+    Each directory is created before being resolved. ``realpath`` of a path that does not
+    exist yet returns the path unchanged, so a directory that only later appears as (or
+    under) a symlink would resolve differently at write time and the job's own logs would
+    be rejected. Creating it first pins the resolution; the log server would create it on
+    the first chunk regardless.
+
+    Returns:
+        Deduplicated resolved directories; empty only if no log paths are configured.
+    """
+    candidates = [
+        getattr(args, 'ft_per_cycle_applog_prefix', None),
+        getattr(args, 'ft_nvrx_logfile', None),
+    ]
+    roots: List[str] = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        expanded = os.path.abspath(os.path.expanduser(candidate))
+        dirname = os.path.dirname(expanded) or os.sep
+        # Best effort: if creation fails the server will report the real error on first write.
+        with contextlib.suppress(OSError):
+            os.makedirs(dirname, exist_ok=True)
+        root = os.path.realpath(dirname)
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
 _LOG_FUNNEL_NODES_PER_LEAF = 1536  # max nodes per single log server (≈6K GPU at 4 GPUs/node)
 
 
@@ -3378,6 +3420,21 @@ def _start_grpc_log_servers(
 
     procs: List[subprocess.Popen] = []
     try:
+        # Clients pick the destination path for every log chunk, and these servers listen
+        # on all interfaces without auth, so confine writes to the configured log
+        # directories. Raising here is caught below and reported as a startup failure, so
+        # the launcher falls back to direct file writing rather than running unconfined.
+        allowed_roots = _resolve_grpc_log_allowed_roots(args)
+        if not allowed_roots:
+            raise ValueError(
+                "cannot determine allowed log write roots for the gRPC log server(s); "
+                "expected --ft-per-cycle-applog-prefix (or --ft-nvrx-logfile) to be set"
+            )
+        allowed_root_args: List[str] = []
+        for root in allowed_roots:
+            allowed_root_args += ['--allowed-root', root]
+        logger.info(f"gRPC log server(s) confined to allowed roots: {allowed_roots}")
+
         if not funnel_ports.uses_two_level:
             grpc_server_log = _grpc_log_path(log_prefix, '_root.log')
             max_workers = min(4096, max(100, max_nodes + 10))
@@ -3397,6 +3454,7 @@ def _start_grpc_log_servers(
                         str(max_workers),
                         '--graceful-shutdown-timeout',
                         str(graceful_shutdown_timeout),
+                        *allowed_root_args,
                     ],
                     stdout=fd,
                     stderr=subprocess.STDOUT,
@@ -3440,6 +3498,7 @@ def _start_grpc_log_servers(
                     str(root_workers),
                     '--graceful-shutdown-timeout',
                     str(root_graceful_shutdown_timeout),
+                    *allowed_root_args,
                 ],
                 stdout=root_fd,
                 stderr=subprocess.STDOUT,
@@ -3475,6 +3534,7 @@ def _start_grpc_log_servers(
                     str(max_queue),
                     '--graceful-shutdown-timeout',
                     str(graceful_shutdown_timeout),
+                    *allowed_root_args,
                 ]
                 lp = subprocess.Popen(  # nosec B603
                     leaf_cmd,

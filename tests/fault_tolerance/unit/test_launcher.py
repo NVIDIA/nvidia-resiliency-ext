@@ -35,6 +35,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
 )
+from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
 
 WORLD_SIZE = 4
 DEFAULT_TIMEOUT = 90
@@ -1149,10 +1150,15 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
         def wait(self):
             pass
 
+    applog_dir = tmp_path / "applogs"
+    applog_dir.mkdir()
     args = SimpleNamespace(
         nnodes="2",
         ft_log_server_graceful_shutdown_timeout=60.0,
         ft_log_leaf_max_queue_chunks=-1,
+        ft_per_cycle_applog_prefix=str(applog_dir / "train.log"),
+        ft_nvrx_logfile=None,
+        ft_log_server_log_prefix=None,
     )
     log_dir = tmp_path / "missing" / "logs"
     log_prefix = str(log_dir / "grpc_diag")
@@ -1166,6 +1172,39 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
     assert (log_dir / "grpc_diag_root.log").is_file()
     assert (log_dir / "grpc_diag_leaf_0.log").is_file()
     assert (log_dir / "grpc_diag_leaf_1.log").is_file()
+
+    # Every spawned server must be confined to the configured log directory: these bind
+    # unauthenticated ports and write to a path chosen by the client on each chunk.
+    for proc in procs:
+        cmd = proc.args[0]
+        roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--allowed-root"]
+        assert roots == [os.path.realpath(str(applog_dir))], cmd
+
+
+def test_start_grpc_log_servers_requires_resolvable_allowed_roots(tmp_path):
+    """Refuse to start unconfined rather than accept client-chosen write destinations."""
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("no server should be spawned without allowed roots")
+
+    args = SimpleNamespace(
+        nnodes="2",
+        ft_log_server_graceful_shutdown_timeout=60.0,
+        ft_log_leaf_max_queue_chunks=-1,
+        ft_per_cycle_applog_prefix=None,
+        ft_nvrx_logfile=None,
+        ft_log_server_log_prefix=None,
+    )
+    ports = launcher.LogFunnelPorts(base_port=50051, first_level_count=1)
+
+    with patch.object(launcher.subprocess, "Popen", FakePopen):
+        # Failure is reported by returning no processes; the caller then disables gRPC
+        # log aggregation and falls back to direct file writing.
+        assert launcher._start_grpc_log_servers(args, str(tmp_path / "grpc_diag"), ports) == []
 
 
 def test_managed_attribution_listen_port_rejects_log_funnel_overlap():
@@ -1676,3 +1715,98 @@ def test_launch_agent_signal_exception_with_rank_failure_re_raises():
     record_event.assert_called_once_with(agent.get_event_failed.return_value)
     rdzv_handler.shutdown.assert_not_called()
     rdzv_handler.shutdown_due_to_failure.assert_not_called()
+
+
+class TestLauncherAllowedRoots:
+    """The launcher must derive roots covering every path its clients legitimately write."""
+
+    def _args(self, **kwargs):
+        from argparse import Namespace
+
+        base = dict(
+            ft_per_cycle_applog_prefix=None,
+            ft_nvrx_logfile=None,
+            ft_log_server_log_prefix=None,
+        )
+        base.update(kwargs)
+        return Namespace(**base)
+
+    def test_roots_are_dirnames_of_configured_log_paths(self, tmp_path):
+        from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
+
+        applog = tmp_path / "app" / "train.log"
+        nvrx = tmp_path / "launcher" / "nvrx.log"
+        applog.parent.mkdir()
+        nvrx.parent.mkdir()
+        roots = _resolve_grpc_log_allowed_roots(
+            self._args(
+                ft_per_cycle_applog_prefix=str(applog),
+                ft_nvrx_logfile=str(nvrx),
+            )
+        )
+        assert roots == [
+            os.path.realpath(str(applog.parent)),
+            os.path.realpath(str(nvrx.parent)),
+        ]
+
+    def test_root_covers_every_per_cycle_log(self, tmp_path):
+        """Per-cycle files are <prefix>_cycleN.log in the prefix dir, so one root suffices."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
+
+        applog = tmp_path / "app" / "train.log"
+        applog.parent.mkdir()
+        (roots,) = _resolve_grpc_log_allowed_roots(
+            self._args(ft_per_cycle_applog_prefix=str(applog))
+        )
+        for cycle in (0, 1, 42):
+            cycle_log = str(applog).replace(".log", f"_cycle{cycle}.log")
+            assert resolve_under_allowed_roots(cycle_log, [roots]) == cycle_log
+
+    def test_duplicate_directories_collapse(self, tmp_path):
+        from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
+
+        roots = _resolve_grpc_log_allowed_roots(
+            self._args(
+                ft_per_cycle_applog_prefix=str(tmp_path / "train.log"),
+                ft_nvrx_logfile=str(tmp_path / "nvrx.log"),
+            )
+        )
+        assert roots == [os.path.realpath(str(tmp_path))]
+
+    def test_roots_are_pinned_against_later_symlink_creation(self, tmp_path):
+        """realpath of a non-existent dir returns it unchanged, so a dir that only later
+        appears as a symlink would resolve elsewhere at write time and the job's own logs
+        would be rejected. Roots must be created before being resolved."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
+
+        logdir = tmp_path / "logs"
+        assert not logdir.exists()
+        (roots,) = _resolve_grpc_log_allowed_roots(
+            self._args(ft_per_cycle_applog_prefix=str(logdir / "train.log"))
+        )
+        assert logdir.is_dir(), "root directory must exist so its resolution is stable"
+        # The job's own log path still validates.
+        cycle_log = str(logdir / "train_cycle0.log")
+        assert resolve_under_allowed_roots(cycle_log, [roots]) == cycle_log
+
+    def test_server_own_log_dir_is_not_an_allowed_root(self, tmp_path):
+        """`_root.log`/`_leaf_N.log` are written by the launcher redirecting each
+        subprocess's stdout/stderr, never through a LogChunk, so that directory must not
+        be exposed to gRPC clients."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
+
+        applog_dir = tmp_path / "applogs"
+        srv_dir = tmp_path / "serverlogs"
+        roots = _resolve_grpc_log_allowed_roots(
+            self._args(
+                ft_per_cycle_applog_prefix=str(applog_dir / "train.log"),
+                ft_log_server_log_prefix=str(srv_dir / "grpc"),
+            )
+        )
+        assert roots == [os.path.realpath(str(applog_dir))]
+        assert os.path.realpath(str(srv_dir)) not in roots
+
+    def test_no_configured_paths_yields_no_roots(self):
+        from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
+
+        assert _resolve_grpc_log_allowed_roots(self._args()) == []

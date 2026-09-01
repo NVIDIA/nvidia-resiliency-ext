@@ -23,6 +23,7 @@ safe file operations.
 
 import os
 import stat
+from typing import Iterable, List, Optional, Sequence
 
 
 def validate_directory(dir_path: str) -> None:
@@ -92,3 +93,76 @@ def validate_filepath(file_path: str) -> None:
         except OSError as e:
             raise OSError(f"Cannot access file {file_path}: {e}")
     # If file doesn't exist, that's fine - it will be created
+
+
+def normalize_allowed_roots(allowed_roots: Optional[Iterable[str]]) -> List[str]:
+    """
+    Resolve a set of allowed-root directories to absolute, symlink-free paths.
+
+    Roots are resolved once at startup so that per-path confinement checks are a cheap
+    lexical comparison against already-resolved strings.
+
+    Args:
+        allowed_roots: Iterable of directory paths (may be relative or contain ``~``).
+
+    Returns:
+        Deduplicated list of resolved absolute roots, preserving input order. Empty
+        entries are skipped; an empty/None input yields an empty list.
+    """
+    normalized: List[str] = []
+    for root in allowed_roots or ():
+        if not root:
+            continue
+        real = os.path.realpath(os.path.abspath(os.path.expanduser(root)))
+        if real not in normalized:
+            normalized.append(real)
+    return normalized
+
+
+def resolve_under_allowed_roots(file_path: str, allowed_roots: Sequence[str]) -> str:
+    """
+    Resolve an untrusted file path and require that it stay under an allowed root.
+
+    Fully resolves ``file_path`` (``..`` segments and symlinks on every component) and
+    requires the result to live under one of ``allowed_roots``. Callers should operate on
+    the returned path rather than the original: the returned path contains no symlinks,
+    so opening it cannot be redirected outside the root between check and use.
+
+    Args:
+        file_path: Untrusted path, e.g. supplied by a network peer.
+        allowed_roots: Non-empty roots, already passed through
+            :func:`normalize_allowed_roots`.
+
+    Returns:
+        The resolved absolute path, guaranteed to be under one of ``allowed_roots``.
+
+    Raises:
+        ValueError: If ``file_path`` is empty, cannot be resolved, or resolves outside
+            every allowed root.
+    """
+    if not file_path:
+        raise ValueError("file_path cannot be empty")
+    if not allowed_roots:
+        raise ValueError("no allowed roots configured; refusing to resolve untrusted file_path")
+    if "\x00" in file_path:
+        raise ValueError("file_path contains a NUL byte")
+
+    try:
+        real = os.path.realpath(os.path.abspath(file_path))
+    except (OSError, ValueError) as e:
+        raise ValueError(f"cannot resolve file_path {file_path!r}: {e}") from e
+
+    for root in allowed_roots:
+        try:
+            # commonpath compares whole path components, so /lustre/logs does not
+            # match /lustre/logs_evil the way a plain string prefix check would.
+            if os.path.commonpath([real, root]) == root:
+                return real
+        except ValueError:
+            # Different drives / mixed absolute-relative: treat as not under this root.
+            continue
+
+    raise ValueError(
+        f"file_path {file_path!r} (resolved to {real!r}) is outside the allowed "
+        f"root(s) {list(allowed_roots)!r}"
+    )
