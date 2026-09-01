@@ -63,8 +63,12 @@ class TestSoft(unittest.TestCase):
                 time.sleep(timelimit / num_chunks)
 
         start = time.perf_counter()
-        with self.assertRaises(inprocess.exception.RestartAbort):
+        # The wrapper will catch RestartAbort and call sys.exit(130)
+        with self.assertRaises(SystemExit) as cm:
             fn()
+
+        # Verify the exit code is 130 (RestartAbort)
+        self.assertEqual(cm.exception.code, 130)
         elapsed = time.perf_counter() - start
         self.assertLess(elapsed, timelimit / 2)
 
