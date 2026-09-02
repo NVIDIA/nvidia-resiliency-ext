@@ -457,6 +457,28 @@ restart proceeds as a best effort.</p>
 with optional gRPC log funneling (<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code>), worker and launcher output can be
 merged through pipes and streamed to one or more aggregators on the rendezvous host before a single
 writer appends to shared storage (for example Lustre).</p>
+<p>Two write paths are possible:</p>
+<ul class="simple">
+<li><p><strong>With log funneling</strong> (<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code>, enabled automatically when
+<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> is set): every node streams to an aggregator on the rendezvous host and
+a <em>single</em> process writes the shared file. No cross-client write guarantees are needed, so
+this works on any shared filesystem and is the recommended deployment for multi-node jobs.</p></li>
+<li><p><strong>Without log funneling</strong> (direct write): every node opens the same
+<code class="docutils literal notranslate"><span class="pre">&lt;prefix&gt;_cycleN.log</span></code> and appends to it with <code class="docutils literal notranslate"><span class="pre">O_APPEND</span></code>. This is a multi-writer
+deployment and is not recommended on any filesystem. On Lustre the appends are atomic, but
+all nodes serialise on the same extent lock, so it does not scale. On NFS- and VAST-style
+storage the append is not atomic across clients at all, so concurrent appends can interleave
+or be lost and nothing reports an error.</p></li>
+</ul>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><strong>Use log funneling for multi-node jobs.</strong> The recommended configuration is to pass
+<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> alongside <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code>; that enables
+<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code> automatically. Setting <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code> on its own
+leaves the log server off and selects multi-writer direct append, which is not a supported
+multi-node deployment. If you use neither option, worker and launcher output go to
+stdout/stderr and are captured by <code class="docutils literal notranslate"><span class="pre">srun</span> <span class="pre">--output</span></code> / <code class="docutils literal notranslate"><span class="pre">--error</span></code> as usual.</p>
+</div>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
 <p><strong>Best-effort semantics.</strong> Per-cycle gRPC log aggregation is best-effort. Logs around failure
