@@ -83,7 +83,7 @@ Everything is gated on its span group and no-ops when the group is off, which in
 
 | Mechanism               | Shape                                                                                  | Used by                                         |
 | ----------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `@trace_fn`             | the span _is_ a method                                                                 | `worker_launch`, `teardown`                      |
+| `@trace_fn`             | the span _is_ a method                                                                 | `worker_launch`, `teardown`, `completion_sync`   |
 | `with span(...)`        | the span is a block                                                                    | `await_round`, `health_check`, most `ckpt` spans |
 | `ManualSpan`            | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                     |
 | `mark(...)`             | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`             |
