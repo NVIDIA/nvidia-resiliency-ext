@@ -65,11 +65,11 @@ NVRx uses two of OTel's carriers, and which one a value belongs in follows from 
 
 A value's carrier follows from whether it is constant for the _emitting process's_ lifetime. OTel's Resource is built once when the TracerProvider is constructed and is immutable after, so anything that changes during a process cannot live there.
 
-| Process           | Constant for its life → Resource                                           | Varies during its life → span attribute |
-| ----------------- | -------------------------------------------------------------------------- | --------------------------------------- |
-| ft-launcher agent | `service.name`, `service.instance.id`, `nv.nvrx.ftl.node`, infrastructure rank    | `nv.nvrx.cycle.index`, and every per-span value  |
-| Trainer worker    | `nv.nvrx.cycle.index`, `nv.nvrx.ftl.membership`, the placement and node-budget keys below, elastic rank | —                             |
-| Checkpoint worker | same as the trainer, plus its own `service.name` and `service.instance.id` | `nv.nvrx.ckpt.call_idx`                         |
+| Process           | Constant for its life → Resource                                                                                                               | Varies during its life → span attribute         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
+| ft-launcher agent | `service.name`, `service.instance.id`, `nv.nvrx.ftl.node`                                                                                       | `nv.nvrx.cycle.index`, and every per-span value  |
+| Trainer worker    | `nv.nvrx.cycle.index`, `nv.nvrx.ftl.membership`, `nv.nvrx.ftl.infra.rank`, the node-budget and segment keys below (see "Placement and node budget") | elastic rank                                     |
+| Checkpoint worker | same as the trainer, plus its own `service.name` and `service.instance.id`                                                                       | `nv.nvrx.ckpt.call_idx`                          |
 
 `nv.nvrx.cycle.index` appears on both sides of that table, which is the clearest case. The agent outlives cycles, so its Resource cannot carry a cycle number and the value is a span attribute. A worker process is created fresh for each cycle, so the cycle is constant for its entire life and belongs in its Resource — which is why the agent appends it to `OTEL_RESOURCE_ATTRIBUTES` at launch rather than passing it some other way.
 
@@ -159,9 +159,9 @@ Export strategy is nemo-lens's default, set through `NEMO_LENS_EXPORT_STRATEGY`.
 
 `_start_workers` extends the worker cohort's environment with one variable, additively:
 
-| Variable                   | Contents                                                         |
-| -------------------------- | ---------------------------------------------------------------- |
-| `OTEL_RESOURCE_ATTRIBUTES` | appended with `nv.nvrx.cycle.index`, `nv.nvrx.ftl.membership`, `nv.nvrx.ftl.infra.rank` |
+| Variable                   | Contents                                                                                                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OTEL_RESOURCE_ATTRIBUTES` | `nv.nvrx.cycle.index`, `nv.nvrx.ftl.membership`, `nv.nvrx.ftl.infra.rank`, `nv.dl.launch.nnodes.active`, `nv.dl.launch.nnodes.spare`, and (under `--ft-segment`) `nv.nvrx.ftl.segment`, `nv.nvrx.ftl.infra.cluster_uuid` |
 
 Cycle number is a **resource** attribute for a worker because a worker process is new each cycle, and a **span** attribute for the agent because the agent outlives cycles.
 
@@ -215,7 +215,7 @@ An exclusion needs no separate signal: `UnhealthyNodeException` propagating out 
 ### Spans
 
 | Span                   | Group      | Source                     | Covers                                                   |
-| ---------------------- | ---------- | -------------------------- |
+| ---------------------- | ---------- | -------------------------- | --------------------------------------------------------- |
 | `nv.nvrx.ftl.python.startup`       | `nvrx.job` | `launcher.py`              | process create time to the entry point's first statement |
 | `nv.nvrx.ftl.python.imports`       | `nvrx.job` | `launcher.py`              | the entry point's top-level imports                      |
 | `nv.nvrx.ftl.cycle_start`  | `nvrx.ft`  | `launcher.py`              | instant: a cycle began                                   |
@@ -230,7 +230,7 @@ An exclusion needs no separate signal: `UnhealthyNodeException` propagating out 
 | `nv.nvrx.ftl.teardown`     | `nvrx.ft`  | `launcher.py`              | `_stop_workers`                                          |
 | `nv.nvrx.ftl.attribution`  | `nvrx.ft`  | `health_check.py`          | an attribution lookup (root span)                        |
 
-`nv.nvrx.ftl.python.startup` and `nv.nvrx.ftl.python.imports` carry no `nvrx.` prefix and are distinguished by `service.name`, so one query answers "how long did imports take" across every service that emits them. Both are measured entirely within this process — `psutil.Process().create_time()` and two `time.time()` stamps — and backdated once telemetry is up.
+Both are measured entirely within this process — `psutil.Process().create_time()` and two `time.time()` stamps — and backdated once telemetry is up.
 
 `fault` is an instant because `teardown` only starts once the restart decision is made; without it the interval between detecting a failure and deciding what to do is unmeasured.
 
@@ -282,13 +282,19 @@ Resource attributes are covered under Identity; everything here is per-span.
 | `nv.nvrx.ftl.group.rank`               | int  | `cycle`, `rendezvous` | elastic group rank, once assigned         |
 | `nv.nvrx.ftl.group.world_size`   | int  | `cycle`               | active node count                         |
 | `nv.nvrx.ftl.cycle.failures`           | int  | `cycle`, `fault`      | failed worker count                       |
-| `nv.nvrx.ftl.cycle.state`              | str  | `fault`               | `WorkerState` at detection                |
+| `nv.nvrx.ftl.cycle.state`              | str  | `cycle`               | `WorkerState` at detection, on a `failed` outcome |
 | `nv.nvrx.cycle.outcome`      | str  | `cycle`               | see above                                 |
 | `nv.nvrx.ftl.rdzv.round`              | int  | `rendezvous`          | rendezvous round number                   |
 | `nv.nvrx.ftl.membership`         | str  | `cycle`, `rendezvous` | `active`, `standby`, `late_joiner`        |
 | `nv.nvrx.ftl.max_restarts`       | int  | `cycle`               | configured budget                         |
 | `nv.nvrx.ftl.remaining_restarts` | int  | `cycle`               | budget left when the round was joined     |
 | `nv.nvrx.ftl.rdzv.run_id`        | str  | `cycle`               | rendezvous run id                         |
+| `nv.nvrx.ftl.infra.rank`         | int  | `cycle`, resource     | physical node ordinal                     |
+| `nv.dl.launch.nnodes.active`     | int  | resource              | configured `min_nodes`                    |
+| `nv.dl.launch.nnodes.spare`      | int  | resource              | `max_nodes - min_nodes`                   |
+| `nv.nvrx.ftl.segment`            | int  | resource              | under `--ft-segment` only                 |
+| `nv.nvrx.ftl.infra.cluster_uuid` | str  | resource              | under `--ft-segment` only; NVLink domain  |
+| `nv.nvrx.ftl.attribution.analyzed_cycle` | int | `attribution`  | the cycle the verdict is about            |
 | `nv.nvrx.ckpt.call_idx`           | int  | `ckpt.*`              | checkpoint call index; joins across ranks |
 
 No span carries a roster of the job's other nodes. Every node already emits its own `nv.nvrx.ftl.membership` and `nv.nvrx.ftl.group.rank` each cycle, so the membership of a cycle is a group-by over `job.uid` and `nv.nvrx.cycle.index` — rule 3, applied. Emitting the full list from every node would write O(N²) bytes to say what N spans already say, and at large node counts each copy is a multi-kilobyte attribute that `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT` may silently truncate.
