@@ -79,7 +79,7 @@ NVRx names follow the shared `nv.` schema: fault-tolerance names under `nv.nvrx.
 
 Values are restricted to OTel's attribute types — string, bool, int, double, or a homogeneous array of those — so nothing nested is passed.
 
-Everything is gated on its span group and no-ops when the group is off, which includes before any process in the interpreter runs `setup_telemetry`, since the enabled set is empty until then.
+Everything is gated on its span group and no-ops when the group is off, which includes before this process has called `setup_telemetry`: the enabled set starts empty and only `setup_telemetry` populates it.
 
 | Mechanism               | Shape                                                                                  | Used by                                         |
 | ----------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------- |
