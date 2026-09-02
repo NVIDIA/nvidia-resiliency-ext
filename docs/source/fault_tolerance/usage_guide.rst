@@ -404,6 +404,28 @@ with optional gRPC log funneling (``--ft-enable-log-server``), worker and launch
 merged through pipes and streamed to one or more aggregators on the rendezvous host before a single
 writer appends to shared storage (for example Lustre).
 
+Two write paths are possible:
+
+* **With log funneling** (``--ft-enable-log-server``, enabled automatically when
+  ``--ft-nvrx-logfile`` is set): every node streams to an aggregator on the rendezvous host and
+  a *single* process writes the shared file. No cross-client write guarantees are needed, so
+  this works on any shared filesystem and is the recommended deployment for multi-node jobs.
+* **Without log funneling** (direct write): every node opens the same
+  ``<prefix>_cycleN.log`` and appends to it with ``O_APPEND``. This is a multi-writer
+  deployment and is not recommended on any filesystem. On Lustre the appends are atomic, but
+  all nodes serialise on the same extent lock, so it does not scale. On NFS- and VAST-style
+  storage the append is not atomic across clients at all, so concurrent appends can interleave
+  or be lost and nothing reports an error.
+
+.. important::
+
+   **Use log funneling for multi-node jobs.** The recommended configuration is to pass
+   ``--ft-nvrx-logfile`` alongside ``--ft-per-cycle-applog-prefix``; that enables
+   ``--ft-enable-log-server`` automatically. Setting ``--ft-per-cycle-applog-prefix`` on its own
+   leaves the log server off and selects multi-writer direct append, which is not a supported
+   multi-node deployment. If you use neither option, worker and launcher output go to
+   stdout/stderr and are captured by ``srun --output`` / ``--error`` as usual.
+
 .. important::
 
    **Best-effort semantics.** Per-cycle gRPC log aggregation is best-effort. Logs around failure
