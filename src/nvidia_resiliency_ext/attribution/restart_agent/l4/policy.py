@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 from ..models import (
     CUDA_OOM_NO_RETRY_CONTEXT_ID,
+    L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID,
     PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID,
     REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID,
     AffectedEntity,
@@ -286,6 +287,8 @@ def evaluate_policy(policy_input: L4PolicyInput) -> L4PolicyOutcome:
         current_facts=policy_input.current_failure_facts,
         configured=policy_input.policy_contexts,
         l1_category_selection=policy_input.l1_category_selection,
+        base_rule=base_rule,
+        history=policy_input.history,
     )
     effective_policy = (
         policy_context_match.effective_policy
@@ -644,12 +647,87 @@ def _match_l1_category_context(
     )
 
 
+def _match_l1_category_restart_context(
+    *,
+    primary: FailureEvidence | None,
+    l1_category_selection: Mapping[str, Any] | None,
+    base_rule: str | None,
+    history: HistorySummary | None,
+    configured: Any,
+) -> _PolicyContextMatch | None:
+    """Match category-driven RESTART override on FIRST occurrence.
+
+    Fires when all of the following hold:
+    - The category context is enabled.
+    - Primary is grounded.
+    - Category picker chose a RESTART-labeled taxonomy entry.
+    - Base rule concluded workload_unrecoverable (a STOP eligible for override).
+    - History shows zero prior attempts with the same root_fingerprint.
+
+    Emits workload_confirmation_retry with history_match_scope=ROOT_ONLY and
+    a tight allowed_retries budget. On any subsequent cycle with the same
+    root, the history guard suppresses the override; base_rule +
+    exhaustion take over and STOP.
+
+    Design rationale:
+    - Only overrides workload_unrecoverable, not other STOP-yielding rules,
+      to keep the override surface minimal.
+    - Only fires on first occurrence: PR #400's history ledger handles
+      recurrences; we do not compete with it.
+    - No confidence gate: the category picker's decision label is treated
+      as authoritative, matching the STOP branch above.
+    """
+
+    from ..l1.categories import category_by_id  # local import to keep L4 loose-coupled
+
+    if not getattr(configured, "enabled", False):
+        return None
+    if primary is None or not isinstance(l1_category_selection, Mapping):
+        return None
+    if base_rule != RetryPolicyRule.WORKLOAD_UNRECOVERABLE.value:
+        return None
+    cid = l1_category_selection.get("category_id")
+    if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0:
+        return None
+    category = category_by_id(cid)
+    if category is None or category.decision != "RESTART":
+        return None
+    # First-occurrence guard: refuse to override once we have any recurrence.
+    if history is None or history.matching_root_attempts > 0:
+        return None
+    conf = l1_category_selection.get("category_confidence")
+    reported_confidence = conf if isinstance(conf, int) and not isinstance(conf, bool) else None
+    effective = EffectiveRetryPolicy(
+        source="policy_context",
+        rule=RetryPolicyRule.WORKLOAD_CONFIRMATION_RETRY.value,
+        history_match_scope=HistoryMatchScope.ROOT_ONLY.value,
+        allowed_retries=int(getattr(configured, "allowed_retries", 1)),
+        policy_context_id=L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID,
+    )
+    return _PolicyContextMatch(
+        effective_policy=effective,
+        payload={
+            "policy_context_id": L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID,
+            "matched": True,
+            "current_signature": {
+                "l1_category_id": cid,
+                "l1_category_name": category.name,
+                "l1_category_confidence_reported": reported_confidence,
+                "overridden_base_rule": base_rule,
+            },
+            "retry_policy": effective.to_payload(),
+        },
+    )
+
+
 def _match_policy_context(
     *,
     primary: FailureEvidence | None,
     current_facts: AttemptFailureFacts | None,
     configured: PolicyContextConfig,
     l1_category_selection: Mapping[str, Any] | None = None,
+    base_rule: str | None = None,
+    history: HistorySummary | None = None,
 ) -> _PolicyContextMatch | None:
     cuda_oom = configured.cuda_oom_no_retry
     if (
@@ -725,13 +803,26 @@ def _match_policy_context(
     if rej_iter_match is not None:
         return rej_iter_match
 
-    # L1 category-driven context runs LAST so any deterministic classifier
-    # context above takes precedence. This is the integration hook proposed
-    # as a discussion spike - callers pass l1_category_selection via
-    # L4PolicyInput.
-    return _match_l1_category_context(
+    # L1 category-driven STOP context runs after all deterministic classifier
+    # contexts so any deterministic classifier above takes precedence. Callers
+    # pass l1_category_selection via L4PolicyInput.
+    stop_match = _match_l1_category_context(
         primary=primary,
         l1_category_selection=l1_category_selection,
+    )
+    if stop_match is not None:
+        return stop_match
+
+    # L1 category-driven RESTART context runs LAST. Only fires when the
+    # optional l1_category_confirmed_restart context is enabled and the
+    # base_rule would have concluded workload_unrecoverable. History guard
+    # ensures we only override on FIRST occurrence.
+    return _match_l1_category_restart_context(
+        primary=primary,
+        l1_category_selection=l1_category_selection,
+        base_rule=base_rule,
+        history=history,
+        configured=configured.l1_category_confirmed_restart,
     )
 
 
