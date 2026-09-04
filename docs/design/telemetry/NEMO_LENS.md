@@ -1,6 +1,6 @@
 # NVRx Telemetry Contract
 
-Optional [nemo-lens](https://github.com/nvidia-nemo/lens) OTel instrumentation for NVRx fault tolerance and async checkpointing. Enabled and configured entirely through nemo-lens env vars (`NEMO_LENS_ENABLED`, `NEMO_LENS_SPAN_GROUPS`, `NEMO_LENS_EXPORT_STRATEGY`); NVRx adds no gates of its own. With nemo-lens absent or disabled, every call site is a silent no-op.
+Optional [nemo-lens](https://github.com/nvidia-nemo/lens) OTel instrumentation for NVRx fault tolerance and async checkpointing. Enabled and configured entirely through nemo-lens env vars (`NEMO_LENS_ENABLED`, `NEMO_LENS_SPAN_GROUPS`, `NEMO_LENS_EXPORTER`); NVRx adds no gates of its own. With nemo-lens absent or disabled, every call site is a silent no-op.
 
 ## Rules
 
@@ -163,7 +163,7 @@ NVRx sets only what describes itself:
 
 Values published this way arrive in the child as strings, because that is what the encoding carries — `nv.dl.rank` reaches a spawned worker's Resource as `"3"`, not `3`. Nothing reads it back as a number.
 
-Export strategy is nemo-lens's default, set through `NEMO_LENS_EXPORT_STRATEGY`. NVRx overrides nothing: whether every node exports or only one depends on the collector topology the launching environment provides, which NVRx cannot know. A deployment running a collector per node sets `all_ranks` to get per-node visibility.
+Every process that is enabled exports; nemo-lens has no rank-based export gate, having no notion of rank at all. The exporter itself is `NEMO_LENS_EXPORTER`, defaulting to `otlp`, and NVRx overrides nothing — where the spans go depends on the collector topology the launching environment provides, which NVRx cannot know.
 
 ### Published to workers
 
