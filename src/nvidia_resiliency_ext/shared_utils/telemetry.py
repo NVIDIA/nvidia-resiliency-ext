@@ -55,13 +55,13 @@ try:
     # is the PEP 484 re-export form, marking a name this module never calls.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanRegistry as _SpanRegistry
-    from nemo.lens import encode_resource_attributes as _encode_resource_attributes
     from nemo.lens import get_tracer as _get_tracer
     from nemo.lens import is_span_group_enabled as _is_span_group_enabled
     from nemo.lens import managed_span as _managed_span
     from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
     from nemo.lens import trace_fn as trace_fn
+    from nemo.lens.resources import extend_otel_resource_attributes as _extend_resource_attributes
 
     _AVAILABLE = True
 
@@ -252,21 +252,28 @@ def set_span_attributes(attributes: dict) -> None:
 def extended_resource_attributes(attributes: dict) -> str:
     """Extend the inherited ``OTEL_RESOURCE_ATTRIBUTES`` with more pairs.
 
-    NVRx never parses the variable -- it is an opaque string to append to. Callers
-    must not pass a key the inherited value already sets. The local encoder is the
-    fallback for a deployment on a plain OTel SDK without nemo-lens.
+    NVRx never parses the variable -- it is an opaque string to extend. Extending is
+    always from the value inherited at start, never from the last extension, or a
+    relaunched cohort accumulates a key per cycle. ``overwrite`` because an NVRx key
+    already in the inherited value is stale: this process is the authority on it.
+    The local encoder is the fallback for a plain OTel SDK without nemo-lens.
     """
     if _AVAILABLE:
-        return _encode_resource_attributes(attributes, _INHERITED_RESOURCE_ATTRIBUTES)
+        return _extend_resource_attributes(
+            _INHERITED_RESOURCE_ATTRIBUTES, attributes, overwrite=True
+        )
 
     from urllib.parse import quote
 
-    added = ",".join(f"{key}={quote(str(value), safe='')}" for key, value in attributes.items())
-    if not _INHERITED_RESOURCE_ATTRIBUTES:
-        return added
-    if not added:
-        return _INHERITED_RESOURCE_ATTRIBUTES
-    return f"{_INHERITED_RESOURCE_ATTRIBUTES},{added}"
+    added = {str(key): quote(str(value), safe="") for key, value in attributes.items()}
+    # Inherited segments are kept byte for byte, dropping only the keys being
+    # overwritten, so this path and nemo-lens's encoder agree on the result.
+    kept = [
+        segment
+        for segment in _INHERITED_RESOURCE_ATTRIBUTES.split(",")
+        if segment.strip() and segment.split("=", 1)[0].strip() not in added
+    ]
+    return ",".join(kept + [f"{key}={value}" for key, value in added.items()])
 
 
 @contextmanager
