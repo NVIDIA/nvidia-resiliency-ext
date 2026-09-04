@@ -110,11 +110,15 @@ Compatible service contract:
 
 * The service must implement ``HealthCheckService.RunHealthCheck`` from the NVRx
   ``nvhcd`` protobuf API and listen on the configured UDS.
-* NVRx calls the service with ``args=["--no-slurm"]``.
-* The response must set ``success`` and return JSON in ``output``. A healthy node
-  is reported with ``success=true`` and ``{"fail_count": 0}``.
-* If ``success`` is false, ``fail_count`` is nonzero, or ``output`` cannot be parsed
-  as JSON with a ``fail_count`` field, NVRx treats the node as unhealthy.
+* NVRx calls the service with the configured health check arguments, which
+  default to ``["--no-slurm", "--group", "prolog", "epilog", "logs", "gpu"]``.
+* To report an unhealthy node, return JSON in ``output`` with a numeric
+  ``fail_count`` value greater than zero. ``failed_checks`` can optionally list
+  the failed check names.
+* NVRx ignores unavailable or unusable health check signals. A missing endpoint,
+  missing gRPC dependency, connectivity error, non-JSON ``output``, missing
+  ``fail_count``, or ``success=false`` response without ``fail_count > 0`` is
+  logged and does not mark the node unhealthy.
 
 Example ``nvhcd`` configuration for BCM:
 
@@ -138,8 +142,8 @@ container so that ``ft_launcher`` can reach the daemon.
 The wrapper can call the same reusable health check entry point that BCM uses for
 Slurm prolog or epilog validation, then normalize the result for NVRx. When using
 ``nvhcd``, the gRPC request ``args`` are forwarded to the configured
-``healthcheck_path`` as command-line arguments, so NVRx's ``--no-slurm`` argument
-will appear in the wrapper's ``"$@"``. For example:
+``healthcheck_path`` as command-line arguments, so the configured NVRx health
+check arguments will appear in the wrapper's ``"$@"``. For example:
 
 .. code-block:: bash
 

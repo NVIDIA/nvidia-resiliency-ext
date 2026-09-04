@@ -566,7 +566,25 @@ class TestNVLHealthCheck(unittest.TestCase):
 
 class TestNodeHealthCheck(unittest.TestCase):
 
-    def _checker_with_mocked_grpc(self, args=None):
+    def test_truncate_node_health_check_output_marks_truncated_payload(self):
+        output = "x" * (NodeHealthCheck._LOG_OUTPUT_LIMIT + 1)
+
+        truncated = NodeHealthCheck._truncate_log_output(output)
+
+        self.assertTrue(truncated.endswith("...[truncated]"))
+        self.assertEqual(
+            len(truncated),
+            NodeHealthCheck._LOG_OUTPUT_LIMIT + len("...[truncated]"),
+        )
+
+    def _checker_with_mocked_grpc(
+        self,
+        args=None,
+        success=True,
+        output='{"fail_count": 0}',
+        exit_code=0,
+        error="",
+    ):
         checker = NodeHealthCheck(args=args)
         checker._channel_target = "unix:///tmp/nvhcd.sock"
 
@@ -578,8 +596,10 @@ class TestNodeHealthCheck(unittest.TestCase):
         checker._grpc.insecure_channel.return_value = channel_context
 
         response = MagicMock()
-        response.success = True
-        response.output = '{"fail_count": 0}'
+        response.success = success
+        response.output = output
+        response.exit_code = exit_code
+        response.error = error
         stub = MagicMock()
         stub.RunHealthCheck.return_value = response
         checker._pb2_grpc = MagicMock()
@@ -613,6 +633,82 @@ class TestNodeHealthCheck(unittest.TestCase):
         checker._pb2.HealthCheckRequest.assert_called_once_with(args=["--group", "epilog"])
         request = stub.RunHealthCheck.call_args.args[0]
         self.assertEqual(request.args, ["--group", "epilog"])
+
+    def test_perform_health_check_fails_for_positive_fail_count(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            output='{"fail_count": 2, "failed_checks": ["bcm_healthcheck"]}'
+        )
+
+        result = checker._perform_health_check()
+
+        self.assertFalse(result)
+
+    def test_perform_health_check_fails_for_positive_fail_count_without_failed_checks(self):
+        checker, _ = self._checker_with_mocked_grpc(output='{"fail_count": 1}')
+
+        result = checker._perform_health_check()
+
+        self.assertFalse(result)
+
+    def test_perform_health_check_ignores_non_json_output(self):
+        checker, _ = self._checker_with_mocked_grpc(output="health check script completed")
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_ignores_response_without_output(self):
+        checker, stub = self._checker_with_mocked_grpc()
+        stub.RunHealthCheck.return_value = SimpleNamespace(success=True, exit_code=0, error="")
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_ignores_json_output_that_is_not_dictionary(self):
+        checker, _ = self._checker_with_mocked_grpc(output='[{"fail_count": 1}]')
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_ignores_missing_fail_count(self):
+        checker, _ = self._checker_with_mocked_grpc(output='{"status": "unavailable"}')
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_ignores_boolean_fail_count(self):
+        checker, _ = self._checker_with_mocked_grpc(output='{"fail_count": true}')
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_ignores_success_false_without_positive_fail_count(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            success=False,
+            output="health check wrapper exited nonzero before returning JSON",
+            exit_code=1,
+            error="exit status 1",
+        )
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_fails_on_success_false_with_positive_fail_count(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            success=False,
+            output='{"fail_count": 1, "failed_checks": ["bcm_healthcheck"]}',
+            exit_code=1,
+            error="exit status 1",
+        )
+
+        result = checker._perform_health_check()
+
+        self.assertFalse(result)
 
 
 class TestAttributionService(unittest.TestCase):
