@@ -66,6 +66,11 @@ def _checkpoint_timeout_evidence(failure_line):
                 "supports": ["primary_failure", "root_cause_assessment"],
             }
         ],
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
 

@@ -5,11 +5,15 @@
 
 from __future__ import annotations
 
+from .categories import CATEGORIES
 from .cluster_context import DEFAULT_CLUSTER_EXECUTION_CONTEXT, render_cluster_execution_context
 from .response_contract import L1_RESPONSE_CONTRACT
 
 _SUPPORT_TAGS = ", ".join(sorted(L1_RESPONSE_CONTRACT.evidence_support_tags))
 _CLUSTER_EXECUTION_CONTEXT = render_cluster_execution_context(DEFAULT_CLUSTER_EXECUTION_CONTEXT)
+_CATEGORY_LIST = "\n".join(
+    f"  {entry.id}. {entry.name}\n     {entry.description}" for entry in CATEGORIES
+)
 
 SYSTEM_PROMPT = f"""\
 Analyze one distributed-training log and return the structured current-log evidence
@@ -128,6 +132,20 @@ selected, assess recovery for that surface; otherwise use the canonical unknown 
 claims and rationale "{L1_RESPONSE_CONTRACT.insufficient_rationale}". Related failure lines are grounded
 diagnostic references, not additional policy-claim citations, and remain empty when no
 primary was identified.
+
+Category classification (optional evidence signal):
+- After the required fields above, you MAY include one additional top-level JSON field
+  named category_selection with three keys: category_id (integer 0-38),
+  category_confidence (integer 0-100), and category_rationale (string, at most 400
+  characters).
+- Choose the single best-fitting id from the curated list below. Use category_id=0 and
+  category_confidence=0 when no listed category clearly matches or you are uncertain.
+- Ground category_rationale in current-log evidence. The rationale is advisory; the
+  L4 policy stage decides STOP/RESTART - the category signal only informs a
+  policy_context match at that stage, it does not itself control the action.
+- Omitting the category_selection field entirely is a valid, contract-compliant response.
+- The curated categories are:
+{_CATEGORY_LIST}
 
 Return one compact JSON object matching the supplied schema. Include only the strongest
 evidence and at most three related failures. Emit no fingerprint, data-position identity,

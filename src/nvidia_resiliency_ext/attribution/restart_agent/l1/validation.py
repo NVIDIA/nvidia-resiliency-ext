@@ -14,7 +14,13 @@ from .response_contract import L1_RESPONSE_CONTRACT
 def model_evidence_contract_errors(payload: Mapping[str, Any]) -> list[str]:
     """Return structural errors without applying semantic policy judgment."""
 
-    errors = _object_shape_errors(payload, L1_RESPONSE_CONTRACT.top_level_fields, "top-level")
+    errors = _object_shape_errors(
+        payload,
+        L1_RESPONSE_CONTRACT.top_level_fields,
+        "top-level",
+        optional=L1_RESPONSE_CONTRACT.optional_top_level_fields,
+    )
+    errors.extend(_category_selection_errors(payload.get("category_selection")))
     if payload.get("schema_version") != L1_EVIDENCE_SCHEMA_VERSION:
         errors.append(f"schema_version must be {L1_EVIDENCE_SCHEMA_VERSION}")
 
@@ -66,6 +72,8 @@ def _object_shape_errors(
     value: Mapping[str, Any],
     expected: frozenset[str],
     field: str,
+    *,
+    optional: frozenset[str] = frozenset(),
 ) -> list[str]:
     errors: list[str] = []
     missing = sorted(expected.difference(value))
@@ -317,3 +325,157 @@ def _positive_line_errors(value: Any, field: str) -> list[str]:
 
 def _nonempty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _category_selection_errors(value: Any) -> list[str]:
+    """Validate the optional L1 category_selection block.
+
+    The block is optional. When present, it must have all three curated fields
+    (category_id, category_confidence, category_rationale). category_id must be
+    an integer in the range [0, 38] (0 means "no listed category matches").
+    category_confidence must be an integer in [0, 100]. category_rationale must
+    be a non-empty string of at most max_category_rationale_chars characters.
+    """
+
+    if value is None:
+        return []
+    if not isinstance(value, Mapping):
+        return ["category_selection must be an object"]
+    errors = _object_shape_errors(
+        value, L1_RESPONSE_CONTRACT.category_selection_fields, "category_selection"
+    )
+    cid = value.get("category_id")
+    if isinstance(cid, bool) or not isinstance(cid, int) or cid < 0 or cid > 38:
+        errors.append("category_selection.category_id must be an integer in [0, 38]")
+    conf = value.get("category_confidence")
+    if isinstance(conf, bool) or not isinstance(conf, int) or conf < 0 or conf > 100:
+        errors.append("category_selection.category_confidence must be an integer in [0, 100]")
+    rationale = value.get("category_rationale")
+    if not isinstance(rationale, str) or not rationale.strip():
+        errors.append("category_selection.category_rationale must be a non-empty string")
+    elif len(rationale) > L1_RESPONSE_CONTRACT.max_category_rationale_chars:
+        errors.append(
+            f"category_selection.category_rationale must be at most "
+            f"{L1_RESPONSE_CONTRACT.max_category_rationale_chars} characters"
+        )
+    return errors
+
+
+def repair_schema_version(payload: Any) -> list[str]:
+    """In-place fix: normalize a similar-but-wrong schema_version string.
+
+    Some models (observed: gemini) hallucinate a schema version like
+    "restart_agent_decision_evidence.v1" instead of the expected
+    "restart_agent_evidence.v1" - the "decision" substring is bleed-through
+    from another schema name used elsewhere in the analyzer artifacts.
+
+    Only rewrites when the payload is otherwise shaped like this schema
+    (has an analysis_status field) and the current schema_version either
+    is missing or starts with "restart_agent". This prevents silently
+    accepting a truly foreign payload while forgiving cosmetic model errors.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    if payload.get("analysis_status") is None:
+        # Not obviously our schema; do not touch.
+        return notes
+    actual = payload.get("schema_version")
+    if actual == L1_EVIDENCE_SCHEMA_VERSION:
+        return notes
+    if actual is None:
+        payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
+        notes.append(f"schema_version: added missing field, set to {L1_EVIDENCE_SCHEMA_VERSION!r}")
+    elif isinstance(actual, str) and actual.startswith("restart_agent"):
+        payload["schema_version"] = L1_EVIDENCE_SCHEMA_VERSION
+        notes.append(
+            f"schema_version: normalized {actual!r} -> {L1_EVIDENCE_SCHEMA_VERSION!r} "
+            f"(model hallucinated similar version string)"
+        )
+    return notes
+
+
+def repair_biconditional_unknowns(payload: Any) -> list[str]:
+    """In-place fix: normalize model_recovery_assessment claim (value, status) pairs.
+
+    Contract rule: value == "unknown" iff status == "unknown". Some models
+    (observed: nemotron) mis-read `unknown` as "not fully committed" and pair
+    value=unknown with status=supported_but_unconfirmed / hypothesis_only. This
+    repair silently normalizes such pairs to value=unknown / status=unknown
+    (dropping any confidence hint on the claim to reflect the demotion), rather
+    than rejecting the entire L1 response.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    assessment = payload.get("model_recovery_assessment")
+    if not isinstance(assessment, dict):
+        return notes
+    for field in ("failure_domain", "retry_outlook_without_workload_change"):
+        claim = assessment.get(field)
+        if not isinstance(claim, dict):
+            continue
+        claim_value = claim.get("value")
+        claim_status = claim.get("status")
+        if (claim_value == "unknown") == (claim_status == AssessmentStatus.UNKNOWN.value):
+            continue
+        # Biconditional violated. Normalize both sides to unknown/unknown and
+        # keep the claim structurally valid so downstream validation passes.
+        claim["value"] = "unknown"
+        claim["status"] = AssessmentStatus.UNKNOWN.value
+        if "confidence" in claim and not (
+            isinstance(claim["confidence"], int) and not isinstance(claim["confidence"], bool)
+        ):
+            # keep confidence field valid; the model's number stays if it was a legal int
+            claim["confidence"] = L1_RESPONSE_CONTRACT.min_confidence
+        notes.append(
+            f"model_recovery_assessment.{field}: normalized "
+            f"(value={claim_value!r}, status={claim_status!r}) -> unknown/unknown"
+        )
+    return notes
+
+
+def repair_overlong_category_rationale(payload: Any) -> list[str]:
+    """In-place fix: truncate category_selection.category_rationale to the contract cap.
+
+    Some models produce a rationale longer than max_category_rationale_chars (400).
+    Truncating preserves the leading, most-relevant content rather than rejecting
+    the whole response.
+
+    Returns a list of repair notes for observability. Empty list means no
+    repair was applied.
+    """
+
+    notes: list[str] = []
+    if not isinstance(payload, dict):
+        return notes
+    selection = payload.get("category_selection")
+    if not isinstance(selection, dict):
+        return notes
+    rationale = selection.get("category_rationale")
+    max_chars = L1_RESPONSE_CONTRACT.max_category_rationale_chars
+    if isinstance(rationale, str) and len(rationale) > max_chars:
+        selection["category_rationale"] = rationale[:max_chars]
+        notes.append(
+            f"category_selection.category_rationale: truncated "
+            f"{len(rationale)} -> {max_chars} chars"
+        )
+    return notes
+
+
+def repair_model_evidence(payload: Any) -> list[str]:
+    """Aggregate all in-place repairs. Returns the concatenated repair notes."""
+
+    notes: list[str] = []
+    notes.extend(repair_schema_version(payload))
+    notes.extend(repair_biconditional_unknowns(payload))
+    notes.extend(repair_overlong_category_rationale(payload))
+    return notes

@@ -190,6 +190,21 @@ class L1EvidenceResult:
             anomalies={"l1_enabled": False},
         )
 
+    def category_selection(self) -> Mapping[str, Any] | None:
+        """Return the optional L1 category_selection block if the model emitted it.
+
+        The block is None when: L1 didn't run, the response was malformed, or
+        the model chose not to include the optional field. Callers must treat
+        None as "no signal available" and MUST NOT synthesize a default.
+        """
+
+        if not isinstance(self.semantic_payload, Mapping):
+            return None
+        selection = self.semantic_payload.get("category_selection")
+        if not isinstance(selection, Mapping):
+            return None
+        return selection
+
     def to_trace(self) -> dict[str, Any]:
         return {
             "enabled": bool(self.model),
