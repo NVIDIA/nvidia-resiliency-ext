@@ -22,7 +22,6 @@ failure into the workload. They run with or without nemo-lens installed.
 """
 
 import ast
-import os
 import pathlib
 import threading
 import time
@@ -164,97 +163,54 @@ class TestBackdatedSpan(unittest.TestCase):
         telemetry.backdated_span("job", "nv.nvrx.ftl.python.imports", 1000.0, 1000.0)
 
 
-@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
-class TestExtendedResourceAttributes(unittest.TestCase):
-    """The agent extends a variable it must never parse, once per cohort.
+class TestResourcePublicationWithoutLens(unittest.TestCase):
+    def test_fresh_process_without_optional_imports(self):
+        import subprocess
+        import sys
 
-    nemo-lens owns the encoding; without it NVRx publishes nothing at all.
-    """
+        code = r"""
+import importlib.abc
+import importlib.util
+import os
+import sys
 
-    def extend(self, inherited, attributes):
-        with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", inherited):
-            return telemetry.extended_resource_attributes(attributes)
-
-    def test_carries_the_inherited_value_through_untouched(self):
-        # Whatever the launching environment set is opaque here, including keys
-        # NVRx has no notion of.
-        inherited = "slurm.job_id=370487,cluster=oci-aga,job.uid=b3f1"
-        result = self.extend(inherited, {"nv.nvrx.cycle.index": 2})
-        self.assertTrue(result.startswith(inherited + ","))
-        self.assertTrue(result.endswith("nv.nvrx.cycle.index=2"))
-
-    def test_works_with_nothing_inherited(self):
-        self.assertEqual(self.extend("", {"nv.nvrx.cycle.index": 0}), "nv.nvrx.cycle.index=0")
-
-    def test_no_attributes_leaves_the_value_alone(self):
-        self.assertEqual(self.extend("cluster=oci-aga", {}), "cluster=oci-aga")
-        self.assertEqual(self.extend("", {}), "")
-
-    def test_values_are_percent_encoded(self):
-        # A value containing a comma or an equals would otherwise be read back as
-        # extra pairs, silently rewriting the resource.
-        result = self.extend("", {"nv.nvrx.ftl.membership": "active,standby=maybe"})
-        self.assertEqual(result, "nv.nvrx.ftl.membership=active%2Cstandby%3Dmaybe")
-
-    def test_extends_the_inherited_value_not_the_last_one(self):
-        # The agent relaunches a cohort every cycle. Extending its own previous
-        # output would append another nv.nvrx.cycle.index each time, without bound.
-        inherited = "cluster=oci-aga"
-        first = self.extend(inherited, {"nv.nvrx.cycle.index": 0})
-        second = self.extend(inherited, {"nv.nvrx.cycle.index": 1})
-        self.assertEqual(first.count("nv.nvrx.cycle.index"), 1)
-        self.assertEqual(second.count("nv.nvrx.cycle.index"), 1)
-        self.assertEqual(second, "cluster=oci-aga,nv.nvrx.cycle.index=1")
-
-
-@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
-class TestPublishResourceAttributes(unittest.TestCase):
-    """The only channel that reaches a spawned child, so it has to be exact."""
-
-    def setUp(self):
-        self.env = unittest.mock.patch.dict(
-            "os.environ", {"OTEL_RESOURCE_ATTRIBUTES": "job.uid=abc"}, clear=False
-        )
-        self.env.start()
-        self.addCleanup(self.env.stop)
-        self.inherited = unittest.mock.patch.object(
-            telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", "job.uid=abc"
-        )
-        self.inherited.start()
-        self.addCleanup(self.inherited.stop)
-
-    def test_the_child_sees_both_inherited_and_published(self):
-        with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-            published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
-        self.assertIn("job.uid=abc", published)
-        self.assertIn("nv.dl.rank=3", published)
-
-    def test_the_parent_is_restored(self):
-        # Left set, it would describe this process and every later child of it.
-        with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-            pass
-        self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
-
-    def test_restored_even_when_the_spawn_raises(self):
-        with self.assertRaises(RuntimeError):
-            with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-                raise RuntimeError("Process.start() failed")
-        self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
-
-    def test_an_unset_variable_is_removed_again_not_left_empty(self):
-        with unittest.mock.patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("OTEL_RESOURCE_ATTRIBUTES", None)
-            with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", ""):
-                with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-                    self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "nv.dl.rank=3")
-                self.assertNotIn("OTEL_RESOURCE_ATTRIBUTES", os.environ)
-
-    def test_successive_publishes_do_not_accumulate(self):
-        # A worker restarts per cycle; building from the last value grows unbounded.
-        for _ in range(3):
-            with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-                published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
-        self.assertEqual(published.count("nv.dl.rank"), 1)
+class BlockOptional(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == sys.argv[2] or fullname.startswith(sys.argv[2] + "."):
+            raise ModuleNotFoundError(fullname)
+sys.meta_path.insert(0, BlockOptional())
+os.environ['OTEL_RESOURCE_ATTRIBUTES'] = 'job.uid=imported'
+spec = importlib.util.spec_from_file_location('isolated_telemetry', sys.argv[1])
+telemetry = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(telemetry)
+assert not telemetry._AVAILABLE
+for original in (None, '', 'job.uid=live,nv.dl.rank=7'):
+    if original is None:
+        os.environ.pop('OTEL_RESOURCE_ATTRIBUTES', None)
+    else:
+        os.environ['OTEL_RESOURCE_ATTRIBUTES'] = original
+    assert telemetry.get_otel_resource_attributes() == {}
+    assert telemetry.compose_attributes({}, defaults={'nv.dl.rank': 3}) == {}
+    assert telemetry.extend_otel_resource_attributes(
+        'job.uid=imported', overrides={'role': 'worker'}
+    ) == 'job.uid=imported'
+    try:
+        with telemetry.publish_otel_resource_attributes({'role': 'worker'}):
+            assert os.environ.get('OTEL_RESOURCE_ATTRIBUTES') == original
+            raise RuntimeError('workload error')
+    except RuntimeError:
+        pass
+    assert os.environ.get('OTEL_RESOURCE_ATTRIBUTES') == original
+"""
+        for blocked in ("nemo.lens", "opentelemetry"):
+            with self.subTest(blocked=blocked):
+                result = subprocess.run(
+                    [sys.executable, "-c", code, telemetry.__file__, blocked],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TestPhase(unittest.TestCase):
@@ -299,7 +255,7 @@ class TestPhase(unittest.TestCase):
         self.assertEqual(
             self.marks, [("nvrx.ft", "nv.nvrx.ftl.cycle_start", {"nv.nvrx.cycle.index": 2})]
         )
-        (group, name, start, end, attributes, parent) = self.spans[0]
+        group, name, start, end, attributes, parent = self.spans[0]
         self.assertEqual((group, name), ("nvrx.ft", "nv.nvrx.ftl.cycle"))
         # The span covers the window, rather than being an instant at close.
         self.assertLessEqual(before, start)

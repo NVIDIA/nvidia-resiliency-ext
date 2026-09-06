@@ -1147,8 +1147,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             **self._launch_budget_attrs(),
         }
         cohort_env = {
-            "OTEL_RESOURCE_ATTRIBUTES": telemetry.extended_resource_attributes(
-                worker_resource_attrs
+            "OTEL_RESOURCE_ATTRIBUTES": telemetry.extend_otel_resource_attributes(
+                telemetry.get_inherited_resource_attributes(),
+                overrides=worker_resource_attrs,
             )
         }
 

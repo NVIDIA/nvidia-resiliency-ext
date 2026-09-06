@@ -66,8 +66,12 @@ try:
     from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
     from nemo.lens import trace_fn as trace_fn
-    from nemo.lens.resources import extend_otel_resource_attributes as _extend_resource_attributes
-    from nemo.lens.resources import publish_otel_resource_attributes as _publish_resource_attributes
+    from nemo.lens.resources.attributes import (
+        extend_otel_resource_attributes,
+        get_otel_resource_attributes,
+        publish_otel_resource_attributes,
+    )
+    from nemo.lens.semconv.encoding import compose_attributes
     from nemo.lens.span_utilities import emit_span as _emit_span
     from nemo.lens.span_utilities import linux_process_create_time as _process_create_time
     from opentelemetry import context as _otel_context
@@ -95,6 +99,23 @@ if _AVAILABLE:
 
 
 if not _AVAILABLE:
+
+    def get_otel_resource_attributes(*, environ=None):
+        """Return no attributes when nemo-lens is unavailable."""
+        return {}
+
+    def compose_attributes(current, *, defaults=None, overrides=None):
+        """Return an inert map when nemo-lens is unavailable."""
+        return {}
+
+    def extend_otel_resource_attributes(text, *, defaults=None, overrides=None):
+        """Leave a selected carrier unchanged when nemo-lens is unavailable."""
+        return text or ""
+
+    @contextmanager
+    def publish_otel_resource_attributes(attributes, *, environ=None):
+        """Leave the environment unchanged when nemo-lens is unavailable."""
+        yield
 
     @contextmanager
     def _managed_span(group, name, tracer=None, **attributes):
@@ -127,7 +148,7 @@ def setup_telemetry(
     ``service_name`` becomes ``service.name``, overriding ``OTEL_SERVICE_NAME``,
     which names the workload rather than these processes. ``instance_id`` becomes
     ``service.instance.id``; omit it when a parent published one through
-    :func:`publish_resource_attributes`. One of the two must supply it -- nemo-lens
+    :func:`publish_otel_resource_attributes`. One of the two must supply it -- nemo-lens
     derives its own from ``nv.dl.rank``, which no NVRx process has a usable value for.
     """
     if not _AVAILABLE:
@@ -196,6 +217,11 @@ class ManualSpan:
             self._stack.close()
             self._stack = None
         self._span = None
+
+
+def get_inherited_resource_attributes() -> str:
+    """Return the Resource carrier captured when this module was imported."""
+    return _INHERITED_RESOURCE_ATTRIBUTES
 
 
 def span(group: str, name: str, attributes: Optional[dict] = None):
@@ -270,37 +296,6 @@ def set_span_attributes(attributes: dict) -> None:
     if not _AVAILABLE:
         return
     _safe_set_span_attributes(_otel_trace.get_current_span(), attributes)
-
-
-def extended_resource_attributes(attributes: dict) -> str:
-    """Extend the inherited ``OTEL_RESOURCE_ATTRIBUTES`` with more pairs.
-
-    NVRx never parses the variable -- it is an opaque string to extend. Extending is
-    always from the value inherited at start, never from the last extension, or a
-    relaunched cohort accumulates a key per cycle. ``overwrite`` because an NVRx key
-    already in the inherited value is stale: this process is the authority on it.
-    Returns the inherited value unchanged when nemo-lens is absent: NVRx emits no
-    telemetry then, so it has nothing to say about this process.
-    """
-    if not _AVAILABLE:
-        return _INHERITED_RESOURCE_ATTRIBUTES
-    return _extend_resource_attributes(_INHERITED_RESOURCE_ATTRIBUTES, attributes, overwrite=True)
-
-
-@contextmanager
-def publish_resource_attributes(attributes: dict):
-    """Publish attributes into the environment, for a child spawned inside.
-
-    ``multiprocessing.Process`` has no ``env``, so the environment at ``start()``
-    is the only channel to a spawned child. Wrap that call. nemo-lens restores the
-    previous value on the way out, including on error -- left set, it would describe
-    this process and every later child of it. Values arrive in the child as strings.
-    """
-    if not _AVAILABLE:
-        yield
-        return
-    with _publish_resource_attributes(attributes, overwrite=True):
-        yield
 
 
 def record_process_startup(
