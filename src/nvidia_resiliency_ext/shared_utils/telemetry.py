@@ -62,6 +62,7 @@ try:
     from nemo.lens import setup_telemetry as _setup_telemetry
     from nemo.lens import trace_fn as trace_fn
     from nemo.lens.resources import extend_otel_resource_attributes as _extend_resource_attributes
+    from nemo.lens.resources import publish_otel_resource_attributes as _publish_resource_attributes
 
     _AVAILABLE = True
 
@@ -256,24 +257,12 @@ def extended_resource_attributes(attributes: dict) -> str:
     always from the value inherited at start, never from the last extension, or a
     relaunched cohort accumulates a key per cycle. ``overwrite`` because an NVRx key
     already in the inherited value is stale: this process is the authority on it.
-    The local encoder is the fallback for a plain OTel SDK without nemo-lens.
+    Returns the inherited value unchanged when nemo-lens is absent: NVRx emits no
+    telemetry then, so it has nothing to say about this process.
     """
-    if _AVAILABLE:
-        return _extend_resource_attributes(
-            _INHERITED_RESOURCE_ATTRIBUTES, attributes, overwrite=True
-        )
-
-    from urllib.parse import quote
-
-    added = {str(key): quote(str(value), safe="") for key, value in attributes.items()}
-    # Inherited segments are kept byte for byte, dropping only the keys being
-    # overwritten, so this path and nemo-lens's encoder agree on the result.
-    kept = [
-        segment
-        for segment in _INHERITED_RESOURCE_ATTRIBUTES.split(",")
-        if segment.strip() and segment.split("=", 1)[0].strip() not in added
-    ]
-    return ",".join(kept + [f"{key}={value}" for key, value in added.items()])
+    if not _AVAILABLE:
+        return _INHERITED_RESOURCE_ATTRIBUTES
+    return _extend_resource_attributes(_INHERITED_RESOURCE_ATTRIBUTES, attributes, overwrite=True)
 
 
 @contextmanager
@@ -281,20 +270,15 @@ def publish_resource_attributes(attributes: dict):
     """Publish attributes into the environment, for a child spawned inside.
 
     ``multiprocessing.Process`` has no ``env``, so the environment at ``start()``
-    is the only channel to a spawned child. Wrap that call. Restored on exit, or it
-    would describe this process and every later child of it too. Values arrive in
-    the child as strings.
+    is the only channel to a spawned child. Wrap that call. nemo-lens restores the
+    previous value on the way out, including on error -- left set, it would describe
+    this process and every later child of it. Values arrive in the child as strings.
     """
-    key = "OTEL_RESOURCE_ATTRIBUTES"
-    previous = os.environ.get(key)
-    os.environ[key] = extended_resource_attributes(attributes)
-    try:
+    if not _AVAILABLE:
         yield
-    finally:
-        if previous is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = previous
+        return
+    with _publish_resource_attributes(attributes, overwrite=True):
+        yield
 
 
 def record_process_startup(

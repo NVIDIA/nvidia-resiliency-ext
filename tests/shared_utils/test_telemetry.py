@@ -164,8 +164,12 @@ class TestBackdatedSpan(unittest.TestCase):
         telemetry.backdated_span("job", "nv.nvrx.ftl.python.imports", 1000.0, 1000.0)
 
 
+@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
 class TestExtendedResourceAttributes(unittest.TestCase):
-    """The agent extends a variable it must never parse, once per cohort."""
+    """The agent extends a variable it must never parse, once per cohort.
+
+    nemo-lens owns the encoding; without it NVRx publishes nothing at all.
+    """
 
     def extend(self, inherited, attributes):
         with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", inherited):
@@ -203,6 +207,7 @@ class TestExtendedResourceAttributes(unittest.TestCase):
         self.assertEqual(second, "cluster=oci-aga,nv.nvrx.cycle.index=1")
 
 
+@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
 class TestPublishResourceAttributes(unittest.TestCase):
     """The only channel that reaches a spawned child, so it has to be exact."""
 
