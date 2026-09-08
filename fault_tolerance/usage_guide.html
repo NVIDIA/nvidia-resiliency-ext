@@ -200,11 +200,16 @@ not fail the job for that reason.</p></li>
 <ul class="simple">
 <li><p>The service must implement <code class="docutils literal notranslate"><span class="pre">HealthCheckService.RunHealthCheck</span></code> from the NVRx
 <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> protobuf API and listen on the configured UDS.</p></li>
-<li><p>NVRx calls the service with <code class="docutils literal notranslate"><span class="pre">args=[&quot;--no-slurm&quot;]</span></code>.</p></li>
-<li><p>The response must set <code class="docutils literal notranslate"><span class="pre">success</span></code> and return JSON in <code class="docutils literal notranslate"><span class="pre">output</span></code>. A healthy node
-is reported with <code class="docutils literal notranslate"><span class="pre">success=true</span></code> and <code class="docutils literal notranslate"><span class="pre">{&quot;fail_count&quot;:</span> <span class="pre">0}</span></code>.</p></li>
-<li><p>If <code class="docutils literal notranslate"><span class="pre">success</span></code> is false, <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> is nonzero, or <code class="docutils literal notranslate"><span class="pre">output</span></code> cannot be parsed
-as JSON with a <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> field, NVRx treats the node as unhealthy.</p></li>
+<li><p>NVRx calls the service with the configured health check arguments, which
+default to <code class="docutils literal notranslate"><span class="pre">[&quot;--no-slurm&quot;,</span> <span class="pre">&quot;--group&quot;,</span> <span class="pre">&quot;prolog&quot;,</span> <span class="pre">&quot;epilog&quot;,</span> <span class="pre">&quot;logs&quot;,</span> <span class="pre">&quot;gpu&quot;]</span></code>.</p></li>
+<li><p>To report an unhealthy node, return <code class="docutils literal notranslate"><span class="pre">success=false</span></code>. For successful
+responses, NVRx also treats JSON in <code class="docutils literal notranslate"><span class="pre">output</span></code> with a numeric <code class="docutils literal notranslate"><span class="pre">fail_count</span></code>
+value greater than zero as unhealthy. <code class="docutils literal notranslate"><span class="pre">failed_checks</span></code> can optionally list
+the failed check names.</p></li>
+<li><p>NVRx ignores unavailable or unusable health check signals. A missing endpoint,
+missing gRPC dependency, connectivity error, non-JSON <code class="docutils literal notranslate"><span class="pre">output</span></code>, missing
+<code class="docutils literal notranslate"><span class="pre">fail_count</span></code>, or invalid <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> value in a successful response is
+logged and does not mark the node unhealthy.</p></li>
 </ul>
 <p>Example <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> configuration for BCM:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">socket_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/var/run/nvhcd.sock</span>
@@ -223,8 +228,8 @@ container so that <code class="docutils literal notranslate"><span class="pre">f
 <p>The wrapper can call the same reusable health check entry point that BCM uses for
 Slurm prolog or epilog validation, then normalize the result for NVRx. When using
 <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>, the gRPC request <code class="docutils literal notranslate"><span class="pre">args</span></code> are forwarded to the configured
-<code class="docutils literal notranslate"><span class="pre">healthcheck_path</span></code> as command-line arguments, so NVRx’s <code class="docutils literal notranslate"><span class="pre">--no-slurm</span></code> argument
-will appear in the wrapper’s <code class="docutils literal notranslate"><span class="pre">&quot;$&#64;&quot;</span></code>. For example:</p>
+<code class="docutils literal notranslate"><span class="pre">healthcheck_path</span></code> as command-line arguments, so the configured NVRx health
+check arguments will appear in the wrapper’s <code class="docutils literal notranslate"><span class="pre">&quot;$&#64;&quot;</span></code>. For example:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/usr/bin/env bash</span>
 <span class="nb">set</span><span class="w"> </span>-euo<span class="w"> </span>pipefail
 
