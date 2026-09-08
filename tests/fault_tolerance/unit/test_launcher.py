@@ -1499,6 +1499,64 @@ def test_launch_agent_unhealthy_node_exits_failure_without_rdzv_shutdown(is_job_
     rdzv_handler.shutdown_cycle_info_reporter.assert_called_once()
 
 
+def test_launch_agent_standby_exit_does_not_shutdown_rendezvous():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    rdzv_handler = MagicMock()
+    spec = SimpleNamespace(rdzv_handler=rdzv_handler)
+    agent = MagicMock()
+    agent.run.return_value = None
+    agent._rdzv_handler = rdzv_handler
+
+    config = _make_launch_agent_config()
+
+    with (
+        patch.object(launcher, "_get_addr_and_port", return_value=("host", 29500)),
+        patch.object(launcher, "_is_store_host", return_value=False),
+        patch.object(launcher, "WorkerSpec", return_value=spec),
+        patch.object(launcher.rdzv_registry, "get_rendezvous_handler", return_value=rdzv_handler),
+        patch.object(launcher, "LocalElasticAgent", return_value=agent),
+        patch.object(launcher.metrics, "initialize_metrics"),
+        patch.object(launcher.events, "record"),
+    ):
+        result = launcher.launch_agent(config, "train.py", [])
+
+    assert result is None
+    rdzv_handler.shutdown.assert_not_called()
+    rdzv_handler.shutdown_due_to_failure.assert_not_called()
+
+
+def test_launch_agent_unexpected_exception_does_not_shutdown_rendezvous():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    rdzv_handler = MagicMock()
+    spec = SimpleNamespace(rdzv_handler=rdzv_handler)
+    agent = MagicMock()
+    agent.run.side_effect = RuntimeError("local launcher failure")
+    agent._rdzv_handler = rdzv_handler
+
+    config = _make_launch_agent_config()
+
+    with (
+        patch.object(launcher, "_get_addr_and_port", return_value=("host", 29500)),
+        patch.object(launcher, "_is_store_host", return_value=False),
+        patch.object(launcher, "WorkerSpec", return_value=spec),
+        patch.object(launcher.rdzv_registry, "get_rendezvous_handler", return_value=rdzv_handler),
+        patch.object(launcher, "LocalElasticAgent", return_value=agent),
+        patch.object(launcher.metrics, "initialize_metrics"),
+        patch.object(launcher.events, "record"),
+    ):
+        with pytest.raises(RuntimeError, match="local launcher failure"):
+            launcher.launch_agent(config, "train.py", [])
+
+    rdzv_handler.shutdown.assert_not_called()
+    rdzv_handler.shutdown_due_to_failure.assert_not_called()
+
+
 def test_launch_agent_failed_result_marks_rendezvous_shutdown_failure():
     from types import SimpleNamespace
 
@@ -1600,6 +1658,73 @@ def test_launch_agent_success_result_returns_values_and_gracefully_shuts_down():
     assert result == {0: "ok"}
     rdzv_handler.shutdown.assert_called_once_with()
     rdzv_handler.shutdown_due_to_failure.assert_not_called()
+
+
+def test_launch_agent_success_result_shuts_down_when_event_construction_fails():
+    from types import SimpleNamespace
+
+    from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    rdzv_handler = MagicMock()
+    spec = SimpleNamespace(rdzv_handler=rdzv_handler)
+    agent = MagicMock()
+    agent.run.return_value = RunResult(state=WorkerState.SUCCEEDED, return_values={0: "ok"})
+    agent.get_event_succeeded.side_effect = RuntimeError("event construction failed")
+    agent._rdzv_handler = rdzv_handler
+
+    config = _make_launch_agent_config()
+
+    with (
+        patch.object(launcher, "_get_addr_and_port", return_value=("host", 29500)),
+        patch.object(launcher, "_is_store_host", return_value=False),
+        patch.object(launcher, "WorkerSpec", return_value=spec),
+        patch.object(launcher.rdzv_registry, "get_rendezvous_handler", return_value=rdzv_handler),
+        patch.object(launcher, "LocalElasticAgent", return_value=agent),
+        patch.object(launcher.metrics, "initialize_metrics"),
+        patch.object(launcher.events, "record"),
+    ):
+        with pytest.raises(RuntimeError, match="event construction failed"):
+            launcher.launch_agent(config, "train.py", [])
+
+    rdzv_handler.shutdown.assert_called_once_with()
+    rdzv_handler.shutdown_due_to_failure.assert_not_called()
+
+
+def test_launch_agent_failed_result_shuts_down_when_event_recording_fails():
+    from types import SimpleNamespace
+
+    from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    rdzv_handler = MagicMock()
+    spec = SimpleNamespace(rdzv_handler=rdzv_handler)
+    agent = MagicMock()
+    agent.run.return_value = RunResult(state=WorkerState.FAILED)
+    agent._rdzv_handler = rdzv_handler
+
+    config = _make_launch_agent_config()
+
+    with (
+        patch.object(launcher, "_get_addr_and_port", return_value=("host", 29500)),
+        patch.object(launcher, "_is_store_host", return_value=False),
+        patch.object(launcher, "WorkerSpec", return_value=spec),
+        patch.object(launcher.rdzv_registry, "get_rendezvous_handler", return_value=rdzv_handler),
+        patch.object(launcher, "LocalElasticAgent", return_value=agent),
+        patch.object(launcher.metrics, "initialize_metrics"),
+        patch.object(
+            launcher.events,
+            "record",
+            side_effect=[RuntimeError("event recording failed"), None],
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="event recording failed"):
+            launcher.launch_agent(config, "train.py", [])
+
+    rdzv_handler.shutdown_due_to_failure.assert_called_once_with()
+    rdzv_handler.shutdown.assert_not_called()
 
 
 def test_launch_agent_signal_exception_without_rank_failure_exits_normally():
