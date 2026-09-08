@@ -1671,12 +1671,21 @@ def launch_agent(
     # when important events occur (e.g., rendezvous round updates)
     spec.rdzv_handler.set_agent(agent)
 
-    shutdown_rdzv = True
+    # Keep the rendezvous open unless this launcher reaches an explicitly terminal
+    # outcome. An unexpected exception is local to this launcher until proven
+    # otherwise and must not permanently prevent healthy nodes from restarting.
+    shutdown_rdzv = False
     shutdown_due_to_failure = False
     try:
         metrics.initialize_metrics(metrics.MetricsConfig(config.metrics_cfg))
 
         result = agent.run()
+
+        # Classify terminal outcomes before fallible event reporting. Once agent.run()
+        # returns a non-None result, the rendezvous must close even if telemetry fails.
+        if result is not None:
+            shutdown_rdzv = True
+            shutdown_due_to_failure = result.is_failed()
 
         # records that agent.run() has succeeded NOT that workers have succeeded
         events.record(agent.get_event_succeeded())
@@ -1686,7 +1695,6 @@ def launch_agent(
             return None
 
         if result.is_failed():
-            shutdown_due_to_failure = True
             # ChildFailedError is treated specially by @record
             # if the error files for the failed children exist
             # @record will copy the first error (root cause)
@@ -1724,6 +1732,7 @@ def launch_agent(
     except ChildFailedError:
         raise
     except TerminalWorkerGroupFailure as e:
+        shutdown_rdzv = True
         shutdown_due_to_failure = True
         logger.error(f"Agent .run() ended with terminal worker-group failure: {e}")
         events.record(agent.get_event_failed())
