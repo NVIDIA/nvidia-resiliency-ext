@@ -59,7 +59,11 @@ Manually for testing:
     python -m nvidia_resiliency_ext.shared_utils.grpc_log_server \\
         --host 0.0.0.0 \\
         --port 50051 \\
-        --output-file /lustre/logs/training.log
+        --allowed-root /lustre/logs
+
+**Security note:** the listening port is unauthenticated, and each ``LogChunk`` carries a
+client-chosen ``file_path``. ``--allowed-root`` (repeatable, required) confines those writes;
+paths resolving outside every root are rejected with ``INVALID_ARGUMENT``.
 """
 
 import argparse
@@ -74,9 +78,14 @@ import time
 import urllib.parse
 from concurrent import futures
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import grpc
+
+from nvidia_resiliency_ext.shared_utils.os_utils import (
+    normalize_allowed_roots,
+    resolve_under_allowed_roots,
+)
 
 # Import generated protobuf code
 # Note: Proto files are in shared_utils/proto/ and compiled during build (build.py)
@@ -141,6 +150,8 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         graceful_shutdown_timeout: float = 60.0,
         flush_interval: float = 1.0,
         completion_idle_timeout: float = _DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS,
+        *,
+        allowed_roots: Sequence[str],
     ):
         """
         Initialize log aggregation server.
@@ -157,9 +168,26 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             completion_idle_timeout: Seconds a per-cycle application log must receive no new
                                      chunks after its latest flush before a heuristic completion
                                      line is emitted.
+            allowed_roots: Non-empty directories that client-supplied ``LogChunk.file_path``
+                           values must resolve under. Chunks targeting anything else are
+                           rejected with ``INVALID_ARGUMENT``. Required with no default:
+                           every chunk names its own destination, so there is no safe
+                           unconfined mode.
+
+        Raises:
+            ValueError: If ``completion_idle_timeout`` is negative or ``allowed_roots`` is empty.
         """
         if completion_idle_timeout < 0:
             raise ValueError("completion_idle_timeout must be non-negative")
+        # Resolved once here so the per-path check is a comparison of resolved strings.
+        resolved_roots = normalize_allowed_roots(allowed_roots)
+        if not resolved_roots:
+            raise ValueError(
+                "allowed_roots must contain at least one directory: clients name their own "
+                "destination on every chunk, so an unconfined servicer would let any peer "
+                "append to any file writable by this process"
+            )
+        self.allowed_roots: List[str] = resolved_roots
         self.max_buffer_size = max_buffer_size
         self.graceful_shutdown_timeout = graceful_shutdown_timeout
         self.completion_idle_timeout = completion_idle_timeout
@@ -183,12 +211,29 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         # Logging
         self.logger = logging.getLogger("LogAggregationServer")
         self.logger.setLevel(logging.INFO)
+        self.logger.info(f"Log write confinement enabled, allowed roots: {self.allowed_roots}")
 
         # Background flush thread (flushes buffer periodically)
         self.flush_interval = flush_interval
         self.shutdown_event = threading.Event()
         self.flush_thread = threading.Thread(target=self._periodic_flush, daemon=True)
         self.flush_thread.start()
+
+    def _resolve_target_path(self, file_path: str) -> str:
+        """
+        Resolve a client-supplied target path, enforcing allowed-root confinement.
+
+        Args:
+            file_path: ``LogChunk.file_path`` as sent by the peer (untrusted).
+
+        Returns:
+            The fully resolved path to actually open.
+
+        Raises:
+            ValueError: If the path escapes every allowed root. ``StreamLogs`` maps this to
+                ``INVALID_ARGUMENT`` and ends the stream.
+        """
+        return resolve_under_allowed_roots(file_path, self.allowed_roots)
 
     def _get_or_create_file_state(self, file_path: str) -> Dict[str, Any]:
         """
@@ -205,9 +250,17 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
 
         with self.files_lock:
             if file_path not in self.files:
-                # Create new file state
-                os.makedirs(os.path.dirname(os.path.abspath(file_path)) or ".", exist_ok=True)
-                file_handle = open(file_path, 'ab', buffering=self.max_buffer_size)
+                # Confinement check runs only on the first chunk for a given path (this
+                # branch also does the makedirs/open), so steady-state chunk handling stays
+                # a single dict lookup with no extra syscalls.
+                target_path = self._resolve_target_path(file_path)
+                # Create new file state. ``target_path`` is fully resolved, so neither the
+                # makedirs nor the open can be redirected outside an allowed root by a
+                # symlink swapped in after the check.
+                os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
+                file_handle = open(target_path, 'ab', buffering=self.max_buffer_size)
+                # Cycle bookkeeping is lexical and in-memory only (log_family is just a dict
+                # key for completion tracking), so it stays on the client-supplied path.
                 cycle_info = _cycle_log_info(file_path)
                 if cycle_info is None:
                     log_family = None
@@ -673,6 +726,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
 def serve(
     host: str,
     port: int,
+    allowed_roots: Sequence[str],
     max_workers: int = 100,
     graceful_shutdown_timeout: float = 60.0,
     completion_idle_timeout: float = _DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS,
@@ -686,9 +740,16 @@ def serve(
     Args:
         host: Host to bind to (e.g., '0.0.0.0' for all interfaces)
         port: Port to listen on
+        allowed_roots: Non-empty list of directories that client-supplied ``file_path``
+            values must resolve under. This entry point binds a network port without
+            authentication, so without confinement any peer that can reach the port could
+            append to any file writable by this process.
         max_workers: Maximum number of worker threads for gRPC
         graceful_shutdown_timeout: Maximum seconds to wait for clients during shutdown
         completion_idle_timeout: Idle seconds before heuristic per-cycle completion is logged
+
+    Raises:
+        ValueError: If ``allowed_roots`` is empty.
     """
     # Set up logging (using aegis-style format)
     logging.basicConfig(
@@ -700,6 +761,7 @@ def serve(
     servicer = LogAggregationServicer(
         graceful_shutdown_timeout=graceful_shutdown_timeout,
         completion_idle_timeout=completion_idle_timeout,
+        allowed_roots=allowed_roots,
     )
 
     # Create gRPC server
@@ -808,6 +870,17 @@ def main():
         'for up to this timeout or until all clients disconnect, whichever comes first.',
     )
     parser.add_argument(
+        '--allowed-root',
+        type=str,
+        action='append',
+        required=True,
+        dest='allowed_roots',
+        metavar='DIR',
+        help='Directory that client-supplied log file paths must resolve under. Repeatable. '
+        'Required: this server binds an unauthenticated port, so without confinement any '
+        'peer that can reach it could append to any file writable by this process.',
+    )
+    parser.add_argument(
         '--completion-idle-timeout',
         type=float,
         default=_DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS,
@@ -820,6 +893,7 @@ def main():
     serve(
         host=args.host,
         port=args.port,
+        allowed_roots=args.allowed_roots,
         max_workers=args.max_workers,
         graceful_shutdown_timeout=args.graceful_shutdown_timeout,
         completion_idle_timeout=args.completion_idle_timeout,

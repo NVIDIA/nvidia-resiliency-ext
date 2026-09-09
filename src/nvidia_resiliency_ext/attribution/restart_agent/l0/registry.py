@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Pattern
 
 from ..identity import fingerprint_for
-from ..models import RecoveryBehavior, RegistryRole
+from ..models import FailureClassifier, RegistryRole
 
 
 @dataclass(frozen=True)
@@ -18,7 +18,19 @@ class SignatureRegistryRow:
     registry_id: str
     pattern: Pattern[str]
     role: str
-    recovery_behavior: str = RecoveryBehavior.NONE.value
+
+
+@dataclass(frozen=True)
+class NcclRdmaPortLifecycleMatch:
+    """One explicit NCCL RDMA port-lifecycle event from a known source dialect."""
+
+    event_type: str
+    device: str
+    port: str
+    event_code: int
+    source_dialect: str
+    network_protocol: str | None = None
+    node: str | None = None
 
 
 _DIAGNOSTIC_CONTEXT_PATTERNS: tuple[tuple[str, Pattern[str]], ...] = (
@@ -51,6 +63,45 @@ _CONDITIONAL_CAUSE_RE = re.compile(
 _DISTRIBUTED_OPERATION_TIMEOUT_RE = re.compile(
     r"\b(?:watchdog\s+)?(?:caught\s+)?(?:collective\s+)?operation\s+timeout\b"
     r"|\boperation\b.*\btimed out\b",
+    re.I,
+)
+
+_REJECTED_NONFINITE_ITERATION_RE = re.compile(
+    r"\bunexpected\s+result\s+(?:nan|[-+]?inf(?:inity)?)\b"
+    r"|\b(?:nan|[-+]?inf(?:inity)?)\s+result\s+rejected\b",
+    re.I,
+)
+
+_CUDA_OOM_RE = re.compile(
+    r"\bCUDA(?:\s+error:)?\s+out of memory\b"
+    r"|\btorch(?:\.cuda)?\.OutOfMemoryError\b"
+    r"|\bCUBLAS_STATUS_ALLOC_FAILED\b",
+    re.I,
+)
+
+_PORT_BIND_CONFLICT_RE = re.compile(
+    r"\bAddress already in use\b|\bEADDRINUSE\b|\bErrno\s*98\b",
+    re.I,
+)
+
+_NCCL_RDMA_PORT_LIFECYCLE_RE = re.compile(
+    r"\bNCCL\s+WARN\s+NET/IB\s*:\s*"
+    r"(?P<device>[A-Za-z0-9_.-]+):(?P<port>\d+)\s+"
+    r"Got\s+non-fatal\s+async\s+event:\s*"
+    r"(?P<event_type>port error|client reregistration|port active)"
+    r"\((?P<event_code>\d+)\)",
+    re.I,
+)
+
+_NCCL_RDMA_PORT_ERROR_RE = re.compile(
+    r"\bNCCL\s+WARN\s+NET/IB\s*:\s*"
+    r"[A-Za-z0-9_.-]+:\d+\s+Got\s+non-fatal\s+async\s+event:\s*"
+    r"port error\(\d+\)",
+    re.I,
+)
+
+_NCCL_NET_IB_SOURCE_NODE_RE = re.compile(
+    r"(?:\[[^\]]+\]\s+)?(?P<node>[A-Za-z0-9_.-]+):\d+:\d+\s+\[\d+\]\s+" r"transport/net_ib\.cc:\d+",
     re.I,
 )
 
@@ -145,7 +196,7 @@ MVP_SIGNATURES: tuple[SignatureRegistryRow, ...] = (
     ),
     SignatureRegistryRow(
         registry_id="cuda_oom",
-        pattern=re.compile(r"CUDA out of memory|CUBLAS_STATUS_ALLOC_FAILED", re.I),
+        pattern=_CUDA_OOM_RE,
         role=RegistryRole.ROOT_CANDIDATE.value,
     ),
     SignatureRegistryRow(
@@ -165,7 +216,6 @@ MVP_SIGNATURES: tuple[SignatureRegistryRow, ...] = (
             re.I,
         ),
         role=RegistryRole.ROOT_CANDIDATE.value,
-        recovery_behavior=RecoveryBehavior.RETRY_THEN_SKIP.value,
     ),
     SignatureRegistryRow(
         registry_id="framework_crash",
@@ -190,6 +240,11 @@ MVP_SIGNATURES: tuple[SignatureRegistryRow, ...] = (
         role=RegistryRole.ROOT_CANDIDATE.value,
     ),
     SignatureRegistryRow(
+        registry_id="nccl_rdma_port_error_event",
+        pattern=_NCCL_RDMA_PORT_ERROR_RE,
+        role=RegistryRole.ROOT_CANDIDATE.value,
+    ),
+    SignatureRegistryRow(
         registry_id="nccl_cascade",
         pattern=re.compile(
             r"^(?!.*(?:watchdog\s+)?(?:caught\s+)?(?:collective\s+)?operation\s+timeout)"
@@ -202,6 +257,16 @@ MVP_SIGNATURES: tuple[SignatureRegistryRow, ...] = (
         registry_id="cuda_previous_error_cascade",
         pattern=re.compile(
             r"operation failed due to a previous error during capture" r"|NCCL WARN Cuda failure",
+            re.I,
+        ),
+        role=RegistryRole.CASCADE_CANDIDATE.value,
+    ),
+    SignatureRegistryRow(
+        registry_id="terminal_transport_failure_surface",
+        pattern=re.compile(
+            r"\b(?:connection (?:reset|closed|lost|aborted)|broken pipe|peer (?:closed|disconnected))\b"
+            r"|\b(?:TCPStore|socket)\b.{0,120}\b(?:failed|error|closed|reset|disconnected)\b"
+            r"|\breceived\s+0\s+bytes\b",
             re.I,
         ),
         role=RegistryRole.CASCADE_CANDIDATE.value,
@@ -250,6 +315,14 @@ _REGISTRY_TRIGGER_TERMS = (
     "out of memory: killed process",
     "memory cgroup out of memory",
     "watchdog",
+    "connection reset",
+    "connection closed",
+    "connection lost",
+    "broken pipe",
+    "peer closed",
+    "disconnected",
+    "tcpstore",
+    "received 0 bytes",
 )
 _NONFINITE_TRIGGER_RE = re.compile(
     r"(?<![a-z0-9_])(?:nan|[-+]?inf(?:inity)?)(?![a-z0-9_])" r"|non[- ]?finite",
@@ -269,7 +342,12 @@ _ROW_TRIGGER_TERMS: dict[str, tuple[str, ...]] = {
     "checkpoint_compatibility_mismatch": ("checkpoint",),
     "shape_mismatch": ("shape mismatch",),
     "filesystem_permission_denied": ("permissionerror", "permission denied", "eacces"),
-    "cuda_oom": ("cuda out of memory", "cublas_status_alloc_failed"),
+    "cuda_oom": (
+        "cuda out of memory",
+        "cuda error: out of memory",
+        "outofmemoryerror",
+        "cublas_status_alloc_failed",
+    ),
     "bad_token_or_window": (
         "bad token",
         "bad sample",
@@ -291,8 +369,20 @@ _ROW_TRIGGER_TERMS: dict[str, tuple[str, ...]] = {
         "memory cgroup",
     ),
     "observed_distributed_operation_timeout": ("timeout", "timed out"),
+    "nccl_rdma_port_error_event": ("net/ib", "port error"),
     "nccl_cascade": ("nccl",),
     "cuda_previous_error_cascade": ("previous error", "nccl warn cuda failure"),
+    "terminal_transport_failure_surface": (
+        "connection reset",
+        "connection closed",
+        "connection lost",
+        "broken pipe",
+        "peer closed",
+        "disconnected",
+        "tcpstore",
+        "socket",
+        "received 0 bytes",
+    ),
 }
 
 
@@ -338,6 +428,41 @@ def match_registry(
     ]
 
 
+def failure_signal_classifiers(line: str) -> tuple[str, ...]:
+    """Return policy-neutral classifiers for an observed failure line."""
+
+    classifiers: list[str] = []
+    if _CUDA_OOM_RE.search(line):
+        classifiers.append(FailureClassifier.CUDA_OOM.value)
+    if _PORT_BIND_CONFLICT_RE.search(line):
+        classifiers.append(FailureClassifier.PORT_BIND_CONFLICT.value)
+    if _REJECTED_NONFINITE_ITERATION_RE.search(line):
+        classifiers.extend(
+            (
+                FailureClassifier.NAN_OR_INF.value,
+                FailureClassifier.REJECTED_NONFINITE_ITERATION.value,
+            )
+        )
+    return tuple(classifiers)
+
+
+def parse_nccl_rdma_port_lifecycle_event(line: str) -> NcclRdmaPortLifecycleMatch | None:
+    """Parse an explicit NCCL RDMA port lifecycle event from NET/IB output."""
+
+    match = _NCCL_RDMA_PORT_LIFECYCLE_RE.search(line)
+    if match is None:
+        return None
+    node_match = _NCCL_NET_IB_SOURCE_NODE_RE.search(line)
+    return NcclRdmaPortLifecycleMatch(
+        event_type=match.group("event_type").lower().replace(" ", "_"),
+        device=match.group("device"),
+        port=match.group("port"),
+        event_code=int(match.group("event_code")),
+        source_dialect="nccl_net_ib",
+        node=node_match.group("node") if node_match is not None else None,
+    )
+
+
 def diagnostic_context_kind(line: str) -> str | None:
     """Return the stable role for non-causal CUDA/PyTorch debugging advice."""
 
@@ -372,8 +497,20 @@ def fingerprint_components(row: SignatureRegistryRow, line: str) -> list[str]:
         return ["comm_abort"]
     if row.registry_id == "observed_distributed_operation_timeout":
         return ["collective_operation_timeout"]
+    if row.registry_id == "nccl_rdma_port_error_event":
+        return ["async_port_error"]
     if row.registry_id == "cuda_previous_error_cascade":
         return ["previous_capture_error"]
+    if row.registry_id == "terminal_transport_failure_surface":
+        if "tcpstore" in lowered:
+            return ["tcpstore_connection_loss"]
+        if "broken pipe" in lowered:
+            return ["broken_pipe"]
+        if "reset" in lowered:
+            return ["connection_reset"]
+        if "received 0 bytes" in lowered:
+            return ["zero_byte_receive"]
+        return ["connection_loss"]
     if row.registry_id == "time_limit":
         return ["time_limit"]
     if row.registry_id == "bad_token_or_window":

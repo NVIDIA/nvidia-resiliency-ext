@@ -22,9 +22,24 @@
     }
   },
   "retry_policy": {
-    "confirmation_retry_allowed_retries": 1,
-    "bounded_retry_allowed_retries": 1,
-    "general_retry_allowed_retries": 3
+    "concrete_confirmation_retry_allowed_retries": 1,
+    "workload_confirmation_retry_allowed_retries": 1,
+    "general_retry_allowed_retries": 2,
+    "job_no_progress_allowed_retries": 3,
+    "job_unknown_progress_allowed_retries": 3
+  },
+  "policy_contexts": {
+    "cuda_oom_no_retry": {
+      "enabled": true
+    },
+    "port_bind_confirmation_retry": {
+      "enabled": true,
+      "allowed_retries": 1
+    },
+    "rejected_iteration_retry_then_skip": {
+      "enabled": true,
+      "allowed_retries": 2
+    }
   },
   "model_defaults": {
     "request": {
@@ -40,12 +55,12 @@
     "tools": {
       "enabled": true,
       "advertisement": {
-        "overview": true,
+        "overview": false,
         "grep_log": true,
         "read_window": true,
-        "get_evidence_objects": false
+        "get_evidence_objects": true
       },
-      "max_rounds": 8
+      "max_rounds": 3
     },
     "reasoning": {
       "thinking_mode": "auto"

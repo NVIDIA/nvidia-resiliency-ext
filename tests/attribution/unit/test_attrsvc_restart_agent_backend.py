@@ -4,19 +4,27 @@
 """Behavioral tests for attrsvc's direct Restart Agent backend."""
 
 import asyncio
+import logging
 import threading
 import time
 from types import SimpleNamespace
+
+import pytest
 
 from nvidia_resiliency_ext.attribution.orchestration.types import LogAnalyzerError
 from nvidia_resiliency_ext.attribution.restart_agent import (
     AnalysisResult,
     DecisionCandidate,
+    DecisionEvidence,
+    L0Artifacts,
+    L0Bundle,
+    L0ModelFacingView,
     ModelAnalysisResult,
     ProgressiveL0Accumulator,
     build_restart_agent_runtime,
     parse_restart_agent_config,
 )
+from nvidia_resiliency_ext.attribution.restart_agent.models import FailureEvidence
 from nvidia_resiliency_ext.services.attrsvc import (
     restart_agent_backend as restart_agent_backend_module,
 )
@@ -24,6 +32,10 @@ from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
     LogConvergencePolicy,
     ProgressiveAnalysisPolicy,
     RestartAgentServiceBackend,
+)
+from nvidia_resiliency_ext.services.attrsvc.restart_agent_logging import (
+    RestartAgentLogContext,
+    RestartAgentOperationalLogger,
 )
 
 
@@ -55,11 +67,19 @@ def _config(*, max_total_records: int = 8):
     )
 
 
-def _analysis_result(decision: str, *, eligible: bool = True) -> AnalysisResult:
+def _analysis_result(
+    decision: str,
+    *,
+    eligible: bool = True,
+    candidate_kind: str | None = None,
+) -> AnalysisResult:
+    provenance = {"nvrx_use": "eligible" if eligible else "fallback_to_nvrx_default"}
+    if candidate_kind is not None:
+        provenance["candidate_kind"] = candidate_kind
     return AnalysisResult(
         decision=decision,
         decision_basis="test",
-        result_provenance={"nvrx_use": "eligible" if eligible else "fallback_to_nvrx_default"},
+        result_provenance=provenance,
         justification=f"test {decision.lower()} result",
     )
 
@@ -78,6 +98,101 @@ class _FakeRuntime:
         self.release = threading.Event()
         self.requests = []
         self.finalized_l0a = []
+        self.route_trace = {
+            "layers": {
+                "L1": {
+                    "wall_clock_s": 0.4,
+                    "model_call_wall_clock_s": 0.3,
+                    "tool_wall_clock_s": 0.1,
+                    "model_calls": 2,
+                    "failed_model_calls": 1,
+                    "retried_model_calls": 1,
+                    "tool_calls": 1,
+                    "total_tokens": 120,
+                },
+                "L2": {
+                    "wall_clock_s": 0.02,
+                    "grounding_status": "grounded",
+                    "history_identity_ready": True,
+                    "root_fingerprint_source": "l2_grounded",
+                    "affected_entity_available": True,
+                    "audit_status": "credible",
+                    "observational_finding_count": 0,
+                },
+                "L3": {
+                    "wall_clock_s": 0.01,
+                    "history_available": True,
+                    "selected_failure_facts_source": "l2_grounded",
+                    "same_job_attempts": 1,
+                    "matching_root_attempts": 1,
+                    "same_entity_attempts": 1,
+                    "no_observed_advance_attempts": 1,
+                    "consecutive_same_root_no_advance_attempts": 1,
+                    "consecutive_same_root_and_entity_no_advance_attempts": 1,
+                },
+                "L4": {
+                    "wall_clock_s": 0.01,
+                    "base_rule": "concrete_confirmation_retry",
+                    "effective_rule": "concrete_confirmation_retry",
+                    "decision": "RESTART",
+                    "decision_basis": "concrete_confirmation_retry_available",
+                    "retry_budget_exhausted": False,
+                    "general_root_ceiling": {
+                        "matching_prior_attempts": 1,
+                        "allowed_retries": 2,
+                    },
+                    "selected_policy_ledger": {
+                        "matching_prior_attempts": 1,
+                        "allowed_retries": 1,
+                    },
+                    "job_no_progress_guard": {
+                        "matching_prior_attempts": 1,
+                        "allowed_retries": 3,
+                    },
+                    "job_unknown_progress_guard": {
+                        "matching_prior_attempts": 0,
+                        "allowed_retries": 3,
+                    },
+                    "exhausted_by": [],
+                },
+            },
+            "l1": {
+                "model_calls": [
+                    {
+                        "model_turn": 1,
+                        "attempt": 1,
+                        "success": False,
+                        "retry_scheduled": True,
+                        "latency_s": 0.1,
+                        "error_type": "http_error",
+                        "http_status": 502,
+                    },
+                    {
+                        "model_turn": 1,
+                        "attempt": 2,
+                        "success": True,
+                        "latency_s": 0.2,
+                        "finish_reason": "tool_calls",
+                        "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+                    },
+                ],
+                "tool_calls": [
+                    {
+                        "model_turn": 1,
+                        "name": "read_window",
+                        "latency_ms": 100,
+                        "result_lines": 20,
+                    }
+                ],
+            },
+            "l4_policy": {
+                "retry_policy": {
+                    "match_requirements": {"root": "required", "entity": "required"},
+                }
+            },
+            "decision_candidates": {"selected": "l1_enriched"},
+            "anomalies": {"provider_retries": 1},
+        }
 
     def analyze(
         self,
@@ -85,10 +200,13 @@ class _FakeRuntime:
         *,
         on_deterministic_ready,
         on_route_complete,
+        on_l0_ready=None,
         retain_detailed_artifacts=True,
     ):
         assert retain_detailed_artifacts is False
         self.requests.append(request)
+        if on_l0_ready is not None:
+            on_l0_ready(_operational_l0_artifacts(request.log_path))
         return self._complete(on_deterministic_ready, on_route_complete)
 
     def analyze_prepared(
@@ -98,11 +216,14 @@ class _FakeRuntime:
         *,
         on_deterministic_ready,
         on_route_complete,
+        on_l0_ready=None,
         retain_detailed_artifacts=True,
     ):
         assert retain_detailed_artifacts is False
         self.requests.append(request)
         self.finalized_l0a.append(finalized_l0a)
+        if on_l0_ready is not None:
+            on_l0_ready(_operational_l0_artifacts(request.log_path))
         return self._complete(on_deterministic_ready, on_route_complete)
 
     def _complete(self, on_deterministic_ready, on_route_complete):
@@ -118,7 +239,7 @@ class _FakeRuntime:
         self.deterministic_published.set()
         if self.block_after_deterministic:
             self.release.wait(timeout=2.0)
-        final = _analysis_result(self.final_decision)
+        final = _analysis_result(self.final_decision, candidate_kind="l1_enriched")
         model_result = ModelAnalysisResult(
             route_id="test-route",
             model="test-model",
@@ -128,7 +249,7 @@ class _FakeRuntime:
             l1_usable=True,
             analysis_result=final,
         )
-        on_route_complete(model_result, {})
+        on_route_complete(model_result, self.route_trace)
         return SimpleNamespace(result=SimpleNamespace(model_results=(model_result,)))
 
 
@@ -153,6 +274,69 @@ def _backend(tmp_path, runtime, *, max_total_records: int = 8):
     )
 
 
+def _operational_l0_artifacts(log_path: str) -> L0Artifacts:
+    primary = FailureEvidence(
+        failure_class="cuda_runtime_failure",
+        signature="not-logged-signature",
+        root_fingerprint="not-logged-fingerprint",
+        fault_outcome="terminal",
+        line=12,
+        quote="not-logged-source-text",
+    )
+    bundle = L0Bundle(
+        log_path=log_path,
+        byte_size=2048,
+        line_count=20,
+        deterministic_primary_candidate=primary,
+    )
+    decision_evidence = DecisionEvidence(
+        deterministic_primary_candidate=primary,
+        selected_observed_failure=None,
+        canonical_observed_identity={"root_fingerprint": "not-logged-fingerprint"},
+        selected_evidence_references={"source_lines": [12]},
+        failure_position={"line": 12},
+        progress_checkpoint_state={},
+        later_progress_recovery={},
+        locality={},
+        coverage_lossiness={},
+        provenance={},
+    )
+    model_view = L0ModelFacingView(
+        decision_evidence=decision_evidence,
+        failure_narrative={
+            "status": "available",
+            "identity_kind": "primary",
+            "events": [],
+            "known_unknowns": [],
+        },
+        decision_evidence_view={
+            "canonical_observed_identity": {"root_fingerprint": "not-logged-fingerprint"},
+            "failure_position": {"line": 12},
+        },
+        evidence_bundle={"context_windows": []},
+        attempt_execution_context={},
+        projection_metrics={
+            "view_size": {"compact_json_characters": 1024, "estimated_tokens": 342},
+            "selection_counts": {"context_windows": {"available": 2, "selected": 1, "omitted": 1}},
+            "compaction_counts": {"truncated_context_windows": 1},
+            "projection_integrity": {
+                "status": "ok",
+                "deterministic_payload_sha256": "sha256:test",
+            },
+        },
+    )
+    return L0Artifacts(
+        bundle=bundle,
+        decision_evidence=decision_evidence,
+        model_view=model_view,
+        l0a_wall_clock_s=0.2,
+        decision_evidence_wall_clock_s=0.01,
+        l0b_wall_clock_s=0.02,
+        l0_wall_clock_s=0.23,
+        l0_reused=False,
+    )
+
+
 def test_live_log_convergence_policy_defaults():
     policy = LogConvergencePolicy()
 
@@ -160,6 +344,313 @@ def test_live_log_convergence_policy_defaults():
     assert policy.quiet_seconds == 5.0
     assert policy.max_wait_seconds == 40.0
     assert policy.poll_seconds == 0.25
+
+
+def test_terminal_service_logs_lifecycle_and_completed_stage_events(tmp_path, caplog):
+    # Arrange
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+    caplog.set_level(logging.DEBUG)
+
+    async def run():
+        await backend.submit_log(
+            str(log_path),
+            job_id="job-7",
+            analysis_intent="terminal",
+        )
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        # Act
+        result = asyncio.run(run())
+
+        # Assert
+        assert result.status == "completed"
+        messages = "\n".join(record.getMessage() for record in caplog.records)
+        for event in (
+            "restart_agent.request.accepted",
+            "restart_agent.terminal.started",
+            "restart_agent.terminal.drain_completed",
+            "restart_agent.l0a.completed",
+            "restart_agent.decision_evidence.completed",
+            "restart_agent.l0b.completed",
+            "restart_agent.candidate.ready",
+            "restart_agent.l1.completed",
+            "restart_agent.l1.model_call.completed",
+            "restart_agent.l1.tool_call.completed",
+            "restart_agent.l2.completed",
+            "restart_agent.l3.completed",
+            "restart_agent.l4.completed",
+            "restart_agent.analysis.completed",
+        ):
+            assert f"event={event}" in messages
+        assert "job_id=job-7" in messages
+        assert "cycle_id=2" in messages
+        assert "model_wall_clock_s=0.300000" in messages
+        assert "tool_wall_clock_s=0.100000" in messages
+        assert "total_tokens=120" in messages
+        assert "endpoint_issues=1" in messages
+        assert any(
+            "event=restart_agent.candidate.ready" in record.getMessage()
+            and "candidate_kind=l1_enriched" in record.getMessage()
+            and "route_id=test-route" in record.getMessage()
+            for record in caplog.records
+        )
+        assert "credential_ref" not in messages
+    finally:
+        backend.shutdown()
+
+
+def test_l0_operational_log_uses_stage_artifacts_without_evidence_content(caplog):
+    # Arrange
+    artifacts = _operational_l0_artifacts("/logs/train_cycle2.log")
+    target = logging.getLogger("test.restart_agent.operational")
+    caplog.set_level(logging.DEBUG, logger=target.name)
+    operational_log = RestartAgentOperationalLogger(target)
+
+    # Act
+    operational_log.l0_completed(
+        RestartAgentLogContext("job-7", 2, "/logs/train_cycle2.log"),
+        artifacts,
+        progressive_metrics={
+            "source_decode_wall_clock_s": 0.04,
+            "source_index_classify_wall_clock_s": 0.05,
+            "source_ingest_wall_clock_s": 0.09,
+            "l0a_bundle_wall_clock_s": 0.11,
+            "decision_evidence_wall_clock_s": 0.01,
+            "l0a_reduction_wall_clock_s": 0.12,
+        },
+    )
+
+    # Assert
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "event=restart_agent.l0a.completed" in messages
+    assert "event=restart_agent.decision_evidence.completed" in messages
+    assert "event=restart_agent.l0a.detail" in messages
+    assert "event=restart_agent.l0b.completed" in messages
+    assert "event=restart_agent.l0b.detail" in messages
+    assert "source_ingest_s=0.090000" in messages
+    assert "evidence_assembly_s=0.110000" in messages
+    assert "decision_evidence_s=0.010000" in messages
+    assert "cumulative_compute_s=0.210000" in messages
+    assert "cumulative_selection_s=0.010000" in messages
+    assert "compact_json_chars=1024" in messages
+    assert "projection_integrity=ok" in messages
+    assert "not-logged-signature" not in messages
+    assert "not-logged-fingerprint" not in messages
+    assert "not-logged-source-text" not in messages
+
+
+def test_route_log_uses_selected_candidate_and_preserves_l2_not_run(caplog):
+    # Arrange
+    target = logging.getLogger("test.restart_agent.route-selection")
+    caplog.set_level(logging.INFO, logger=target.name)
+    operational_log = RestartAgentOperationalLogger(target)
+    result = ModelAnalysisResult(
+        route_id="test-route",
+        model="test-model",
+        endpoint="https://llm.example.test/v1",
+        credential_ref="TEST_LLM_KEY_FILE",
+        execution_status="completed",
+        l1_usable=True,
+        analysis_result=_analysis_result("RESTART"),
+    )
+    trace = {
+        "layers": {
+            "L1": {"wall_clock_s": 0.1},
+            "L2": {
+                "wall_clock_s": 0.0,
+                "grounding_status": "not_run",
+                "audit_status": "not_run",
+            },
+            "L3": {},
+            "L4": {},
+        },
+        "decision_candidates": {"selected": "deterministic"},
+    }
+
+    # Act
+    operational_log.route_completed(
+        RestartAgentLogContext("job-7", 2, "/logs/train_cycle2.log"),
+        result,
+        trace,
+        terminal_to_ready_s=0.2,
+    )
+
+    # Assert
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "event=restart_agent.l2.completed" in message and "status=not_run" in message
+        for message in messages
+    )
+    for event in (
+        "restart_agent.l3.completed",
+        "restart_agent.l4.completed",
+        "restart_agent.candidate.ready",
+    ):
+        assert any(
+            f"event={event}" in message and "candidate_kind=deterministic" in message
+            for message in messages
+        )
+
+
+@pytest.mark.parametrize(
+    ("reason", "model_call"),
+    [
+        (
+            "context_budget_exceeded",
+            {
+                "success": False,
+                "error_type": "context_budget_exceeded",
+                "error": "request exceeds configured context budget",
+            },
+        ),
+        (
+            "analysis_deadline_exceeded",
+            {
+                "success": False,
+                "error_type": "analysis_deadline_exceeded",
+                "error": "analysis deadline exceeded during HTTP request",
+                "timeout": True,
+            },
+        ),
+    ],
+)
+def test_route_log_separates_non_endpoint_l1_failure_from_endpoint_issue(
+    caplog,
+    reason,
+    model_call,
+):
+    target = logging.getLogger(f"test.restart_agent.{reason}")
+    caplog.set_level(logging.INFO, logger=target.name)
+    operational_log = RestartAgentOperationalLogger(target)
+    assessment = {
+        "execution_status": "failed",
+        "result_quality": "unusable",
+        "reason_codes": [reason],
+        "unusable_reason": reason,
+    }
+    result = ModelAnalysisResult(
+        route_id="oversized-route",
+        model="test-model",
+        endpoint="https://llm.example.test/v1",
+        credential_ref="TEST_LLM_KEY_FILE",
+        execution_status="failed",
+        l1_usable=False,
+        analysis_result=_analysis_result("RESTART"),
+        l1_execution_assessment=assessment,
+    )
+    trace = {
+        "layers": {
+            "L1": {"wall_clock_s": 0.01, "execution_assessment": assessment},
+            "L2": {"grounding_status": "not_run", "audit_status": "not_run"},
+            "L3": {},
+            "L4": {},
+        },
+        "l1": {"model_calls": [model_call]},
+        "decision_candidates": {"selected": "deterministic"},
+    }
+
+    operational_log.route_completed(
+        RestartAgentLogContext("job-7", 2, "/logs/train_cycle2.log"),
+        result,
+        trace,
+        terminal_to_ready_s=0.02,
+    )
+
+    l1_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "event=restart_agent.l1.completed" in record.getMessage()
+    )
+    assert "execution_status=failed" in l1_message
+    assert f"unusable_reason={reason}" in l1_message
+    assert "endpoint_issues=0" in l1_message
+    assert f"error_classification={reason}" in l1_message
+
+
+def test_operational_handler_failure_does_not_strand_terminal_attempt(
+    tmp_path,
+    monkeypatch,
+):
+    # Arrange
+    runtime = _FakeRuntime(final_decision="RESTART")
+    backend = _backend(tmp_path, runtime)
+    log_path = tmp_path / "train_cycle3.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    def fail_logging(*args, **kwargs):
+        raise RuntimeError("test log handler failure")
+
+    for method in ("info", "debug", "warning", "error"):
+        monkeypatch.setattr(backend._operational_log, method, fail_logging)
+
+    async def run():
+        await backend.submit_log(
+            str(log_path),
+            job_id="job-7",
+            analysis_intent="terminal",
+        )
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        # Act
+        result = asyncio.run(run())
+
+        # Assert
+        assert result.status == "completed"
+        assert result.recommendation["action"] == "RESTART"
+        assert result.candidate_recommendation["action"] == "RESTART"
+        assert runtime.deterministic_published.is_set()
+    finally:
+        backend.shutdown()
+
+
+def test_analysis_failure_emits_bounded_error_event(tmp_path, monkeypatch, caplog):
+    # Arrange
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    log_path = tmp_path / "train_cycle4.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+    caplog.set_level(logging.ERROR)
+
+    def fail_analysis(*args, **kwargs):
+        raise RuntimeError("sensitive provider response")
+
+    monkeypatch.setattr(runtime, "analyze", fail_analysis)
+    monkeypatch.setattr(runtime, "analyze_prepared", fail_analysis)
+
+    async def run():
+        await backend.submit_log(
+            str(log_path),
+            job_id="job-7",
+            analysis_intent="terminal",
+        )
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        # Act
+        result = asyncio.run(run())
+
+        # Assert
+        assert result.status == "completed"
+        assert result.result == {
+            "analysis_outcome": "failed",
+            "error": "RuntimeError: sensitive provider response",
+        }
+        assert result.recommendation == {
+            "action": "UNKNOWN",
+            "reason": "analysis_failed",
+            "source": "restart_agent",
+        }
+        messages = "\n".join(record.getMessage() for record in caplog.records)
+        assert "event=restart_agent.analysis.failed" in messages
+        assert "error_classification=RuntimeError" in messages
+        assert "sensitive provider response" not in messages
+    finally:
+        backend.shutdown()
 
 
 def test_progressive_start_accepts_expected_file_before_creation_and_preserves_cycle_zero(
@@ -235,7 +726,7 @@ def test_default_terminal_first_policy_registers_then_analyzes_at_terminal(tmp_p
         backend.shutdown()
 
 
-def test_progressive_start_precomputes_and_terminal_reuses_finalized_l0a(tmp_path):
+def test_progressive_start_precomputes_and_terminal_reuses_finalized_l0a(tmp_path, caplog):
     runtime = _FakeRuntime()
     backend = RestartAgentServiceBackend(
         allowed_root=str(tmp_path),
@@ -261,6 +752,7 @@ def test_progressive_start_precomputes_and_terminal_reuses_finalized_l0a(tmp_pat
         "RuntimeError: CUDA out of memory\n",
         encoding="utf-8",
     )
+    caplog.set_level(logging.DEBUG)
 
     async def run():
         await backend.submit_log(
@@ -294,6 +786,11 @@ def test_progressive_start_precomputes_and_terminal_reuses_finalized_l0a(tmp_pat
         assert finalized.progressive_metrics["l0a_build_count"] == 1
         stats = asyncio.run(backend.get_stats())
         assert stats["restart_agent"]["progressive"]["active_state_count"] == 0
+        messages = "\n".join(record.getMessage() for record in caplog.records)
+        assert "event=restart_agent.progressive.registered" in messages
+        assert "event=restart_agent.progressive.refresh.completed" in messages
+        assert "source_ingest_s=" in messages
+        assert "l0a_reduction_s=" in messages
     finally:
         backend.shutdown()
 
@@ -364,6 +861,8 @@ def test_terminal_drain_ingests_late_rank_output_and_precomputes_final_boundary(
         assert finalized.progressive_metrics["source_decode_wall_clock_s"] >= 0
         assert finalized.progressive_metrics["source_index_classify_wall_clock_s"] >= 0
         assert finalized.progressive_metrics["source_ingest_wall_clock_s"] >= 0
+        assert finalized.progressive_metrics["l0a_bundle_wall_clock_s"] >= 0
+        assert finalized.progressive_metrics["decision_evidence_wall_clock_s"] >= 0
         assert finalized.progressive_metrics["l0a_reduction_wall_clock_s"] >= 0
         drain = finalized.progressive_metrics["terminal_drain"]
         assert drain["converged"] is True

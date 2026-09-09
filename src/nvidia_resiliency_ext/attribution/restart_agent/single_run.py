@@ -20,6 +20,7 @@ from .l1 import (
     deadline_exceeded_result,
     extract_timed,
     output_health,
+    pending_output_health,
 )
 from .l2 import L2GroundingInput, L2Result, ground_and_audit_model_evidence
 from .models import (
@@ -253,6 +254,8 @@ def _build_single_run_trace(
             deterministic_failure_facts=outcome.deterministic_failure_facts,
             selected_failure_facts=outcome.selected_failure_facts,
             history=outcome.history,
+            cycle_history=outcome.cycle_history,
+            path_selection=outcome.path_selection.to_payload(),
             retry_policy=outcome.retry_policy,
             l0_reused=prepared.l0_reused,
             l2_wall_clock_s=enrichment.l2_wall_clock_s,
@@ -317,11 +320,7 @@ def _publish_deterministic_recommendation(
     route_id: str,
 ) -> _DeterministicPublication:
     l1_result = L1EvidenceResult.disabled()
-    l1_health = (
-        {"status": "pending", "usable": False, "errors": []}
-        if enrichment_enabled
-        else output_health(l1_result)
-    )
+    l1_health = pending_output_health() if enrichment_enabled else output_health(l1_result)
     outcome = build_decision_outcome(
         bundle=bundle,
         decision_evidence=decision_evidence,
@@ -446,7 +445,10 @@ def _run_l1_until_deadline(
                 timeout=remaining_deadline_seconds(deadline_monotonic, clock=clock)
             )
             if completed_monotonic > deadline_monotonic:
-                l1_result = deadline_exceeded_result(model=type(extractor).__name__)
+                l1_result = deadline_exceeded_result(
+                    model=type(extractor).__name__,
+                    final_evidence_reason=l1_result.anomalies.get("final_evidence_reason"),
+                )
             return l1_result, wall_clock_s
         except FutureTimeoutError:
             future.cancel()

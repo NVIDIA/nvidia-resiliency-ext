@@ -13,15 +13,29 @@ from ..models import (
     AttemptFailureFacts,
     AttemptProgressSummary,
     AttemptRecord,
+    CycleHistoryComparison,
     FaultOutcome,
     HistoryDimensionComparison,
+    HistoryIdentityKind,
     HistoryProgressComparison,
     HistoryProgressRelation,
     HistorySummary,
+    JobProgressHistory,
     PriorAttemptView,
+    RouteHistorySummary,
 )
 
 DETERMINISTIC_FACT_SELECTOR = "deterministic"
+PRIMARY_FACT_SELECTOR_PREFIX = "primary:"
+OBSERVATION_FACT_SELECTOR_PREFIX = "observation:"
+
+
+def primary_fact_selector(route_id: str) -> str:
+    return f"{PRIMARY_FACT_SELECTOR_PREFIX}{route_id}"
+
+
+def observation_fact_selector(route_id: str) -> str:
+    return f"{OBSERVATION_FACT_SELECTOR_PREFIX}{route_id}"
 
 
 @dataclass(frozen=True)
@@ -31,9 +45,12 @@ class HistoryEvaluationInput:
     current_record: AttemptRecord
     fact_selector: str
     prior_attempts: PriorAttemptView
+    job_progress: JobProgressHistory | None = None
 
 
 def evaluate_history(history_input: HistoryEvaluationInput) -> HistorySummary:
+    """Compare one explicitly selected failure track without cross-track fallback."""
+
     prior_view = history_input.prior_attempts
     current_facts = _selected_current_facts(
         history_input.current_record,
@@ -43,32 +60,68 @@ def evaluate_history(history_input: HistoryEvaluationInput) -> HistorySummary:
         return HistorySummary(
             available=False,
             availability_reason=prior_view.availability_reason,
+            job_history_available=False,
+            job_history_availability_reason=prior_view.availability_reason,
         )
+
+    ordered = tuple(sorted(prior_view.records, key=lambda record: record.cycle_id))
+    job_progress = history_input.job_progress or _evaluate_job_progress(
+        history_input.current_record,
+        prior_view,
+    )
+    job_fields = {
+        "identity_kind": (
+            current_facts.identity_kind
+            if current_facts is not None
+            else HistoryIdentityKind.NONE.value
+        ),
+        "same_job_attempts": job_progress.same_job_attempts,
+        "job_history_available": job_progress.available,
+        "job_history_availability_reason": job_progress.availability_reason,
+        "job_comparisons": job_progress.comparisons,
+        "consecutive_same_job_no_advance_attempts": (job_progress.consecutive_no_advance_attempts),
+        "consecutive_same_job_unknown_progress_attempts": (
+            job_progress.consecutive_unknown_progress_attempts
+        ),
+        "job_progress_advanced": job_progress.progress_advanced,
+    }
+    observation_fields = _observation_history_fields(
+        history_input.current_record,
+        current_facts,
+        ordered,
+        fact_selector=history_input.fact_selector,
+    )
     if current_facts is None or not current_facts.root_fingerprint:
         return HistorySummary(
             available=False,
             availability_reason="missing_root_fingerprint",
-            same_job_attempts=len(prior_view.records),
+            **observation_fields,
+            **job_fields,
         )
 
-    ordered = tuple(sorted(prior_view.records, key=lambda record: record.cycle_id))
-    matching = tuple(
-        record
+    matching_pairs = tuple(
+        (record, prior_facts)
         for record in ordered
-        if record.deterministic.root_fingerprint == current_facts.root_fingerprint
+        if (prior_facts := _selected_prior_facts(record, history_input.fact_selector)) is not None
+        and prior_facts.root_fingerprint == current_facts.root_fingerprint
     )
     comparisons = tuple(
-        _compare_progress(history_input.current_record, current_facts, record)
-        for record in matching
+        _compare_progress(
+            history_input.current_record,
+            current_facts,
+            record,
+            prior_facts,
+        )
+        for record, prior_facts in matching_pairs
     )
     qualifying_pairs = tuple(
-        (record, comparison)
-        for record, comparison in zip(matching, comparisons)
+        (record, prior_facts, comparison)
+        for (record, prior_facts), comparison in zip(matching_pairs, comparisons)
         if comparison.prior_fault_outcome
         in {FaultOutcome.TERMINAL.value, FaultOutcome.UNRESOLVED.value}
     )
-    qualifying = tuple(comparison for _record, comparison in qualifying_pairs)
-    qualifying_records = tuple(record for record, _comparison in qualifying_pairs)
+    qualifying = tuple(comparison for _record, _facts, comparison in qualifying_pairs)
+    qualifying_facts = tuple(facts for _record, facts, _comparison in qualifying_pairs)
 
     observed_advance = _relation_count(qualifying, HistoryProgressRelation.ADVANCED)
     same_progress = _relation_count(qualifying, HistoryProgressRelation.SAME)
@@ -101,28 +154,23 @@ def evaluate_history(history_input: HistoryEvaluationInput) -> HistorySummary:
     )
 
     rank_matches = current_facts.faulting_rank is not None and any(
-        record.deterministic.faulting_rank == current_facts.faulting_rank
-        for record in qualifying_records
+        facts.faulting_rank == current_facts.faulting_rank for facts in qualifying_facts
     )
     node_matches = current_facts.faulting_node is not None and any(
-        record.deterministic.faulting_node == current_facts.faulting_node
-        for record in qualifying_records
+        facts.faulting_node == current_facts.faulting_node for facts in qualifying_facts
     )
     cross_node = current_facts.faulting_node is not None and any(
-        record.deterministic.faulting_node is not None
-        and record.deterministic.faulting_node != current_facts.faulting_node
-        for record in qualifying_records
+        facts.faulting_node is not None and facts.faulting_node != current_facts.faulting_node
+        for facts in qualifying_facts
     )
     gpu_matches = current_facts.faulting_gpu is not None and any(
-        record.deterministic.faulting_gpu == current_facts.faulting_gpu
-        for record in qualifying_records
+        facts.faulting_gpu == current_facts.faulting_gpu for facts in qualifying_facts
     )
 
     return HistorySummary(
         available=True,
         availability_reason="ready",
-        same_job_attempts=len(ordered),
-        matching_root_attempts=len(matching),
+        matching_root_attempts=len(matching_pairs),
         comparisons=comparisons,
         observed_advance_attempts=observed_advance,
         same_progress_attempts=same_progress,
@@ -130,14 +178,14 @@ def evaluate_history(history_input: HistoryEvaluationInput) -> HistorySummary:
         unknown_progress_attempts=unknown,
         no_observed_advance_attempts=no_observed_advance,
         matching_root_attempts_with_observed_training_progress=sum(
-            record.progress.training_progress == "observed" for record in matching
+            record.progress.training_progress == "observed" for record, _facts in matching_pairs
         ),
         matching_root_attempts_before_observed_training_progress=sum(
             record.progress.failure_position == "before_observed_training_progress"
-            for record in matching
+            for record, _facts in matching_pairs
         ),
         matching_root_attempts_with_unknown_training_progress=sum(
-            record.progress.training_progress == "unknown" for record in matching
+            record.progress.training_progress == "unknown" for record, _facts in matching_pairs
         ),
         exact_failure_position_attempts=exact_failure_position,
         same_rank_iteration_attempts=same_rank_iteration,
@@ -154,12 +202,14 @@ def evaluate_history(history_input: HistoryEvaluationInput) -> HistorySummary:
             history_input.current_record,
             current_facts,
             ordered,
+            fact_selector=history_input.fact_selector,
         ),
         consecutive_same_root_and_entity_no_advance_attempts=(
             _consecutive_same_root_no_advance(
                 history_input.current_record,
                 current_facts,
                 ordered,
+                fact_selector=history_input.fact_selector,
                 require_same_entity=True,
             )
         ),
@@ -174,10 +224,154 @@ def evaluate_history(history_input: HistoryEvaluationInput) -> HistorySummary:
         same_node_recurrence=node_matches,
         same_gpu_recurrence=gpu_matches,
         same_rank_only_recurrence=rank_matches and not node_matches and not gpu_matches,
-        rank_to_gpu_mapping_available=any(
-            record.deterministic.rank_to_gpu_map for record in qualifying_records
-        ),
+        rank_to_gpu_mapping_available=any(facts.rank_to_gpu_map for facts in qualifying_facts),
+        **observation_fields,
+        **job_fields,
     )
+
+
+def evaluate_cycle_history(
+    *,
+    current_record: AttemptRecord,
+    prior_attempts: PriorAttemptView,
+) -> CycleHistoryComparison:
+    """Compare deterministic and route tracks independently for one cycle."""
+
+    job_progress = _evaluate_job_progress(current_record, prior_attempts)
+    deterministic = evaluate_history(
+        HistoryEvaluationInput(
+            current_record=current_record,
+            fact_selector=DETERMINISTIC_FACT_SELECTOR,
+            prior_attempts=prior_attempts,
+            job_progress=job_progress,
+        )
+    )
+    routes = tuple(
+        RouteHistorySummary(
+            route_id=entry.route_id,
+            primary=(
+                evaluate_history(
+                    HistoryEvaluationInput(
+                        current_record=current_record,
+                        fact_selector=primary_fact_selector(entry.route_id),
+                        prior_attempts=prior_attempts,
+                        job_progress=job_progress,
+                    )
+                )
+                if entry.primary is not None
+                else None
+            ),
+            observation=(
+                evaluate_history(
+                    HistoryEvaluationInput(
+                        current_record=current_record,
+                        fact_selector=observation_fact_selector(entry.route_id),
+                        prior_attempts=prior_attempts,
+                        job_progress=job_progress,
+                    )
+                )
+                if entry.observation is not None
+                else None
+            ),
+        )
+        for entry in current_record.enriched
+    )
+    return CycleHistoryComparison(
+        job_progress=job_progress,
+        deterministic=deterministic,
+        routes=routes,
+    )
+
+
+def _evaluate_job_progress(
+    current_record: AttemptRecord,
+    prior_attempts: PriorAttemptView,
+) -> JobProgressHistory:
+    if not prior_attempts.available:
+        return JobProgressHistory(
+            available=False,
+            availability_reason=prior_attempts.availability_reason,
+        )
+    ordered = tuple(sorted(prior_attempts.records, key=lambda record: record.cycle_id))
+    comparisons = tuple(_compare_job_progress(current_record, record) for record in ordered)
+    return JobProgressHistory(
+        available=True,
+        availability_reason="ready",
+        same_job_attempts=len(ordered),
+        comparisons=comparisons,
+        consecutive_no_advance_attempts=_consecutive_job_relations(
+            comparisons,
+            {
+                HistoryProgressRelation.SAME.value,
+                HistoryProgressRelation.REGRESSED.value,
+            },
+        ),
+        consecutive_unknown_progress_attempts=_consecutive_job_relations(
+            comparisons,
+            {HistoryProgressRelation.UNKNOWN.value},
+        ),
+        progress_advanced=bool(comparisons)
+        and comparisons[-1].relation == HistoryProgressRelation.ADVANCED.value,
+    )
+
+
+def _observation_history_fields(
+    current_record: AttemptRecord,
+    current_facts: AttemptFailureFacts | None,
+    ordered: Sequence[AttemptRecord],
+    *,
+    fact_selector: str,
+) -> dict[str, object]:
+    if (
+        current_facts is None
+        or current_facts.identity_kind != HistoryIdentityKind.OBSERVATION_ONLY.value
+        or not current_facts.observation_fingerprint
+    ):
+        return {
+            "observation_history_available": False,
+            "observation_history_availability_reason": (
+                "current_identity_is_root"
+                if current_facts is not None
+                and current_facts.identity_kind == HistoryIdentityKind.ROOT.value
+                else "missing_observation_fingerprint"
+            ),
+        }
+    matching_pairs = tuple(
+        (record, prior_facts)
+        for record in ordered
+        if (prior_facts := _selected_prior_facts(record, fact_selector)) is not None
+        and prior_facts.identity_kind == HistoryIdentityKind.OBSERVATION_ONLY.value
+        and prior_facts.observation_fingerprint == current_facts.observation_fingerprint
+    )
+    comparisons = tuple(
+        _compare_progress(current_record, current_facts, record, prior_facts)
+        for record, prior_facts in matching_pairs
+    )
+    consecutive = 0
+    for record in reversed(ordered):
+        prior_facts = _selected_prior_facts(record, fact_selector)
+        if (
+            prior_facts is None
+            or prior_facts.identity_kind != HistoryIdentityKind.OBSERVATION_ONLY.value
+            or prior_facts.observation_fingerprint != current_facts.observation_fingerprint
+            or prior_facts.fault_outcome
+            not in {FaultOutcome.TERMINAL.value, FaultOutcome.UNRESOLVED.value}
+        ):
+            break
+        comparison = _compare_progress(current_record, current_facts, record, prior_facts)
+        if comparison.relation not in {
+            HistoryProgressRelation.SAME.value,
+            HistoryProgressRelation.REGRESSED.value,
+        }:
+            break
+        consecutive += 1
+    return {
+        "observation_history_available": True,
+        "observation_history_availability_reason": "ready",
+        "matching_observation_attempts": len(matching_pairs),
+        "observation_comparisons": comparisons,
+        "consecutive_same_observation_no_advance_attempts": consecutive,
+    }
 
 
 def _selected_current_facts(
@@ -186,18 +380,42 @@ def _selected_current_facts(
 ) -> AttemptFailureFacts | None:
     if selector == DETERMINISTIC_FACT_SELECTOR:
         return record.deterministic
+    track_name, route_id = _split_track_selector(selector)
     for entry in record.enriched:
-        if entry.route_id == selector:
-            return entry.facts
+        if entry.route_id == route_id:
+            return entry.primary if track_name == "primary" else entry.observation
     return None
+
+
+def _selected_prior_facts(
+    record: AttemptRecord,
+    selector: str,
+) -> AttemptFailureFacts | None:
+    if selector == DETERMINISTIC_FACT_SELECTOR:
+        return record.deterministic
+    track_name, route_id = _split_track_selector(selector)
+    for entry in record.enriched:
+        if entry.route_id == route_id:
+            return entry.primary if track_name == "primary" else entry.observation
+    return None
+
+
+def _split_track_selector(selector: str) -> tuple[str, str]:
+    for prefix, track_name in (
+        (PRIMARY_FACT_SELECTOR_PREFIX, "primary"),
+        (OBSERVATION_FACT_SELECTOR_PREFIX, "observation"),
+    ):
+        if selector.startswith(prefix) and selector[len(prefix) :]:
+            return track_name, selector[len(prefix) :]
+    raise ValueError(f"invalid enriched fact selector: {selector}")
 
 
 def _compare_progress(
     current_record: AttemptRecord,
     current_facts: AttemptFailureFacts,
     prior_record: AttemptRecord,
+    prior_facts: AttemptFailureFacts,
 ) -> HistoryProgressComparison:
-    prior_facts = prior_record.deterministic
     dimensions = _positive_progress_dimensions(current_record.progress, prior_record.progress)
     selected_basis = _selected_basis(dimensions)
     relation, conflict = _combine_positive_dimensions(dimensions)
@@ -230,6 +448,27 @@ def _compare_progress(
             and prior_facts.faulting_rank == current_facts.faulting_rank
         ),
         affected_entity_relation=_affected_entity_relation(current_facts, prior_facts),
+        same_root_observer_count=_same_observer_count(current_facts, prior_facts),
+        same_unattributed_root_occurrence_count=(
+            _same_unattributed_count(current_facts, prior_facts)
+        ),
+    )
+
+
+def _compare_job_progress(
+    current_record: AttemptRecord,
+    prior_record: AttemptRecord,
+) -> HistoryProgressComparison:
+    dimensions = _positive_progress_dimensions(current_record.progress, prior_record.progress)
+    relation, conflict = _combine_positive_dimensions(dimensions)
+    return HistoryProgressComparison(
+        prior_cycle_id=prior_record.cycle_id,
+        selected_basis=_selected_basis(dimensions),
+        dimension_comparisons=dimensions,
+        positive_progress_conflict=conflict,
+        relation=relation,
+        prior_attempt_progress=prior_record.progress.to_payload(),
+        prior_fault_outcome=prior_record.deterministic.fault_outcome,
     )
 
 
@@ -380,13 +619,20 @@ def _consecutive_same_root_no_advance(
     current_facts: AttemptFailureFacts,
     ordered: Sequence[AttemptRecord],
     *,
+    fact_selector: str,
     require_same_entity: bool = False,
 ) -> int:
     count = 0
     for prior_record in reversed(ordered):
-        if prior_record.deterministic.root_fingerprint != current_facts.root_fingerprint:
+        prior_facts = _selected_prior_facts(prior_record, fact_selector)
+        if prior_facts is None or prior_facts.root_fingerprint != current_facts.root_fingerprint:
             break
-        comparison = _compare_progress(current_record, current_facts, prior_record)
+        comparison = _compare_progress(
+            current_record,
+            current_facts,
+            prior_record,
+            prior_facts,
+        )
         if (
             require_same_entity
             and comparison.affected_entity_relation != AffectedEntityRelation.SAME.value
@@ -404,6 +650,36 @@ def _consecutive_same_root_no_advance(
             break
         count += 1
     return count
+
+
+def _consecutive_job_relations(
+    comparisons: Sequence[HistoryProgressComparison],
+    qualifying_relations: set[str],
+) -> int:
+    count = 0
+    for comparison in reversed(comparisons):
+        if comparison.relation not in qualifying_relations:
+            break
+        count += 1
+    return count
+
+
+def _same_observer_count(
+    current_facts: AttemptFailureFacts,
+    prior_facts: AttemptFailureFacts,
+) -> bool:
+    current = current_facts.root_observer_ranks
+    prior = prior_facts.root_observer_ranks
+    return current is not None and prior is not None and len(current) == len(prior)
+
+
+def _same_unattributed_count(
+    current_facts: AttemptFailureFacts,
+    prior_facts: AttemptFailureFacts,
+) -> bool:
+    current = current_facts.unattributed_root_occurrence_count
+    prior = prior_facts.unattributed_root_occurrence_count
+    return current is not None and prior is not None and current == prior
 
 
 def _affected_entity_relation(

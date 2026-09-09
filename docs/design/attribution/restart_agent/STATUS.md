@@ -29,6 +29,27 @@ cannot establish fleet-wide accuracy or false-STOP safety.
 - Per-stage results, provenance, timing, model/tool activity, endpoint events,
   and token usage in result and trace artifacts.
 
+## Observation-Only Path
+
+The product preserves useful terminal evidence when the initiating failure is
+absent. L0 groups generic terminal transport surfaces, keeps the primary and
+root fingerprint null, and may select one canonical observation with a separate
+observation fingerprint. L1 can report and select grounded observed failures;
+L2 grounds them without rewriting the model assessment; and L3 compares their
+fingerprints only in an explicitly weaker diagnostic scope. L4 applies
+root-independent `general_retry` from same-job progress. Observation identity
+never enters a root or entity ledger.
+
+## Three-Track Contract
+
+One cycle entry keeps shared progress, deterministic facts, and independent
+route-primary and route-observation facts. L2 may publish both enriched tracks;
+L3 compares every available track only with the same kind and route in prior
+cycles; L4 then selects primary, observation, deterministic, or none for the
+current recommendation. Missing enriched history is not replaced with
+deterministic history, and selecting one policy path does not remove the other
+tracks from the attempt record, trace, or public L2 result.
+
 ## Production Qualification Gates
 
 1. Expand and review a representative gold corpus before adding narrow
@@ -45,6 +66,10 @@ cannot establish fleet-wide accuracy or false-STOP safety.
 ## Deferred Scope
 
 - Restart-surviving or distributed history and attrsvc history hydration.
+- A complete ordered same-job comparison sequence for arbitrary future policy
+  contexts; the current contract exposes safe consecutive same-root counts.
 - Route arbitration, verifier models, and a Restart Agent MCP transport.
 - Structured runtime signals, isolation recommendations, and provider-capacity
   control.
+- Broader observed-surface detector coverage beyond the current terminal
+  transport family; additions require corpus qualification.

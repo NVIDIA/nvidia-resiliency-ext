@@ -12,6 +12,13 @@ from typing import Any
 
 from ..identity import normalized_pattern
 from ..models import CausalRole, DecisionEvidence, L0Bundle, L0ModelFacingView
+from .narrative import (
+    MODEL_VIEW_SAMPLE_LIMIT,
+    build_decision_evidence_view,
+    build_failure_narrative,
+    decision_evidence_view_is_consistent,
+    narrative_references_resolve,
+)
 from .registry import diagnostic_context_kind, diagnostic_uncertainty_kind
 
 PROMPT_PATTERN_MAX_CHARS = 240
@@ -30,6 +37,7 @@ PROMPT_REGISTRY_CANDIDATE_GROUP_MAX = 20
 PROMPT_CANDIDATE_ANCHOR_MAX = 20
 PROMPT_FAILURE_EPISODE_MAX = 10
 PROMPT_DISTRIBUTED_INCIDENT_MAX = 10
+PROMPT_FANOUT_SAMPLE_MAX = 8
 PROMPT_CAUSE_CONFIRMATION_MAX = 10
 PROMPT_LATER_PROGRESS_OBSERVATION_MAX = 10
 PROMPT_POST_FAULT_SUMMARY_MAX = 10
@@ -50,24 +58,49 @@ def build_l0_model_facing_view(
     """Build the deterministic, attention-efficient L0B projection once."""
 
     evidence_bundle = _model_evidence_for_projection(bundle, decision_evidence)
+    context_windows, context_stats, selection_counts, compaction_counts = _projection_accounting(
+        bundle, evidence_bundle
+    )
+    selection_coverage = _model_visible_selection_coverage(
+        selection_counts,
+        compaction_counts,
+    )
+    selection_coverage["required_primary_support"] = _required_primary_support(
+        bundle,
+        decision_evidence,
+        context_windows,
+    )
+    evidence_bundle["selection_coverage"] = selection_coverage
     attempt_execution_context = _attempt_execution_context(bundle)
+    failure_narrative = build_failure_narrative(bundle, decision_evidence)
+    decision_evidence_view = build_decision_evidence_view(decision_evidence)
     serialized_evidence = json.dumps(
         {
-            "decision_evidence": decision_evidence.to_payload(),
+            "failure_narrative": failure_narrative,
+            "decision_evidence_view": decision_evidence_view,
             "attempt_execution_context": attempt_execution_context,
             "evidence_bundle": evidence_bundle,
         },
         separators=(",", ":"),
-        sort_keys=True,
+        sort_keys=False,
     )
     projection_metrics = _projection_metrics(
         bundle,
         decision_evidence,
         evidence_bundle,
         serialized_evidence,
+        failure_narrative=failure_narrative,
+        decision_evidence_view=decision_evidence_view,
+        attempt_execution_context=attempt_execution_context,
+        context_windows=context_windows,
+        context_stats=context_stats,
+        selection_counts=selection_counts,
+        compaction_counts=compaction_counts,
     )
     return L0ModelFacingView(
         decision_evidence=decision_evidence,
+        failure_narrative=failure_narrative,
+        decision_evidence_view=decision_evidence_view,
         evidence_bundle=evidence_bundle,
         attempt_execution_context=attempt_execution_context,
         projection_metrics=projection_metrics,
@@ -79,25 +112,20 @@ def _projection_metrics(
     decision_evidence: DecisionEvidence,
     evidence_bundle: dict[str, Any],
     serialized_evidence: str,
+    *,
+    failure_narrative: dict[str, Any],
+    decision_evidence_view: dict[str, Any],
+    attempt_execution_context: dict[str, Any],
+    context_windows: list[dict[str, Any]],
+    context_stats: dict[str, Any],
+    selection_counts: dict[str, dict[str, Any]],
+    compaction_counts: dict[str, int],
 ) -> dict[str, Any]:
-    context_windows = list(evidence_bundle.get("context_windows") or ())
-    context_stats = _context_projection_stats(bundle, context_windows)
-    selection_counts = _projection_selection_counts(
-        bundle,
-        evidence_bundle,
-        projected_context_window_count=len(context_windows),
-        selected_source_window_count=context_stats["selected_source_window_count"],
-    )
     budget_utilization = _projection_budget_utilization(
         evidence_bundle,
         max_window_lines=context_stats["max_window_lines"],
         max_window_characters=context_stats["max_window_characters"],
         selected_source_window_count=context_stats["selected_source_window_count"],
-    )
-    compaction_counts = _projection_compaction_counts(
-        bundle,
-        context_windows,
-        context_stats,
     )
     integrity_checks = _projection_integrity_checks(
         bundle,
@@ -105,14 +133,53 @@ def _projection_metrics(
         context_windows,
         selection_counts,
         budget_utilization,
+        failure_narrative=failure_narrative,
+        decision_evidence_view=decision_evidence_view,
         unresolved_projected_window_ids=context_stats["unresolved_projected_window_ids"],
     )
+    section_sizes = {
+        name: _section_size(payload)
+        for name, payload in (
+            ("failure_narrative", failure_narrative),
+            ("decision_evidence_view", decision_evidence_view),
+            ("attempt_execution_context", attempt_execution_context),
+            ("evidence_bundle", evidence_bundle),
+        )
+    }
+    narrative_events = list(failure_narrative.get("events") or ())
+    narrative_fanout_ranks_compacted = sum(
+        max(0, int(event["rank_count"]) - len(event.get("rank_samples") or ()))
+        for event in narrative_events
+        if isinstance(event.get("rank_count"), int)
+    )
+    root_observer_ranks = decision_evidence.locality.get("root_observer_ranks")
+    root_observer_count = len(root_observer_ranks) if root_observer_ranks is not None else 0
+    compaction_counts = {
+        **compaction_counts,
+        "decision_evidence_root_observers_compacted": max(
+            0, root_observer_count - MODEL_VIEW_SAMPLE_LIMIT
+        ),
+        "narrative_fanout_ranks_compacted": narrative_fanout_ranks_compacted,
+        **_supporting_fanout_compaction(bundle, evidence_bundle),
+    }
     return {
         "view_size": {
             "compact_json_characters": len(serialized_evidence),
             "estimated_tokens": (len(serialized_evidence) + ESTIMATED_CHARS_PER_EVIDENCE_TOKEN - 1)
             // ESTIMATED_CHARS_PER_EVIDENCE_TOKEN,
             "estimation_characters_per_token": ESTIMATED_CHARS_PER_EVIDENCE_TOKEN,
+            "sections": section_sizes,
+        },
+        "narrative": {
+            "status": failure_narrative.get("status"),
+            "event_count": len(narrative_events),
+            "known_unknown_count": len(failure_narrative.get("known_unknowns") or ()),
+            "referenced_event_count": sum(
+                bool(event.get("evidence_references")) for event in narrative_events
+            ),
+            "fanout_event_count": sum(
+                event.get("kind") == "distributed_fanout" for event in narrative_events
+            ),
         },
         "budget_utilization": budget_utilization,
         "selection_counts": selection_counts,
@@ -126,6 +193,92 @@ def _projection_metrics(
             ),
         },
     }
+
+
+def _projection_accounting(
+    bundle: L0Bundle,
+    evidence_bundle: dict[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any],
+    dict[str, dict[str, Any]],
+    dict[str, int],
+]:
+    context_windows = list(evidence_bundle.get("context_windows") or ())
+    context_stats = _context_projection_stats(bundle, context_windows)
+    selection_counts = _projection_selection_counts(
+        bundle,
+        evidence_bundle,
+        projected_context_window_count=len(context_windows),
+        selected_source_window_count=context_stats["selected_source_window_count"],
+    )
+    compaction_counts = _projection_compaction_counts(
+        bundle,
+        context_windows,
+        context_stats,
+    )
+    return context_windows, context_stats, selection_counts, compaction_counts
+
+
+def _model_visible_selection_coverage(
+    selection_counts: dict[str, dict[str, Any]],
+    compaction_counts: dict[str, int],
+) -> dict[str, Any]:
+    collections: dict[str, dict[str, int]] = {}
+    for name, counts in selection_counts.items():
+        selected = int(counts["selected"])
+        included = int(counts.get("projected_after_merge", selected))
+        entry = {
+            "available": int(counts["available"]),
+            "included": included,
+            "omitted": int(counts["omitted"]),
+        }
+        if name == "context_windows":
+            entry.update(
+                {
+                    "selected_before_merge": selected,
+                    "merged": int(compaction_counts["context_windows_merged"]),
+                    "truncated": int(compaction_counts["truncated_context_windows"]),
+                    "truncated_lines": int(compaction_counts["truncated_model_facing_lines"]),
+                }
+            )
+        collections[name] = entry
+
+    bounded = any(item["omitted"] for item in collections.values()) or bool(
+        compaction_counts["truncated_context_windows"]
+        or compaction_counts["truncated_model_facing_lines"]
+    )
+    return {
+        "status": "bounded" if bounded else "complete",
+        "semantics": "initial_model_view_selection",
+        "collections": collections,
+    }
+
+
+def _required_primary_support(
+    bundle: L0Bundle,
+    decision_evidence: DecisionEvidence,
+    context_windows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    primary = decision_evidence.deterministic_primary_candidate
+    primary_line = primary.line if primary is not None else None
+    if primary_line is None:
+        return {"status": "not_applicable", "primary_line": None}
+
+    covering_window_available = any(
+        window.start_line <= primary_line <= window.end_line for window in bundle.context_windows
+    )
+    if not covering_window_available:
+        return {"status": "unavailable", "primary_line": primary_line}
+
+    primary_line_visible = any(
+        int(line.get("line") or 0) == primary_line
+        for window in context_windows
+        for line in window.get("lines") or ()
+    )
+    if not primary_line_visible:
+        raise ValueError(f"L0B projection omitted required primary support at line {primary_line}")
+    return {"status": "included", "primary_line": primary_line}
 
 
 def _context_projection_stats(
@@ -294,6 +447,33 @@ def _projection_compaction_counts(
     }
 
 
+def _supporting_fanout_compaction(
+    bundle: L0Bundle,
+    evidence_bundle: dict[str, Any],
+) -> dict[str, int]:
+    incidents_by_id = {
+        incident.incident_id: incident for incident in bundle.distributed_failure_incidents
+    }
+    incident_ranks_compacted = sum(
+        max(
+            0,
+            len(incidents_by_id[item["incident_id"]].rank_spread)
+            - len(item.get("rank_spread_sample") or ()),
+        )
+        for item in evidence_bundle.get("distributed_failure_incidents") or ()
+        if item.get("incident_id") in incidents_by_id
+    )
+    projected_cascades = list(evidence_bundle.get("cascades") or ())
+    cascade_ranks_compacted = sum(
+        max(0, len(cascade.rank_spread) - len(projected.get("rank_spread_sample") or ()))
+        for cascade, projected in zip(bundle.cascades, projected_cascades)
+    )
+    return {
+        "supporting_incident_ranks_compacted": incident_ranks_compacted,
+        "supporting_cascade_ranks_compacted": cascade_ranks_compacted,
+    }
+
+
 def _projection_integrity_checks(
     bundle: L0Bundle,
     decision_evidence: DecisionEvidence,
@@ -301,6 +481,8 @@ def _projection_integrity_checks(
     selection_counts: dict[str, dict[str, Any]],
     budget_utilization: dict[str, Any],
     *,
+    failure_narrative: dict[str, Any],
+    decision_evidence_view: dict[str, Any],
     unresolved_projected_window_ids: list[str],
 ) -> dict[str, bool]:
     return {
@@ -308,6 +490,12 @@ def _projection_integrity_checks(
         "decision_evidence_references_resolve": _decision_evidence_references_resolve(
             bundle,
             decision_evidence,
+        ),
+        "failure_narrative_references_resolve": narrative_references_resolve(
+            bundle, failure_narrative
+        ),
+        "decision_evidence_view_consistent": decision_evidence_view_is_consistent(
+            decision_evidence, decision_evidence_view
         ),
         "projected_context_references_resolve": not unresolved_projected_window_ids,
         "projected_line_numbers_valid": _projected_line_numbers_valid(
@@ -326,6 +514,15 @@ def _projection_integrity_checks(
         "lossiness_accounted": all(
             "omitted" in counts and "limit" in counts for counts in selection_counts.values()
         ),
+    }
+
+
+def _section_size(payload: Any) -> dict[str, int]:
+    serialized = json.dumps(payload, separators=(",", ":"), sort_keys=False)
+    return {
+        "compact_json_characters": len(serialized),
+        "estimated_tokens": (len(serialized) + ESTIMATED_CHARS_PER_EVIDENCE_TOKEN - 1)
+        // ESTIMATED_CHARS_PER_EVIDENCE_TOKEN,
     }
 
 
@@ -488,7 +685,7 @@ def _distributed_incidents_for_prompt(bundle: L0Bundle) -> list[dict[str, Any]]:
             "operation_types": list(incident.operation_types),
             "operation_signatures": list(incident.operation_signatures),
             "observed_rank_count": incident.observed_rank_count,
-            "rank_spread_sample": list(incident.rank_spread),
+            "rank_spread_sample": list(incident.rank_spread[:PROMPT_FANOUT_SAMPLE_MAX]),
             "process_group_types": list(incident.process_group_types),
             "phase": incident.phase,
             "configured_timeout_seconds": incident.configured_timeout_seconds,
@@ -538,9 +735,9 @@ def _cascades_for_prompt(bundle: L0Bundle) -> list[dict[str, Any]]:
             "last_line": cascade.last_line,
             "count": cascade.count,
             "sample_lines": list(cascade.sample_lines),
-            "rank_spread": list(cascade.rank_spread),
-            "node_spread": list(cascade.node_spread),
-            "gpu_spread": list(cascade.gpu_spread),
+            "rank_spread_sample": list(cascade.rank_spread[:PROMPT_FANOUT_SAMPLE_MAX]),
+            "node_spread_sample": list(cascade.node_spread[:PROMPT_FANOUT_SAMPLE_MAX]),
+            "gpu_spread_sample": list(cascade.gpu_spread[:PROMPT_FANOUT_SAMPLE_MAX]),
             "reason": cascade.reason,
         }
         for cascade in bundle.cascades[:PROMPT_CASCADE_MAX]
@@ -604,7 +801,7 @@ def _run_progress_summary_for_prompt(summary: Any) -> dict[str, Any]:
         "progress_after_failure_episode": summary.progress_after_failure_episode,
         "first_terminal_incident_line": summary.first_terminal_incident_line,
         "first_terminal_incident_timestamp": summary.first_terminal_incident_timestamp,
-        "configured_terminal_timeout_seconds": summary.configured_terminal_timeout_seconds,
+        "incident_configured_timeout_seconds": summary.incident_configured_timeout_seconds,
         "seconds_from_last_progress_to_terminal_incident": (
             summary.seconds_from_last_progress_to_terminal_incident
         ),
@@ -617,13 +814,30 @@ def _attempt_execution_context(bundle: L0Bundle) -> dict[str, Any]:
     return {
         "scope": "current_log_only",
         "terminal_timing": {
-            "configured_terminal_timeout_seconds": summary.configured_terminal_timeout_seconds,
+            "coverage_status": _terminal_timing_coverage_status(summary),
+            "incident_configured_timeout_seconds": summary.incident_configured_timeout_seconds,
             "seconds_from_last_progress_to_terminal_incident": (
                 summary.seconds_from_last_progress_to_terminal_incident
             ),
             "terminal_detection_lag_seconds": summary.terminal_detection_lag_seconds,
         },
     }
+
+
+def _terminal_timing_coverage_status(summary: Any) -> str:
+    if summary.first_terminal_incident_line is None:
+        return "not_applicable"
+    values = (
+        summary.incident_configured_timeout_seconds,
+        summary.seconds_from_last_progress_to_terminal_incident,
+        summary.terminal_detection_lag_seconds,
+    )
+    available = sum(value is not None for value in values)
+    if available == len(values):
+        return "complete"
+    if available:
+        return "partial"
+    return "unavailable"
 
 
 def _later_progress_after_fault_observations_for_prompt(
@@ -726,6 +940,12 @@ def _failure_episode_for_prompt(episode: Any) -> dict[str, Any]:
         ),
         "terminal_exception_iteration": episode.terminal_exception_iteration,
         "terminal_exception_causal_role_hint": (episode.terminal_exception_causal_role_hint),
+        "lifecycle_family": episode.lifecycle_family,
+        "lifecycle_source_dialects": list(episode.lifecycle_source_dialects),
+        "lifecycle_entities": list(episode.lifecycle_entities),
+        "lifecycle_fault_lines": list(episode.lifecycle_fault_lines),
+        "recovery_attempt_lines": list(episode.recovery_attempt_lines),
+        "recovery_confirmation_lines": list(episode.recovery_confirmation_lines),
         "precursor_lines": list(episode.precursor_lines),
         "identity_anchor_line": episode.identity_anchor_line,
         "identity_anchor_reason": episode.identity_anchor_reason,
@@ -878,7 +1098,18 @@ def _context_windows_for_prompt(
             selected_windows.append(window)
 
     merged_windows = _merge_context_windows(selected_windows)
-    return [_context_window_payload(window) for window in merged_windows]
+    return [
+        _context_window_payload(
+            window,
+            required_lines=(
+                (primary_line,)
+                if primary_line is not None
+                and window["start_line"] <= primary_line <= window["end_line"]
+                else ()
+            ),
+        )
+        for window in merged_windows
+    ]
 
 
 def _seed_context_windows(windows: Any, *, primary_line: int | None) -> list[Any]:
@@ -961,9 +1192,13 @@ def _merge_selected_by(first: str, second: str) -> str:
     return "+".join(parts)
 
 
-def _context_window_payload(window: dict[str, Any]) -> dict[str, Any]:
+def _context_window_payload(
+    window: dict[str, Any],
+    *,
+    required_lines: tuple[int, ...] = (),
+) -> dict[str, Any]:
     lines = [window["lines_by_number"][line] for line in sorted(window["lines_by_number"])]
-    excerpt, excerpt_truncated = _window_excerpt_lines(lines)
+    excerpt, excerpt_truncated = _window_excerpt_lines(lines, required_lines=required_lines)
     return {
         "window_id": window["window_id"],
         "selected_by": window["selected_by"],
@@ -979,31 +1214,46 @@ def _context_window_payload(window: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _window_excerpt_lines(lines: Any) -> tuple[list[dict[str, Any]], bool]:
-    result: list[dict[str, Any]] = []
+def _window_excerpt_lines(
+    lines: Any,
+    *,
+    required_lines: tuple[int, ...] = (),
+) -> tuple[list[dict[str, Any]], bool]:
+    line_list = list(lines)
+    line_by_number = {item.line: item for item in line_list}
+    result_by_line: dict[int, dict[str, Any]] = {}
     used_chars = 0
-    truncated = False
-    for item in list(lines):
-        if len(result) >= PROMPT_CONTEXT_EXCERPT_MAX_LINES:
-            truncated = True
-            break
+
+    def add(item: Any) -> bool:
+        nonlocal used_chars
+        if item.line in result_by_line:
+            return True
+        if len(result_by_line) >= PROMPT_CONTEXT_EXCERPT_MAX_LINES:
+            return False
         text = _truncate_text(item.text, PROMPT_CONTEXT_LINE_MAX_CHARS)
         next_used = used_chars + len(text or "")
         if next_used > PROMPT_CONTEXT_EXCERPT_MAX_CHARS:
-            truncated = True
-            break
-        result.append(
-            {
-                "line": item.line,
-                "text": text,
-                "line_truncated": len(item.text) > PROMPT_CONTEXT_LINE_MAX_CHARS,
-                "line_role": _prompt_line_role(item.text),
-                "diagnostic_kind": diagnostic_context_kind(item.text),
-                "diagnostic_uncertainty_kind": diagnostic_uncertainty_kind(item.text),
-            }
-        )
+            return False
+        result_by_line[item.line] = {
+            "line": item.line,
+            "text": text,
+            "line_truncated": len(item.text) > PROMPT_CONTEXT_LINE_MAX_CHARS,
+            "line_role": _prompt_line_role(item.text),
+            "diagnostic_kind": diagnostic_context_kind(item.text),
+            "diagnostic_uncertainty_kind": diagnostic_uncertainty_kind(item.text),
+        }
         used_chars = next_used
-    return result, truncated
+        return True
+
+    for line_no in required_lines:
+        item = line_by_number.get(line_no)
+        if item is not None:
+            add(item)
+    for item in line_list:
+        add(item)
+
+    result = [result_by_line[line_no] for line_no in sorted(result_by_line)]
+    return result, len(result) < len(line_list)
 
 
 def _prompt_line_role(text: str) -> str:

@@ -12,16 +12,16 @@ source and the named focused spec as authoritative for that topic.
   requirements, non-goals, and acceptance criteria.
 - `L0A.md`: complete deterministic evidence assembly, Decision Evidence,
   progress, deterministic identity, and L0A KPIs.
-- `L0B.md`: bounded attention-efficient model projection, selection accounting,
-  and L0B KPIs.
+- `L0B.md`: deterministic failure narrative, compact Decision Evidence view,
+  bounded supporting evidence, selection accounting, and L0B KPIs.
 - `L1.md`: semantic model task, prompts, route execution, usability, and L1
   measurements.
 - `L2.md`: source grounding, enriched identity, non-overriding audit, and L2
   measurements.
 - `L3.md`: exact-job history comparison, affected-entity relation, progress,
   and recurrence.
-- `L4.md`: ordered STOP/RESTART rule selection, retry budgets, declared
-  recovery capabilities, and action.
+- `L4.md`: ordered STOP/RESTART rule selection, retry budgets, declared policy
+  context, and action.
 - `RUNTIME.md`: configuration/bootstrap boundaries, stateful runtime ownership,
   artifact lifetimes, history injection, and CLI/library execution.
 - `SCHEMA.md`: public request/response, internal execution context, model evidence
@@ -60,7 +60,10 @@ The public action is binary:
 
 Default bias is `RESTART`. L1 reports semantic recovery facts; L3 reports
 observational history; L4 selects a versioned retry rule and emits `STOP` only
-for grounded unrecoverable workload evidence or an exhausted retry budget.
+when a mechanically grounded L1 primary carries established
+workload/nonrecoverability semantics or an applicable retry budget or job guard
+is exhausted. A terminal observation may support root-independent general
+retry when the initiating primary is absent, but it cannot create root identity.
 The public response contract has no user/not-user policy scores.
 
 ## Scope And Boundary
@@ -73,18 +76,18 @@ The caller supplies a `restart_agent_request.v1` object containing:
 - `job_id`: optional job identifier.
 - `cycle_id`: optional integer NVRx restart/cycle identifier. When present, it orders
   restart attempts within the same `job_id`; it is not application progress.
-- `analysis_mode`: optional mode. Default is `terminal`; progressive cycle
-  integrations use `progressive_start` and `progressive_end`.
 
 Configuration, history, and evaluation metadata are deliberately absent from
-the public request. `SCHEMA.md` is canonical for the exact shape.
+the public request. Terminal/progressive lifecycle intent is also absent: the
+attrsvc orchestration boundary owns polling and finalization, then invokes the
+same mode-neutral Restart Agent core with finalized L0A evidence. `SCHEMA.md`
+is canonical for the exact request shape.
 
 ### Internal Execution Context
 
 After request validation, the agent combines the request with:
 
 - an immutable `PriorAttemptView` selected by the restart-agent runtime;
-- configured restart-environment assumptions; and
 - configured L4 retry budgets.
 
 The resulting immutable `AnalysisExecutionContext` is the internal input to
@@ -92,6 +95,10 @@ L0-L4. The stateful `RestartAgentRuntime` supplies history through the same
 boundary for library, CLI, and future MCP entrypoints. Configuration is loaded
 from `restart_agent_config.v1`; history data and evaluation labels are never
 configuration fields.
+
+Restart-transition guarantees are not execution-context fields or deployment
+configuration. They are immutable product semantics encoded in the static L1
+prompt contract described under `L1 Semantic Analysis`.
 
 The initial implementation targets one log file. Multi-file one-rank-per-file
 inputs are out of scope unless they are pre-concatenated into one interleaved
@@ -116,11 +123,11 @@ ready-to-use dependencies, not a configuration filename, raw JSON,
 environment-variable names, or secret paths. `RUNTIME.md` is canonical for
 these boundaries.
 
-History is enabled by default and retains up to 10 attempts per exact `job_id`
-and 3000 records across all jobs; product configuration may disable it or
-override either bound. The MVP store is local in-memory state for one runtime
-lifetime. It orders attempts by integer `cycle_id`, excludes current/future
-cycles, and upserts idempotently by `(job_id, cycle_id)`.
+History is enabled by default and bounded per exact `job_id` and across all
+jobs. `CONFIGURATION.md` owns the concrete limits. The MVP store is local
+in-memory state for one runtime lifetime. It orders attempts by integer
+`cycle_id`, excludes current/future cycles, and upserts idempotently by
+`(job_id, cycle_id)`.
 
 The runtime exposes an `AttemptRecordControl` seam for library/unit tests to
 seed, inspect, and clear state. The CLI may explicitly import and export a
@@ -166,7 +173,11 @@ external health signals. It MUST define its own schema, confidence threshold,
 action ownership, propagation path, and eval criteria before any isolation
 recommendation is acted on.
 
-## Global Invariants
+## Cross-Stage Safety Invariants
+
+These are non-substitution and authority rules that cross stage boundaries.
+Focused L0A-L4 specs own the algorithms, examples, and exact fields; new
+stage-local detail should be added there rather than extending this summary.
 
 - L0 deterministic analysis builds the first evidence bundle before any LLM
   call. `L0A.md` and `L0B.md` own the detailed assembly and projection
@@ -187,7 +198,12 @@ recommendation is acted on.
 - L0 keeps terminal episodes open for later explicit scheduler, kernel, or
   runtime cause confirmation. Bare process-kill records remain cause-unknown;
   bounded confirmation representatives and excerpts are linked only when the
-  log directly names the cause and no compatible progress intervenes.
+  log directly names the cause and no compatible progress intervenes. A linked
+  confirmation becomes the episode identity only when the prior identity is a
+  cause-unknown process termination; it remains supporting evidence when the
+  episode already has a concrete initiating failure. Recovered and
+  progressed-after episodes cannot supply the deterministic primary, and exact
+  ties use stable evidence fields rather than collection order.
 - L0 represents an inherently distributed terminal mechanism, such as a
   collective timeout, as a `distributed_mechanism` incident even when only one
   reporter is observed. Additional same-epoch reports across ranks, operations,
@@ -220,6 +236,11 @@ recommendation is acted on.
   summarized as background normalized occurrence groups or `progressed_after` context; they
   should not be promoted to primary L1 evidence just because they appeared
   early or repeated often.
+- L0 preserves failure observations even when the initiating event is absent.
+  It may select one canonical terminal failure surface after the last durable
+  progress marker, but records it as `observation_only`, not as a primary or
+  root. Retry-pending, recovered, progressed-after, diagnostic, and ambiguous
+  tied candidates remain in evidence without becoming the selected surface.
 - L0 exposes deterministic job/run metadata such as explicit `world_size`,
   observed-rank lower bounds, iteration deltas, consumed-sample deltas, and
   checkpoint counts. An iteration explicitly attached to a terminal failure is
@@ -240,7 +261,8 @@ recommendation is acted on.
 - L0 does not make semantic `STOP` decisions in MVP. The analyzer may return
   restart-biased results for nonsemantic availability cases such as a missing,
   unreadable, or
-  empty log, but semantic `STOP` requires source-grounded L1 recovery evidence
+  empty log, but semantic `STOP` requires a mechanically grounded L1 primary
+  with qualifying typed recovery semantics
   or an exhausted L3/L4 retry budget.
 - Evidence extraction, candidate terminality, and final policy/action are
   separate stages. Extraction may nominate candidates, but it does not decide
@@ -255,11 +277,17 @@ recommendation is acted on.
   the observed primary mechanism, root-cause assessment, and model recovery
   assessment; the client computes the action.
 - A non-null model primary MUST include a causal role and canonical evidence
-  citations. Missing required structural fields may trigger one
-  bounded L1 contract-repair response; repeated structural failure is invalid L1
-  output. A primary labeled `cascade` or `teardown`, or imperfect citation
-  grounding, is an L2 credibility finding rather than an L1 contract failure.
-- L1 evidence uses a compact closed contract: one observed primary failure,
+  citations. Missing required structural fields may trigger one bounded,
+  tools-disabled L1 final-evidence response with reason `contract_repair`;
+  repeated structural failure is invalid L1 output. The same one-turn mechanism
+  uses distinct reasons for tool-round exhaustion and an output-limited prior
+  response. A primary labeled `cascade` or `teardown` is an L1 contract failure.
+  Canonical evidence must minimally support the selected primary and root-cause
+  assessment. Missing recovery support tags remain L2 credibility findings and
+  do not discard an otherwise grounded primary or entity; unknown recovery
+  claims are abstentions and require no positive support citation.
+- L1 evidence uses a compact closed contract: one optional primary failure,
+  optional non-primary observed failures with at most one selected observation,
   one root-cause assessment, one model recovery assessment, optional minimal
   related-failure role annotations, and cited evidence. L0/L2 derive
   fine class, fault outcome, locality, data-position identity, and the stable
@@ -289,12 +317,20 @@ recommendation is acted on.
   restart. L1 requires evidence for both domain and retry-outlook claims;
   absent that, it preserves supported, hypothetical, or unknown semantics for
   L4 while L3 independently evaluates prior-attempt recurrence.
-- The static L1 system prompt declares immutable product guarantees: the
-  workload is unchanged, process state is recreated, normal restart delay
-  applies, and hardware allocation and mutable external-service state may
-  change. L1 must reason about the next attempt under those transition
-  semantics rather than assuming the failed process, allocation, port
-  ownership, or service state is preserved. L0B does not repeat them.
+- The static L1 system prompt canonically renders the typed, immutable
+  `ClusterExecutionContext`. The workload has an exclusive allocation drawn
+  from a homogeneous node pool; replacement preserves hardware and software
+  BOM, resource capacity and limits, and storage access. It also declares
+  generic compute-node, scale-up-fabric, scale-out-fabric,
+  distributed-storage, and service/control dependency paths. Workload code,
+  data, configuration, and workload-selected software remain unchanged;
+  process state is recreated; and normal restart delay applies. A separate
+  health mechanism may quarantine malfunctioning resources. A competing cause
+  is relevant only when the failed operation depends on its path and the cause
+  can produce the observed mechanism; exact physical-component identity is not
+  required, while generic component fallibility is not evidence. This context
+  describes the restart transition rather than proving cause, ownership, or
+  recovery. L0B does not repeat the context.
 - `retry_outlook_without_workload_change` asks whether the same workload may
   recover after the product restart transition. Cross-attempt persistence is
   not an L1 claim; L3 derives it from exact job and root-fingerprint matches.
@@ -308,11 +344,12 @@ recommendation is acted on.
 - L1-selected fields used by policy receive a grounding audit and
   stable client-derived identity. L0 observations may supply deterministic
   fingerprint inputs. L2 preserves the raw L1 root-cause and recovery
-  assessment; it may emit audit findings, but has no separate policy-active
-  semantic view.
+  assessment; it may emit observational audit findings, but has no separate
+  policy-active semantic view and cannot degrade the route.
   History identity is client-derived from observed log evidence rather than
   model vocabulary.
-- L2 grounds the evidence tagged for each recovery claim. It does not infer
+- L2 audits the evidence tagged for each recovery claim. Its support findings
+  do not gate the typed L1 assessment passed to L4. It does not infer
   cross-attempt persistence from same-attempt fanout, deterministic exception
   handling, or execution position.
 - L2 derives model visibility from the exact complete initial
@@ -320,14 +357,14 @@ recommendation is acted on.
   tool payloads. It does not reconstruct visibility from the compact evidence
   subsection. Invalid related-failure references are findings and are omitted
   from the audited projection without altering raw L1 output.
-- Canonical L1 citations are grounded only when their line/quote text was
+- Canonical L1 primary and selected-observation citations are mechanically grounded only when their line/quote text was
   model-visible. A quote that merely matches an unseen source-log line is an
-  audit finding and cannot support policy. Nearby line correction remains
+  audit finding and cannot create an enriched branch. Nearby line correction remains
   available when the quoted text was visible at one unique nearby source line.
 - When L1 claims established infrastructure ownership or unrecoverability while
   the product restart guarantees may replace the allocation or mutable
-  service state, L2 records a policy-material audit finding and an unapplied
-  suggestion. The raw L1 claim remains unchanged.
+  service state, L2 records an observational audit finding and an unapplied
+  suggestion. The raw L1 claim and L4 input remain unchanged.
 - L2 records same-attempt rank fanout used as cross-attempt support as an
   advisory because fanout is not recurrence by itself. The advisory does not
   rewrite either L1 claim. Current-attempt deterministic checker behavior and
@@ -338,23 +375,27 @@ recommendation is acted on.
   an L1 primary with stale L0 relationship text or contradictory secondary
   policy/causal labels.
 - L4 selects a versioned retry rule and budget, then computes
-  `decision_basis` and final `STOP` / `RESTART` from grounded recovery facts and
-  L3 observations.
-- A deterministic exact artifact or data-position identity selects
-  `confirmation_retry`. Its default one-retry ledger consumes only exact
-  root-and-entity recurrence without observed advance; a changed entity does
-  not reset the concurrent general same-root ceiling.
-- Trusted product configuration may declare workload-managed recovery
-  capabilities consumed only by L4. The closed MVP supports
-  `bad_token_retry_then_skip`: L4 applies its two-retry budget only when the
-  grounded primary has classifier `bad_token_or_window` and deterministic
-  `recovery_behavior=retry_then_skip`, and the selected facts contain a
-  `data_position` affected entity. Its retry accounting uses exact root and
-  entity matching while the general same-root ceiling remains active. Model
-  prose cannot activate it, and absence of the declaration leaves generic
-  policy unchanged.
-- Progressive execution follows `ATTRSVC_INTEGRATION.md` for the implemented
-  registration/terminal first cut and `PROGRESSIVE.md` for later L0
+  `decision_basis` and final `STOP` / `RESTART` from the typed L1 recovery
+  assessment attached to a mechanically grounded primary or selected
+  observation and L3 observations. Observation-only assessment is restricted
+  to root-independent general policy unless a declared policy context matches.
+- A deterministic exact artifact identity selects
+  `concrete_confirmation_retry`. Its default one-retry ledger consumes only
+  exact root-and-non-null-entity recurrence without observed advance. A
+  qualifying L1 workload failure without full identity instead selects
+  `workload_confirmation_retry`, whose one-retry ledger uses root-only
+  recurrence. Neither rule treats null entities as equal, and a changed entity
+  does not reset the concurrent general same-root ceiling.
+- Trusted policy context supplied outside the log belongs in L4. The active
+  `cuda_oom_no_retry` context applies a zero-retry product policy to a selected
+  terminal CUDA OOM. The active `port_bind_confirmation_retry` context gives a
+  selected terminal address-in-use bind failure one same-root confirmation
+  retry without depending on its L1 domain label. The active
+  `rejected_iteration_retry_then_skip` context
+  matches typed current facts and uses training iteration only as a
+  context-specific history key, not as an affected entity.
+- Progressive execution follows `ATTRSVC_INTEGRATION.md` for service
+  registration and terminal submission, and `PROGRESSIVE.md` for optional L0A
   precompute: start is non-authoritative and end may produce the final action
   after combining retained state with the final log tail.
 - Ordering, progress-before-fault, coverage, and history inputs used by L3/L4
@@ -392,7 +433,7 @@ recommendation is acted on.
   observed in one log MUST NOT be promoted into the core prompt without corpus
   evidence and an A/B evaluation showing improvement without regressions.
 - The versioned `restart_agent_config.v1` contract binds runtime history, retry
-  policy, declared recovery capabilities, routing, and per-route request,
+  policy, routing, and per-route request,
   reasoning, tool, and reliability settings. Prompt, schema, detector, and
   stage-algorithm versions belong to the product build rather than this config.
 - `CONFIGURATION.md` owns configuration resolution, credential handling, effective
@@ -423,23 +464,37 @@ recommendation is acted on.
   current-lifetime history and orchestration. CLI and library entrypoints
   exercise the same runtime. `ATTRSVC_INTEGRATION.md` owns this service
   contract; any future Restart Agent MCP adapter remains optional and thin.
-- Only the selected `AttemptFailureFacts` identity participates in recurrence
-  policy. It contains a mechanism-level `root_fingerprint` and may contain one
-  exact-object `affected_entity`; secondary and cascade identities are not
-  recurrence keys.
+- Each `AttemptFailureFacts` block has exactly one identity kind: root identity
+  with an optional exact-object `affected_entity`, observation-only identity,
+  or no identity. A cycle preserves a shared deterministic block plus
+  independent route-primary and route-observation blocks. Observation identity
+  describes the visible failure surface and never enters root or concrete
+  ledgers; secondary and cascade identities are not recurrence keys.
 - Identity ownership is path-specific and deterministic. L0 creates the
-  deterministic root fingerprint and affected entity. L2 creates the enriched
-  equivalents after auditing the L1-selected primary against L0 evidence. L1
-  proposals are trace-only, L3 performs exact history comparison, and L4 does
-  not construct identity.
-- L3 computes root-only and root-plus-entity no-advance recurrence as
-  independent observations. L4 always evaluates the general same-root safety
+  deterministic root/entity or observation-only identity. L2 creates the
+  enriched primary and observation equivalents after grounding L1 evidence
+  against model-visible evidence. L1 proposals are trace-only, L3 performs
+  exact like-kind history comparison, and L4 does not construct identity.
+- L1's `failure_identity` is a semantic description, not a third history
+  identity. When L1 selects the same canonical incident as L0, L2 reuses the L0
+  observed root identity and may add only source-grounded entity detail. When
+  L1 selects a different grounded incident, L2 derives that track's observed
+  identity from source evidence. L3 compares deterministic, route-primary, and
+  route-observation tracks independently; it does not select among them or
+  silently substitute one for another.
+- L3 computes root-only, root-plus-entity, and separately labeled
+  observation-only no-advance recurrence. L4 always evaluates the general same-root safety
   ceiling and concurrently evaluates any narrower budget selected by grounded
-  policy or a declared recovery capability. A narrower budget may stop earlier
+  policy or a declared policy context. A narrower budget may stop earlier
   but cannot extend the general ceiling. Root identity answers whether the
   mechanism recurred; entity identity distinguishes exact
   token/sample/window positions and checkpoint/artifact paths. Entity identity
   alone never selects a stricter rule.
+- L4 composes tracks with explicit precedence: eligible grounded primary,
+  grounded selected observation, deterministic facts, then none. The selected
+  track consumes only its matching L3 history. Observation fallback uses
+  root-independent `general_retry` and same-job progress; its fingerprint is
+  never a surrogate root. Unconditional job guards apply independently.
 - If L1 selects a wrapper summary or traceback line belonging to an L0 failure
   episode, L2 derives `root_fingerprint` from the episode's canonical causal
   terminal exception. L0 consolidates duplicate serialization, inner-cause,
@@ -467,12 +522,17 @@ restart_agent_request.v1 + restart_agent_config.v1 + PriorAttemptView
   -> L0A complete evidence assembly -> immutable L0A bundle
   -> shared DecisionEvidence
   -> AttemptRecord(progress + deterministic failure facts)
-       +-> L3(current deterministic, prior deterministic) -> L4
+       +-> L3(compare deterministic) -> L4
        |     -> publish deterministic recommendation
-       +-> L0B initial model evidence view -> L1 semantic analysis
+       +-> L0B context management
+             -> deterministic failure narrative
+             -> compact Decision Evidence view + selected support
+             -> Initial Model Evidence View
+             -> L1 semantic analysis
              -> L2 grounding, identity, and advisory audit
-             -> add/replace AttemptRecord.enriched[route_id]
-             -> L3(current enriched, prior deterministic) -> L4
+             -> add/replace route primary and observation tracks
+             -> L3 compare all tracks with like-kind prior tracks
+             -> L4 select the policy-active path
   -> publish deterministic and enriched candidates as they become ready
   -> complete or stop at the configured Restart Agent analysis timeout
   -> external analyzer output: retry-policy state + decision_basis + STOP/RESTART
@@ -484,12 +544,15 @@ The stages are explicit trust and observability boundaries:
 
 | Stage | Typed transformation | Authority |
 | --- | --- | --- |
-| L0A | `LogSnapshot -> L0Bundle + DecisionEvidence + deterministic attempt facts` | Complete deterministic evidence, progress, primary, and deterministic identity. See `L0A.md`. |
-| L0B | `L0Bundle + DecisionEvidence -> L0ModelFacingView` | Bounded attention projection and selection/lossiness accounting. See `L0B.md`. |
-| L1 | `L1EvidenceContext -> L1EvidenceResult` | Model semantic assessment and provider/tool execution record. See `L1.md`. |
-| L2 | `L2GroundingInput -> L2Result` | Source grounding, enriched identity, and non-overriding audit. See `L2.md`. |
-| L3 | `HistoryEvaluationInput -> HistorySummary` | Exact-job recurrence, affected-entity relation, and progress comparison. See `L3.md`. |
-| L4 | `L4PolicyInput -> L4PolicyOutcome` | Ordered retry-rule selection, budget accounting, and final action. See `L4.md`. |
+| L0A | `LogSnapshot -> L0Bundle + DecisionEvidence` | Complete deterministic evidence, progress observations, strict optional primary, optional selected observation, and deterministic identity. Runtime assembly derives compact attempt facts from these outputs. See `L0A.md`. |
+| L0B | `L0Bundle + DecisionEvidence -> L0ModelFacingView` | Context management through a deterministic failure narrative, compact Decision Evidence projection, bounded supporting evidence, and selection/lossiness accounting. See `L0B.md`. |
+| L1 | `L1EvidenceContext -> L1EvidenceResult` | Model semantic assessment, strict optional primary, optional observed failure surfaces, and provider/tool execution record. See `L1.md`. |
+| L2 | `L2GroundingInput -> L2Result` | Independent grounding of route-primary/root and route-observation identities plus non-overriding audit. See `L2.md`. |
+| L3 | `HistoryEvaluationInput -> CycleHistoryComparison` | Like-kind deterministic/primary/observation recurrence plus shared progress comparison. See `L3.md`. |
+| L4 | `L4PolicyInput -> L4PolicyOutcome` | Evidence-path precedence, ordered retry-rule selection, budget accounting, and final action. See `L4.md`. |
+
+The three-track history and L4 path-composition contract in this table is
+implemented. `STATUS.md` owns the remaining production-qualification gaps.
 
 No layer silently rewrites an earlier layer. L1 semantics remain visible after
 L2 grounding, L3 reports observations without selecting thresholds, and L4
@@ -498,7 +561,8 @@ calibration data, not an L4 threshold.
 
 `AttemptRecord` is the neutral runtime-owned aggregate for the current attempt
 and later immutable prior views. It contains shared L0 progress, one required
-deterministic `AttemptFailureFacts` block, and route-keyed L2 enriched blocks.
+deterministic `AttemptFailureFacts` block with root, observation-only, or no
+identity, and route-keyed L2 primary/observation blocks.
 It contains no L3 judgment or L4 outcome. `SCHEMA.md` owns exact contracts.
 
 Module ownership follows the stage boundary. `l0/` owns deterministic assembly,
@@ -520,150 +584,55 @@ belong to any L0-L4 stage.
 
 #### Runtime Dependency Boundaries
 
-Preparation feeds one captured source boundary through the shared byte-chunk
-reader, incremental line decoder, and L0 observation accumulator, then freezes
-one immutable `LogSnapshot`. Terminal execution supplies every available chunk
-without waiting; progressive execution supplies available chunks, waits for
-growth, and drains the final tail at end. L0A, L1 evidence tools, and L2
-grounding reuse the finalized snapshot. Stages do not reopen
-`L0Bundle.log_path`. `LocalLogSource` is the default adapter; another source
-adapter may implement the same captured-boundary contract.
+Preparation freezes one captured source boundary as an immutable
+`LogSnapshot`. L0A, L1 evidence tools, and L2 grounding reuse that snapshot;
+stages do not reopen the log path or construct infrastructure dependencies.
 
-Configuration loading produces immutable `ModelRouteSpec` values and does not
-create provider clients. The CLI composition root converts route specs into
-runtime `ModelRoute` values through an `EvidenceExtractorFactory`.
-The file loader delegates to the pure `parse_restart_agent_config` validator,
-which receives an explicit environment mapping. `LlmEvidenceExtractor` accepts
-a `CredentialProvider`, `ChatTransport`, clock, sleeper, and optional retry
-transport factory. `OpenAICompatibleTransport` receives an `HttpClient`; its
-default adapter owns one persistent synchronous `httpx.Client` connection pool
-per route. Restart Agent retains responsibility for provider retries,
-deadline clamping, error classification, and trace records rather than
-delegating those policies to the HTTP library. The read-only evidence-tool
-factory, executor factory, and multi-route prepared-runner factory are also
-injectable. Direct construction in the CLI and public facade is composition,
-not a stage dependency.
-
-The composition root also constructs `RestartAgentRuntime`, its
-`AttemptRecordStore`, and its `AttemptRecordAssembler`. History is enabled by
-default with `max_attempts_per_job=10` and `max_total_records=3000`. The
-runtime owns the live state but does not parse configuration or construct the
-store. Library/unit tests may
-inject or seed the store directly through `AttemptRecordControl`; that
-in-memory test seam is not a serialized artifact or transport contract.
-
-Orchestration receives a `Clock` and `ExecutorFactory`. Deadline checks,
-candidate timings, and route scheduling therefore have deterministic unit-test
-seams without changing the production thread-based implementation. The
-asynchronous L0 artifact publisher receives the same executor-factory contract,
-and the live artifact writer receives a clock for deterministic lifecycle
-timestamps and elapsed time. L0A itself
-is decomposed into typed detection, contextualization, and bundle-assembly
-steps. DecisionEvidence selection, L2 citation grounding, attempt-record
-assembly, history/policy execution, and final result assembly are separately
-testable transformations.
-
-The library contract is `RestartAgent.run()` / `run_many()`. Each returns an
-immutable run envelope containing the public result and the exact bundle,
-model view, trace, and deterministic artifacts for that invocation. The core
-orchestrator stores no caller-visible last-run state. There is no mutable
-compatibility adapter or alternate legacy execution path.
-
-L1 owns provider health, timeout, truncation, parsing, required output-contract
-checks, and its bounded contract-repair turn. L2 runs only when L1 produced a
-structurally usable semantic response; otherwise L2 reports `not_run`, L3 uses
-the available deterministic identity/history path, and L4 emits the deterministic policy.
+The composition root resolves configuration, credentials, model routes,
+transports, clocks, executors, and history storage, then injects typed
+dependencies into the runtime. `RUNTIME.md` owns construction, lifetime,
+callback, and test-seam details. `CONFIGURATION.md` owns concrete fields and
+defaults, while `L1.md` owns provider execution and deadline behavior.
 
 #### Concurrent Candidate Publication
 
-Every product run computes a `deterministic` candidate from immutable
-Decision Evidence and
-immutable `PriorAttemptView`. L0 supplies shared progress and deterministic
-failure facts; the runtime assembles the initial `AttemptRecord` and upserts it
-when eligible before running deterministic L3 and L4. This path does not build
-L0B or run L1/L2. Its provenance records `model_contribution=not_enabled` and
-`l1_execution_status=not_run`.
+Every run publishes the deterministic L0A-to-L3/L4 candidate before model-route
+enrichment. Each structurally usable route may later publish an independent
+L1-enriched candidate after L2, L3, and L4. All branches use the same immutable
+`PriorAttemptView`; an external caller may act on an earlier candidate without
+closing the internal analysis lifecycle.
 
-With the default enriched execution, the analyzer publishes that same
-deterministic candidate before model routes start. While enrichment is pending,
-its provenance records `model_contribution=pending_not_used` and
-`l1_execution_status=in_flight`.
-
-If structurally usable L1 output becomes available before the configured
-Restart Agent analysis timeout, the analyzer runs L2, adds or replaces that
-route's enriched fact block in the same-key record, and recomputes L3/L4 as an
-`l1_enriched` candidate. Both branches use the same immutable runtime-selected
-`PriorAttemptView`; prior-record comparisons remain deterministic in MVP.
-Candidates are published as they become ready. An external caller may stop
-waiting and act on an earlier candidate without closing analysis. Route priority
-and canonical enriched-history selection remain deferred.
-
-Enriched execution is a second execution of existing L3/L4 over different
-current-cycle evidence, not an additional semantic layer. After deterministic
-publication, the analyzer starts L1. The synchronous library/CLI waits only
-until the configured analysis
-timeout and returns the selected final result; `on_deterministic_ready`
-exposes the earlier typed `DecisionCandidate` for a progressive service. The
-library callback executes synchronously, is failure-isolated, and has its
-latency traced separately from L1. It MUST perform only bounded work or hand
-off immediately; otherwise it delays L1 and consumes the analysis budget.
-
-`run()` and `run_many()` also expose `on_l0_ready`. For model-backed execution,
-it fires once after L0A, Decision Evidence, and L0B are complete and before
-model-route fanout. For deterministic-only execution it fires after L0A and
-Decision Evidence, with `model_view=null`. The
-callback receives one immutable `L0Artifacts` object; unavailable or empty logs
-do not produce it. The CLI binds this boundary to one background artifact
-writer, so serialization does not delay route start. When requested, the
-writer atomically publishes canonical `l0_bundle.json`,
-`decision_evidence.json`, and `l0_model_view.json` files while L1 is still
-running. Callback/persistence timing is observability data, not L0 build time.
-
-`collect_all` additionally exposes `on_route_complete`. The callback runs once
-for each route as that route reaches a terminal execution status; it does not
-wait for slower routes and callback failure cannot change route semantics. The
-caller may provide exact canonical result/trace paths for every configured route
-through a route-artifact manifest. The CLI writes each route trace and then its
-result directly to those final paths; result existence is the completion marker
-that guarantees the companion trace is already complete. The deterministic
-recommendation and shared L0 products likewise go directly to
-caller-declared paths.
-
-`--incremental-artifact-dir` contains lifecycle control data only: an atomically
-replaced status snapshot and an append-only event stream. Events reference the
-canonical artifacts rather than duplicating payloads below `live/`. The
-canonical batch trace is written before its result after all routes finish or
-the analysis timeout expires. This is incremental publication by completed
-logical artifact, not fragment streaming into one invalid partial JSON object.
-
-The implemented Restart Agent analysis timeout is configured by
-`routing.timeout_seconds` and defaults to 240 seconds from analysis start.
-Internally it is represented as an absolute monotonic deadline. Route-level
-provider timeouts are subordinate: each HTTP request is clamped to the remaining
-analysis budget, and retries, model turns, tool calls, and forced final
-responses cannot start after that boundary. Worker cancellation is cooperative;
-orchestration returns without waiting for an unfinished worker, while the
-built-in provider client unwinds at its clamped request timeout. This boundary
-is independent of any external NVRx action deadline.
+`RUNTIME.md` owns callback ordering, deadline handling, and attempt-record
+updates. `SCHEMA.md` owns artifact paths, completion markers, result provenance,
+and trace contracts. `CONFIGURATION.md` owns route and timeout defaults.
 
 #### Audit And Policy Ownership
 
 L2 may make narrow mechanical reference repairs and derive client-owned
-identity, but its semantic suggestions are advisory and marked unapplied. Raw
-L1 remains visible. L4 alone maps eligible L1 semantics and L3 observations to
-retry policy and action. See `L2.md` and `L4.md` for the normative boundaries.
+identity, but every semantic or chronology finding is observational only. Raw
+L1 remains visible and audit findings cannot degrade the route or alter policy.
+Once L1 evidence is mechanically grounded, L2 publishes primary and observation
+tracks independently. L3 compares both without selection. L4 uses the L1
+recovery assessment with the primary track when one exists, or with the
+observation track only when L1 had no primary. Selected-observation input is
+limited to root-independent general policy unless a declared context matches.
+See `L2.md` and `L4.md` for the normative boundaries.
 
 Public downstream evidence assembly may annotate L0 cascade/teardown groups
 with grounded L1 relationships, but that observational rendering is not an L4
 input.
 
-#### Grounded History Identity
+#### Grounded Root And Observation Identity
 
-History uses `root_fingerprint` for failure mechanism and optional
-`affected_entity` for the exact artifact or data position. L0A derives the
-deterministic identity; L2 derives route-enriched identity after grounding. L3
-consumes those typed values without reopening source logs or model prose.
-`L0A.md`, `L2.md`, and `L3.md` own the detailed rules.
+History uses `root_fingerprint` for an initiating failure mechanism and optional
+`affected_entity` for the exact artifact or data position.
+`observation_fingerprint` separately identifies one selected visible failure
+surface and may coexist in another track. The two identity kinds are mutually exclusive within
+one fact block but may coexist as separate tracks in one cycle. Null roots never
+compare, and observation identity cannot enter root-scoped policy. L0A derives
+deterministic identity; L2 derives route-primary and route-observation identity
+after grounding. L3 consumes those typed values without reopening source logs
+or model prose. `L0A.md`, `L2.md`, and `L3.md` own the detailed rules.
 
 ### End-to-End Example
 
@@ -682,15 +651,27 @@ failure:
    progress facts with prior exact-job attempts. In parallel, L1 may describe
    the mechanism and recovery outlook; L2 grounds its cited line and derives
    the enriched root/entity without rewriting the model assessment.
-4. L3 compares the selected current branch directly with each earlier
-   same-root attempt. A first occurrence has no consumed history. Repeated
+4. L3 compares deterministic and route-primary tracks independently with
+   like-kind earlier same-root attempts; any observation track is compared in
+   its separate scope. A first occurrence has no consumed history. Repeated
    terminal/unresolved occurrences with no observed advance consume the
-   selected rule's retry budget; an unknown progress relation does not. One
+   eventual selected path's retry budget; an unknown progress relation does not. One
    prior exact root-and-checkpoint recurrence exhausts the default
-   confirmation budget.
-5. L4 alone maps the selected rule and consumed budget to `RESTART` or `STOP`.
+   concrete-confirmation budget. Root-independent same-job guards separately
+   bound repeated no-advance and unverifiable-progress attempts.
+5. L4 selects primary, observation, or deterministic evidence, pairs it with
+   the matching L3 history, and maps the selected rule and consumed budget to
+   `RESTART` or `STOP`.
    The result and trace keep deterministic recommendation, raw L1 assessment, L2
    grounding, L3 comparisons, and L4 policy provenance distinct.
+
+If the initiating process termination is absent but the terminal episode shows
+repeated TCPStore peer disconnects, both L0A and L1 leave the primary null. They
+may select the canonical disconnect as an observation-only anchor. L2 grounds
+that observation and derives an observation fingerprint, L3 keeps its
+recurrence separate from root history, and L4 applies root-independent general
+retry using same-job progress. The result says what was observed without
+claiming why the store owner disappeared.
 
 ### Layer Runtime Metrics
 
@@ -700,14 +681,14 @@ families are:
 
 | Boundary | Product-emitted measurements |
 | --- | --- |
-| L0A | Assembly time, source bytes/lines, object counts, caps/lossiness, deterministic root/entity availability/source/readiness. |
-| Decision Evidence | Selection time, schema, primary and identity availability, referenced source lines, exact branch reuse. |
-| L0B | Projection time, characters/estimated tokens, selected context, compaction/truncation, payload integrity. |
+| L0A | Assembly time, source bytes/lines, object counts, caps/lossiness, primary/selected-observation state, and deterministic root/observation/entity availability. |
+| Decision Evidence | Selection time, schema, primary and selected-observation availability, identity kind, referenced source lines, exact branch reuse. |
+| L0B | Projection time, per-section characters/estimated tokens, narrative event/reference coverage, selected context, fanout/overlap compaction, truncation, and payload integrity. |
 | L1 | Semantic output, first-turn usability, model/tool/repair turns, tool yield, tokens, parsing/truncation, and contract status. |
 | Endpoint | Provider attempts, successes/failures, retries, timeouts, HTTP/provider errors, and failed-call time. |
-| L2 | Grounding/audit time and status, citation outcomes, findings/materiality, repairs, and enriched root/entity readiness/source. |
-| L3 | Comparable attempt counts, progress markers/relations, entity relations, root-only and root-plus-entity no-advance streaks, and unknowns. |
-| L4 | Policy version, selected rule and history scope, retry budget/count/exhaustion, observed-advance handling, action/basis, and latency. |
+| L2 | Grounding/audit time and status, citation outcomes, observational findings, repairs, and enriched root/observation/entity readiness/source. |
+| L3 | Comparable attempt counts, progress markers/relations, entity relations, root-only, root-plus-entity, observation-only, and same-job progress streaks. |
+| L4 | Policy version, base and effective policy, concurrent ledger/guard counts and exhaustion, observed-advance handling, action/basis, and latency. |
 | Candidate readiness | Deterministic/enriched readiness, result provenance/usability, selection reason, analysis-timeout outcome, and terminal request-to-result latency. |
 
 The eval harness specifications define how these measurements combine with human
@@ -730,86 +711,25 @@ verdict-producing path MUST emit the external analyzer output and a decision
 trace, including deterministic paths such as log unavailable, provider failure,
 malformed model output, and analysis timeout.
 
-The trace must be sufficient to explain which evidence view produced the final
-action and why production/eval runs may diverge. At architecture level that
-means preserving:
+The trace must preserve the configuration and contract identity, exact stage
+inputs and outputs used by policy, deterministic and enriched provenance,
+candidate readiness, timing, endpoint/tool outcomes, history comparisons, and
+the final retry rule and budget state. Raw L1 output remains distinct from L2
+grounding and audit; root and observation identities remain distinct at every
+stage.
 
-- resolved configuration fingerprint, product contract versions, effective
-  analysis timeout, model-routing outcome, and deterministic path;
-- result provenance and usability: whether the final result used L0
-  deterministic evidence, source-grounded L1 model evidence with a separate
-  credibility audit, history recurrence, or deterministic behavior, and whether
-  NVRx should treat the result as normal, degraded, or unusable;
-- L1 raw semantic output and interaction transcript, preserved without client
-  rewriting;
-- L2 functional grounding/identity status and enriched `AttemptFailureFacts`,
-  plus separate per-field audit findings, citation resolutions,
-  unresolved-grounding reasons, and L1 usability;
-- L0A bundle reference or content, selected candidates, candidate anchors/event
-  timeline, evidence coverage, progress/checkpoint facts, and assembly
-  selection/lossiness metadata;
-- exact versioned Decision Evidence, including the deterministic primary and
-  references back to L0A;
-- exact typed L0B model-facing view, its schema version, projection metrics,
-  and projection selection/truncation metadata;
-- per-model and per-tool-call latency, configured budget/cap events,
-  truncation, unsupported requests, errors, and whether each result affected the
-  final evidence;
-- optional provider-reported L1 downstream-API and proxy processing spans when
-  response headers supply them. These remain distinct from client wall time,
-  are not labeled model compute, and are omitted when unavailable;
-- attempt-record lifecycle: deterministic creation, route-keyed enriched
-  updates, same-key generation, close/timeout state, and rejected stale or
-  late updates;
-- L3 history inputs and outputs: current `AttemptRecord`, selected deterministic
-  or enriched fact block, immutable ordered `PriorAttemptView`, typed progress
-  comparisons and deltas, stronger exact-position observations, and
-  streak/count facts;
-- L4 policy inputs and outputs: grounded L1 recovery assessment, L3 history
-  facts, selected retry rule, allowed retries, matching prior failures,
-  exhaustion and observed-advance state, `decision_basis`, and final
-  `STOP` / `RESTART`;
-- progressive state hit/fallback behavior, retained candidate summaries,
-  terminal-equivalence outcome, and deterministic/enriched publication latency.
-
-The trace preserves primary selection by stage: L0 deterministic candidate,
-raw L1 semantic primary, L2 grounded primary, and final L4 result. These fields
-MUST remain distinct even when their lines or classes agree.
-- references to bulky artifacts, especially the L0 evidence bundle and the
-  LLM/tool interaction transcript.
-
-`SCHEMA.md` owns the trace schema and required metrics. `L0A.md` and `L0B.md`
-own bundle traceability and selection/lossiness accounting. `TOOLS.md` owns
-tool-call observability. `CONFIGURATION.md` owns resolved configuration identity and
-route-setting traceability.
+`SCHEMA.md` owns exact result, trace, artifact, and metric shapes. The L0A-L4
+specs own stage-specific functionality, tracing, and measurements. `TOOLS.md`
+owns tool-call observability, `CONFIGURATION.md` owns resolved configuration
+identity, and `RUNTIME.md` owns artifact publication and lifetime.
 
 External trace sink failures MUST NOT change the restart decision, but the
 analyzer MUST still return the external output schema and SHOULD record the
 sink failure wherever a local trace or response anomaly can preserve it.
 
-Service mode exposes trace inspection as non-critical observability views:
-`summary` for quick operator inspection and `detail` for the full trace record.
-CLI mode cannot rely on service endpoints, so CLI verdict-producing runs should
-support writing a local trace artifact, include a local `trace_uri`/path in the
-output when one is written, and support local rendering of the same
-summary/detail projections from that artifact.
-
-The optional CLI `--summary` is a human-readable projection of result and
-metric fields for interactive use; it is not a diagnostic artifact and review
-harnesses SHOULD NOT persist it. Decisions and primary evidence belong to the
-result, while timing, tokens, calls, retries, and handled model/provider errors
-belong to structured trace telemetry. Process stderr is reserved for unexpected
-warnings and failures and MAY be retained as a failure-only diagnostic log.
-
-Model/tool interaction debugging requires a separate artifact from the compact
-trace. The analyzer SHOULD write an interaction transcript file containing the
-evidence bundle snapshot or reference, rendered prompts/messages, advertised
-tools, raw visible model responses, parsed tool requests, tool results,
-provider retries, provider errors, token exhaustion, malformed output, JSON
-repair attempts, and any selection/arbitration outcomes when that future mode is
-enabled. The compact trace records summary
-counts, hashes, and artifact URIs; the transcript file carries the bulky
-payloads after required secret redaction.
+Bulky model/tool transcripts remain separate from compact trace telemetry and
+are referenced by artifact path after required secret redaction. Human-readable
+summaries are projections, not sources of truth.
 
 ## Progressive Cycle Mode
 
@@ -830,16 +750,17 @@ and trace artifacts consumed by that evaluation.
 
 ## Configuration Ownership
 
-This architecture document does not own concrete defaults. Focused specs own
-defaults close to the behavior they configure:
+This architecture document does not own concrete configuration defaults.
+`CONFIGURATION.md` is the complete field/default catalog; focused specs explain
+the behavior those settings control:
 
 - `L3.md` owns history comparison and recurrence counting.
-- `L4.md` owns retry-rule selection, retry budgets, capabilities, and action
-  mapping.
-- `CONFIGURATION.md` owns restart-agent configuration resolution, credential
+- `L4.md` owns retry-rule selection, retry-budget semantics, declared policy
+  context, and action mapping.
+- `CONFIGURATION.md` owns fields, defaults, validation, resolution, credential
   references, effective identity, fingerprinting, and comparison semantics.
 - `RUNTIME.md` owns configuration/bootstrap boundaries and runtime-history
-  defaults, lifecycle, injection, and replay.
+  lifecycle, injection, and replay.
 - `TOOLS.md` owns fixed tool interfaces and response limits. `CONFIGURATION.md` owns
   tool advertisement, model-call settings, and route overrides.
 - `REQUIREMENTS.md` and `SCHEMA.md` own Restart Agent execution semantics and

@@ -22,9 +22,35 @@ COLLECT_ALL_SCHEMA_VERSION = "restart_agent_collect_all.v1"
 RETRY_POLICY_VERSION = "retry_budget.v1"
 DEFAULT_RETRY_POLICY: Mapping[str, Any] = MappingProxyType(
     {
-        "confirmation_retry_allowed_retries": 1,
-        "bounded_retry_allowed_retries": 1,
-        "general_retry_allowed_retries": 3,
+        "concrete_confirmation_retry_allowed_retries": 1,
+        "workload_confirmation_retry_allowed_retries": 1,
+        "general_retry_allowed_retries": 2,
+        "job_no_progress_allowed_retries": 3,
+        "job_unknown_progress_allowed_retries": 3,
+    }
+)
+REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID = "rejected_iteration_retry_then_skip"
+CUDA_OOM_NO_RETRY_CONTEXT_ID = "cuda_oom_no_retry"
+PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID = "port_bind_confirmation_retry"
+DEFAULT_POLICY_CONTEXTS: Mapping[str, Mapping[str, Any]] = MappingProxyType(
+    {
+        CUDA_OOM_NO_RETRY_CONTEXT_ID: MappingProxyType(
+            {
+                "enabled": True,
+            }
+        ),
+        PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID: MappingProxyType(
+            {
+                "enabled": True,
+                "allowed_retries": 1,
+            }
+        ),
+        REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID: MappingProxyType(
+            {
+                "enabled": True,
+                "allowed_retries": 2,
+            }
+        ),
     }
 )
 
@@ -37,11 +63,14 @@ class Decision(str, Enum):
 class DecisionBasis(str, Enum):
     LOG_UNAVAILABLE = "log_unavailable"
     WORKLOAD_UNRECOVERABLE = "workload_unrecoverable"
+    POLICY_CONTEXT_NO_RETRY = "policy_context_no_retry"
     RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
-    RETRY_RECOVERY_AVAILABLE = "retry_recovery_available"
-    CONFIRMATION_RETRY_AVAILABLE = "confirmation_retry_available"
-    WORKLOAD_MANAGED_RECOVERY_AVAILABLE = "workload_managed_recovery_available"
+    JOB_NO_PROGRESS_BUDGET_EXHAUSTED = "job_no_progress_budget_exhausted"
+    PROGRESS_UNVERIFIABLE_BUDGET_EXHAUSTED = "progress_unverifiable_budget_exhausted"
+    CONCRETE_CONFIRMATION_RETRY_AVAILABLE = "concrete_confirmation_retry_available"
+    WORKLOAD_CONFIRMATION_RETRY_AVAILABLE = "workload_confirmation_retry_available"
     GENERAL_RETRY_AVAILABLE = "general_retry_available"
+    POLICY_CONTEXT_RETRY_AVAILABLE = "policy_context_retry_available"
     OBSERVED_ADVANCE = "observed_advance"
     NO_PRIMARY_FAILURE = "no_primary_failure"
     MALFORMED_MODEL_OUTPUT = "malformed_model_output"
@@ -76,7 +105,14 @@ class FaultOutcome(str, Enum):
     TERMINAL = "terminal"
     RECOVERED = "recovered"
     PROGRESSED_AFTER = "progressed_after"
+    RETRY_PENDING = "retry_pending"
     UNRESOLVED = "unresolved"
+
+
+class RetryLifecycleState(str, Enum):
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    EXHAUSTED = "exhausted"
 
 
 class CausalRole(str, Enum):
@@ -89,12 +125,6 @@ class CausalRole(str, Enum):
 class DistributedIncidentKind(str, Enum):
     DISTRIBUTED_MECHANISM = "distributed_mechanism"
     DISTRIBUTED_FANOUT = "distributed_fanout"
-
-
-class AnalysisMode(str, Enum):
-    TERMINAL = "terminal"
-    PROGRESSIVE_START = "progressive_start"
-    PROGRESSIVE_END = "progressive_end"
 
 
 class DecisionCandidateKind(str, Enum):
@@ -129,16 +159,6 @@ class RegistryRole(str, Enum):
     EITHER = "either"
 
 
-class RecoveryBehavior(str, Enum):
-    NONE = "none"
-    RETRY_THEN_SKIP = "retry_then_skip"
-
-
-class RecoveryCapabilityId(str, Enum):
-    # Keep the serialized id stable without making Bandit treat it as a secret.
-    BAD_TOKEN_RETRY_THEN_SKIP = "_".join(("bad", "token", "retry", "then", "skip"))
-
-
 class HistoryProgressRelation(str, Enum):
     ADVANCED = "advanced"
     SAME = "same"
@@ -147,7 +167,6 @@ class HistoryProgressRelation(str, Enum):
 
 
 class AffectedEntityKind(str, Enum):
-    DATA_POSITION = "data_position"
     ARTIFACT = "artifact"
 
 
@@ -160,19 +179,39 @@ class AffectedEntityRelation(str, Enum):
 class HistoryMatchScope(str, Enum):
     ROOT_ONLY = "root_only"
     ROOT_AND_ENTITY = "root_and_entity"
+    SAME_JOB_NO_PROGRESS = "same_job_no_progress"
+    SAME_JOB_UNKNOWN_PROGRESS = "same_job_unknown_progress"
+    REJECTED_ITERATION_SIGNATURE = "rejected_iteration_signature"
 
 
 class RetryPolicyRule(str, Enum):
-    WORKLOAD_MANAGED_RECOVERY = "workload_managed_recovery"
     WORKLOAD_UNRECOVERABLE = "workload_unrecoverable"
-    CONFIRMATION_RETRY = "confirmation_retry"
-    BOUNDED_RETRY = "bounded_retry"
+    CONCRETE_CONFIRMATION_RETRY = "concrete_confirmation_retry"
+    WORKLOAD_CONFIRMATION_RETRY = "workload_confirmation_retry"
     GENERAL_RETRY = "general_retry"
+    CUDA_OOM_NO_RETRY = "cuda_oom_no_retry"
+    PORT_BIND_CONFIRMATION_RETRY = "port_bind_confirmation_retry"
+    REJECTED_ITERATION_RETRY_THEN_SKIP = "rejected_iteration_retry_then_skip"
+
+
+class FailureClassifier(str, Enum):
+    """Typed, policy-neutral classifiers derived from observed failure text."""
+
+    CUDA_OOM = "cuda_oom"
+    NAN_OR_INF = "nan_or_inf"
+    PORT_BIND_CONFLICT = "port_bind_conflict"
+    REJECTED_NONFINITE_ITERATION = "rejected_nonfinite_iteration"
 
 
 class AttemptFailureFactsSource(str, Enum):
     L0_DETERMINISTIC = "l0_deterministic"
     L2_GROUNDED = "l2_grounded"
+
+
+class HistoryIdentityKind(str, Enum):
+    ROOT = "root"
+    OBSERVATION_ONLY = "observation_only"
+    NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -232,22 +271,78 @@ class AttemptFailureFacts:
     root_fingerprint: str | None
     root_fingerprint_source: str | None
     fault_outcome: str | None
+    identity_kind: str = HistoryIdentityKind.ROOT.value
+    observation_fingerprint: str | None = None
+    observation_fingerprint_source: str | None = None
     primary_line: int | None = None
+    selected_observation_line: int | None = None
+    selected_observation_causal_role: str | None = None
     identity_anchor_line: int | None = None
     identity_anchor_reason: str | None = None
     failure_iteration: int | None = None
+    classifiers: Sequence[str] = field(default_factory=tuple)
     affected_entity: AffectedEntity | None = None
     faulting_rank: str | None = None
     faulting_node: str | None = None
     faulting_gpu: str | None = None
+    root_observer_ranks: Sequence[str] | None = None
+    unattributed_root_occurrence_count: int | None = None
     rank_to_gpu_map: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        valid_identity_kinds = {item.value for item in HistoryIdentityKind}
+        if self.identity_kind not in valid_identity_kinds:
+            raise ValueError(f"invalid history identity kind: {self.identity_kind}")
+        if self.identity_kind == HistoryIdentityKind.ROOT.value:
+            if not self.root_fingerprint or self.primary_line is None:
+                raise ValueError("root identity requires root_fingerprint and primary_line")
+            if (
+                self.observation_fingerprint is not None
+                or self.selected_observation_line is not None
+            ):
+                raise ValueError("root identity forbids observation-only fields")
+        elif self.identity_kind == HistoryIdentityKind.OBSERVATION_ONLY.value:
+            if not self.observation_fingerprint or self.selected_observation_line is None:
+                raise ValueError("observation-only identity requires fingerprint and selected line")
+            if self.root_fingerprint is not None or self.primary_line is not None:
+                raise ValueError("observation-only identity forbids root fields")
+            if self.affected_entity is not None or self.root_observer_ranks is not None:
+                raise ValueError("observation-only identity forbids root-scoped facts")
+        elif any(
+            value is not None
+            for value in (
+                self.root_fingerprint,
+                self.observation_fingerprint,
+                self.primary_line,
+                self.selected_observation_line,
+            )
+        ):
+            raise ValueError("identity kind none forbids root and observation identities")
+        if any(not isinstance(item, str) or not item for item in self.classifiers):
+            raise TypeError("classifiers items must be non-empty strings")
+        object.__setattr__(self, "classifiers", tuple(sorted(set(self.classifiers))))
+        if self.root_observer_ranks is not None:
+            object.__setattr__(
+                self,
+                "root_observer_ranks",
+                tuple(sorted({str(rank) for rank in self.root_observer_ranks})),
+            )
+        if self.unattributed_root_occurrence_count is not None and (
+            isinstance(self.unattributed_root_occurrence_count, bool)
+            or not isinstance(self.unattributed_root_occurrence_count, int)
+            or self.unattributed_root_occurrence_count < 0
+        ):
+            raise TypeError("unattributed_root_occurrence_count must be a non-negative integer")
+        if (self.root_observer_ranks is None) != (self.unattributed_root_occurrence_count is None):
+            raise ValueError(
+                "root_observer_ranks and unattributed_root_occurrence_count "
+                "must be available or unavailable together"
+            )
         object.__setattr__(self, "rank_to_gpu_map", freeze_json_value(self.rank_to_gpu_map))
 
     @property
     def history_identity_ready(self) -> bool:
-        return bool(self.root_fingerprint)
+        return bool(self.root_fingerprint or self.observation_fingerprint)
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -258,10 +353,27 @@ class AttemptFailureFacts:
 
 @dataclass(frozen=True)
 class EnrichedAttemptFacts:
-    """One route-keyed L2-grounded fact block."""
+    """Independent L2-grounded primary and observation tracks for one route."""
 
     route_id: str
-    facts: AttemptFailureFacts
+    primary: AttemptFailureFacts | None = None
+    observation: AttemptFailureFacts | None = None
+
+    def __post_init__(self) -> None:
+        if not self.route_id:
+            raise ValueError("route_id is required for enriched attempt facts")
+        if self.primary is None and self.observation is None:
+            raise ValueError("enriched attempt facts require a primary or observation track")
+        if (
+            self.primary is not None
+            and self.primary.identity_kind != HistoryIdentityKind.ROOT.value
+        ):
+            raise ValueError("enriched primary track requires a root identity")
+        if (
+            self.observation is not None
+            and self.observation.identity_kind != HistoryIdentityKind.OBSERVATION_ONLY.value
+        ):
+            raise ValueError("enriched observation track requires an observation-only identity")
 
     def to_payload(self) -> dict[str, Any]:
         return _to_payload(self)
@@ -304,69 +416,12 @@ class PriorAttemptView:
 
 
 @dataclass(frozen=True)
-class DeclaredRecoveryCapability:
-    """Trusted L4 policy input describing workload-owned recovery behavior."""
-
-    capability_id: RecoveryCapabilityId
-    behavior: RecoveryBehavior
-    applies_to: tuple[str, ...]
-    required_entity_kind: AffectedEntityKind
-    history_match_scope: HistoryMatchScope
-    allowed_retries: int
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.capability_id, RecoveryCapabilityId):
-            raise TypeError("declared recovery capability id must be typed")
-        if not isinstance(self.behavior, RecoveryBehavior):
-            raise TypeError("declared recovery capability behavior must be typed")
-        if not isinstance(self.required_entity_kind, AffectedEntityKind):
-            raise TypeError("declared recovery capability required_entity_kind must be typed")
-        if not isinstance(self.history_match_scope, HistoryMatchScope):
-            raise TypeError("declared recovery capability history_match_scope must be typed")
-        if not isinstance(self.applies_to, (list, tuple)) or not self.applies_to:
-            raise TypeError("declared recovery capability applies_to must be non-empty")
-        if any(
-            not isinstance(classifier, str) or not classifier.strip()
-            for classifier in self.applies_to
-        ):
-            raise TypeError(
-                "declared recovery capability applies_to items must be non-empty strings"
-            )
-        if isinstance(self.allowed_retries, bool) or not isinstance(self.allowed_retries, int):
-            raise TypeError("declared recovery capability allowed_retries must be an integer")
-        if self.allowed_retries < 1:
-            raise ValueError(
-                "declared recovery capability allowed_retries must be greater than zero"
-            )
-        object.__setattr__(self, "applies_to", tuple(self.applies_to))
-        if self.capability_id == RecoveryCapabilityId.BAD_TOKEN_RETRY_THEN_SKIP:
-            if self.behavior != RecoveryBehavior.RETRY_THEN_SKIP:
-                raise ValueError("bad_token_retry_then_skip behavior must be retry_then_skip")
-            if self.applies_to != ("bad_token_or_window",):
-                raise ValueError(
-                    "bad_token_retry_then_skip applies_to must be " "['bad_token_or_window']"
-                )
-            if self.required_entity_kind != AffectedEntityKind.DATA_POSITION:
-                raise ValueError(
-                    "bad_token_retry_then_skip required_entity_kind must be data_position"
-                )
-            if self.history_match_scope != HistoryMatchScope.ROOT_AND_ENTITY:
-                raise ValueError(
-                    "bad_token_retry_then_skip history_match_scope must be root_and_entity"
-                )
-
-    def to_payload(self) -> dict[str, Any]:
-        return _to_payload(self)
-
-
-@dataclass(frozen=True)
 class RestartAgentRequest:
     """Validated caller-owned input to one restart-agent invocation."""
 
     log_path: str
     job_id: str | None = None
     cycle_id: int | None = None
-    analysis_mode: str = AnalysisMode.TERMINAL.value
     schema_version: str = RESTART_AGENT_REQUEST_SCHEMA_VERSION
 
     def to_payload(self) -> dict[str, Any]:
@@ -380,9 +435,7 @@ class AnalysisExecutionContext:
     request: RestartAgentRequest
     prior_attempts: PriorAttemptView = field(default_factory=PriorAttemptView)
     retry_policy: Mapping[str, Any] = field(default_factory=lambda: dict(DEFAULT_RETRY_POLICY))
-    declared_recovery_capabilities: tuple[DeclaredRecoveryCapability, ...] = field(
-        default_factory=tuple
-    )
+    policy_contexts: PolicyContextConfig = field(default_factory=lambda: PolicyContextConfig())
 
     @property
     def log_path(self) -> str:
@@ -395,10 +448,6 @@ class AnalysisExecutionContext:
     @property
     def cycle_id(self) -> int | None:
         return self.request.cycle_id
-
-    @property
-    def analysis_mode(self) -> str:
-        return self.request.analysis_mode
 
 
 @dataclass(frozen=True)
@@ -452,7 +501,7 @@ def _assessment_confidence(value: Mapping[str, Any], label: str) -> int:
 
 @dataclass(frozen=True)
 class ModelRecoveryAssessment:
-    """Typed L1 recovery semantics grounded by L2 and consumed by L4."""
+    """Exact typed L1 recovery semantics consumed by L4 after primary grounding."""
 
     failure_domain: FailureDomainAssessment
     retry_outlook_without_workload_change: RetryOutlookAssessment
@@ -486,15 +535,19 @@ class RetryPolicyConfig:
     """Validated L4 retry-budget configuration."""
 
     policy_version: str = RETRY_POLICY_VERSION
-    confirmation_retry_allowed_retries: int = 1
-    bounded_retry_allowed_retries: int = 1
-    general_retry_allowed_retries: int = 3
+    concrete_confirmation_retry_allowed_retries: int = 1
+    workload_confirmation_retry_allowed_retries: int = 1
+    general_retry_allowed_retries: int = 2
+    job_no_progress_allowed_retries: int = 3
+    job_unknown_progress_allowed_retries: int = 3
 
     def __post_init__(self) -> None:
         for field_name in (
-            "confirmation_retry_allowed_retries",
-            "bounded_retry_allowed_retries",
+            "concrete_confirmation_retry_allowed_retries",
+            "workload_confirmation_retry_allowed_retries",
             "general_retry_allowed_retries",
+            "job_no_progress_allowed_retries",
+            "job_unknown_progress_allowed_retries",
         ):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int):
@@ -502,8 +555,8 @@ class RetryPolicyConfig:
             if value < 0:
                 raise ValueError(f"{field_name} must not be negative")
         for field_name in (
-            "confirmation_retry_allowed_retries",
-            "bounded_retry_allowed_retries",
+            "concrete_confirmation_retry_allowed_retries",
+            "workload_confirmation_retry_allowed_retries",
         ):
             if getattr(self, field_name) > self.general_retry_allowed_retries:
                 raise ValueError(f"{field_name} must not exceed general_retry_allowed_retries")
@@ -512,18 +565,132 @@ class RetryPolicyConfig:
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "RetryPolicyConfig":
         configured = normalize_retry_policy(value or {})
         return cls(
-            confirmation_retry_allowed_retries=int(
-                configured["confirmation_retry_allowed_retries"]
+            concrete_confirmation_retry_allowed_retries=int(
+                configured["concrete_confirmation_retry_allowed_retries"]
             ),
-            bounded_retry_allowed_retries=int(configured["bounded_retry_allowed_retries"]),
+            workload_confirmation_retry_allowed_retries=int(
+                configured["workload_confirmation_retry_allowed_retries"]
+            ),
             general_retry_allowed_retries=int(configured["general_retry_allowed_retries"]),
+            job_no_progress_allowed_retries=int(configured["job_no_progress_allowed_retries"]),
+            job_unknown_progress_allowed_retries=int(
+                configured["job_unknown_progress_allowed_retries"]
+            ),
         )
+
+
+@dataclass(frozen=True)
+class RejectedIterationRetryThenSkipConfig:
+    """External workload recovery context for rejected nonfinite iterations."""
+
+    enabled: bool = True
+    allowed_retries: int = 2
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("rejected_iteration_retry_then_skip.enabled must be boolean")
+        if isinstance(self.allowed_retries, bool) or not isinstance(self.allowed_retries, int):
+            raise TypeError("rejected_iteration_retry_then_skip.allowed_retries must be an integer")
+        if self.allowed_retries < 0:
+            raise ValueError(
+                "rejected_iteration_retry_then_skip.allowed_retries must not be negative"
+            )
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
+
+
+@dataclass(frozen=True)
+class CudaOomNoRetryConfig:
+    """External product policy for a selected terminal CUDA OOM."""
+
+    enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("cuda_oom_no_retry.enabled must be boolean")
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
+
+
+@dataclass(frozen=True)
+class PortBindConfirmationRetryConfig:
+    """External confirmation policy for an address-in-use bind failure."""
+
+    enabled: bool = True
+    allowed_retries: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("port_bind_confirmation_retry.enabled must be boolean")
+        if isinstance(self.allowed_retries, bool) or not isinstance(self.allowed_retries, int):
+            raise TypeError("port_bind_confirmation_retry.allowed_retries must be an integer")
+        if self.allowed_retries < 0:
+            raise ValueError("port_bind_confirmation_retry.allowed_retries must not be negative")
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
+
+
+@dataclass(frozen=True)
+class PolicyContextConfig:
+    """Validated external policy contexts available to L4."""
+
+    cuda_oom_no_retry: CudaOomNoRetryConfig = field(default_factory=CudaOomNoRetryConfig)
+    port_bind_confirmation_retry: PortBindConfirmationRetryConfig = field(
+        default_factory=PortBindConfirmationRetryConfig
+    )
+    rejected_iteration_retry_then_skip: RejectedIterationRetryThenSkipConfig = field(
+        default_factory=RejectedIterationRetryThenSkipConfig
+    )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> "PolicyContextConfig":
+        configured = normalize_policy_contexts(value or {})
+        cuda_oom = configured[CUDA_OOM_NO_RETRY_CONTEXT_ID]
+        port_bind = configured[PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID]
+        context = configured[REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID]
+        return cls(
+            cuda_oom_no_retry=CudaOomNoRetryConfig(
+                enabled=bool(cuda_oom["enabled"]),
+            ),
+            port_bind_confirmation_retry=PortBindConfirmationRetryConfig(
+                enabled=bool(port_bind["enabled"]),
+                allowed_retries=int(port_bind["allowed_retries"]),
+            ),
+            rejected_iteration_retry_then_skip=RejectedIterationRetryThenSkipConfig(
+                enabled=bool(context["enabled"]),
+                allowed_retries=int(context["allowed_retries"]),
+            ),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            CUDA_OOM_NO_RETRY_CONTEXT_ID: self.cuda_oom_no_retry.to_payload(),
+            PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID: (
+                self.port_bind_confirmation_retry.to_payload()
+            ),
+            REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID: (
+                self.rejected_iteration_retry_then_skip.to_payload()
+            ),
+        }
 
 
 @dataclass(frozen=True)
 class LogLine:
     line: int
     text: str
+
+
+@dataclass(frozen=True)
+class RetryLifecycle:
+    state: RetryLifecycleState
+    attempt: int | None = None
+    max_attempts: int | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
 
 
 @dataclass(frozen=True)
@@ -540,12 +707,13 @@ class FailureEvidence:
     node: str | None = None
     gpu: str | None = None
     failure_iteration: int | None = None
-    data_position_fingerprint: str | None = None
     registry_id: str | None = None
     role: str | None = None
-    recovery_behavior: str = RecoveryBehavior.NONE.value
-    root_fingerprint_source: str = "l0_registry"
+    root_fingerprint_source: str | None = "l0_registry"
     affected_entity: AffectedEntity | None = None
+    retry_lifecycle: RetryLifecycle | None = None
+    observation_fingerprint: str | None = None
+    observation_fingerprint_source: str | None = None
 
     def to_failure_payload(self) -> dict[str, Any]:
         return {
@@ -553,10 +721,14 @@ class FailureEvidence:
             "signature": self.signature,
             "root_fingerprint": self.root_fingerprint,
             "root_fingerprint_source": self.root_fingerprint_source,
+            "observation_fingerprint": self.observation_fingerprint,
+            "observation_fingerprint_source": self.observation_fingerprint_source,
             "fault_outcome": self.fault_outcome,
+            "retry_lifecycle": (
+                self.retry_lifecycle.to_payload() if self.retry_lifecycle is not None else None
+            ),
             "causal_role": self.causal_role,
             "failure_iteration": self.failure_iteration,
-            "data_position_fingerprint": self.data_position_fingerprint,
             "line": self.line,
             "rank": self.rank,
             "phase": self.phase,
@@ -592,6 +764,7 @@ class NormalizedOccurrenceGroup:
     count: int
     sample_lines: Sequence[int] = field(default_factory=tuple)
     rank_spread: Sequence[str] = field(default_factory=tuple)
+    unattributed_occurrence_count: int = 0
     node_spread: Sequence[str] = field(default_factory=tuple)
     gpu_spread: Sequence[str] = field(default_factory=tuple)
     registry_id: str | None = None
@@ -662,6 +835,12 @@ class FailureEpisode:
     terminal_exception_quote: str | None = None
     terminal_exception_iteration: int | None = None
     terminal_exception_causal_role_hint: str = CausalRole.UNKNOWN.value
+    lifecycle_family: str | None = None
+    lifecycle_source_dialects: Sequence[str] = field(default_factory=tuple)
+    lifecycle_entities: Sequence[str] = field(default_factory=tuple)
+    lifecycle_fault_lines: Sequence[int] = field(default_factory=tuple)
+    recovery_attempt_lines: Sequence[int] = field(default_factory=tuple)
+    recovery_confirmation_lines: Sequence[int] = field(default_factory=tuple)
     precursor_lines: Sequence[int] = field(default_factory=tuple)
     identity_anchor_line: int | None = None
     identity_anchor_reason: str | None = None
@@ -793,7 +972,7 @@ class RunProgressSummary:
     progress_after_failure_episode: bool | None = None
     first_terminal_incident_line: int | None = None
     first_terminal_incident_timestamp: str | None = None
-    configured_terminal_timeout_seconds: float | None = None
+    incident_configured_timeout_seconds: float | None = None
     seconds_from_last_progress_to_terminal_incident: float | None = None
     terminal_detection_lag_seconds: float | None = None
 
@@ -865,6 +1044,7 @@ class L0Bundle:
     candidate_anchors: Sequence[CandidateAnchor] = field(default_factory=tuple)
     registry_matches: Sequence[FailureEvidence] = field(default_factory=tuple)
     deterministic_primary_candidate: FailureEvidence | None = None
+    selected_observed_failure: FailureEvidence | None = None
     cascades: Sequence[CascadeEvidence] = field(default_factory=tuple)
     cause_confirmations: Sequence[FailureEvidence] = field(default_factory=tuple)
     failure_episodes: Sequence[FailureEpisode] = field(default_factory=tuple)
@@ -891,6 +1071,7 @@ class DecisionEvidence:
     """Canonical deterministic decision facts selected from L0A."""
 
     deterministic_primary_candidate: FailureEvidence | None
+    selected_observed_failure: FailureEvidence | None
     canonical_observed_identity: Mapping[str, Any]
     selected_evidence_references: Mapping[str, Any]
     failure_position: Mapping[str, Any]
@@ -925,6 +1106,8 @@ class L0ModelFacingView:
     """Deterministic L0B projection consumed by L1."""
 
     decision_evidence: DecisionEvidence
+    failure_narrative: Mapping[str, Any]
+    decision_evidence_view: Mapping[str, Any]
     evidence_bundle: Mapping[str, Any]
     attempt_execution_context: Mapping[str, Any]
     projection_metrics: Mapping[str, Any] = field(default_factory=dict)
@@ -932,6 +1115,8 @@ class L0ModelFacingView:
 
     def __post_init__(self) -> None:
         for name in (
+            "failure_narrative",
+            "decision_evidence_view",
             "evidence_bundle",
             "attempt_execution_context",
             "projection_metrics",
@@ -940,7 +1125,8 @@ class L0ModelFacingView:
 
     def prompt_payload(self) -> dict[str, Any]:
         return {
-            "decision_evidence": self.decision_evidence.to_payload(),
+            "failure_narrative": _to_payload(self.failure_narrative),
+            "decision_evidence_view": _to_payload(self.decision_evidence_view),
             "attempt_execution_context": _to_payload(self.attempt_execution_context),
             "evidence_bundle": _to_payload(self.evidence_bundle),
         }
@@ -976,6 +1162,8 @@ class HistoryProgressComparison:
     same_failure_iteration: bool = False
     same_rank: bool = False
     affected_entity_relation: str = AffectedEntityRelation.UNKNOWN.value
+    same_root_observer_count: bool = False
+    same_unattributed_root_occurrence_count: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dimension_comparisons", tuple(self.dimension_comparisons))
@@ -1015,6 +1203,71 @@ class HistorySummary:
     same_gpu_recurrence: bool = False
     same_rank_only_recurrence: bool = False
     rank_to_gpu_mapping_available: bool = False
+    job_history_available: bool = False
+    job_history_availability_reason: str = "history_disabled"
+    job_comparisons: Sequence[HistoryProgressComparison] = field(default_factory=tuple)
+    consecutive_same_job_no_advance_attempts: int = 0
+    consecutive_same_job_unknown_progress_attempts: int = 0
+    job_progress_advanced: bool = False
+    identity_kind: str = HistoryIdentityKind.NONE.value
+    observation_history_available: bool = False
+    observation_history_availability_reason: str = "history_disabled"
+    matching_observation_attempts: int = 0
+    observation_comparisons: Sequence[HistoryProgressComparison] = field(default_factory=tuple)
+    consecutive_same_observation_no_advance_attempts: int = 0
+
+
+@dataclass(frozen=True)
+class JobProgressHistory:
+    """Route-independent progress comparison computed once for the current cycle."""
+
+    available: bool = False
+    availability_reason: str = "history_disabled"
+    same_job_attempts: int = 0
+    comparisons: Sequence[HistoryProgressComparison] = field(default_factory=tuple)
+    consecutive_no_advance_attempts: int = 0
+    consecutive_unknown_progress_attempts: int = 0
+    progress_advanced: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "comparisons", tuple(self.comparisons))
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
+
+
+@dataclass(frozen=True)
+class RouteHistorySummary:
+    """Like-kind L3 comparisons for one L1 route."""
+
+    route_id: str
+    primary: HistorySummary | None = None
+    observation: HistorySummary | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
+
+
+@dataclass(frozen=True)
+class CycleHistoryComparison:
+    """Shared job progress plus independent deterministic and route histories."""
+
+    job_progress: JobProgressHistory
+    deterministic: HistorySummary
+    routes: Sequence[RouteHistorySummary] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        routes = tuple(self.routes)
+        route_ids = [item.route_id for item in routes]
+        if len(route_ids) != len(set(route_ids)):
+            raise ValueError("cycle history route_id values must be unique")
+        object.__setattr__(self, "routes", routes)
+
+    def route(self, route_id: str) -> RouteHistorySummary | None:
+        return next((item for item in self.routes if item.route_id == route_id), None)
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
 
 
 @dataclass(frozen=True)
@@ -1024,13 +1277,14 @@ class AnalysisResult:
     retry_policy: Mapping[str, Any] = field(default_factory=dict)
     failure_domain: str | None = None
     result_provenance: Mapping[str, Any] = field(default_factory=dict)
+    l1_assessment: Mapping[str, Any] | None = None
+    l2_grounding: Mapping[str, Any] = field(default_factory=dict)
     primary_failure: Mapping[str, Any] | None = None
-    root_cause_assessment: Mapping[str, Any] | None = None
-    model_recovery_assessment: Mapping[str, Any] | None = None
+    observed_failures: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    selected_observed_failure: Mapping[str, Any] | None = None
     secondary_failures: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     cascades: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     evidence_coverage: Mapping[str, str] = field(default_factory=dict)
-    evidence: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     justification: str = ""
     schema_version: str = RESTART_AGENT_RESPONSE_SCHEMA_VERSION
 
@@ -1064,7 +1318,20 @@ class ModelAnalysisResult:
     execution_status: str
     l1_usable: bool
     analysis_result: AnalysisResult
+    l1_execution_assessment: Mapping[str, Any] = field(default_factory=dict)
     error: str | None = None
+
+    @property
+    def selected_candidate_kind(self) -> str:
+        """Return the policy candidate represented by ``analysis_result``."""
+
+        value = self.analysis_result.result_provenance.get("candidate_kind")
+        if value in (
+            DecisionCandidateKind.DETERMINISTIC.value,
+            DecisionCandidateKind.L1_ENRICHED.value,
+        ):
+            return str(value)
+        return DecisionCandidateKind.DETERMINISTIC.value
 
     def to_payload(self) -> dict[str, Any]:
         return _to_payload(self)
@@ -1090,7 +1357,6 @@ def normalize_restart_agent_request(
         log_path = value.log_path
         job_id = value.job_id
         cycle_id = value.cycle_id
-        analysis_mode = value.analysis_mode
         schema_version = value.schema_version
     elif isinstance(value, Mapping):
         allowed_fields = {
@@ -1098,7 +1364,6 @@ def normalize_restart_agent_request(
             "log_path",
             "job_id",
             "cycle_id",
-            "analysis_mode",
         }
         unknown = sorted(set(value).difference(allowed_fields))
         if unknown:
@@ -1106,7 +1371,6 @@ def normalize_restart_agent_request(
         log_path = value.get("log_path")
         job_id = _optional_request_str(value.get("job_id"), "job_id")
         cycle_id = value.get("cycle_id")
-        analysis_mode = str(value.get("analysis_mode") or AnalysisMode.TERMINAL.value)
         schema_version = value.get("schema_version")
     else:
         raise TypeError("restart-agent request must be RestartAgentRequest or mapping")
@@ -1123,16 +1387,10 @@ def normalize_restart_agent_request(
     if not Path(normalized_log_path).is_absolute():
         raise ValueError("log_path must be absolute")
 
-    try:
-        normalized_analysis_mode = AnalysisMode(str(analysis_mode)).value
-    except ValueError as exc:
-        raise ValueError(f"unsupported analysis_mode: {analysis_mode!r}") from exc
-
     return RestartAgentRequest(
         log_path=normalized_log_path,
         job_id=_optional_request_str(job_id, "job_id"),
         cycle_id=_cycle_id(cycle_id),
-        analysis_mode=normalized_analysis_mode,
         schema_version=RESTART_AGENT_REQUEST_SCHEMA_VERSION,
     )
 
@@ -1142,25 +1400,21 @@ def build_analysis_execution_context(
     *,
     prior_attempts: PriorAttemptView | None = None,
     retry_policy: Mapping[str, Any] | None = None,
-    declared_recovery_capabilities: (
-        Sequence[DeclaredRecoveryCapability | Mapping[str, Any]] | None
-    ) = None,
+    policy_contexts: Mapping[str, Any] | PolicyContextConfig | None = None,
 ) -> AnalysisExecutionContext:
     """Assemble validated agent-owned state around a public request."""
 
     normalized_retry_policy = normalize_retry_policy(retry_policy or {})
-    normalized_capabilities = normalize_declared_recovery_capabilities(
-        declared_recovery_capabilities or ()
-    )
-    validate_recovery_capability_budgets(
-        normalized_capabilities,
-        normalized_retry_policy,
+    normalized_policy_contexts = (
+        policy_contexts
+        if isinstance(policy_contexts, PolicyContextConfig)
+        else PolicyContextConfig.from_mapping(policy_contexts)
     )
     return AnalysisExecutionContext(
         request=request,
         prior_attempts=prior_attempts or PriorAttemptView(),
         retry_policy=normalized_retry_policy,
-        declared_recovery_capabilities=normalized_capabilities,
+        policy_contexts=normalized_policy_contexts,
     )
 
 
@@ -1185,7 +1439,9 @@ def log_unavailable_result(reason: str) -> AnalysisResult:
         decision_basis=DecisionBasis.LOG_UNAVAILABLE.value,
         retry_policy={
             "policy_version": RETRY_POLICY_VERSION,
-            "rule": None,
+            "base_rule": None,
+            "effective_policy": None,
+            "applied_policy_context": None,
             "decision": Decision.RESTART.value,
             "decision_basis": DecisionBasis.LOG_UNAVAILABLE.value,
             "retry_budget_exhausted": False,
@@ -1196,12 +1452,34 @@ def log_unavailable_result(reason: str) -> AnalysisResult:
                 "rule": RetryPolicyRule.GENERAL_RETRY.value,
                 "history_match_scope": HistoryMatchScope.ROOT_ONLY.value,
                 "allowed_retries": None,
-                "matching_prior_failures": 0,
+                "matching_prior_attempts": 0,
                 "observed_advance": False,
                 "exhausted": False,
                 "inapplicable_reason": "missing_primary",
             },
-            "selected_rule_budget": None,
+            "selected_policy_ledger": None,
+            "job_no_progress_guard": {
+                "ledger_id": "job_no_progress_guard",
+                "applicable": False,
+                "rule": "job_no_progress_guard",
+                "history_match_scope": HistoryMatchScope.SAME_JOB_NO_PROGRESS.value,
+                "allowed_retries": None,
+                "matching_prior_attempts": 0,
+                "observed_advance": False,
+                "exhausted": False,
+                "inapplicable_reason": "log_unavailable",
+            },
+            "job_unknown_progress_guard": {
+                "ledger_id": "job_unknown_progress_guard",
+                "applicable": False,
+                "rule": "job_unknown_progress_guard",
+                "history_match_scope": HistoryMatchScope.SAME_JOB_UNKNOWN_PROGRESS.value,
+                "allowed_retries": None,
+                "matching_prior_attempts": 0,
+                "observed_advance": False,
+                "exhausted": False,
+                "inapplicable_reason": "log_unavailable",
+            },
         },
         result_provenance={
             "candidate_kind": DecisionCandidateKind.DETERMINISTIC.value,
@@ -1214,11 +1492,31 @@ def log_unavailable_result(reason: str) -> AnalysisResult:
             "l1_execution_issues": [],
             "notes": ["log_unavailable"],
         },
+        l1_assessment=None,
+        l2_grounding={
+            "used": False,
+            "grounding_status": "not_run",
+            "audit_status": "not_run",
+            "not_run_reason": "log_unavailable",
+            "grounded_primary_failure": None,
+            "grounded_related_failures": [],
+            "grounded_evidence": [],
+            "audit_influence": "observational_only",
+            "grounded_failure_identities": {"primary": None, "observation": None},
+            "history_identity": {
+                "ready": False,
+                "anchor_line": None,
+                "anchor_reason": None,
+                "root_fingerprint": None,
+                "root_fingerprint_source": "unavailable",
+            },
+            "grounding_adjustments": [],
+            "findings": [],
+        },
         primary_failure=None,
         secondary_failures=(),
         cascades=(),
         evidence_coverage=coverage,
-        evidence=(),
         justification=reason,
     )
 
@@ -1232,9 +1530,11 @@ def normalize_retry_policy(value: Any) -> Mapping[str, Any]:
     result = dict(DEFAULT_RETRY_POLICY)
     result.update(value)
     for key in (
-        "confirmation_retry_allowed_retries",
-        "bounded_retry_allowed_retries",
+        "concrete_confirmation_retry_allowed_retries",
+        "workload_confirmation_retry_allowed_retries",
         "general_retry_allowed_retries",
+        "job_no_progress_allowed_retries",
+        "job_unknown_progress_allowed_retries",
     ):
         configured = result[key]
         if isinstance(configured, bool) or not isinstance(configured, int):
@@ -1242,8 +1542,8 @@ def normalize_retry_policy(value: Any) -> Mapping[str, Any]:
         if configured < 0:
             raise ValueError(f"retry_policy.{key} must not be negative")
     for key in (
-        "confirmation_retry_allowed_retries",
-        "bounded_retry_allowed_retries",
+        "concrete_confirmation_retry_allowed_retries",
+        "workload_confirmation_retry_allowed_retries",
     ):
         if result[key] > result["general_retry_allowed_retries"]:
             raise ValueError(
@@ -1252,118 +1552,63 @@ def normalize_retry_policy(value: Any) -> Mapping[str, Any]:
     return result
 
 
-def validate_recovery_capability_budgets(
-    capabilities: Sequence[DeclaredRecoveryCapability],
-    retry_policy: Mapping[str, Any],
-) -> None:
-    """Ensure specialized recovery never extends the general root ceiling."""
+def normalize_policy_contexts(value: Any) -> Mapping[str, Mapping[str, Any]]:
+    """Validate externally declared L4 policy contexts."""
 
-    general_retries = int(retry_policy["general_retry_allowed_retries"])
-    for capability in capabilities:
-        if capability.allowed_retries > general_retries:
+    if not isinstance(value, Mapping):
+        raise TypeError("policy_contexts must be a mapping")
+    unknown_contexts = sorted(set(value).difference(DEFAULT_POLICY_CONTEXTS))
+    if unknown_contexts:
+        raise ValueError("unknown policy_contexts: " + ", ".join(unknown_contexts))
+
+    result = {context_id: dict(config) for context_id, config in DEFAULT_POLICY_CONTEXTS.items()}
+    for context_id, raw_config in value.items():
+        if not isinstance(raw_config, Mapping):
+            raise TypeError(f"policy_contexts.{context_id} must be a mapping")
+        unknown_fields = sorted(set(raw_config).difference(result[context_id]))
+        if unknown_fields:
             raise ValueError(
-                "declared recovery capability allowed_retries must not exceed "
-                "retry_policy.general_retry_allowed_retries"
+                f"policy_contexts.{context_id} has unsupported fields: " + ", ".join(unknown_fields)
             )
+        result[context_id].update(raw_config)
 
+    cuda_oom = result[CUDA_OOM_NO_RETRY_CONTEXT_ID]
+    if not isinstance(cuda_oom["enabled"], bool):
+        raise TypeError("policy_contexts.cuda_oom_no_retry.enabled must be boolean")
 
-def normalize_declared_recovery_capabilities(
-    value: Any,
-) -> tuple[DeclaredRecoveryCapability, ...]:
-    """Validate the closed MVP set of trusted workload recovery declarations."""
+    port_bind = result[PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID]
+    if not isinstance(port_bind["enabled"], bool):
+        raise TypeError("policy_contexts.port_bind_confirmation_retry.enabled must be boolean")
+    port_bind_allowed_retries = port_bind["allowed_retries"]
+    if isinstance(port_bind_allowed_retries, bool) or not isinstance(
+        port_bind_allowed_retries, int
+    ):
+        raise TypeError(
+            "policy_contexts.port_bind_confirmation_retry.allowed_retries must be an integer"
+        )
+    if port_bind_allowed_retries < 0:
+        raise ValueError(
+            "policy_contexts.port_bind_confirmation_retry.allowed_retries must not be negative"
+        )
 
-    if not isinstance(value, (list, tuple)):
-        raise TypeError("declared_recovery_capabilities must be an array")
-    normalized: list[DeclaredRecoveryCapability] = []
-    seen_ids: set[RecoveryCapabilityId] = set()
-    expected_fields = {
-        "capability_id",
-        "behavior",
-        "applies_to",
-        "required_entity_kind",
-        "history_match_scope",
-        "allowed_retries",
-    }
-    for index, item in enumerate(value):
-        if isinstance(item, DeclaredRecoveryCapability):
-            capability = item
-        else:
-            if not isinstance(item, Mapping):
-                raise TypeError(f"declared_recovery_capabilities[{index}] must be an object")
-            unknown = sorted(set(item).difference(expected_fields))
-            missing = sorted(expected_fields.difference(item))
-            if unknown:
-                raise ValueError(
-                    f"declared_recovery_capabilities[{index}] has unsupported fields: "
-                    + ", ".join(unknown)
-                )
-            if missing:
-                raise ValueError(
-                    f"declared_recovery_capabilities[{index}] is missing fields: "
-                    + ", ".join(missing)
-                )
-            try:
-                capability_id = RecoveryCapabilityId(str(item["capability_id"]))
-            except ValueError as exc:
-                raise ValueError(
-                    f"declared_recovery_capabilities[{index}].capability_id is unsupported"
-                ) from exc
-            try:
-                behavior = RecoveryBehavior(str(item["behavior"]))
-            except ValueError as exc:
-                raise ValueError(
-                    f"declared_recovery_capabilities[{index}].behavior is unsupported"
-                ) from exc
-            try:
-                required_entity_kind = AffectedEntityKind(str(item["required_entity_kind"]))
-            except ValueError as exc:
-                raise ValueError(
-                    f"declared_recovery_capabilities[{index}].required_entity_kind "
-                    "is unsupported"
-                ) from exc
-            try:
-                history_match_scope = HistoryMatchScope(str(item["history_match_scope"]))
-            except ValueError as exc:
-                raise ValueError(
-                    f"declared_recovery_capabilities[{index}].history_match_scope " "is unsupported"
-                ) from exc
-            applies_to = item["applies_to"]
-            if not isinstance(applies_to, (list, tuple)) or not applies_to:
-                raise TypeError(
-                    f"declared_recovery_capabilities[{index}].applies_to "
-                    "must be a non-empty array"
-                )
-            if any(not isinstance(entry, str) or not entry.strip() for entry in applies_to):
-                raise TypeError(
-                    f"declared_recovery_capabilities[{index}].applies_to "
-                    "items must be non-empty strings"
-                )
-            allowed_retries = item["allowed_retries"]
-            if isinstance(allowed_retries, bool) or not isinstance(allowed_retries, int):
-                raise TypeError(
-                    f"declared_recovery_capabilities[{index}].allowed_retries " "must be an integer"
-                )
-            if allowed_retries < 1:
-                raise ValueError(
-                    f"declared_recovery_capabilities[{index}].allowed_retries "
-                    "must be greater than zero"
-                )
-            capability = DeclaredRecoveryCapability(
-                capability_id=capability_id,
-                behavior=behavior,
-                applies_to=tuple(applies_to),
-                required_entity_kind=required_entity_kind,
-                history_match_scope=history_match_scope,
-                allowed_retries=allowed_retries,
-            )
-
-        if capability.capability_id in seen_ids:
-            raise ValueError(
-                f"duplicate declared recovery capability: {capability.capability_id.value!r}"
-            )
-        seen_ids.add(capability.capability_id)
-        normalized.append(capability)
-    return tuple(normalized)
+    rejected_iteration = result[REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID]
+    enabled = rejected_iteration["enabled"]
+    if not isinstance(enabled, bool):
+        raise TypeError(
+            "policy_contexts.rejected_iteration_retry_then_skip.enabled must be boolean"
+        )
+    allowed_retries = rejected_iteration["allowed_retries"]
+    if isinstance(allowed_retries, bool) or not isinstance(allowed_retries, int):
+        raise TypeError(
+            "policy_contexts.rejected_iteration_retry_then_skip.allowed_retries "
+            "must be an integer"
+        )
+    if allowed_retries < 0:
+        raise ValueError(
+            "policy_contexts.rejected_iteration_retry_then_skip.allowed_retries "
+            "must not be negative"
+        )
+    return result
 
 
 def normalize_attempt_records(value: Sequence[Any]) -> tuple[AttemptRecord, ...]:
@@ -1402,7 +1647,6 @@ def _attempt_record(value: Any, index: int) -> AttemptRecord:
         value.get("deterministic"),
         index,
         "deterministic",
-        required_identity=True,
     )
     enriched_value = value.get("enriched") or []
     if not isinstance(enriched_value, Sequence) or isinstance(enriched_value, (str, bytes)):
@@ -1411,17 +1655,38 @@ def _attempt_record(value: Any, index: int) -> AttemptRecord:
     for entry_index, entry in enumerate(enriched_value):
         if not isinstance(entry, Mapping):
             raise TypeError(f"attempt records[{index}].enriched[{entry_index}] must be an object")
+        allowed_entry_fields = {"route_id", "primary", "observation"}
+        unknown_entry_fields = sorted(set(entry).difference(allowed_entry_fields))
+        if unknown_entry_fields:
+            raise ValueError(
+                f"attempt records[{index}].enriched[{entry_index}] has unsupported fields: "
+                + ", ".join(unknown_entry_fields)
+            )
         route_id = _required_record_string(
             entry.get("route_id"), index, f"enriched[{entry_index}].route_id"
         )
+        primary_value = entry.get("primary")
+        observation_value = entry.get("observation")
         enriched.append(
             EnrichedAttemptFacts(
                 route_id=route_id,
-                facts=_attempt_failure_facts(
-                    entry.get("facts"),
-                    index,
-                    f"enriched[{entry_index}].facts",
-                    required_identity=False,
+                primary=(
+                    _attempt_failure_facts(
+                        primary_value,
+                        index,
+                        f"enriched[{entry_index}].primary",
+                    )
+                    if primary_value is not None
+                    else None
+                ),
+                observation=(
+                    _attempt_failure_facts(
+                        observation_value,
+                        index,
+                        f"enriched[{entry_index}].observation",
+                    )
+                    if observation_value is not None
+                    else None
                 ),
             )
         )
@@ -1474,8 +1739,6 @@ def _attempt_failure_facts(
     value: Any,
     index: int,
     field_prefix: str,
-    *,
-    required_identity: bool,
 ) -> AttemptFailureFacts:
     if not isinstance(value, Mapping):
         raise TypeError(f"attempt records[{index}].{field_prefix} must be an object")
@@ -1491,13 +1754,12 @@ def _attempt_failure_facts(
         raise ValueError(f"attempt records[{index}].{field_prefix}.source is invalid") from exc
     root_fingerprint = _optional_str(value.get("root_fingerprint"))
     root_source = _optional_str(value.get("root_fingerprint_source"))
-    if required_identity and (not root_fingerprint or not root_source):
+    if bool(root_fingerprint) != bool(root_source):
         raise ValueError(
-            f"attempt records[{index}].{field_prefix} requires root fingerprint and source"
+            f"attempt records[{index}].{field_prefix} root fingerprint and source "
+            "must be supplied together"
         )
     fault_outcome = _optional_str(value.get("fault_outcome"))
-    if not fault_outcome:
-        raise ValueError(f"attempt records[{index}].{field_prefix}.fault_outcome is required")
     if fault_outcome is not None and fault_outcome not in {item.value for item in FaultOutcome}:
         raise ValueError(f"attempt records[{index}].{field_prefix}.fault_outcome is invalid")
     rank_to_gpu_map = value.get("rank_to_gpu_map") or {}
@@ -1505,7 +1767,28 @@ def _attempt_failure_facts(
         raise TypeError(
             f"attempt records[{index}].{field_prefix}.rank_to_gpu_map must be an object"
         )
-    int_fields = ("primary_line", "identity_anchor_line", "failure_iteration")
+    observation_fingerprint = _optional_str(value.get("observation_fingerprint"))
+    observation_source = _optional_str(value.get("observation_fingerprint_source"))
+    if bool(observation_fingerprint) != bool(observation_source):
+        raise ValueError(
+            f"attempt records[{index}].{field_prefix} observation fingerprint and source "
+            "must be supplied together"
+        )
+    identity_kind = _optional_str(value.get("identity_kind")) or (
+        HistoryIdentityKind.ROOT.value
+        if root_fingerprint
+        else (
+            HistoryIdentityKind.OBSERVATION_ONLY.value
+            if observation_fingerprint
+            else HistoryIdentityKind.NONE.value
+        )
+    )
+    int_fields = (
+        "primary_line",
+        "selected_observation_line",
+        "identity_anchor_line",
+        "failure_iteration",
+    )
     numbers = {
         field_name: _optional_record_int(
             value.get(field_name), index, f"{field_prefix}.{field_name}"
@@ -1517,19 +1800,65 @@ def _attempt_failure_facts(
         index,
         field_prefix,
     )
+    classifiers_value = value.get("classifiers", ())
+    if not isinstance(classifiers_value, Sequence) or isinstance(classifiers_value, (str, bytes)):
+        raise TypeError(f"attempt records[{index}].{field_prefix}.classifiers must be an array")
+    if any(not isinstance(item, str) or not item for item in classifiers_value):
+        raise TypeError(
+            f"attempt records[{index}].{field_prefix}.classifiers items "
+            "must be non-empty strings"
+        )
+    root_observer_ranks_value = value.get("root_observer_ranks")
+    root_observer_ranks: tuple[str, ...] | None
+    if root_observer_ranks_value is None:
+        root_observer_ranks = None
+    else:
+        if not isinstance(root_observer_ranks_value, Sequence) or isinstance(
+            root_observer_ranks_value, (str, bytes)
+        ):
+            raise TypeError(
+                f"attempt records[{index}].{field_prefix}.root_observer_ranks "
+                "must be an array or null"
+            )
+        if any(not isinstance(rank, str) or not rank for rank in root_observer_ranks_value):
+            raise TypeError(
+                f"attempt records[{index}].{field_prefix}.root_observer_ranks "
+                "items must be non-empty strings"
+            )
+        root_observer_ranks = tuple(root_observer_ranks_value)
+    unattributed_count = _optional_record_int(
+        value.get("unattributed_root_occurrence_count"),
+        index,
+        f"{field_prefix}.unattributed_root_occurrence_count",
+    )
+    if unattributed_count is not None and unattributed_count < 0:
+        raise ValueError(
+            f"attempt records[{index}].{field_prefix}.unattributed_root_occurrence_count "
+            "must be non-negative"
+        )
     return AttemptFailureFacts(
         source=source,
+        identity_kind=identity_kind,
         root_fingerprint=root_fingerprint,
         root_fingerprint_source=root_source,
+        observation_fingerprint=observation_fingerprint,
+        observation_fingerprint_source=observation_source,
         fault_outcome=fault_outcome,
         primary_line=numbers["primary_line"],
+        selected_observation_line=numbers["selected_observation_line"],
+        selected_observation_causal_role=_optional_str(
+            value.get("selected_observation_causal_role")
+        ),
         identity_anchor_line=numbers["identity_anchor_line"],
         identity_anchor_reason=_optional_str(value.get("identity_anchor_reason")),
         failure_iteration=numbers["failure_iteration"],
+        classifiers=tuple(classifiers_value),
         affected_entity=affected_entity,
         faulting_rank=_optional_str(value.get("faulting_rank")),
         faulting_node=_optional_str(value.get("faulting_node")),
         faulting_gpu=_optional_str(value.get("faulting_gpu")),
+        root_observer_ranks=root_observer_ranks,
+        unattributed_root_occurrence_count=unattributed_count,
         rank_to_gpu_map={str(key): str(item) for key, item in rank_to_gpu_map.items()},
     )
 

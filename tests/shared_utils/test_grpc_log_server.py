@@ -5,6 +5,8 @@
 
 import logging
 import os
+import subprocess
+import sys
 import tempfile
 import time
 from unittest.mock import MagicMock
@@ -12,8 +14,12 @@ from unittest.mock import MagicMock
 import grpc
 import pytest
 
-from nvidia_resiliency_ext.shared_utils.grpc_log_server import LogAggregationServicer
+from nvidia_resiliency_ext.shared_utils.grpc_log_server import LogAggregationServicer, serve
 from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2
+
+# These tests exercise buffering/flush behaviour, not path confinement (see
+# test_grpc_log_server_confinement.py). Every path they write to lives under the temp dir.
+_TEST_ROOTS = ["/tmp", tempfile.gettempdir()]
 
 
 class TestLogAggregationServicer:
@@ -28,7 +34,7 @@ class TestLogAggregationServicer:
     @pytest.fixture
     def servicer(self):
         """Create a LogAggregationServicer instance."""
-        return LogAggregationServicer(max_buffer_size=1024 * 1024)  # 1MB
+        return LogAggregationServicer(max_buffer_size=1024 * 1024, allowed_roots=_TEST_ROOTS)  # 1MB
 
     def test_multi_file_support(self, servicer, temp_log_dir):
         """Test that server writes to different files based on file_path."""
@@ -76,7 +82,8 @@ class TestLogAggregationServicer:
 
         # Create servicer with small buffer for testing
         servicer_small_buffer = LogAggregationServicer(
-            max_buffer_size=100  # Small buffer (periodic flush will handle flushing)
+            allowed_roots=_TEST_ROOTS,
+            max_buffer_size=100,  # Small buffer (periodic flush will handle flushing)
         )
 
         # Create chunks that exceed buffer size
@@ -275,7 +282,7 @@ class TestLogAggregationServicer:
         # Use nested directory that doesn't exist
         nested_file = os.path.join(temp_log_dir, "subdir", "nested", "file.log")
 
-        servicer = LogAggregationServicer()
+        servicer = LogAggregationServicer(allowed_roots=_TEST_ROOTS)
 
         chunks = [
             log_aggregation_pb2.LogChunk(
@@ -301,7 +308,9 @@ class TestPeriodicFlush:
         log_file = tmp_path / "periodic.log"
 
         # Create servicer with short flush interval
-        servicer = LogAggregationServicer(max_buffer_size=1024 * 1024)  # Large buffer
+        servicer = LogAggregationServicer(
+            max_buffer_size=1024 * 1024, allowed_roots=_TEST_ROOTS
+        )  # Large buffer
 
         # Manually set flush interval to 0.5s for testing
         servicer.flush_interval = 0.5
@@ -376,7 +385,9 @@ class TestHeuristicCycleLogCompletion:
 
     def test_current_cycle_log_does_not_complete_on_idle_only(self, tmp_path, caplog):
         log_file = tmp_path / "train_cycle3.log"
-        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        servicer = LogAggregationServicer(
+            flush_interval=1000.0, completion_idle_timeout=1.0, allowed_roots=_TEST_ROOTS
+        )
         try:
             with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
                 self._stream_chunk(servicer, log_file)
@@ -388,7 +399,9 @@ class TestHeuristicCycleLogCompletion:
 
     def test_shutdown_completion_includes_latest_cycle_without_idle_wait(self, tmp_path, caplog):
         log_file = tmp_path / "train_cycle3.log"
-        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1000.0)
+        servicer = LogAggregationServicer(
+            flush_interval=1000.0, completion_idle_timeout=1000.0, allowed_roots=_TEST_ROOTS
+        )
 
         with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
             self._stream_chunk(servicer, log_file)
@@ -404,7 +417,9 @@ class TestHeuristicCycleLogCompletion:
     ):
         log_file = tmp_path / "train_cycle3.log"
         next_log_file = tmp_path / "train_cycle4.log"
-        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        servicer = LogAggregationServicer(
+            flush_interval=1000.0, completion_idle_timeout=1.0, allowed_roots=_TEST_ROOTS
+        )
         try:
             with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
                 self._stream_chunk(servicer, log_file)
@@ -425,7 +440,9 @@ class TestHeuristicCycleLogCompletion:
 
     def test_non_cycle_log_is_ignored_by_completion_scan(self, tmp_path, caplog):
         log_file = tmp_path / "train.log"
-        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        servicer = LogAggregationServicer(
+            flush_interval=1000.0, completion_idle_timeout=1.0, allowed_roots=_TEST_ROOTS
+        )
         try:
             with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
                 servicer.StreamLogs(
@@ -451,7 +468,9 @@ class TestHeuristicCycleLogCompletion:
     def test_late_cycle_chunk_warns_and_allows_updated_completion(self, tmp_path, caplog):
         log_file = tmp_path / "train_cycle7.log"
         next_log_file = tmp_path / "train_cycle8.log"
-        servicer = LogAggregationServicer(flush_interval=1000.0, completion_idle_timeout=1.0)
+        servicer = LogAggregationServicer(
+            flush_interval=1000.0, completion_idle_timeout=1.0, allowed_roots=_TEST_ROOTS
+        )
         try:
             with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
                 self._stream_chunk(servicer, log_file, data=b"first chunk\n")
@@ -478,7 +497,9 @@ class TestGracefulShutdown:
         log_file = tmp_path / "graceful.log"
 
         # Create servicer with short timeout and fast flush for testing
-        servicer = LogAggregationServicer(graceful_shutdown_timeout=2.0, flush_interval=0.1)
+        servicer = LogAggregationServicer(
+            graceful_shutdown_timeout=2.0, flush_interval=0.1, allowed_roots=_TEST_ROOTS
+        )
 
         # Simulate client connection by manually incrementing counter
         with servicer.clients_lock:
@@ -518,7 +539,9 @@ class TestGracefulShutdown:
         """Test that graceful shutdown respects timeout when clients don't disconnect."""
 
         # Create servicer with very short timeout and fast flush for testing
-        servicer = LogAggregationServicer(graceful_shutdown_timeout=1.0, flush_interval=0.1)
+        servicer = LogAggregationServicer(
+            graceful_shutdown_timeout=1.0, flush_interval=0.1, allowed_roots=_TEST_ROOTS
+        )
 
         # Simulate client that doesn't disconnect
         with servicer.clients_lock:
@@ -535,7 +558,9 @@ class TestGracefulShutdown:
     def test_graceful_shutdown_with_no_clients(self, tmp_path):
         """Test that graceful shutdown exits immediately when no clients connected."""
 
-        servicer = LogAggregationServicer(graceful_shutdown_timeout=10.0)  # Long timeout
+        servicer = LogAggregationServicer(
+            graceful_shutdown_timeout=10.0, allowed_roots=_TEST_ROOTS
+        )  # Long timeout
 
         # No clients connected (default state)
         assert servicer.connected_clients == 0
@@ -552,7 +577,7 @@ class TestGracefulShutdown:
         """Test that graceful shutdown properly flushes all buffered data."""
         log_file = tmp_path / "graceful_flush.log"
 
-        servicer = LogAggregationServicer(graceful_shutdown_timeout=1.0)
+        servicer = LogAggregationServicer(graceful_shutdown_timeout=1.0, allowed_roots=_TEST_ROOTS)
 
         # Write data
         chunks = [
@@ -572,3 +597,144 @@ class TestGracefulShutdown:
         with open(log_file, 'r') as f:
             content = f.read()
         assert "Data before graceful shutdown\n" in content
+
+
+def _chunk(file_path, data=b"payload\n", node_id="evil"):
+    return log_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
+
+
+@pytest.fixture
+def log_root(tmp_path):
+    root = tmp_path / "logs"
+    root.mkdir()
+    # realpath: on some platforms the pytest tmp dir itself sits behind a symlink.
+    return os.path.realpath(str(root))
+
+
+@pytest.fixture
+def outside_dir(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    return os.path.realpath(str(outside))
+
+
+class TestRootServerConfinement:
+    """The root server must refuse chunks aimed outside its allowed roots."""
+
+    def test_write_inside_root_is_accepted(self, log_root):
+        servicer = LogAggregationServicer(flush_interval=1000.0, allowed_roots=[log_root])
+        target = os.path.join(log_root, "sub", "train.log")
+        try:
+            resp = servicer.StreamLogs(iter([_chunk(target, b"hello\n")]), MagicMock())
+            assert resp.status == "OK"
+        finally:
+            servicer.shutdown()
+        with open(target, "rb") as f:
+            assert f.read() == b"hello\n"
+
+    @pytest.mark.parametrize("relative_escape", [False, True])
+    def test_write_outside_root_is_rejected(self, log_root, outside_dir, relative_escape):
+        servicer = LogAggregationServicer(flush_interval=1000.0, allowed_roots=[log_root])
+        if relative_escape:
+            target = os.path.join(log_root, "..", "outside", "pwned", "owned.txt")
+        else:
+            target = os.path.join(outside_dir, "pwned", "owned.txt")
+
+        context = MagicMock()
+        context.abort.side_effect = grpc.RpcError("aborted")
+        try:
+            with pytest.raises(grpc.RpcError):
+                servicer.StreamLogs(iter([_chunk(target)]), MagicMock(wraps=context))
+        finally:
+            servicer.shutdown()
+
+        context.abort.assert_called_once()
+        assert context.abort.call_args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
+        # Neither the file nor the directory the server would have had to create exists.
+        assert not os.path.exists(target)
+        assert not os.path.exists(os.path.dirname(target))
+
+    def test_rejected_path_is_not_tracked_or_opened(self, log_root, outside_dir):
+        servicer = LogAggregationServicer(flush_interval=1000.0, allowed_roots=[log_root])
+        target = os.path.join(outside_dir, "owned.txt")
+        context = MagicMock()
+        context.abort.side_effect = grpc.RpcError("aborted")
+        try:
+            with pytest.raises(grpc.RpcError):
+                servicer.StreamLogs(iter([_chunk(target)]), context)
+            assert servicer.files == {}
+        finally:
+            servicer.shutdown()
+
+    def test_symlink_inside_root_cannot_redirect_write(self, log_root, outside_dir):
+        """A symlink planted in the log dir must not become an append target."""
+        victim = os.path.join(outside_dir, "authorized_keys")
+        with open(victim, "wb") as f:
+            f.write(b"original\n")
+        link = os.path.join(log_root, "train.log")
+        os.symlink(victim, link)
+
+        servicer = LogAggregationServicer(flush_interval=1000.0, allowed_roots=[log_root])
+        context = MagicMock()
+        context.abort.side_effect = grpc.RpcError("aborted")
+        try:
+            with pytest.raises(grpc.RpcError):
+                servicer.StreamLogs(iter([_chunk(link, b"ssh-rsa AAAA...\n")]), context)
+        finally:
+            servicer.shutdown()
+
+        with open(victim, "rb") as f:
+            assert f.read() == b"original\n"
+
+    def test_confinement_check_runs_once_per_path(self, log_root, monkeypatch):
+        """Steady-state chunks must not re-run the resolve (per-chunk syscall cost)."""
+        servicer = LogAggregationServicer(flush_interval=1000.0, allowed_roots=[log_root])
+        calls = []
+        original = servicer._resolve_target_path
+
+        def counting(file_path):
+            calls.append(file_path)
+            return original(file_path)
+
+        monkeypatch.setattr(servicer, "_resolve_target_path", counting)
+        target = os.path.join(log_root, "train.log")
+        try:
+            servicer.StreamLogs(iter([_chunk(target, b"a\n") for _ in range(50)]), MagicMock())
+        finally:
+            servicer.shutdown()
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("roots", [None, [], [""]])
+    def test_servicer_refuses_to_construct_unconfined(self, roots):
+        """There is no unconfined mode: every chunk names its own destination."""
+        with pytest.raises(ValueError, match="at least one directory"):
+            LogAggregationServicer(flush_interval=1000.0, allowed_roots=roots)
+
+    def test_servicer_requires_allowed_roots_explicitly(self):
+        """allowed_roots is keyword-only with no default, so it cannot be forgotten."""
+        with pytest.raises(TypeError, match="allowed_roots"):
+            LogAggregationServicer(flush_interval=1000.0)
+
+
+class TestServeRequiresAllowedRoots:
+    """The network-facing entry point must fail closed."""
+
+    def test_serve_rejects_empty_allowed_roots(self):
+        with pytest.raises(ValueError, match="at least one directory"):
+            serve(host="127.0.0.1", port=0, allowed_roots=[])
+
+    def test_cli_requires_allowed_root(self):
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "nvidia_resiliency_ext.shared_utils.grpc_log_server",
+                "--port",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode != 0
+        assert "--allowed-root" in proc.stderr

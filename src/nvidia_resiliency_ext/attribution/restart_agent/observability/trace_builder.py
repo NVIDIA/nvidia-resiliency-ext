@@ -9,12 +9,14 @@ from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Mapping
 
 from ..l1.contracts import L1EvidenceResult
+from ..l1.execution import l1_contract_advisories
 from ..l4.policy import RetryPolicyEvaluation
 from ..models import (
     AnalysisExecutionContext,
     AnalysisResult,
     AttemptFailureFacts,
     AttemptFailureFactsSource,
+    CycleHistoryComparison,
     DecisionCandidate,
     DecisionCandidateKind,
     DecisionEvidence,
@@ -25,17 +27,8 @@ from ..models import (
 )
 
 
-def _assessment(audit: Mapping[str, Any], name: str) -> dict[str, Any] | None:
-    value = audit.get(name)
-    return dict(value) if isinstance(value, Mapping) else None
-
-
-def _l2_material_finding_count(audit: Mapping[str, Any]) -> int:
-    return sum(
-        1
-        for finding in audit.get("findings") or []
-        if isinstance(finding, Mapping) and bool(finding.get("policy_material", True))
-    )
+def _l2_observational_finding_count(audit: Mapping[str, Any]) -> int:
+    return sum(1 for finding in audit.get("findings") or [] if isinstance(finding, Mapping))
 
 
 @dataclass(frozen=True)
@@ -62,6 +55,8 @@ class DecisionTraceInputs:
     deterministic_failure_facts: AttemptFailureFacts
     selected_failure_facts: AttemptFailureFacts
     history: Any
+    cycle_history: CycleHistoryComparison
+    path_selection: Mapping[str, Any]
     retry_policy: RetryPolicyEvaluation
     l0_reused: bool
     l2_wall_clock_s: float
@@ -166,16 +161,17 @@ def build_decision_trace(inputs: DecisionTraceInputs) -> dict[str, Any]:
         "l0_model_view": (
             inputs.model_view.to_payload() if inputs.model_view is not None else None
         ),
-        "l2_grounded_semantics": _l2_grounded_semantics(inputs.l2_primary, inputs.l2_audit),
+        "l2_grounding": _l2_grounding(inputs.l2_primary, inputs.l2_audit),
         "l2_audit": _l2_audit_trace(inputs.l2_audit, inputs.l1_result),
         "l1": inputs.l1_result.to_trace(),
         "selection_summary": dict(inputs.bundle.selection_summary),
-        "l3_history": history_trace(inputs.history),
+        "l3_history": cycle_history_trace(inputs.cycle_history),
         "l4_policy": {
             "decision": inputs.result.decision,
             "decision_basis": inputs.result.decision_basis,
             "retry_policy": inputs.retry_policy.to_payload(),
             "history_inputs": history_trace(inputs.history),
+            "path_selection": dict(inputs.path_selection),
             "result_provenance": dict(inputs.result.result_provenance),
         },
         "anomalies": _anomalies_trace(inputs, metrics),
@@ -230,7 +226,9 @@ def _l0_layer_trace(inputs: DecisionTraceInputs, metrics: _TraceMetrics) -> dict
         "failure_episodes": len(bundle.failure_episodes),
         "distributed_failure_incidents": len(bundle.distributed_failure_incidents),
         "seconds_from_last_progress_to_terminal_incident": bundle.run_progress_summary.seconds_from_last_progress_to_terminal_incident,
-        "configured_terminal_timeout_seconds": bundle.run_progress_summary.configured_terminal_timeout_seconds,
+        "incident_configured_timeout_seconds": (
+            bundle.run_progress_summary.incident_configured_timeout_seconds
+        ),
         "terminal_detection_lag_seconds": bundle.run_progress_summary.terminal_detection_lag_seconds,
         "occurrence_groups": len(bundle.occurrence_groups),
         "root_fingerprint_owner": "L0",
@@ -302,6 +300,7 @@ def _l0_layer_trace(inputs: DecisionTraceInputs, metrics: _TraceMetrics) -> dict
 
 
 def _l1_layer_trace(inputs: DecisionTraceInputs, metrics: _TraceMetrics) -> dict[str, Any]:
+    execution_assessment = dict(inputs.l1_output_health.get("execution_assessment") or {})
     return {
         "name": "semantic_analysis",
         "wall_clock_s": round(inputs.l1_wall_clock_s, 3),
@@ -316,6 +315,7 @@ def _l1_layer_trace(inputs: DecisionTraceInputs, metrics: _TraceMetrics) -> dict
         "output_status": inputs.l1_output_health.get("status"),
         "output_usable": bool(inputs.l1_output_health.get("usable")),
         "output_errors": list(inputs.l1_output_health.get("errors") or []),
+        "execution_assessment": execution_assessment,
         "execution_status": inputs.result.result_provenance.get("l1_execution_status"),
         "execution_issues": list(inputs.result.result_provenance.get("l1_execution_issues") or []),
         "prompt_tokens": metrics.token_usage["prompt_tokens"],
@@ -333,18 +333,17 @@ def _l2_layer_trace(inputs: DecisionTraceInputs, metrics: _TraceMetrics) -> dict
         "wall_clock_s": inputs.l2_wall_clock_s,
         "grounding_status": audit.get("grounding_status"),
         "grounding_method": audit.get("grounding_method"),
-        "enriched_failure_facts_available": bool(
-            inputs.selected_failure_facts.source == AttemptFailureFactsSource.L2_GROUNDED
-        ),
+        "enriched_tracks_available": {
+            "primary": bool((audit.get("enriched_failure_tracks") or {}).get("primary")),
+            "observation": bool((audit.get("enriched_failure_tracks") or {}).get("observation")),
+        },
         "audit_status": audit.get("audit_status"),
         "primary_available": bool(audit.get("primary_used")),
-        "recovery_assessment_available": bool(audit.get("recovery_assessment_used")),
-        "recovery_assessment_policy_grounded": bool(
-            audit.get("recovery_assessment_policy_grounded")
-        ),
+        "recovery_assessment_audited": bool(audit.get("recovery_assessment_audited")),
+        "audit_influence": "observational_only",
         "related_failures_audited": len(audit.get("audited_related_failure_roles") or []),
         "finding_count": sum(len(items) for items in (audit.get("field_findings") or {}).values()),
-        "material_finding_count": _l2_material_finding_count(audit),
+        "observational_finding_count": _l2_observational_finding_count(audit),
         "finding_severity_counts": _l2_finding_severity_counts(audit),
         "citation_count": len(citations),
         "nearby_resolved_count": sum(
@@ -361,6 +360,8 @@ def _l2_layer_trace(inputs: DecisionTraceInputs, metrics: _TraceMetrics) -> dict
         "root_fingerprint": metrics.l2_root_fingerprint,
         "root_fingerprint_source": metrics.l2_root_fingerprint_source,
         "root_fingerprint_available": identity_ready,
+        "identity_lineage": audit.get("identity_lineage"),
+        "affected_entity_selection": audit.get("affected_entity_selection"),
         "affected_entity": (
             inputs.selected_failure_facts.affected_entity.to_payload()
             if inputs.selected_failure_facts.source == AttemptFailureFactsSource.L2_GROUNDED
@@ -380,6 +381,7 @@ def _l3_layer_trace(inputs: DecisionTraceInputs) -> dict[str, Any]:
     history = inputs.history
     return {
         "name": "history_enrichment",
+        "track_comparisons": cycle_history_trace(inputs.cycle_history),
         "wall_clock_s": inputs.l3_wall_clock_s,
         "selected_failure_facts_source": inputs.selected_failure_facts.source.value,
         "history_identity_ready": inputs.selected_failure_facts.history_identity_ready,
@@ -426,30 +428,44 @@ def _l3_layer_trace(inputs: DecisionTraceInputs) -> dict[str, Any]:
                 False,
             )
         ),
+        "job_history_available": bool(getattr(history, "job_history_available", False)),
+        "consecutive_same_job_no_advance_attempts": int(
+            getattr(history, "consecutive_same_job_no_advance_attempts", 0) or 0
+        ),
+        "consecutive_same_job_unknown_progress_attempts": int(
+            getattr(history, "consecutive_same_job_unknown_progress_attempts", 0) or 0
+        ),
+        "job_progress_advanced": bool(getattr(history, "job_progress_advanced", False)),
     }
 
 
 def _l4_layer_trace(inputs: DecisionTraceInputs) -> dict[str, Any]:
     general_root_ceiling = inputs.retry_policy.general_root_ceiling.to_payload()
-    selected_rule_budget = (
-        inputs.retry_policy.selected_rule_budget.to_payload()
-        if inputs.retry_policy.selected_rule_budget is not None
+    selected_policy_ledger = (
+        inputs.retry_policy.selected_policy_ledger.to_payload()
+        if inputs.retry_policy.selected_policy_ledger is not None
         else None
     )
     return {
         "name": "policy_decision",
+        "path_selection": dict(inputs.path_selection),
         "wall_clock_s": inputs.l4_wall_clock_s,
         "decision": inputs.result.decision,
         "decision_basis": inputs.result.decision_basis,
-        "rule": inputs.retry_policy.rule,
+        "base_rule": inputs.retry_policy.base_rule,
+        "effective_policy": (
+            inputs.retry_policy.effective_policy.to_payload()
+            if inputs.retry_policy.effective_policy is not None
+            else None
+        ),
+        "applied_policy_context": inputs.retry_policy.applied_policy_context,
         "general_root_ceiling": general_root_ceiling,
-        "selected_rule_budget": selected_rule_budget,
+        "selected_policy_ledger": selected_policy_ledger,
+        "job_no_progress_guard": (inputs.retry_policy.job_no_progress_guard.to_payload()),
+        "job_unknown_progress_guard": (inputs.retry_policy.job_unknown_progress_guard.to_payload()),
         "exhausted_by": list(inputs.retry_policy.exhausted_by),
         "current_affected_entity": inputs.retry_policy.current_affected_entity,
         "retry_budget_exhausted": inputs.retry_policy.retry_budget_exhausted,
-        "recovery_assessment_policy_grounded": (
-            inputs.retry_policy.recovery_assessment_policy_grounded
-        ),
         "current_evidence_qualified": inputs.retry_policy.current_evidence_qualified,
         "result_quality": inputs.result.result_provenance.get("result_quality"),
     }
@@ -490,20 +506,17 @@ def _anomalies_trace(inputs: DecisionTraceInputs, metrics: _TraceMetrics) -> dic
         "provider_error_type": inputs.l1_result.anomalies.get("provider_error_type"),
         "provider_timeout": bool(inputs.l1_result.anomalies.get("provider_timeout")),
         "context_window_exceeded": bool(inputs.l1_result.anomalies.get("context_window_exceeded")),
+        "context_budget_exceeded": bool(inputs.l1_result.anomalies.get("context_budget_exceeded")),
         "provider_retries": len(metrics.retried_model_calls),
         "token_limit_hit": metrics.token_limit["hit"],
-        "contract_repair_requested": bool(
-            inputs.l1_result.anomalies.get("contract_repair_requested")
-        ),
+        "final_evidence_turn": bool(inputs.l1_result.anomalies.get("final_evidence_turn")),
+        "final_evidence_reason": inputs.l1_result.anomalies.get("final_evidence_reason"),
         "l1_contract_invalid": inputs.l1_output_health.get("status") == "contract_invalid",
+        "l1_contract_advisories": l1_contract_advisories(inputs.l1_result),
         "malformed_model_evidence": inputs.l1_output_health.get("status") == "malformed",
         "model_output_truncated": bool(inputs.l1_result.anomalies.get("model_output_truncated")),
-        "model_prohibited_fields_ignored": bool(inputs.l2_audit.get("ignored_prohibited_fields")),
         "l0_policy_downgraded": bool(inputs.l2_audit.get("l0_policy_downgraded")),
         "unsupported_tool_request_seen": bool(inputs.l1_result.unsupported_tool_requests),
-        "forced_final_evidence_call": bool(
-            inputs.l1_result.anomalies.get("forced_final_evidence_call")
-        ),
         "deterministic_callback_error": inputs.deterministic_callback_error,
     }
 
@@ -604,7 +617,7 @@ def _l2_audit_trace(
 
     recovery_status = "not_evaluated"
     if audit.get("primary_used"):
-        recovery_status = "available" if audit.get("recovery_assessment_used") else "not_evaluated"
+        recovery_status = "audited" if audit.get("recovery_assessment_audited") else "not_evaluated"
         if any("recovery" in field for field in adjusted_fields):
             recovery_status = "resolved"
         if field_findings.get("model_recovery_assessment"):
@@ -659,7 +672,7 @@ def _l2_finding_severity_counts(audit: Mapping[str, Any]) -> dict[str, int]:
     return counts
 
 
-def _l2_grounded_semantics(
+def _l2_grounding(
     primary: FailureEvidence | None,
     audit: Mapping[str, Any],
 ) -> dict[str, Any] | None:
@@ -669,12 +682,9 @@ def _l2_grounded_semantics(
         "grounding_status": audit.get("grounding_status"),
         "grounding_method": audit.get("grounding_method"),
         "audit_status": audit.get("audit_status"),
-        "recovery_assessment_policy_grounded": bool(
-            audit.get("recovery_assessment_policy_grounded")
-        ),
+        "audit_influence": "observational_only",
         "primary_failure": primary.to_failure_payload(),
-        "root_cause_assessment": _assessment(audit, "root_cause_assessment"),
-        "model_recovery_assessment": _assessment(audit, "model_recovery_assessment"),
+        "failure_identity_grounding": dict(audit.get("failure_identity_grounding") or {}),
         "recovery_field_audits": list(audit.get("recovery_field_audits") or []),
         "related_failures": list(audit.get("audited_related_failure_roles") or []),
         "secondary_failures": list(audit.get("audited_related_failures") or []),
@@ -710,12 +720,37 @@ def history_trace(history: HistorySummary) -> dict[str, Any]:
         "same_gpu_recurrence",
         "same_rank_only_recurrence",
         "rank_to_gpu_mapping_available",
+        "job_history_available",
+        "job_history_availability_reason",
+        "consecutive_same_job_no_advance_attempts",
+        "consecutive_same_job_unknown_progress_attempts",
+        "job_progress_advanced",
     )
     payload = {field: getattr(history, field, None) for field in fields}
     payload["comparisons"] = [
         asdict(item) if is_dataclass(item) else item for item in getattr(history, "comparisons", ())
     ]
+    payload["job_comparisons"] = [
+        asdict(item) if is_dataclass(item) else item
+        for item in getattr(history, "job_comparisons", ())
+    ]
     return payload
+
+
+def cycle_history_trace(history: CycleHistoryComparison) -> dict[str, Any]:
+    return {
+        "job_progress": history.job_progress.to_payload(),
+        "deterministic": history_trace(history.deterministic),
+        "routes": {
+            route.route_id: {
+                "primary": history_trace(route.primary) if route.primary is not None else None,
+                "observation": (
+                    history_trace(route.observation) if route.observation is not None else None
+                ),
+            }
+            for route in history.routes
+        },
+    }
 
 
 def l1_token_limit_summary(model_calls: tuple[dict[str, Any], ...]) -> dict[str, Any]:
@@ -732,22 +767,26 @@ def l1_token_limit_summary(model_calls: tuple[dict[str, Any], ...]) -> dict[str,
             ),
             "max_retries": call.get("max_retries"),
             "limit_kind": (
-                "context_window"
-                if call.get("error_type") == "context_window_exceeded"
-                else "output"
+                "client_context_budget"
+                if call.get("error_type") == "context_budget_exceeded"
+                else (
+                    "context_window"
+                    if call.get("error_type") == "context_window_exceeded"
+                    else "output"
+                )
             ),
         }
         for call in model_calls
         if call.get("finish_reason") == "length"
-        or call.get("error_type") == "context_window_exceeded"
+        or call.get("error_type") in {"context_window_exceeded", "context_budget_exceeded"}
     ]
     return {
         "hit": bool(hit_calls),
         "hit_count": len(hit_calls),
         "hit_calls": hit_calls,
         "meaning": (
-            "At least one L1 call exhausted output tokens or was rejected because "
-            "input plus requested output exceeded the model context window."
+            "At least one L1 call exhausted output tokens, failed client context "
+            "preflight, or was rejected by the model context window."
         ),
     }
 
@@ -905,7 +944,7 @@ def build_log_unavailable_trace(
             },
         },
         "selected_failure_facts": None,
-        "l2_grounded_semantics": None,
+        "l2_grounding": None,
         "l2_audit": {
             "used": False,
             "grounding_status": "not_run",

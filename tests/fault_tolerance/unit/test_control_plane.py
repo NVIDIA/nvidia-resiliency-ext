@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -263,6 +264,37 @@ def test_nvrx_control_does_not_start_attribution_without_endpoint(tmp_path):
         control_plane.run(args)
 
     manager_cls.assert_not_called()
+
+
+def test_control_skips_log_funnel_without_confinable_destination(tmp_path, caplog):
+    """--ft-log-server-log-prefix alone is accepted by validation, but names where the
+    funnel's own diagnostics go, not where clients write, so it cannot define the
+    confinement boundary. Skip the funnel (as the launcher does when no applog prefix is
+    set) instead of failing nvrx-control startup."""
+    args = control_plane.parse_args(
+        [
+            "--nnodes",
+            "2",
+            "--rdzv-endpoint",
+            "127.0.0.1:29500",
+            "--ft-log-server-log-prefix",
+            str(tmp_path / "ctrl" / "grpc"),
+        ]
+    )
+    ft_cfg = control_plane.FaultToleranceConfig.from_args(args)
+    control_plane._validate_args(args, ft_cfg)
+
+    with (
+        patch.object(control_plane, "_create_tcp_store"),
+        patch.object(control_plane, "_start_grpc_log_servers") as start_servers,
+        patch.object(control_plane, "stop_grpc_log_servers"),
+        patch.object(control_plane, "_run_control_rendezvous_loop"),
+        caplog.at_level(logging.WARNING),
+    ):
+        control_plane.run(args)
+
+    start_servers.assert_not_called()
+    assert any("no client log destination" in r.getMessage() for r in caplog.records)
 
 
 def test_control_parser_rejects_log_server_without_diagnostic_prefix():

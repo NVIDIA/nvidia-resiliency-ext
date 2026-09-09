@@ -21,6 +21,8 @@ PRIMARY_FAILURE_SUPPORT_TAG = "primary_failure"
 ROOT_CAUSE_SUPPORT_TAG = "root_cause_assessment"
 FAILURE_DOMAIN_SUPPORT_TAG = "failure_domain"
 RETRY_OUTLOOK_SUPPORT_TAG = "retry_outlook_without_workload_change"
+AFFECTED_ARTIFACT_PATH_FIELD = "affected_artifact_path"
+DIRECT_FAILURE_OBJECT_PATH_FIELD = "direct_failure_object_path"
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,8 @@ class L1ResponseContract:
             "schema_version",
             "analysis_status",
             "primary_failure",
+            "observed_failures",
+            "selected_observed_failure_id",
             "root_cause_assessment",
             "model_recovery_assessment",
             "related_failures",
@@ -39,8 +43,30 @@ class L1ResponseContract:
         }
     )
     primary_failure_fields: frozenset[str] = frozenset({"line", "causal_role", "failure_identity"})
+    observed_failure_fields: frozenset[str] = frozenset(
+        {"id", "line", "causal_role", "failure_identity", "rationale", "evidence_ids"}
+    )
     failure_identity_fields: frozenset[str] = frozenset(
-        {"operation", "mechanism", "component", "artifact_path"}
+        {
+            "operation",
+            "mechanism",
+            "component",
+            DIRECT_FAILURE_OBJECT_PATH_FIELD,
+            AFFECTED_ARTIFACT_PATH_FIELD,
+        }
+    )
+    direct_failure_object_path_description: str = (
+        "Exact path directly acted on by the failing operation. It may be an internal "
+        "lock, metadata, manifest, index, cache, shard, or temporary file. Do not use a "
+        "source-code location, traceback frame, component installation path, log path, "
+        "or diagnostic callsite. Use null when no direct runtime object path is identifiable."
+    )
+    affected_artifact_path_description: str = (
+        "Exact runtime artifact targeted by the enclosing workload operation in which "
+        "the primary failure occurred, even when the failure surfaced in an internal "
+        "sub-operation. It records context, not artifact fault. Do not use a source-code "
+        "location, traceback frame, component installation path, log path, or diagnostic "
+        "callsite. Use null when no operation artifact is identifiable."
     )
     root_cause_fields: frozenset[str] = frozenset(
         {"summary", "status", "plausible_causes", "missing_evidence"}
@@ -59,15 +85,15 @@ class L1ResponseContract:
             RETRY_OUTLOOK_SUPPORT_TAG,
         }
     )
-    max_plausible_causes: int = 3
-    max_missing_evidence: int = 5
-    max_related_failures: int = 3
-    max_evidence_items: int = 12
-    max_evidence_id_chars: int = 64
+    recommended_max_plausible_causes: int = 3
+    recommended_max_missing_evidence: int = 5
+    recommended_max_related_failures: int = 3
+    recommended_max_observed_failures: int = 3
+    recommended_max_evidence_items: int = 12
+    recommended_max_evidence_id_chars: int = 64
     min_confidence: int = 1
     max_confidence: int = 99
     non_primary_confidence: int = 1
-    require_unique_evidence_ids: bool = True
     no_failure_summary: str = "No failure was observed in the supplied evidence."
     no_failure_rationale: str = "Recovery is not assessed because no failure was observed."
     insufficient_summary: str = "Insufficient evidence to identify a primary failure."
@@ -78,8 +104,13 @@ class L1ResponseContract:
         return frozenset(item.value for item in L1AnalysisStatus)
 
     @property
-    def causal_roles(self) -> frozenset[str]:
-        return frozenset(item.value for item in CausalRole)
+    def primary_causal_roles(self) -> frozenset[str]:
+        return frozenset(
+            {
+                CausalRole.INITIATING.value,
+                CausalRole.UNKNOWN.value,
+            }
+        )
 
     @property
     def related_causal_roles(self) -> frozenset[str]:
@@ -104,8 +135,10 @@ class L1ResponseContract:
         return frozenset(item.value for item in AssessmentStatus)
 
     @property
-    def required_primary_support_tags(self) -> frozenset[str]:
-        return self.evidence_support_tags
+    def required_primary_evidence_support_tags(self) -> frozenset[str]:
+        """Return the minimum citations required for a usable identified primary."""
+
+        return frozenset({PRIMARY_FAILURE_SUPPORT_TAG, ROOT_CAUSE_SUPPORT_TAG})
 
     def model_schema(self) -> dict[str, Any]:
         """Return the complete contract advertised in the initial model request."""
@@ -124,7 +157,10 @@ class L1ResponseContract:
                         "type": "integer",
                         "minimum": self.min_confidence,
                         "maximum": self.max_confidence,
-                        "description": "Calibration-only confidence in this claim.",
+                        "description": (
+                            "Calibration-only confidence in a substantive claim; "
+                            "unknown and non-primary placeholders are excluded from calibration."
+                        ),
                     },
                 },
                 "semanticConstraint": (
@@ -132,13 +168,20 @@ class L1ResponseContract:
                 ),
             }
 
+        failure_identity_properties = {
+            name: {"type": ["string", "null"]} for name in sorted(self.failure_identity_fields)
+        }
+        failure_identity_properties[AFFECTED_ARTIFACT_PATH_FIELD][
+            "description"
+        ] = self.affected_artifact_path_description
+        failure_identity_properties[DIRECT_FAILURE_OBJECT_PATH_FIELD][
+            "description"
+        ] = self.direct_failure_object_path_description
         failure_identity = {
             "type": "object",
             "additionalProperties": False,
             "required": sorted(self.failure_identity_fields),
-            "properties": {
-                name: {"type": ["string", "null"]} for name in sorted(self.failure_identity_fields)
-            },
+            "properties": failure_identity_properties,
         }
         primary_failure = {
             "type": "object",
@@ -146,8 +189,41 @@ class L1ResponseContract:
             "required": sorted(self.primary_failure_fields),
             "properties": {
                 "line": {"type": "integer", "minimum": 1},
-                "causal_role": {"type": "string", "enum": sorted(self.causal_roles)},
+                "causal_role": {
+                    "type": "string",
+                    "enum": sorted(self.primary_causal_roles),
+                },
                 "failure_identity": failure_identity,
+            },
+        }
+        observed_failure = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(self.observed_failure_fields),
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        "Identifier for this observed failure. Prefer a unique value of at most "
+                        f"{self.recommended_max_evidence_id_chars} characters. Duplicate ids are "
+                        "accepted with an advisory; a selected duplicate makes only the "
+                        "observation track unavailable."
+                    ),
+                },
+                "line": {"type": "integer", "minimum": 1},
+                "causal_role": {"type": "string", "enum": sorted(self.related_causal_roles)},
+                "failure_identity": failure_identity,
+                "rationale": {"type": "string", "minLength": 1},
+                "evidence_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": (
+                        "Citation identifiers supporting this observation. Prefer unique "
+                        "values; duplicates are accepted with an advisory finding."
+                    ),
+                    "items": {"type": "string", "minLength": 1},
+                },
             },
         }
         return {
@@ -161,6 +237,24 @@ class L1ResponseContract:
                     "enum": sorted(self.analysis_statuses),
                 },
                 "primary_failure": {"oneOf": [primary_failure, {"type": "null"}]},
+                "observed_failures": {
+                    "type": "array",
+                    "description": (
+                        "Non-primary failure surfaces. Prefer at most "
+                        f"{self.recommended_max_observed_failures} entries; additional "
+                        "well-formed entries are accepted with an advisory finding."
+                    ),
+                    "items": observed_failure,
+                },
+                "selected_observed_failure_id": {
+                    "type": ["string", "null"],
+                    "minLength": 1,
+                    "description": (
+                        "Prefer null or an identifier resolving to exactly one observed failure. "
+                        "An unresolved or ambiguous value is accepted with an advisory and makes "
+                        "only the observation track unavailable."
+                    ),
+                },
                 "root_cause_assessment": {
                     "type": "object",
                     "additionalProperties": False,
@@ -170,12 +264,20 @@ class L1ResponseContract:
                         "status": {"type": "string", "enum": claim_statuses},
                         "plausible_causes": {
                             "type": "array",
-                            "maxItems": self.max_plausible_causes,
+                            "description": (
+                                "Concise causal alternatives supported by the current log. "
+                                f"Prefer at most {self.recommended_max_plausible_causes}; "
+                                "additional items are accepted with an advisory finding."
+                            ),
                             "items": {"type": "string", "minLength": 1},
                         },
                         "missing_evidence": {
                             "type": "array",
-                            "maxItems": self.max_missing_evidence,
+                            "description": (
+                                "Missing evidence that would materially resolve the assessment. "
+                                f"Prefer at most {self.recommended_max_missing_evidence}; "
+                                "additional items are accepted with an advisory finding."
+                            ),
                             "items": {"type": "string", "minLength": 1},
                         },
                     },
@@ -192,10 +294,11 @@ class L1ResponseContract:
                 },
                 "related_failures": {
                     "type": "array",
-                    "maxItems": self.max_related_failures,
                     "description": (
                         "Grounded source-line references for diagnostic relationships; "
-                        "they are not canonical policy-claim citations."
+                        "they are not canonical policy-claim citations. Prefer at most "
+                        f"{self.recommended_max_related_failures}; additional well-formed "
+                        "entries are accepted with an advisory finding."
                     ),
                     "items": {
                         "type": "object",
@@ -213,8 +316,11 @@ class L1ResponseContract:
                 },
                 "evidence": {
                     "type": "array",
-                    "maxItems": self.max_evidence_items,
-                    "description": "Canonical citations for the four policy-relevant claims.",
+                    "description": (
+                        "Canonical citations for the four policy-relevant claims. Prefer at most "
+                        f"{self.recommended_max_evidence_items}; additional well-formed citations "
+                        "are accepted with an advisory finding."
+                    ),
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
@@ -223,14 +329,21 @@ class L1ResponseContract:
                             "id": {
                                 "type": "string",
                                 "minLength": 1,
-                                "maxLength": self.max_evidence_id_chars,
+                                "description": (
+                                    "Citation identifier. Prefer a unique value of at most "
+                                    f"{self.recommended_max_evidence_id_chars} characters. "
+                                    "Duplicate ids are accepted and audited."
+                                ),
                             },
                             "line": {"type": "integer", "minimum": 1},
                             "quote": {"type": "string", "minLength": 1},
                             "supports": {
                                 "type": "array",
                                 "minItems": 1,
-                                "uniqueItems": True,
+                                "description": (
+                                    "Claims supported by this citation. Prefer unique values; "
+                                    "duplicates are accepted with an advisory finding."
+                                ),
                                 "items": {
                                     "type": "string",
                                     "enum": sorted(self.evidence_support_tags),
@@ -241,13 +354,31 @@ class L1ResponseContract:
                 },
             },
             "semanticConstraints": {
-                "evidence_ids": "unique non-empty strings",
+                "evidence_ids": (
+                    "object ids and observation references are non-empty strings; uniqueness "
+                    "is preferred and duplicate or dangling references are audited"
+                ),
+                "selected_observed_failure_id": (
+                    "prefer null or an id resolving to exactly one observed failure; zero or "
+                    "multiple matches make only the observation track unavailable"
+                ),
                 "primary_identified": {
                     "primary_failure": "required object",
-                    "evidence": ("non-empty and collectively supports every evidence support tag"),
+                    "observed_failures": (
+                        "optional non-primary failure surfaces retained independently"
+                    ),
+                    "selected_observed_failure_id": (
+                        "optional selected non-primary surface; it does not replace primary_failure"
+                    ),
+                    "evidence": (
+                        "non-empty and collectively supports primary_failure and "
+                        "root_cause_assessment; recovery support is audited by L2"
+                    ),
                 },
                 "no_failure_observed": {
                     "primary_failure": None,
+                    "observed_failures": [],
+                    "selected_observed_failure_id": None,
                     "root_cause_summary": self.no_failure_summary,
                     "root_cause_status": "unknown",
                     "plausible_causes": [],
@@ -259,12 +390,17 @@ class L1ResponseContract:
                 },
                 "insufficient_evidence": {
                     "primary_failure": None,
+                    "observed_failures": "zero or more grounded failure surfaces",
+                    "selected_observed_failure_id": (
+                        "one observed-failure id when a unique terminal surface is selected, else null"
+                    ),
                     "root_cause_summary": self.insufficient_summary,
                     "root_cause_status": "unknown",
                     "plausible_causes": [],
                     "missing_evidence": "one or more strings",
-                    "recovery_claims": "unknown value, unknown status, confidence 1",
-                    "recovery_rationale": self.insufficient_rationale,
+                    "recovery_claims": (
+                        "substantive only when selected_observed_failure_id is non-null; otherwise unknown"
+                    ),
                     "related_failures": [],
                     "evidence": [],
                 },

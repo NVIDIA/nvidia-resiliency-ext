@@ -19,26 +19,33 @@ import httpx
 
 from ..models import L1_EVIDENCE_SCHEMA_VERSION, L0ModelFacingView
 from ..runtime import SYSTEM_CLOCK, SYSTEM_SLEEPER, Clock, Sleeper
-from .contracts import L1EvidenceContext, L1EvidenceResult
+from .advisories import model_evidence_contract_advisories
+from .contracts import L1EvidenceContext, L1EvidenceResult, L1FinalEvidenceReason
+from .normalization import normalize_model_evidence_payload
 from .prompts import SYSTEM_PROMPT
 from .provider_profiles import NVIDIA_INFERENCE_HUB
 from .response_contract import model_response_schema
+from .tool_contracts import (
+    DEFAULT_ADVERTISED_TOOLS,
+    IMPLEMENTED_TOOL_NAMES,
+    advertised_tool_schemas,
+    execute_tool_request,
+)
 from .tools import LogTools
 from .validation import model_evidence_contract_errors
 
 DEFAULT_BASE_URL = NVIDIA_INFERENCE_HUB.base_url
 DEFAULT_MODEL = NVIDIA_INFERENCE_HUB.model
-DEFAULT_OMIT_SAMPLING_PARAMS_MODEL_RE = r"gpt-5\.5"
+DEFAULT_OMIT_SAMPLING_PARAMS_MODEL_RE = r"gpt-5\.(?:5|6)"
 THINKING_MODES = ("auto", "disable", "allow")
 MAX_ERROR_DETAIL_CHARS = 4000
 DEFAULT_LLM_MAX_RETRIES = 1
 DEFAULT_LLM_RETRY_BACKOFF_SECONDS = 0.5
 DEFAULT_LLM_MAX_OUTPUT_TOKENS = 64_000
+DEFAULT_MAX_TOOL_ROUNDS = 3
 DEFAULT_CONTEXT_SAFETY_TOKENS = 4_096
 ESTIMATED_CHARS_PER_INPUT_TOKEN = 3
 CONTEXT_TOKEN_ESTIMATE_MULTIPLIER = 1.15
-DEFAULT_ADVERTISED_TOOLS = ("overview", "grep_log", "read_window")
-IMPLEMENTED_TOOL_NAMES = frozenset((*DEFAULT_ADVERTISED_TOOLS, "get_evidence_objects"))
 KNOWN_MODEL_CONTEXT_WINDOWS = {
     "nvidia/qwen/eccn-qwen-235b": 200_000,
     "nvidia/qwen/eccn-qwen3-5-397b-a17b": 262_144,
@@ -49,6 +56,7 @@ PROVIDER_TIMING_HEADERS = {
     "x-litellm-timing-post-processing-ms": "proxy_post_processing_ms",
     "x-litellm-timing-message-copy-ms": "proxy_message_copy_ms",
 }
+TOOL_ROUND_EXHAUSTED_ERROR = "tool-round limit exhausted before final evidence"
 
 
 @dataclass(frozen=True)
@@ -64,7 +72,7 @@ class LlmConfig:
     temperature: float | None = 0.2
     top_p: float | None = 0.7
     omit_sampling_params_for_model_regex: str = DEFAULT_OMIT_SAMPLING_PARAMS_MODEL_RE
-    max_tool_rounds: int = 8
+    max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS
     max_retries: int = DEFAULT_LLM_MAX_RETRIES
     retry_backoff_seconds: float = DEFAULT_LLM_RETRY_BACKOFF_SECONDS
     tools_enabled: bool = True
@@ -73,6 +81,8 @@ class LlmConfig:
     reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
+        if self.max_tool_rounds < 0:
+            raise ValueError("max_tool_rounds must not be negative")
         unknown = set(self.advertised_tools).difference(IMPLEMENTED_TOOL_NAMES)
         if unknown:
             raise ValueError("unknown advertised tools: " + ", ".join(sorted(unknown)))
@@ -202,7 +212,7 @@ class LlmConfig:
         return KNOWN_MODEL_CONTEXT_WINDOWS.get(self.model)
 
     def resolved_advertised_tools(self) -> tuple[str, ...]:
-        if not self.tools_enabled:
+        if not self.tools_enabled or self.max_tool_rounds == 0:
             return ()
         return tuple(dict.fromkeys(self.advertised_tools))
 
@@ -211,7 +221,7 @@ class LlmConfig:
 
 
 class LlmCallError(RuntimeError):
-    """Provider call failed after a request was attempted."""
+    """Provider call failed before or during a request attempt."""
 
     def __init__(
         self,
@@ -225,6 +235,24 @@ class LlmCallError(RuntimeError):
         self.call_record = call_record
         self.prior_call_records = tuple(dict(item) for item in prior_call_records)
         self.transcript_events = tuple(dict(item) for item in transcript_events)
+
+
+class ModelEvidenceParseError(ValueError):
+    """The model response could not be decoded into a structured value."""
+
+
+class ModelEvidenceContractError(ValueError):
+    """The decoded model response does not satisfy the closed L1 contract."""
+
+    def __init__(
+        self,
+        errors: Sequence[str],
+        *,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.contract_errors = tuple(errors)
+        self.payload = payload
+        super().__init__("model evidence contract failed: " + "; ".join(self.contract_errors))
 
 
 class CredentialProvider(Protocol):
@@ -241,7 +269,7 @@ class ConfigCredentialProvider:
 
 
 class ToolLoopSession:
-    """Execute one bounded model/tool conversation and contract-repair turn."""
+    """Execute one bounded model/tool conversation and optional final turn."""
 
     def __init__(
         self,
@@ -277,12 +305,13 @@ class ToolLoopSession:
         )
         if loop_outcome.result is not None:
             return loop_outcome.result
-        return ContractRepairExecutor(
+        return FinalEvidenceExecutor(
             self._config,
             self._call_model_with_retries,
             clock=self._clock,
         ).run(
             state,
+            reason=loop_outcome.final_reason,
             previous_error=loop_outcome.final_error,
             deadline_monotonic=deadline_monotonic,
         )
@@ -338,6 +367,7 @@ class _ToolConversation:
 @dataclass(frozen=True)
 class _ToolLoopOutcome:
     result: L1EvidenceResult | None
+    final_reason: L1FinalEvidenceReason | None = None
     final_error: str | None = None
 
 
@@ -387,15 +417,40 @@ class ToolRoundExecutor:
                 state.messages.append({"role": "assistant", "content": state.raw_output})
                 return _ToolLoopOutcome(
                     None,
+                    L1FinalEvidenceReason.FORCED_FINAL_AFTER_OUTPUT_LIMIT,
                     "model output hit max_tokens before final evidence completed",
                 )
             try:
                 evidence = _parse_model_evidence(state.raw_output or "")
-            except ValueError as exc:
+            except ModelEvidenceContractError as exc:
+                state.transcript_events.append(
+                    {
+                        "event_type": "model_response_validation",
+                        "model_turn": call_record.get("model_turn"),
+                        "parse_status": "contract_invalid",
+                        "parsed_payload": exc.payload,
+                        "contract_errors": list(exc.contract_errors),
+                    }
+                )
                 state.messages.append({"role": "assistant", "content": state.raw_output})
-                return _ToolLoopOutcome(None, str(exc))
+                return _ToolLoopOutcome(
+                    None,
+                    L1FinalEvidenceReason.CONTRACT_REPAIR,
+                    str(exc),
+                )
+            except ModelEvidenceParseError as exc:
+                state.messages.append({"role": "assistant", "content": state.raw_output})
+                return _ToolLoopOutcome(
+                    None,
+                    L1FinalEvidenceReason.CONTRACT_REPAIR,
+                    str(exc),
+                )
             return _ToolLoopOutcome(_successful_evidence_result(self._config, state, evidence))
-        return _ToolLoopOutcome(None)
+        return _ToolLoopOutcome(
+            None,
+            L1FinalEvidenceReason.FORCED_FINAL_AFTER_TOOL_EXHAUSTION,
+            TOOL_ROUND_EXHAUSTED_ERROR,
+        )
 
     def _request_model(
         self,
@@ -492,8 +547,8 @@ class ToolRoundExecutor:
         return None
 
 
-class ContractRepairExecutor:
-    """Request one final schema-conforming response without tool advertisement."""
+class FinalEvidenceExecutor:
+    """Request the one optional final response without tool advertisement."""
 
     def __init__(
         self,
@@ -510,23 +565,26 @@ class ContractRepairExecutor:
         self,
         state: _ToolConversation,
         *,
+        reason: L1FinalEvidenceReason | None,
         previous_error: str | None,
         deadline_monotonic: float | None,
     ) -> L1EvidenceResult:
-        contract_repair_requested = bool(previous_error and "max_tokens" not in previous_error)
-        model_turn = len(state.model_calls) + 1
+        if reason is None:
+            raise ValueError("final evidence reason is required")
+        model_turn = _next_model_turn(state.model_calls)
         if _deadline_expired(deadline_monotonic, clock=self._clock):
             return _deadline_failure_from_state(
                 self._config,
                 state,
                 model_turn=model_turn,
                 reason="before_final_evidence_call",
+                final_reason=reason,
                 clock=self._clock,
             )
-        _append_contract_repair_prompt(
+        _append_final_evidence_prompt(
             state,
+            reason=reason,
             previous_error=previous_error,
-            contract_repair_requested=contract_repair_requested,
         )
         try:
             try:
@@ -540,14 +598,19 @@ class ContractRepairExecutor:
                     deadline_monotonic=deadline_monotonic,
                 )
             except LlmCallError as exc:
-                return _provider_failure_from_state(self._config, state, exc)
+                return _provider_failure_from_state(
+                    self._config,
+                    state,
+                    exc,
+                    final_reason=reason,
+                )
             state.model_calls.append(call_record)
             message = _response_message(response)
             state.raw_output = message.get("content") or ""
             state.transcript_events.append(
                 {
                     "event_type": "model_response",
-                    "model_turn": len(state.model_calls),
+                    "model_turn": model_turn,
                     "model": self._config.model,
                     "finish_reason": call_record.get("finish_reason"),
                     "raw_model_output": state.raw_output,
@@ -557,47 +620,56 @@ class ContractRepairExecutor:
             if call_record.get("finish_reason") == "length":
                 raise ValueError("model output hit max_tokens during final evidence response")
             evidence = _parse_model_evidence(state.raw_output)
+        except ModelEvidenceContractError as exc:
+            return _contract_invalid_evidence_result(
+                self._config,
+                state,
+                exc,
+                final_reason=reason,
+            )
         except Exception as exc:
             return _malformed_evidence_result(
                 self._config,
                 state,
                 exc,
-                contract_repair_requested=contract_repair_requested,
+                final_reason=reason,
             )
         return _successful_evidence_result(
             self._config,
             state,
             evidence,
-            forced_final=True,
-            contract_repair_requested=contract_repair_requested,
+            final_reason=reason,
         )
 
 
-def _append_contract_repair_prompt(
+def _append_final_evidence_prompt(
     state: _ToolConversation,
     *,
+    reason: L1FinalEvidenceReason,
     previous_error: str | None,
-    contract_repair_requested: bool,
 ) -> None:
     state.transcript_events.append(
         {
             "event_type": "budget_event",
-            "reason": (
-                "contract_repair_call"
-                if contract_repair_requested
-                else "forced_final_evidence_call"
-            ),
+            "reason": reason.value,
             "previous_error": previous_error,
         }
     )
-    repair_context = (
-        f"The previous response could not be accepted: {previous_error}. " if previous_error else ""
-    )
+    if reason is L1FinalEvidenceReason.CONTRACT_REPAIR:
+        final_context = (
+            f"The previous response could not be accepted: {previous_error}. "
+            if previous_error
+            else "The previous response did not satisfy the response contract. "
+        )
+    elif reason is L1FinalEvidenceReason.FORCED_FINAL_AFTER_TOOL_EXHAUSTION:
+        final_context = "The tool-round budget is exhausted. "
+    else:
+        final_context = "The previous response reached its output limit. "
     state.messages.append(
         {
             "role": "user",
             "content": (
-                f"{repair_context}Return one complete {L1_EVIDENCE_SCHEMA_VERSION} "
+                f"{final_context}Return one complete {L1_EVIDENCE_SCHEMA_VERSION} "
                 "JSON object now. Copy schema_version exactly. Include the primary "
                 "failure, root_cause_assessment, model_recovery_assessment, "
                 "related_failures, and grounded evidence. Do not call "
@@ -612,21 +684,29 @@ def _successful_evidence_result(
     state: _ToolConversation,
     evidence: Mapping[str, Any],
     *,
-    forced_final: bool = False,
-    contract_repair_requested: bool = False,
+    final_reason: L1FinalEvidenceReason | None = None,
 ) -> L1EvidenceResult:
+    contract_advisories = model_evidence_contract_advisories(evidence)
+    normalized_evidence, _ = normalize_model_evidence_payload(evidence)
     anomalies: dict[str, Any] = {
         "unsupported_tool_request_seen": bool(state.unsupported_tool_requests),
+        "contract_advisories": contract_advisories,
     }
-    if forced_final:
-        anomalies.update(
+    if contract_advisories:
+        state.transcript_events.append(
             {
-                "forced_final_evidence_call": True,
-                "contract_repair_requested": contract_repair_requested,
+                "event_type": "model_response_validation",
+                "model_turn": (
+                    state.model_calls[-1].get("model_turn") if state.model_calls else None
+                ),
+                "parse_status": "valid_with_advisories",
+                "contract_advisories": contract_advisories,
             }
         )
+    if final_reason is not None:
+        anomalies.update(_final_evidence_anomalies(final_reason))
     return L1EvidenceResult(
-        evidence=evidence,
+        semantic_payload=normalized_evidence,
         model=config.model,
         raw_model_output=state.raw_output,
         success=True,
@@ -643,10 +723,10 @@ def _malformed_evidence_result(
     state: _ToolConversation,
     error: Exception,
     *,
-    contract_repair_requested: bool,
+    final_reason: L1FinalEvidenceReason,
 ) -> L1EvidenceResult:
     return L1EvidenceResult(
-        evidence=None,
+        semantic_payload=None,
         model=config.model,
         raw_model_output=state.raw_output,
         success=False,
@@ -657,8 +737,7 @@ def _malformed_evidence_result(
         unsupported_tool_requests=tuple(state.unsupported_tool_requests),
         transcript_events=tuple(state.transcript_events),
         anomalies={
-            "forced_final_evidence_call": True,
-            "contract_repair_requested": contract_repair_requested,
+            **_final_evidence_anomalies(final_reason, include_inactive_flags=True),
             "malformed_model_evidence": True,
             "model_output_truncated": bool(
                 state.model_calls and state.model_calls[-1].get("finish_reason") == "length"
@@ -668,10 +747,38 @@ def _malformed_evidence_result(
     )
 
 
+def _contract_invalid_evidence_result(
+    config: LlmConfig,
+    state: _ToolConversation,
+    error: ModelEvidenceContractError,
+    *,
+    final_reason: L1FinalEvidenceReason,
+) -> L1EvidenceResult:
+    return L1EvidenceResult(
+        semantic_payload=error.payload,
+        model=config.model,
+        raw_model_output=state.raw_output,
+        success=False,
+        malformed=False,
+        errors=error.contract_errors,
+        model_calls=tuple(state.model_calls),
+        tool_calls=tuple(state.tool_calls),
+        unsupported_tool_requests=tuple(state.unsupported_tool_requests),
+        transcript_events=tuple(state.transcript_events),
+        anomalies={
+            **_final_evidence_anomalies(final_reason),
+            "contract_invalid_model_evidence": True,
+            "unsupported_tool_request_seen": bool(state.unsupported_tool_requests),
+        },
+    )
+
+
 def _provider_failure_from_state(
     config: LlmConfig,
     state: _ToolConversation,
     error: LlmCallError,
+    *,
+    final_reason: L1FinalEvidenceReason | None = None,
 ) -> L1EvidenceResult:
     return _provider_failure_result(
         config=config,
@@ -681,7 +788,26 @@ def _provider_failure_from_state(
         tool_calls=state.tool_calls,
         unsupported_tool_requests=state.unsupported_tool_requests,
         transcript_events=state.transcript_events,
+        final_reason=final_reason,
     )
+
+
+def _final_evidence_anomalies(
+    reason: L1FinalEvidenceReason,
+    *,
+    include_inactive_flags: bool = False,
+) -> dict[str, Any]:
+    anomalies: dict[str, Any] = {
+        "final_evidence_turn": True,
+        "final_evidence_reason": reason.value,
+    }
+    tool_round_exhausted = reason is L1FinalEvidenceReason.FORCED_FINAL_AFTER_TOOL_EXHAUSTION
+    prior_output_truncated = reason is L1FinalEvidenceReason.FORCED_FINAL_AFTER_OUTPUT_LIMIT
+    if tool_round_exhausted or include_inactive_flags:
+        anomalies["tool_round_exhausted"] = tool_round_exhausted
+    if prior_output_truncated or include_inactive_flags:
+        anomalies["prior_output_truncated"] = prior_output_truncated
+    return anomalies
 
 
 def _deadline_failure_from_state(
@@ -690,6 +816,7 @@ def _deadline_failure_from_state(
     *,
     model_turn: int,
     reason: str,
+    final_reason: L1FinalEvidenceReason | None = None,
     clock: Clock = SYSTEM_CLOCK,
 ) -> L1EvidenceResult:
     return _deadline_failure_result(
@@ -701,6 +828,7 @@ def _deadline_failure_from_state(
         transcript_events=state.transcript_events,
         model_turn=model_turn,
         reason=reason,
+        final_reason=final_reason,
         clock=clock,
     )
 
@@ -736,30 +864,37 @@ class RetryingChatTransport:
         transcript_events: list[dict[str, Any]] = []
         for attempt in range(1, max_attempts + 1):
             if _deadline_expired(deadline_monotonic, clock=self._clock):
+                context_budget = _request_context_budget(
+                    self._config,
+                    messages,
+                    include_tools=include_tools,
+                )
                 deadline_error = _deadline_call_error(
                     config=self._config,
                     model_turn=model_turn,
                     attempt=attempt,
                     max_retries=max_retries,
                     reason="before_model_request",
+                    include_tools=include_tools,
+                    context_budget=context_budget,
                     clock=self._clock,
                 )
                 deadline_error.prior_call_records = tuple(prior_call_records)
                 deadline_error.transcript_events = tuple(transcript_events)
                 raise deadline_error
-            transcript_events.append(
-                _model_request_event(
-                    config=self._config,
-                    messages=messages,
-                    include_tools=include_tools,
-                    model_turn=model_turn,
-                    attempt=attempt,
-                    max_retries=max_retries,
-                    deadline_monotonic=deadline_monotonic,
-                    clock=self._clock,
-                )
-            )
             try:
+                transcript_events.append(
+                    _model_request_event(
+                        config=self._config,
+                        messages=messages,
+                        include_tools=include_tools,
+                        model_turn=model_turn,
+                        attempt=attempt,
+                        max_retries=max_retries,
+                        deadline_monotonic=deadline_monotonic,
+                        clock=self._clock,
+                    )
+                )
                 response, call_record = self._request_call(
                     api_key=api_key,
                     messages=messages,
@@ -812,6 +947,12 @@ class RetryingChatTransport:
                         attempt=attempt,
                         max_retries=max_retries,
                         reason="before_retry_backoff",
+                        include_tools=include_tools,
+                        context_budget=_request_context_budget(
+                            self._config,
+                            messages,
+                            include_tools=include_tools,
+                        ),
                         clock=self._clock,
                     )
                     deadline_error.prior_call_records = tuple(prior_call_records)
@@ -883,6 +1024,7 @@ def _prepare_provider_request(
         deadline_monotonic,
         clock=clock,
     )
+    context_budget = _request_context_budget(config, messages, include_tools=include_tools)
     if remaining_before_call_s is not None and remaining_before_call_s <= 0:
         raise _deadline_call_error(
             config=config,
@@ -890,12 +1032,26 @@ def _prepare_provider_request(
             attempt=attempt,
             max_retries=config.max_retries if max_retries is None else max_retries,
             reason="before_http_request",
+            include_tools=include_tools,
+            context_budget=context_budget,
             clock=clock,
         )
     effective_timeout_seconds = config.timeout_seconds
     if remaining_before_call_s is not None:
         effective_timeout_seconds = min(effective_timeout_seconds, remaining_before_call_s)
-    context_budget = _request_context_budget(config, messages, include_tools=include_tools)
+    if context_budget["context_budget_exceeded"]:
+        raise _context_budget_call_error(
+            config=config,
+            context_budget=context_budget,
+            include_tools=include_tools,
+            model_turn=model_turn,
+            attempt=attempt,
+            max_retries=config.max_retries if max_retries is None else max_retries,
+            started=started,
+            effective_timeout_seconds=effective_timeout_seconds,
+            remaining_before_call_s=remaining_before_call_s,
+            clock=clock,
+        )
     body = _request_body(config, messages, include_tools=include_tools)
     return _PreparedProviderRequest(
         url=config.base_url.rstrip("/") + "/chat/completions",
@@ -991,7 +1147,27 @@ class OpenAICompatibleTransport:
         except LlmCallError:
             raise
         except httpx.TimeoutException as exc:
-            raise self._classified_timeout(exc, prepared) from exc
+            timeout_kind = _httpx_timeout_kind(exc)
+            if _deadline_expired(deadline_monotonic, clock=self._clock):
+                raise _deadline_call_error(
+                    config=self._config,
+                    model_turn=model_turn,
+                    attempt=attempt,
+                    max_retries=(self._config.max_retries if max_retries is None else max_retries),
+                    reason="during_http_request",
+                    started=prepared.started,
+                    effective_timeout_seconds=prepared.effective_timeout_seconds,
+                    remaining_before_call_s=prepared.remaining_before_call_s,
+                    timeout_kind=timeout_kind,
+                    include_tools=prepared.include_tools,
+                    context_budget=prepared.context_budget,
+                    clock=self._clock,
+                ) from exc
+            raise self._classified_timeout(
+                exc,
+                prepared,
+                timeout_kind=timeout_kind,
+            ) from exc
         except httpx.RequestError as exc:
             raise self._classified_request_error(exc, prepared) from exc
         except json.JSONDecodeError as exc:
@@ -1007,8 +1183,27 @@ class OpenAICompatibleTransport:
                 started=prepared.started,
                 effective_timeout_seconds=prepared.effective_timeout_seconds,
                 remaining_before_call_s=prepared.remaining_before_call_s,
+                include_tools=prepared.include_tools,
+                context_budget=prepared.context_budget,
                 clock=self._clock,
             )
+
+        payload_error = _provider_payload_error(payload)
+        if payload_error is not None:
+            context_window_exceeded = _is_context_window_exceeded_error(payload_error)
+            record = self._failure_record(
+                prepared,
+                error_type=(
+                    "context_window_exceeded" if context_window_exceeded else "provider_error"
+                ),
+                error="provider returned an error envelope",
+                http_status=response.status_code,
+                response_body=_truncate_error_detail(payload_error),
+                retryable=False,
+                timeout=False,
+                provider_reported_timing=provider_reported_timing,
+            )
+            raise LlmCallError(f"provider error envelope: {payload_error}", record)
 
         choice = (payload.get("choices") or [{}])[0]
         call_record = self._call_record(
@@ -1035,14 +1230,15 @@ class OpenAICompatibleTransport:
         detail = response.text
         status = response.status_code
         context_window_exceeded = _is_context_window_exceeded_error(detail)
+        retryable = _is_retryable_http_status(status) and not context_window_exceeded
         record = self._failure_record(
             prepared,
             error_type=("context_window_exceeded" if context_window_exceeded else "http_error"),
             error=f"HTTP {status}",
             http_status=status,
             response_body=_truncate_error_detail(detail),
-            retryable=_is_retryable_http_status(status),
-            timeout=_is_http_timeout_status(status),
+            retryable=retryable,
+            timeout=_is_http_timeout_status(status) and not context_window_exceeded,
             provider_reported_timing=_provider_reported_timing(response.headers),
         )
         return LlmCallError(f"HTTP {status}: {detail}", record)
@@ -1066,6 +1262,8 @@ class OpenAICompatibleTransport:
         self,
         error: Exception,
         prepared: "_PreparedProviderRequest",
+        *,
+        timeout_kind: str,
     ) -> LlmCallError:
         record = self._failure_record(
             prepared,
@@ -1073,6 +1271,7 @@ class OpenAICompatibleTransport:
             error=str(error),
             retryable=True,
             timeout=True,
+            timeout_kind=timeout_kind,
         )
         return LlmCallError(f"LLM request timed out: {error}", record)
 
@@ -1125,6 +1324,7 @@ class OpenAICompatibleTransport:
         response_body: str | None = None,
         retryable: bool = False,
         timeout: bool = False,
+        timeout_kind: str | None = None,
         context_budget: Mapping[str, Any] | None = None,
         effective_timeout_seconds: float | None = None,
         remaining_before_call_s: float | None = None,
@@ -1155,6 +1355,8 @@ class OpenAICompatibleTransport:
         }
         if provider_reported_timing:
             record["provider_reported_timing"] = dict(provider_reported_timing)
+        if timeout_kind is not None:
+            record["timeout_kind"] = timeout_kind
         if not success:
             record.update(
                 {
@@ -1228,7 +1430,7 @@ class LlmEvidenceExtractor:
             )
         except Exception as exc:  # pragma: no cover - defensive provider boundary
             return L1EvidenceResult(
-                evidence=None,
+                semantic_payload=None,
                 model=self._config.model,
                 success=False,
                 errors=(str(exc),),
@@ -1323,6 +1525,7 @@ def _request_body(
         "model": config.model,
         "messages": messages,
         "max_tokens": budget["effective_max_output_tokens"],
+        "stream": False,
     }
     if config.request_temperature() is not None:
         body["temperature"] = config.request_temperature()
@@ -1361,12 +1564,17 @@ def _request_context_budget(
         raw_estimated_input_tokens * CONTEXT_TOKEN_ESTIMATE_MULTIPLIER
     )
     effective_max_output_tokens = config.max_output_tokens
+    available_output_tokens: int | None = None
+    context_budget_exceeded = False
     if context_window is not None:
-        available = max(
-            1,
-            context_window - estimated_input_tokens - max(0, config.context_safety_tokens),
+        available_output_tokens = (
+            context_window - estimated_input_tokens - max(0, config.context_safety_tokens)
         )
-        effective_max_output_tokens = min(config.max_output_tokens, available)
+        context_budget_exceeded = available_output_tokens <= 0
+        effective_max_output_tokens = min(
+            config.max_output_tokens,
+            max(1, available_output_tokens),
+        )
     return {
         "context_window_tokens": context_window,
         "raw_estimated_input_tokens": raw_estimated_input_tokens,
@@ -1376,8 +1584,10 @@ def _request_context_budget(
         "input_chars": input_chars,
         "configured_max_output_tokens": config.max_output_tokens,
         "effective_max_output_tokens": effective_max_output_tokens,
+        "available_output_tokens": available_output_tokens,
         "safety_tokens": max(0, config.context_safety_tokens),
         "adjusted": effective_max_output_tokens != config.max_output_tokens,
+        "context_budget_exceeded": context_budget_exceeded,
     }
 
 
@@ -1392,8 +1602,22 @@ def _model_request_event(
     deadline_monotonic: float | None = None,
     clock: Clock = SYSTEM_CLOCK,
 ) -> dict[str, Any]:
-    body = _request_body(config, messages, include_tools=include_tools)
     context_budget = _request_context_budget(config, messages, include_tools=include_tools)
+    if context_budget["context_budget_exceeded"]:
+        raise _context_budget_call_error(
+            config=config,
+            context_budget=context_budget,
+            include_tools=include_tools,
+            model_turn=model_turn,
+            attempt=attempt,
+            max_retries=max_retries,
+            remaining_before_call_s=_remaining_deadline_seconds(
+                deadline_monotonic,
+                clock=clock,
+            ),
+            clock=clock,
+        )
+    body = _request_body(config, messages, include_tools=include_tools)
     encoded = _encoded_request_body(body)
     request_body = json.loads(encoded.decode("utf-8"))
     return {
@@ -1438,6 +1662,7 @@ def _provider_failure_result(
     tool_calls: list[dict[str, Any]],
     unsupported_tool_requests: list[dict[str, Any]],
     transcript_events: list[dict[str, Any]],
+    final_reason: L1FinalEvidenceReason | None = None,
 ) -> L1EvidenceResult:
     model_calls.append(exc.call_record)
     transcript_events.append(
@@ -1454,8 +1679,19 @@ def _provider_failure_result(
         }
     )
     error_type = str(exc.call_record.get("error_type") or "provider_error")
+    anomalies: dict[str, Any] = {
+        "provider_error": True,
+        "provider_error_type": error_type,
+        "provider_timeout": bool(exc.call_record.get("timeout")),
+        "deadline_exceeded": error_type == "analysis_deadline_exceeded",
+        "context_window_exceeded": error_type == "context_window_exceeded",
+        "context_budget_exceeded": error_type == "context_budget_exceeded",
+        "unsupported_tool_request_seen": bool(unsupported_tool_requests),
+    }
+    if final_reason is not None:
+        anomalies.update(_final_evidence_anomalies(final_reason))
     return L1EvidenceResult(
-        evidence=None,
+        semantic_payload=None,
         model=config.model,
         raw_model_output=raw_output,
         success=False,
@@ -1465,14 +1701,7 @@ def _provider_failure_result(
         tool_calls=tuple(tool_calls),
         unsupported_tool_requests=tuple(unsupported_tool_requests),
         transcript_events=tuple(transcript_events),
-        anomalies={
-            "provider_error": True,
-            "provider_error_type": error_type,
-            "provider_timeout": bool(exc.call_record.get("timeout")),
-            "deadline_exceeded": error_type == "analysis_deadline_exceeded",
-            "context_window_exceeded": error_type == "context_window_exceeded",
-            "unsupported_tool_request_seen": bool(unsupported_tool_requests),
-        },
+        anomalies=anomalies,
     )
 
 
@@ -1505,6 +1734,9 @@ def _deadline_call_error(
     started: float | None = None,
     effective_timeout_seconds: float | None = None,
     remaining_before_call_s: float | None = None,
+    timeout_kind: str | None = None,
+    include_tools: bool = False,
+    context_budget: Mapping[str, Any] | None = None,
     clock: Clock = SYSTEM_CLOCK,
 ) -> LlmCallError:
     message = f"analysis deadline exceeded: {reason}"
@@ -1518,7 +1750,7 @@ def _deadline_call_error(
         "latency_s": round(clock.monotonic() - started, 3) if started is not None else 0.0,
         "finish_reason": None,
         "usage": None,
-        "tools_advertised": False,
+        "tools_advertised": include_tools,
         "reasoning_mode_requested": config.thinking_mode,
         "error_type": "analysis_deadline_exceeded",
         "error": message,
@@ -1526,9 +1758,53 @@ def _deadline_call_error(
         "response_body": None,
         "retryable": False,
         "retry_scheduled": False,
-        "timeout": True,
+        "timeout": timeout_kind is not None,
         "deadline_exceeded": True,
         "deadline_reason": reason,
+        "configured_request_timeout_seconds": config.timeout_seconds,
+        "effective_request_timeout_seconds": effective_timeout_seconds,
+        "remaining_analysis_budget_before_call_s": remaining_before_call_s,
+        "context_budget": dict(context_budget or {}),
+    }
+    if timeout_kind is not None:
+        call_record["timeout_kind"] = timeout_kind
+    return LlmCallError(message, call_record)
+
+
+def _context_budget_call_error(
+    *,
+    config: LlmConfig,
+    context_budget: Mapping[str, Any],
+    include_tools: bool,
+    model_turn: int,
+    attempt: int,
+    max_retries: int,
+    started: float | None = None,
+    effective_timeout_seconds: float | None = None,
+    remaining_before_call_s: float | None = None,
+    clock: Clock = SYSTEM_CLOCK,
+) -> LlmCallError:
+    message = "estimated L1 input plus safety reserve exceeds the model context window"
+    call_record = {
+        "layer": "L1",
+        "model": config.model,
+        "model_turn": model_turn,
+        "attempt": attempt,
+        "max_retries": max_retries,
+        "success": False,
+        "latency_s": round(clock.monotonic() - started, 3) if started is not None else 0.0,
+        "finish_reason": None,
+        "usage": None,
+        "tools_advertised": include_tools,
+        "reasoning_mode_requested": config.thinking_mode,
+        "error_type": "context_budget_exceeded",
+        "error": message,
+        "http_status": None,
+        "response_body": None,
+        "retryable": False,
+        "retry_scheduled": False,
+        "timeout": False,
+        "context_budget": dict(context_budget),
         "configured_request_timeout_seconds": config.timeout_seconds,
         "effective_request_timeout_seconds": effective_timeout_seconds,
         "remaining_analysis_budget_before_call_s": remaining_before_call_s,
@@ -1546,6 +1822,7 @@ def _deadline_failure_result(
     transcript_events: list[dict[str, Any]],
     model_turn: int,
     reason: str,
+    final_reason: L1FinalEvidenceReason | None = None,
     clock: Clock = SYSTEM_CLOCK,
 ) -> L1EvidenceResult:
     return _provider_failure_result(
@@ -1563,21 +1840,31 @@ def _deadline_failure_result(
         tool_calls=tool_calls,
         unsupported_tool_requests=unsupported_tool_requests,
         transcript_events=transcript_events,
+        final_reason=final_reason,
     )
+
+
+def _next_model_turn(model_calls: Sequence[Mapping[str, Any]]) -> int:
+    turns = [
+        turn
+        for call in model_calls
+        if isinstance((turn := call.get("model_turn")), int) and not isinstance(turn, bool)
+    ]
+    return max(turns, default=0) + 1
 
 
 def _initial_user_message(model_view: L0ModelFacingView) -> str:
     payload = {
-        "response_schema": model_response_schema(),
         **model_view.prompt_payload(),
+        "response_schema": model_response_schema(),
     }
-    return json.dumps(payload, indent=2, sort_keys=True)
+    return json.dumps(payload, indent=2, sort_keys=False)
 
 
 def _tool_loop_profile(config: LlmConfig) -> dict[str, Any]:
     advertised_tools = config.resolved_advertised_tools()
     tools_active = bool(advertised_tools)
-    max_tool_rounds = max(1, config.max_tool_rounds) if tools_active else 0
+    max_tool_rounds = config.max_tool_rounds if tools_active else 0
     return {
         "tools_enabled": tools_active,
         "advertised_tools": list(advertised_tools),
@@ -1592,78 +1879,7 @@ def _tool_loop_profile(config: LlmConfig) -> dict[str, Any]:
 
 
 def _tool_schemas(config: LlmConfig) -> list[dict[str, Any]]:
-    schemas = [
-        {
-            "type": "function",
-            "function": {
-                "name": "overview",
-                "description": "Return a compact summary, head/tail preview, and L0 findings.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "grep_log",
-                "description": "Search the bound log with a regular expression.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "ignore_case": {"type": "boolean", "default": True},
-                        "max_matches": {"type": "integer", "default": 50},
-                    },
-                    "required": ["pattern"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_window",
-                "description": "Read original log lines around one center line.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "center_line": {"type": "integer"},
-                        "before": {"type": "integer", "default": 20},
-                        "after": {"type": "integer", "default": 80},
-                    },
-                    "required": ["center_line"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_evidence_objects",
-                "description": (
-                    "Resolve stable L0A evidence references from the current attempt "
-                    "without rescanning the log."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "refs": {
-                            "type": "array",
-                            "items": {"type": "string", "maxLength": 128},
-                            "maxItems": 8,
-                        }
-                    },
-                    "required": ["refs"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-    ]
-    advertised = set(config.resolved_advertised_tools())
-    return [schema for schema in schemas if schema["function"]["name"] in advertised]
+    return advertised_tool_schemas(config.resolved_advertised_tools())
 
 
 def _execute_tool_call(
@@ -1676,46 +1892,25 @@ def _execute_tool_call(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     started = clock.monotonic()
     name = str(tool_call.get("name") or "")
-    args = _tool_args(tool_call)
-    unsupported: dict[str, Any] | None = None
-    try:
-        if name not in advertised_tools:
-            result = {"error": "tool_not_advertised", "requested_tool_name": name}
-            unsupported = {
-                "model_turn": model_turn,
-                "requested_tool_name": name,
-                "args_summary": _compact_args(args),
-                "rejection_reason": "tool_not_advertised",
-            }
-        elif name == "overview":
-            result = tools.overview()
-        elif name == "grep_log":
-            result = tools.grep_log(
-                str(args.get("pattern") or ""),
-                ignore_case=bool(args.get("ignore_case", True)),
-                max_matches=int(args.get("max_matches", 50)),
-            )
-        elif name == "read_window":
-            result = tools.read_window(
-                int(args["center_line"]),
-                before=int(args.get("before", 20)),
-                after=int(args.get("after", 80)),
-            )
-        elif name == "get_evidence_objects":
-            refs = args.get("refs")
-            if not isinstance(refs, list) or not all(isinstance(ref, str) for ref in refs):
-                raise ValueError("refs must be an array of strings")
-            result = tools.get_evidence_objects(refs)
-        else:
-            result = {"error": "tool_not_implemented", "requested_tool_name": name}
-            unsupported = {
-                "model_turn": model_turn,
-                "requested_tool_name": name,
-                "args_summary": _compact_args(args),
-                "rejection_reason": "tool_not_implemented",
-            }
-    except Exception as exc:
-        result = {"error": str(exc), "requested_tool_name": name}
+    result, args, unsupported_request = execute_tool_request(
+        tools,
+        name=name,
+        raw_arguments=tool_call.get("arguments"),
+        advertised_tools=tuple(advertised_tools),
+    )
+    error = result.get("error")
+    error_code = error.get("code") if isinstance(error, Mapping) else None
+    unsupported = None
+    if unsupported_request:
+        unsupported = {
+            "model_turn": model_turn,
+            "requested_tool_name": name,
+            "args_summary": _compact_args(args),
+            "rejection_reason": error_code,
+        }
+
+    data = result.get("data")
+    result_data = dict(data) if isinstance(data, Mapping) else {}
 
     result_text = json.dumps(result, sort_keys=True)
     record = {
@@ -1725,23 +1920,22 @@ def _execute_tool_call(
         "args_summary": _compact_args(args),
         "latency_ms": round((clock.monotonic() - started) * 1000),
         "result_chars": len(result_text),
-        "result_lines": _result_line_count(result),
-        "total_matches": result.get("total_matches") if isinstance(result, dict) else None,
-        "truncated": bool(result.get("truncated")) if isinstance(result, dict) else False,
-        "error": result.get("error") if isinstance(result, dict) else None,
+        "result_lines": _result_line_count(result_data),
+        "total_raw_matches": result_data.get("total_raw_matches"),
+        "total_match_groups": result_data.get("total_match_groups"),
+        "collapsed_matches": result_data.get("collapsed_matches"),
+        "scan_complete": result_data.get("scan_complete"),
+        "samples_truncated": result_data.get("samples_truncated"),
+        "new_evidence_beyond_initial_view": (
+            (result_data.get("initial_view_overlap") or {}).get("new_evidence_beyond_initial_view")
+            if isinstance(result_data.get("initial_view_overlap"), Mapping)
+            else None
+        ),
+        "truncated": bool(result.get("truncated")),
+        "status": result.get("status"),
+        "error": error_code,
     }
     return result, record, unsupported
-
-
-def _tool_args(tool_call: dict[str, Any]) -> dict[str, Any]:
-    raw = tool_call.get("arguments") or "{}"
-    if isinstance(raw, dict):
-        return raw
-    try:
-        parsed = json.loads(str(raw))
-    except json.JSONDecodeError:
-        parsed = {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _compact_args(args: dict[str, Any]) -> str:
@@ -1793,37 +1987,68 @@ def _assistant_tool_call_message(message: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_model_evidence(text: str | None) -> dict[str, Any]:
     if not text:
-        raise ValueError("empty model output")
+        raise ModelEvidenceParseError("model output was empty")
     payload_text = _extract_json_text(text)
     try:
         payload = json.loads(payload_text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as json_error:
         try:
             payload = ast.literal_eval(payload_text)
         except Exception as exc:
-            raise ValueError(f"model output is not JSON: {exc}") from exc
+            raise ModelEvidenceParseError(
+                "model output could not be parsed as JSON or a Python literal; "
+                f"JSON error: {json_error.msg} "
+                f"(line {json_error.lineno}, column {json_error.colno}, "
+                f"character {json_error.pos}); "
+                f"Python literal error: {type(exc).__name__}: {exc}"
+            ) from exc
     if not isinstance(payload, dict):
-        raise ValueError("model output JSON must be an object")
+        raise ModelEvidenceContractError(
+            (f"top-level value must be an object, got {type(payload).__name__}",)
+        )
     contract_errors = model_evidence_contract_errors(payload)
     if contract_errors:
-        raise ValueError("model evidence contract failed: " + "; ".join(contract_errors))
+        raise ModelEvidenceContractError(contract_errors, payload=payload)
     return payload
 
 
 def _extract_json_text(text: str) -> str:
     stripped = text.strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.S)
-    if fenced:
-        return fenced.group(1)
     start = stripped.find("{")
     if start < 0:
         return stripped
     decoder = json.JSONDecoder()
     try:
         _, end = decoder.raw_decode(stripped[start:])
+        trailing = stripped[start + end :]
+        if _contains_additional_json_object(trailing):
+            raise ModelEvidenceParseError("model output contained multiple JSON objects")
         return stripped[start : start + end]
     except json.JSONDecodeError:
         return stripped[start:]
+
+
+def _contains_additional_json_object(text: str) -> bool:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return True
+    return False
+
+
+def _provider_payload_error(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping) or payload.get("error") is None:
+        return None
+    error = payload["error"]
+    if isinstance(error, Mapping):
+        return json.dumps(error, ensure_ascii=False, sort_keys=True)
+    return str(error)
 
 
 def _load_api_key(config: LlmConfig) -> str:
@@ -1864,6 +2089,21 @@ def _httpx_request_error(error: httpx.RequestError) -> tuple[str, bool]:
         if isinstance(error, error_class):
             return error_type, retryable
     return "request_error", False
+
+
+def _httpx_timeout_kind(error: httpx.TimeoutException) -> str:
+    """Return the bounded HTTPX operation that exhausted its timeout."""
+
+    categories: tuple[tuple[type[httpx.TimeoutException], str], ...] = (
+        (httpx.ConnectTimeout, "connect"),
+        (httpx.PoolTimeout, "pool"),
+        (httpx.WriteTimeout, "write"),
+        (httpx.ReadTimeout, "read"),
+    )
+    for error_class, kind in categories:
+        if isinstance(error, error_class):
+            return kind
+    return "unknown"
 
 
 def _is_context_window_exceeded_error(detail: str) -> bool:

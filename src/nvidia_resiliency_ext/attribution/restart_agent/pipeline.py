@@ -21,9 +21,9 @@ from .models import (
     AnalysisExecutionContext,
     AttemptRecord,
     DecisionCandidate,
-    DeclaredRecoveryCapability,
     L0Bundle,
     ModelAnalysisResult,
+    PolicyContextConfig,
     PriorAttemptView,
     RestartAgentRequest,
     build_analysis_execution_context,
@@ -49,12 +49,10 @@ class RestartAgent:
         executor_factory: ExecutorFactory = THREAD_EXECUTOR_FACTORY,
         future_waiter: FutureWaiter | None = None,
         retry_policy: Mapping[str, Any] | None = None,
-        declared_recovery_capabilities: (
-            Sequence[DeclaredRecoveryCapability | Mapping[str, Any]] | None
-        ) = None,
+        policy_contexts: Mapping[str, Any] | PolicyContextConfig | None = None,
     ) -> None:
         self._retry_policy = retry_policy
-        self._declared_recovery_capabilities = declared_recovery_capabilities
+        self._policy_contexts = policy_contexts
         self._clock = clock
         self._single_run = SingleRunCoordinator(
             evidence_extractor=evidence_extractor,
@@ -198,7 +196,7 @@ class RestartAgent:
             normalized_request,
             prior_attempts=prior_attempts,
             retry_policy=self._retry_policy,
-            declared_recovery_capabilities=self._declared_recovery_capabilities,
+            policy_contexts=self._policy_contexts,
         )
 
 

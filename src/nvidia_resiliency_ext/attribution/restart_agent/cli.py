@@ -466,11 +466,13 @@ def _print_collect_all_summary(
     for route_result in result.model_results:
         payload = route_result.analysis_result.to_payload()
         primary = payload.get("primary_failure") or {}
+        unusable_reason = route_result.l1_execution_assessment.get("unusable_reason")
         print(
             "restart_agent collect_all: "
             f"route={route_result.route_id} "
             f"model={route_result.model} "
             f"status={route_result.execution_status} "
+            f"reason={unusable_reason or '<none>'} "
             f"l1_usable={route_result.l1_usable} "
             f"decision={payload.get('decision')} "
             f"primary={primary.get('failure_class')}@{primary.get('line')}",
@@ -487,20 +489,21 @@ def _print_summary(
     primary = payload.get("primary_failure") or {}
     retry_policy = payload.get("retry_policy") or {}
     general_ceiling = retry_policy.get("general_root_ceiling") or {}
-    selected_budget = retry_policy.get("selected_rule_budget") or {}
+    selected_budget = retry_policy.get("selected_policy_ledger") or {}
+    effective_policy = retry_policy.get("effective_policy") or {}
     selected_summary = ""
     if selected_budget:
         selected_summary = (
             " "
-            f"selected_prior_matches={selected_budget.get('matching_prior_failures')} "
+            f"selected_prior_matches={selected_budget.get('matching_prior_attempts')} "
             f"selected_allowed_retries={selected_budget.get('allowed_retries')}"
         )
     print(
         "restart_agent summary: "
         f"decision={payload.get('decision')} "
         f"basis={payload.get('decision_basis')} "
-        f"rule={retry_policy.get('rule')} "
-        f"root_prior_matches={general_ceiling.get('matching_prior_failures')} "
+        f"rule={effective_policy.get('rule')} "
+        f"root_prior_matches={general_ceiling.get('matching_prior_attempts')} "
         f"root_allowed_retries={general_ceiling.get('allowed_retries')}"
         f"{selected_summary} "
         f"exhausted={retry_policy.get('retry_budget_exhausted')}",

@@ -1505,10 +1505,12 @@ class NodeHealthCheck:
 
     def _perform_health_check(self) -> bool:
         """
-        Query node health check service over UDS and interpret success as healthy.
+        Query node health check service over UDS and fail only on explicit check failure.
         Behavior:
           - If gRPC/protos are unavailable, or UDS socket is missing, return True (non-fatal/optional check).
-          - On gRPC connectivity errors, return False.
+          - On gRPC connectivity errors, return True.
+          - A success=false response marks the node unhealthy.
+          - For successful responses, JSON output with fail_count > 0 marks the node unhealthy.
         """
         # Use pre-validated target computed during initialization
         target = self._channel_target
@@ -1536,29 +1538,39 @@ class NodeHealthCheck:
                     return False
 
                 # Parse JSON output and check fail_count
-                output = response.output
                 try:
-                    result = json.loads(output)
+                    result = json.loads(getattr(response, "output", None))
+                    if not isinstance(result, dict):
+                        logger.warning(
+                            "Node health check: JSON output is not a dictionary; "
+                            "ignoring health check result"
+                        )
+                        return True
                     fail_count = result.get("fail_count")
                     if fail_count is None:
                         logger.warning(
                             "Node health check: 'fail_count' field not found in response"
                         )
-                        return False
-                    if fail_count != 0:
+                        return True
+                    if isinstance(fail_count, bool) or not isinstance(fail_count, (int, float)):
+                        logger.warning(
+                            f"Node health check: invalid fail_count value: {fail_count}; "
+                            "ignoring health check result"
+                        )
+                        return True
+                    if fail_count > 0:
                         failed_checks = result.get("failed_checks", [])
                         logger.warning(
                             f"Node health check failed: fail_count={fail_count}, "
                             f"failed_checks={failed_checks}"
                         )
                         return False
-                except json.JSONDecodeError as e:
+                except (json.JSONDecodeError, TypeError) as e:
                     logger.warning(f"Node health check: failed to parse JSON output: {e}")
-                    return False
+                    return True
 
-                logger.debug("Node health check: success (fail_count=0)")
+                logger.debug(f"Node health check: success (fail_count={fail_count})")
                 return True
-
         except Exception as e:
             logger.warning(
                 f"Node health check gRPC connectivity error: {str(e)}; treating as healthy (skip)."

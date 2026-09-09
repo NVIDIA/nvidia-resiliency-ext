@@ -410,9 +410,6 @@ class RestartAgentRuntime:
             if not self._store.enabled:
                 state.upsert_reason = "history_disabled"
                 return
-            if not record.deterministic.root_fingerprint:
-                state.upsert_reason = "missing_root_fingerprint"
-                return
             if not self._accepts_update(state):
                 state.ignored_updates += 1
                 return
@@ -453,7 +450,8 @@ class RestartAgentRuntime:
             replacement = self._assembler.with_enriched(
                 state.record,
                 route_id=route_id,
-                facts=entry.facts,
+                primary=entry.primary,
+                observation=entry.observation,
             )
             self._store.upsert_attempt(replacement)
             state.record = replacement
@@ -546,7 +544,7 @@ def build_restart_agent_runtime(
     analyzer = RestartAgent(
         log_source_factory=build_log_source_factory(config),
         retry_policy=config.retry_policy,
-        declared_recovery_capabilities=config.declared_recovery_capabilities,
+        policy_contexts=config.policy_contexts,
     )
     return RestartAgentRuntime(
         analyzer,
