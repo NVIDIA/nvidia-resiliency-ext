@@ -48,6 +48,11 @@ def _valid_no_failure_evidence():
         },
         "related_failures": [],
         "evidence": [],
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "no failure observed",
+        },
     }
 
 
@@ -99,6 +104,11 @@ def _primary_evidence_without_recovery_support():
                 "supports": ["primary_failure", "root_cause_assessment"],
             }
         ],
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable to this fixture",
+        },
     }
 
 
