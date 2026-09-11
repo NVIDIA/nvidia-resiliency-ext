@@ -132,6 +132,7 @@ def build_decision_outcome(
             l1_primary_declared=_l1_primary_declared(l1_result),
             retry_policy=RetryPolicyConfig.from_mapping(execution_context.retry_policy),
             policy_contexts=execution_context.policy_contexts,
+            l1_category_selection=l1_result.category_selection(),
         )
     )
     assert l4_outcome.selected_failure_facts is not None
