@@ -32,6 +32,7 @@ DEFAULT_RETRY_POLICY: Mapping[str, Any] = MappingProxyType(
 REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID = "rejected_iteration_retry_then_skip"
 CUDA_OOM_NO_RETRY_CONTEXT_ID = "cuda_oom_no_retry"
 PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID = "port_bind_confirmation_retry"
+L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID = "l1_category_confirmed_restart"
 DEFAULT_POLICY_CONTEXTS: Mapping[str, Mapping[str, Any]] = MappingProxyType(
     {
         CUDA_OOM_NO_RETRY_CONTEXT_ID: MappingProxyType(
@@ -49,6 +50,12 @@ DEFAULT_POLICY_CONTEXTS: Mapping[str, Mapping[str, Any]] = MappingProxyType(
             {
                 "enabled": True,
                 "allowed_retries": 2,
+            }
+        ),
+        L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID: MappingProxyType(
+            {
+                "enabled": False,
+                "allowed_retries": 1,
             }
         ),
     }
@@ -634,6 +641,31 @@ class PortBindConfirmationRetryConfig:
 
 
 @dataclass(frozen=True)
+class L1CategoryConfirmedRestartConfig:
+    """Two-way L1 category override for a base_rule that would have STOPed.
+
+    Disabled by default. When enabled, permits a categorization-driven
+    RESTART override of a workload_unrecoverable base_rule on the FIRST
+    occurrence of the primary's root_fingerprint. Recurrences fall back
+    to base_rule + history and STOP.
+    """
+
+    enabled: bool = False
+    allowed_retries: int = 1
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("l1_category_confirmed_restart.enabled must be boolean")
+        if isinstance(self.allowed_retries, bool) or not isinstance(self.allowed_retries, int):
+            raise TypeError("l1_category_confirmed_restart.allowed_retries must be an integer")
+        if self.allowed_retries < 0:
+            raise ValueError("l1_category_confirmed_restart.allowed_retries must not be negative")
+
+    def to_payload(self) -> dict[str, Any]:
+        return _to_payload(self)
+
+
+@dataclass(frozen=True)
 class PolicyContextConfig:
     """Validated external policy contexts available to L4."""
 
@@ -644,6 +676,9 @@ class PolicyContextConfig:
     rejected_iteration_retry_then_skip: RejectedIterationRetryThenSkipConfig = field(
         default_factory=RejectedIterationRetryThenSkipConfig
     )
+    l1_category_confirmed_restart: L1CategoryConfirmedRestartConfig = field(
+        default_factory=L1CategoryConfirmedRestartConfig
+    )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "PolicyContextConfig":
@@ -651,6 +686,7 @@ class PolicyContextConfig:
         cuda_oom = configured[CUDA_OOM_NO_RETRY_CONTEXT_ID]
         port_bind = configured[PORT_BIND_CONFIRMATION_RETRY_CONTEXT_ID]
         context = configured[REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID]
+        l1_cat_restart = configured[L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID]
         return cls(
             cuda_oom_no_retry=CudaOomNoRetryConfig(
                 enabled=bool(cuda_oom["enabled"]),
@@ -663,6 +699,10 @@ class PolicyContextConfig:
                 enabled=bool(context["enabled"]),
                 allowed_retries=int(context["allowed_retries"]),
             ),
+            l1_category_confirmed_restart=L1CategoryConfirmedRestartConfig(
+                enabled=bool(l1_cat_restart["enabled"]),
+                allowed_retries=int(l1_cat_restart["allowed_retries"]),
+            ),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -673,6 +713,9 @@ class PolicyContextConfig:
             ),
             REJECTED_ITERATION_RETRY_THEN_SKIP_CONTEXT_ID: (
                 self.rejected_iteration_retry_then_skip.to_payload()
+            ),
+            L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID: (
+                self.l1_category_confirmed_restart.to_payload()
             ),
         }
 
@@ -1607,6 +1650,19 @@ def normalize_policy_contexts(value: Any) -> Mapping[str, Mapping[str, Any]]:
         raise ValueError(
             "policy_contexts.rejected_iteration_retry_then_skip.allowed_retries "
             "must not be negative"
+        )
+
+    l1_cat_restart = result[L1_CATEGORY_CONFIRMED_RESTART_CONTEXT_ID]
+    if not isinstance(l1_cat_restart["enabled"], bool):
+        raise TypeError("policy_contexts.l1_category_confirmed_restart.enabled must be boolean")
+    l1_cat_allowed_retries = l1_cat_restart["allowed_retries"]
+    if isinstance(l1_cat_allowed_retries, bool) or not isinstance(l1_cat_allowed_retries, int):
+        raise TypeError(
+            "policy_contexts.l1_category_confirmed_restart.allowed_retries must be an integer"
+        )
+    if l1_cat_allowed_retries < 0:
+        raise ValueError(
+            "policy_contexts.l1_category_confirmed_restart.allowed_retries must not be negative"
         )
     return result
 

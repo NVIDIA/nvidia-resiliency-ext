@@ -1,0 +1,233 @@
+{
+  "schema_version": "restart_agent_categories.v1",
+  "categories": [
+    {
+      "id": 1,
+      "name": "SLURM step cancelled / drain / preemption",
+      "description": "Clean external cancellation by the scheduler (scancel, drain, preemption); no application fault.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 2,
+      "name": "Node failure / SLURM externally terminated",
+      "description": "SLURM 'CANCELLED DUE TO NODE FAILURE' or other external node termination.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 3,
+      "name": "Off-file termination / external teardown (cause not in log)",
+      "description": "Healthy training then an external-signal all-thread faulthandler dump (no 'Fatal Python error' / no 'Current thread 0x'), log truncated mid-dump; no in-file CANCELLED / watchdog / IB / Xid / NVRx marker. A real termination occurred but its cause is off-file (most likely a SLURM cancel/preempt/timeout).",
+      "decision": "RESTART"
+    },
+    {
+      "id": 4,
+      "name": "No failure observed / clean planned exit",
+      "description": "Whole-file scan finds no failure: the run reached its exit_interval / final iteration, saved the final checkpoint, logged training energy, and only benign teardown (destroy_process_group / CudaIPC cleanup) follows. Includes the reset_opt_norm 'Unexpected keys' benign-WARNING trap and recovered-then-clean runs.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 5,
+      "name": "Incomplete / truncated log",
+      "description": "Whole-file scan finds no failure signal and the log has no clean ending; likely a log-collection failure.",
+      "decision": "EXCLUDED"
+    },
+    {
+      "id": 6,
+      "name": "NVRx used (multi-cycle, deferred)",
+      "description": "ft_launcher restarted the worker group in-job; one file concatenates multiple training cycles with separate root causes.",
+      "decision": "EXCLUDED"
+    },
+    {
+      "id": 7,
+      "name": "NVLink / GPU error",
+      "description": "Uncorrectable NVLink/GPU hardware error (Xid, ECC DBE, peer-access failure); the device fault may be transient and clear on an in-place restart.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 8,
+      "name": "IB port flap / NCCL watchdog timeout",
+      "description": "IB port error / RDMA retry exhaustion killing collectives; the port flap is typically transient and clears on an in-place restart.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 9,
+      "name": "Container / Pyxis setup failure",
+      "description": "Container never started (pyxis couldn't start container / enroot failure); transient node-local runtime vs bad image undecidable from one log.",
+      "decision": "EXCLUDED"
+    },
+    {
+      "id": 10,
+      "name": "Early/startup NCCL init or checkpoint-load timeout",
+      "description": "NCCL init / checkpoint-load collective timeout before the first completed training iteration; true cause usually not in this log.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 11,
+      "name": "NCCL timeout mid-training",
+      "description": "Watchdog collective timeout after at least one completed iteration; consequence-class symptom, upstream cause often absent from the log.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 12,
+      "name": "Distributed rendezvous / TCPStore socket timeout",
+      "description": "c10d/TCPStore rendezvous socket timeout as the INITIATING failure only. TCPStore socket errors appear as cascade signatures across many other failure modes: when any rank dies for any reason (CUDA OOM, SIGKILL, node failure, mid-training watchdog abort, checkpoint code error, etc.), the surviving ranks eventually time out waiting for the dead peer on the TCPStore, so many logs contain TCPStore timeout lines that are secondary. Pick this category ONLY when TCPStore rendezvous timeout is the primary observable event and there is no earlier crash, OOM, watchdog trigger, or other upstream fault in the log that better explains the failure. Otherwise pick the upstream category.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 13,
+      "name": "NCCL remote process exited / network error / bootstrap Message-truncated",
+      "description": "NCCL Error 6 (remote peer exited); infrastructure/peer failure. Also covers NCCL bootstrap/transport corruption ('Message truncated : received N bytes instead of M') during any distributed-checkpoint gather_object communicator setup - both LOAD-side startup and async-finalize save-side - where a downstream rank0 Segmentation fault in the same stack is NOT the root.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 14,
+      "name": "OSError Errno 98 / port bind race",
+      "description": "Fatal port-bind failure (EADDRINUSE) at the rendezvous master; startup race, job died at bind with no progress.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 15,
+      "name": "DataLoader worker I/O failure (Bus error, BrokenPipe, Lustre or NIC)",
+      "description": "Transient data-path I/O failure inside a DataLoader worker: Bus error, BrokenPipeError (Errno 108 transport endpoint shutdown) on Lustre-backed .bin readinto, /dev/shm exhaustion, or fatal Lustre read. Distinguishes from cat 16 by occurring in the DataLoader worker path.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 16,
+      "name": "Filesystem I/O error / Lustre or node-local FS / import visibility",
+      "description": "Transient filesystem error on a NON-checkpoint path: Lustre I/O stall (OSError Errno 5), missing dataset cache from filesystem-visibility lag, or ImportError/ModuleNotFoundError where the failing import path lives on a network-mounted code tree. Missing CHECKPOINT paths are cat 22 (STOP).",
+      "decision": "RESTART"
+    },
+    {
+      "id": 17,
+      "name": "Dataset missing indexed data files",
+      "description": "Dataset .idx/.bin files missing at dataset init; deterministic against the same config until dataset path/files are fixed.",
+      "decision": "STOP"
+    },
+    {
+      "id": 18,
+      "name": "PermissionError / dataset cache or filesystem permission",
+      "description": "Deterministic permission-denied (EACCES/Errno 13) on dataset cache or filesystem path.",
+      "decision": "STOP"
+    },
+    {
+      "id": 19,
+      "name": "Checkpoint failure / transient async-write I/O",
+      "description": "Transient I/O failure during the checkpoint async-save path on a checkpoint directory: filesystem_async 'Local process 0 encountered an error', PyTorch inline_container position mismatch, BrokenPipeError Errno 108 from a writer, OSError Errno 5 (Input/output error). Prefer this over cat 16 whenever the failing path is a checkpoint directory and the mechanism is on the write side, even if the surface is generic filesystem I/O. Load-side checkpoint I/O errors that do not fit cat 10 (early/startup timeout) route to cat 16 (Filesystem I/O) instead; they have the same decision (RESTART) but a different labeling story.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 20,
+      "name": "Checkpoint failure / corrupt checkpoint metadata on load",
+      "description": "Garbled checkpoint metadata buffer at load (UnpicklingError/UnicodeDecodeError); transient corruption, checkpoint likely reusable on healthy nodes.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 21,
+      "name": "Post-checkpoint progress-log assertion",
+      "description": "Assertion after checkpoint resume (progress-log bookkeeping); restart from last committed checkpoint is appropriate.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 22,
+      "name": "Checkpoint failure / missing checkpoint path",
+      "description": "Missing checkpoint path; cannot self-heal by restarting.",
+      "decision": "STOP"
+    },
+    {
+      "id": 23,
+      "name": "Checkpoint failure / deterministic checkpoint format or shape mismatch",
+      "description": "Checkpoint-load shape/key/TP-PP mismatch with zero completed iterations; deterministic against same checkpoint + code/config.",
+      "decision": "STOP"
+    },
+    {
+      "id": 24,
+      "name": "Checkpoint failure / async-save finalize code error",
+      "description": "Deterministic code error (e.g. NoneType AttributeError) in the post-training async-save FINALIZE path.",
+      "decision": "STOP"
+    },
+    {
+      "id": 25,
+      "name": "Checkpoint failure / save-path native crash (PyTorchStreamWriter)",
+      "description": "Native SIGSEGV in PyTorchStreamWriter::writeRecord during the first torch_dist checkpoint save; structural serializer buffer overrun deterministic against unchanged shape/config.",
+      "decision": "STOP"
+    },
+    {
+      "id": 26,
+      "name": "CUDA OOM during checkpoint async-save",
+      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. As with cat 32, an unchanged workload will keep hitting the same allocation ceiling on retry, so product policy calls this a STOP.",
+      "decision": "STOP"
+    },
+    {
+      "id": 27,
+      "name": "Bad token / gradient Inf or NaN",
+      "description": "Non-finite gradient/loss from a bad token or transient overflow; external guidance is restart.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 28,
+      "name": "Launch config or workload code deterministic error (TypeError/AttributeError)",
+      "description": "Deterministic runtime error inside already-loaded workload code that will recur on unchanged retry: TypeError/AttributeError on None value threaded through model code (e.g. float(None) in moe_layer postprocess), missing MASTER_ADDR, argparse error, or world-size mismatch. Excludes ModuleNotFoundError / ImportError where the failing import path resolves under Lustre or a mounted network filesystem - those are cat 16 (filesystem visibility), not a workload code fault, even if no adjacent FileNotFoundError is present on the same line.",
+      "decision": "STOP"
+    },
+    {
+      "id": 29,
+      "name": "Triton cubin / TorchInductor software toolchain error",
+      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels (idx 1311/1418/1420) + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup (idx 1417); clean Python exceptions, multi-node, deterministic in-container.",
+      "decision": "STOP"
+    },
+    {
+      "id": 30,
+      "name": "CUDA illegal op in CUDA graph capture",
+      "description": "Illegal CUDA operation during graph capture; deterministic code bug on the same code path.",
+      "decision": "STOP"
+    },
+    {
+      "id": 31,
+      "name": "CPU OOM / Linux OOM killer",
+      "description": "Host memory exhausted (oom_kill). Old STOP rested on a same-job/config recurrence presumption, not on in-log evidence.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 32,
+      "name": "CUDA OOM",
+      "description": "Device OOM at fixed batch/config. A CUDA OOM under an unchanged workload is highly likely to reproduce on the next attempt; product policy calls this a STOP because the retry cost is high and the outcome is stable.",
+      "decision": "STOP"
+    },
+    {
+      "id": 33,
+      "name": "CUDA unspecified launch failure",
+      "description": "cudaErrorLaunchFailure; a single log cannot separate transient hardware/runtime state from a deterministic kernel/code bug.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 34,
+      "name": "Segmentation fault / native runtime crash",
+      "description": "Single-rank (rank 608) SIGSEGV in torch's pinned host allocator during GPTDataset index load, wild HIGH address (not 0x8), no self-reported corruption guard and no HW signal; a single log genuinely cannot separate a torch race from host-memory corruption.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 35,
+      "name": "Node-local native SIGBUS (Triton/TE native kernel)",
+      "description": "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT .so dlopen/mmap at kernel load (idx 1006; driver.py compile_module_from_src -> create_module; zero iterations); (b) mid-training in the TE/Triton MoE permutation forward (idx 534; permutation.py; one node's 4 ranks after ckpt 27600 while thousands of peers keep running). Node-local hardware/memory fault.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 36,
+      "name": "Startup native SIGSEGV / torch pin_memory host-allocator",
+      "description": "Native SIGSEGV 'address not mapped to object at address 0x8' (null-ptr deref) with a byte-identical backtrace through at::native::_pin_memory into the libtorch_cuda CachingHostAllocator pinned-map operator[], fired at [before the start of training step] with zero completed iterations. pin_cpu_grads/pin_cpu_params=True forces the path in-log; crashing node sets differ across jobs (rules out node-local hardware); reproduces every rerun. 20 samples = 11 unique files (9 md5 mirror pairs).",
+      "decision": "STOP"
+    },
+    {
+      "id": 37,
+      "name": "Native heap corruption / glibc malloc abort",
+      "description": "Native glibc heap-integrity abort (\"malloc(): unaligned tcache chunk detected\") on a rank pre-first-iter; deterministic in-process heap corruption traceable to the initialization software stack, recurs on unchanged code/library/container image.",
+      "decision": "STOP"
+    },
+    {
+      "id": 38,
+      "name": "Suspected SDC / DP-replica weight-hash mismatch",
+      "description": "DP-replica weight-hash mismatch (suspected silent data corruption); restart from last good checkpoint is plausibly safe.",
+      "decision": "RESTART"
+    }
+  ]
+}
