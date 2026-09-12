@@ -75,6 +75,7 @@ ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
 nvrx-control = "nvidia_resiliency_ext.fault_tolerance.control_plane:main"
 nvrx-attrsvc = "nvidia_resiliency_ext.services.attrsvc.__main__:main"
 nvrx-smonsvc = "nvidia_resiliency_ext.services.smonsvc.__main__:main"
+nvrx-scheduler-exclusion-service = "nvidia_resiliency_ext.services.scheduler_exclusions.__main__:main"
 
 [tool.poetry-dynamic-versioning]
 enable = true
