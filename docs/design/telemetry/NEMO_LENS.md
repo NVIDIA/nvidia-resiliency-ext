@@ -206,7 +206,7 @@ sequenceDiagram
 | `nv.nvrx.ftl.teardown`       | `nvrx.ft`  | `launcher.py`              | `_stop_workers`                                          |
 | `nv.nvrx.ftl.attribution`    | `nvrx.ft`  | `health_check.py`          | an attribution lookup (root span)                        |
 
-Both `nv.nvrx.ftl.python.startup` and `nv.nvrx.ftl.python.imports` are measured within this process — `psutil.Process().create_time()` and two `time.time()` stamps — and backdated once telemetry is up.
+Both `nv.nvrx.ftl.python.startup` and `nv.nvrx.ftl.python.imports` are measured within this process — using nemo-lens' `linux_process_create_time()` and `time.time()` stamps — and backdated once telemetry is up.
 
 `fault` is an instant because `teardown` only starts once the restart decision is made; without it the interval between detecting a failure and deciding what to do is unmeasured.
 
