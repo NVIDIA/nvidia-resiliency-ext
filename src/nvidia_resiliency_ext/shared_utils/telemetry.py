@@ -63,6 +63,8 @@ try:
     from nemo.lens import trace_fn as trace_fn
     from nemo.lens.resources import extend_otel_resource_attributes as _extend_resource_attributes
     from nemo.lens.resources import publish_otel_resource_attributes as _publish_resource_attributes
+    from nemo.lens.span_utilities import emit_span as _emit_span
+    from nemo.lens.span_utilities import linux_process_create_time as _process_create_time
 
     _AVAILABLE = True
 
@@ -200,6 +202,27 @@ def span(group: str, name: str, attributes: Optional[dict] = None):
     return _managed_span(group, name, **(attributes or {}))
 
 
+def _emit(
+    group: str,
+    name: str,
+    start: float,
+    end: float,
+    attributes: Optional[dict] = None,
+    context=None,
+):
+    """Emit one span over an explicit window. Returns its ``SpanContext``, or None.
+
+    ``context`` of None inherits the ambient span, the way an ordinary span does;
+    an empty ``Context()`` roots a new trace instead.
+    """
+    if not _AVAILABLE or not _is_span_group_enabled(group):
+        return None
+    recorded = _emit_span(
+        _get_tracer(__name__), name, start, end, context=context, attributes=attributes or {}
+    )
+    return recorded.get_span_context()
+
+
 def backdated_span(
     group: str,
     name: str,
@@ -221,14 +244,12 @@ def backdated_span(
     from opentelemetry import trace
     from opentelemetry.context import Context
 
+    # Empty, not the ambient context: this window closed before the call, so the
+    # span that happens to be open now is not its parent.
     context = Context()
     if parent is not None:
         context = trace.set_span_in_context(trace.NonRecordingSpan(parent), context)
-    tracer = _get_tracer(__name__)
-    span = tracer.start_span(
-        name, context=context, start_time=int(start * 1e9), attributes=attributes or {}
-    )
-    span.end(end_time=int(end * 1e9))
+    _emit(group, name, start, end, attributes, context)
 
 
 def mark(group: str, name: str, attributes: Optional[dict] = None):
@@ -236,9 +257,10 @@ def mark(group: str, name: str, attributes: Optional[dict] = None):
 
     Returns its ``SpanContext``, or None when the group is off. A mark exports
     immediately, so the context outlives it -- ids, not a handle to anything live.
+    Inherits the ambient span, so a mark nests where an ordinary span would.
     """
-    with span(group, name, attributes) as recorded:
-        return recorded.get_span_context() if recorded is not None else None
+    now = time.time()
+    return _emit(group, name, now, now, attributes)
 
 
 def set_span_attributes(attributes: dict) -> None:
@@ -292,13 +314,12 @@ def record_process_startup(
     Two backdated windows: process creation to the entry module's first statement,
     and that module's top-level imports. Both root their own trace.
     """
-    try:
-        import psutil
-
-        created = psutil.Process().create_time()
-    except Exception:
-        logger.debug("Process create time unavailable", exc_info=True)
-        created = None
+    created = None
+    if _AVAILABLE:
+        try:
+            created = _process_create_time()
+        except Exception:
+            logger.debug("Process create time unavailable", exc_info=True)
     backdated_span(group, "nv.nvrx.ftl.python.startup", created, imports_started, attributes)
     backdated_span(
         group, "nv.nvrx.ftl.python.imports", imports_started, imports_finished, attributes
