@@ -53,6 +53,11 @@ _INHERITED_RESOURCE_ATTRIBUTES = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
 try:
     # Underscored names exist only when nemo-lens is installed. trace_fn's alias
     # is the PEP 484 re-export form, marking a name this module never calls.
+    #
+    # OpenTelemetry is imported here, not where it is used, so that NVRx depends on
+    # it in its own right rather than on nemo-lens continuing to pull it in. A
+    # failure here lands in the same place as a missing nemo-lens: _AVAILABLE goes
+    # false and every entry point below no-ops.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanRegistry as _SpanRegistry
     from nemo.lens import get_tracer as _get_tracer
@@ -65,6 +70,8 @@ try:
     from nemo.lens.resources import publish_otel_resource_attributes as _publish_resource_attributes
     from nemo.lens.span_utilities import emit_span as _emit_span
     from nemo.lens.span_utilities import linux_process_create_time as _process_create_time
+    from opentelemetry import context as _otel_context
+    from opentelemetry import trace as _otel_trace
 
     _AVAILABLE = True
 
@@ -151,9 +158,7 @@ def flush(timeout_ms: int = 1500) -> None:
     """Export what is buffered, for a point where this process may be killed next."""
     if not _AVAILABLE:
         return
-    from opentelemetry import trace
-
-    provider = trace.get_tracer_provider()
+    provider = _otel_trace.get_tracer_provider()
     if hasattr(provider, "force_flush"):
         provider.force_flush(timeout_millis=timeout_ms)
 
@@ -241,14 +246,11 @@ def backdated_span(
         return
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return
-    from opentelemetry import trace
-    from opentelemetry.context import Context
-
     # Empty, not the ambient context: this window closed before the call, so the
     # span that happens to be open now is not its parent.
-    context = Context()
+    context = _otel_context.Context()
     if parent is not None:
-        context = trace.set_span_in_context(trace.NonRecordingSpan(parent), context)
+        context = _otel_trace.set_span_in_context(_otel_trace.NonRecordingSpan(parent), context)
     _emit(group, name, start, end, attributes, context)
 
 
@@ -267,9 +269,7 @@ def set_span_attributes(attributes: dict) -> None:
     """Set attributes on the active span, for inside a ``@trace_fn``. No-op if none."""
     if not _AVAILABLE:
         return
-    from opentelemetry import trace
-
-    _safe_set_span_attributes(trace.get_current_span(), attributes)
+    _safe_set_span_attributes(_otel_trace.get_current_span(), attributes)
 
 
 def extended_resource_attributes(attributes: dict) -> str:
@@ -367,11 +367,8 @@ class Phase:
         if self._parent is None:  # group off; the phase still spans nothing to nest in
             return
         try:
-            from opentelemetry import context as otel_context
-            from opentelemetry import trace
-
-            self._token = otel_context.attach(
-                trace.set_span_in_context(trace.NonRecordingSpan(self._parent))
+            self._token = _otel_context.attach(
+                _otel_trace.set_span_in_context(_otel_trace.NonRecordingSpan(self._parent))
             )
         except Exception:
             # Losing the ambient context costs nesting, not spans.
@@ -390,9 +387,7 @@ class Phase:
             return
         if self._token is not None:
             try:
-                from opentelemetry import context as otel_context
-
-                otel_context.detach(self._token)
+                _otel_context.detach(self._token)
             except Exception:
                 # A phase opened after this one outlived it, so the token is not the
                 # top of the stack. The span is still correct; the next open() fixes
