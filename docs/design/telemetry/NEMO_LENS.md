@@ -9,7 +9,7 @@ Design rules for this implementation:
 1. **No API changes solely for telemetry information:** The NVRX APIs must not change simply to pass additional data needed only for telemetry.
 2. **Spans must be self-contained:** A span must lie entirely within one logical unit of code, wherever possible given the current code architecture.
 3. **A span ends promptly:** A span must end promptly and not remain open. If a span covers a long-running task, e.g., a multi-iteration training run, we use a starting zero-duration span and emit a back-dated span at closing time.
-4. **Correlation is by attributes:** Use span attributes to filter and group records from different processes. Within a process, spans retain their parent relationships, including relationships to phase start markers.
+4. **Correlation is by attributes:** Use span attributes to filter and group records from different processes. Within a process, spans retain their parent relationships, including relationships to phase start anchors.
 
 ## Scope
 
@@ -43,21 +43,25 @@ graph TD
 
 ## `shared_utils/telemetry.py`
 
-### Job and worker-attempt identity
+### Timed spans
 
-A launcher handles multiple worker attempts, so setup does not derive an attempt run UUID. Lens retains an explicitly supplied or inherited Resource value like any other attribute; NVRx does not add setup-time filtering.
+NVRx uses Lens's `span_utilities.emit_span()` to record intervals and zero-duration markers. Equal start and end timestamps are valid. Lens clamps inversions of at most 30 ms by default to zero duration and warns; larger inversions raise `ValueError`. Lens callers can override the finite, non-negative tolerance with `emit_span(..., eps_ms=...)`; zero rejects every inversion. NVRx passes its timestamps unchanged and uses the default, preserving the original import window. Startup intervals with missing timestamps are omitted. This requires a Lens revision containing the timestamp tolerance change; support for the `group` argument alone is insufficient.
 
-After round synchronization, the launcher captures the cycle index and derives a run UUID once from that index and the rendezvous run ID. The same captured values are applied to cycle spans and passed to trainer workers through `OTEL_RESOURCE_ATTRIBUTES`. Trainers and checkpoint workers store them in their Resources. Closing a cycle clears the captured identity before another round can start workers.
+### Resource propagation and lifecycle snapshots
 
-`Phase` holds a Lens attribute scope with the run UUID and cycle index. After rendezvous succeeds, a nested scope adds group rank, group size, and active membership. Lens's span processor adds these values to new spans; explicit span attributes take precedence. Outcomes and failure details stay on their own spans. Closing the phase restores the previous scope. Async tasks inherit the context; new threads require an explicit context copy.
+NVRx does not create or interpret application run identity. Its Resource carrier operations preserve arbitrary application attributes without naming, validating, filtering, or deriving them. For example, an inherited `example.attribute` passes through worker publication unchanged.
 
-The launcher uses one provider for its lifetime. Its run UUID is a span attribute; the MLM worker's matching UUID is a Resource attribute. OTLP keeps these fields separate. Downstream run filters and joins must read the span UUID first, then fall back to the Resource UUID. Scopes do not change metrics, logs, or worker Resources. This requires Lens's `span_attributes` API and provider processor.
+At each top-level fault-tolerance operation, NVRx records the rendezvous round and profiling cycle observed at entry. The values may differ. Later counter changes do not alter the snapshot. Global cycle attribution is determined in post-processing from both counters, timestamps, parent relationships, and process identity.
 
-Standby and retry paths close the cycle before waiting for another round.
+The cycle start anchor is created before `await_round`, so the wait is its child even when synchronization changes the counters. Each subsequent operation takes a fresh snapshot. The rendezvous `ManualSpan` applies its snapshot through a short Lens attribute scope so the nested health check inherits the same values. Explicit span attributes take precedence. No cycle-long attribute scope is used.
+
+The launcher uses one provider for its lifetime. Application attributes remain Resource attributes supplied through the generic carrier. The worker's operational `nv.nvrx.cycle.index` remains a Resource attribute because it is fixed for that worker process. Attribute scopes do not change metrics, logs, or worker Resources. This requires Lens's `span_attributes` API and provider processor.
+
+Standby and retry paths close the current cycle before opening the next cycle and entering its wait.
 
 Provides (for use in NVRX) three groups of functions:
 
-- **Spans** — `span`, `trace_fn`, `ManualSpan`, `Phase`, `mark`, `backdated_span`, `set_span_attributes`, `record_process_startup`
+- **Spans** — `span`, `trace_fn`, `ManualSpan`, `Phase`, `mark`, `backdated_span`, `record_process_startup`
 - **Cross-process context** — `get_otel_resource_attributes`, `compose_attributes`, `extend_otel_resource_attributes`, `publish_otel_resource_attributes`
 - **Lifecycle** — `setup_telemetry`, `shutdown`, `flush`
 
@@ -70,7 +74,7 @@ NVRx uses two of OTel's carriers, and which one a value belongs in follows from 
 | OTel carrier            | Describes                                | Set through                                                                                               | Serialized            |
 | ----------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------- | --------------------- |
 | **Resource attributes** | the emitting process, for its whole life | `OTEL_RESOURCE_ATTRIBUTES`, plus `setup_telemetry(resource_attributes=)` for what NVRx knows about itself | once per export batch |
-| **Span attributes**     | one span                                 | the dict passed to `span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, `set_span_attributes`          | once per span         |
+| **Span attributes**     | one span                                 | the dict passed to `span`, `mark`, `backdated_span`, `ManualSpan`/`Phase`, or a `trace_fn` callback       | once per span         |
 
 **No span reference crosses a process boundary in either direction.**
 
@@ -80,11 +84,11 @@ A value's carrier follows from whether it is constant for the _emitting process'
 
 | Process           | Resource attributes (constant for the process)                                                                      | Span attributes (vary during the process)                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| FT launcher agent | `nv.dl.job.uuid`, `service.name`, `service.instance.id`, `nv.nvrx.ftl.node`                                         | `nv.dl.run.uuid`, `nv.nvrx.cycle.index`, other span values |
+| FT launcher agent | `nv.dl.job.uuid`, `service.name`, `service.instance.id`, `nv.nvrx.ftl.node`                                         | rendezvous and profiling counter snapshots, other span values |
 | Trainer worker    | `nv.nvrx.cycle.index`, `nv.nvrx.ftl.membership`, `nv.nvrx.ftl.infra.rank`, node-budget and segment keys (see below) | elastic rank                                               |
 | Checkpoint worker | trainer attributes, with its own `service.name` and `service.instance.id`                                           | `nv.nvrx.ckpt.call_idx`                                    |
 
-`nv.nvrx.cycle.index` is constant for the lifetime of the training process, but not for the lifetime of the fault-tolerant launcher. Therefore, different mechanisms are used for the two scenarios.
+`nv.nvrx.cycle.index` is constant for the lifetime of a training process and remains in that process's Resource. The fault-tolerant launcher records the raw rendezvous and profiling counters on spans instead of inferring the worker's grouping index.
 
 NVRx names follow the shared `nv.` schema: fault-tolerance names under `nv.nvrx.ftl.`, checkpoint names under `nv.nvrx.ckpt.`, and the cycle entity under `nv.nvrx.cycle.`. Eventually, these names will follow a semantic convention defined by nemo-lens.
 
@@ -92,16 +96,16 @@ Values are restricted to OTel's attribute types — string, bool, int, double, o
 
 | Mechanism             | Shape                                                                                  | Used by                                                    |
 | --------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `@trace_fn`           | the span _is_ a method                                                                 | `worker_launch`, `teardown`, `completion_sync`             |
+| `@trace_fn`           | the span _is_ a method; an optional gated callback supplies entry attributes            | `worker_launch`, `teardown`, `completion_sync`             |
 | `with span(...)`      | the span is a block                                                                    | `await_round`, `health_check`, most `ckpt` spans           |
 | `ManualSpan`          | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                                |
 | `mark(...)`           | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`                        |
 | `backdated_span(...)` | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `nv.nvrx.ftl.python.startup`, `nv.nvrx.ftl.python.imports` |
 | `Phase`               | a window too long to hold a span open: a start mark now, a backdated span at close     | `cycle`, `run`                                             |
 
-`ManualSpan` owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. Ideally, this mechanism should also be owned by nemo-lens.
+`ManualSpan` owns the `ExitStack` bookkeeping and no-ops while nothing is open, so callers need no guards. For rendezvous, it enters a short attribute scope before the span and closes the span before restoring that scope. The nested health check therefore receives the rendezvous starting snapshot. Ideally, this mechanism should also be owned by nemo-lens.
 
-`Phase` is used for telemetry with long-running tasks. `open()` creates a zero-duration span `<name>_start` and makes it the active context for all child spans, while `close()` emits `<name>` backdated from the start to the end time. If the process terminates unexpectedly, this will result in a missing backdated span, but will keep all the spans that were emitted until the point of termination.
+`Phase` is used for telemetry with long-running tasks. `open()` creates a zero-duration start anchor `<name>_start` and makes it the active context for all child spans, while `close()` emits `<name>` as a duration summary from the saved start time. Opening attributes are retained for the summary, so later counter changes do not relabel it. If the process terminates unexpectedly, the duration summary can be missing, but the start anchor and recorded children remain.
 
 ### Span registry
 
@@ -154,7 +158,6 @@ Every process and span group that is enabled will export telemetry. An OTel coll
 
 `_start_workers` extends the worker's environment with the `OTEL_RESOURCE_ATTRIBUTES` variable if it is not already set, or updates it if it is already set. It adds or updates the following keys:
 
-- `nv.dl.run.uuid` (the UUID for this worker attempt)
 - `nv.nvrx.cycle.index`
 - `nv.nvrx.ftl.membership`
 - `nv.nvrx.ftl.infra.rank`
@@ -166,17 +169,19 @@ and under `--ft-segment` also adds:
 - `nv.nvrx.ftl.segment`
 - `nv.nvrx.ftl.infra.cluster_uuid`
 
-`nv.nvrx.cycle.index` is a resource attribute for the training process, but is a span attribute for ft-launcher.
+`nv.nvrx.cycle.index` is a legacy attempt field used as a Resource attribute for the training process. The launcher does not use it as a span grouping identity.
 
 ## Fault tolerance
 
 ### Cycle lifecycle
 
-After synchronizing the round number, the launcher emits a zero-duration `nv.nvrx.ftl.cycle_start` span and retains its `SpanContext`. The cycle's child spans use that context and retain their nested parent relationships. They share one trace per node. At the end of the attempt, the launcher emits `nv.nvrx.ftl.cycle` with the recorded start and end times and the outcome. This span is a child of the cycle start marker. No cycle span stays open for the duration of the attempt.
+Before waiting for a round, the launcher snapshots both counters, emits a zero-duration `nv.nvrx.ftl.cycle_start` start anchor, and retains its `SpanContext`. The `await_round` span is its first child. Synchronization can change either counter during the wait, but the wait and the cycle records keep their starting values. Rendezvous and later operations take fresh snapshots at their own entry points.
 
-The run uses the same start-marker and completed-span pattern. `nv.nvrx.ftl.run_start` is a descendant of the cycle start marker, and `nv.nvrx.ftl.run` is a child of the run start marker. The run starts after worker initialization returns. It ends when the launcher observes completion or begins failure or restart handling. Subtracting run duration from cycle duration gives the time spent on rendezvous, health checks, worker launch and teardown. Waiting for a round to open is measured separately and has no attempt run UUID.
+The cycle's child spans retain their parent relationships and share one trace per node. At the end of the attempt, the launcher emits `nv.nvrx.ftl.cycle` with the recorded start and end times, the starting counter snapshot, and the outcome. This duration summary is a child of the cycle start anchor. No cycle span stays open for the duration of the attempt.
 
-If a cycle ends without closing its phase, its duration span is missing. The start marker and any child spans already emitted remain available.
+The run uses the same start-anchor and duration-summary pattern. `nv.nvrx.ftl.run_start` is a descendant of the cycle start anchor, and `nv.nvrx.ftl.run` is a child of the run start anchor. The run starts after worker initialization returns. It ends when the launcher observes completion or begins failure or restart handling. Its two records keep the counter snapshot taken when the run starts. Subtracting run duration from cycle duration gives the time spent on rendezvous, health checks, worker launch and teardown.
+
+If a cycle ends without closing its phase, its duration span is missing. The start anchor and any child spans already emitted remain available.
 
 ```mermaid
 sequenceDiagram
@@ -189,8 +194,8 @@ sequenceDiagram
     loop each cycle
         L->>R: next_rendezvous() [sync]
         loop each rendezvous round
-            R->>R: nv.nvrx.ftl.await_round (job-scoped), synchronize round
-            R->>L: open cycle_start with this round's run UUID
+            R->>L: open cycle_start with current round and profiling snapshots
+            R->>R: nv.nvrx.ftl.await_round, synchronize round
             R->>R: open nv.nvrx.ftl.rendezvous, closing the previous round's
             R->>R: nv.nvrx.ftl.health_check
             Note over R,L: standby/retry closes this cycle before another wait
@@ -262,29 +267,29 @@ ft-launcher publishes additional keys into the worker's resource attributes, whi
 
 Resource attributes are covered under Identity; everything here is per-span.
 
-| Attribute                                | Type | Spans                 | Notes                                             |
-| ---------------------------------------- | ---- | --------------------- | ------------------------------------------------- |
-| `nv.nvrx.cycle.index`                    | int  | all agent spans       | restart cycle counter                             |
-| `nv.nvrx.ftl.node`                       | str  | resource, spans       | node identity                                     |
-| `nv.nvrx.ftl.group.rank`                 | int  | `cycle`, `rendezvous` | elastic group rank, once assigned                 |
-| `nv.nvrx.ftl.group.world_size`           | int  | `cycle`               | active node count                                 |
-| `nv.nvrx.ftl.cycle.failures`             | int  | `cycle`, `fault`      | failed worker count                               |
-| `nv.nvrx.ftl.cycle.state`                | str  | `cycle`               | `WorkerState` at detection, on a `failed` outcome |
-| `nv.nvrx.cycle.outcome`                  | str  | `cycle`               | see above                                         |
-| `nv.nvrx.ftl.rdzv.round`                 | int  | `rendezvous`          | rendezvous round number                           |
-| `nv.nvrx.ftl.membership`                 | str  | `cycle`, `rendezvous` | `active`, `standby`, `late_joiner`                |
-| `nv.nvrx.ftl.max_restarts`               | int  | `cycle`               | configured budget                                 |
-| `nv.nvrx.ftl.remaining_restarts`         | int  | `cycle`               | budget left when the round was joined             |
-| `nv.nvrx.ftl.rdzv.run_id`                | str  | `cycle`               | rendezvous run id                                 |
-| `nv.nvrx.ftl.infra.rank`                 | int  | `cycle`, resource     | physical node ordinal                             |
-| `nv.dl.launch.nnodes.active`             | int  | resource              | configured `min_nodes`                            |
-| `nv.dl.launch.nnodes.spare`              | int  | resource              | `max_nodes - min_nodes`                           |
-| `nv.nvrx.ftl.segment`                    | int  | resource              | under `--ft-segment` only                         |
-| `nv.nvrx.ftl.infra.cluster_uuid`         | str  | resource              | under `--ft-segment` only; NVLink domain          |
-| `nv.nvrx.ftl.attribution.analyzed_cycle` | int  | `attribution`         | the cycle the verdict is about                    |
-| `nv.nvrx.ckpt.call_idx`                  | int  | `ckpt.*`              | checkpoint call index; joins across ranks         |
+| Attribute                                | Type | Spans                                      | Notes                                                        |
+| ---------------------------------------- | ---- | ------------------------------------------ | ------------------------------------------------------------ |
+| `nv.nvrx.ftl.rdzv.round`                 | int  | top-level fault-tolerance operations       | rendezvous round observed at operation entry                 |
+| `nv.nvrx.ftl.profiling.cycle`            | int  | top-level fault-tolerance operations       | profiling count observed at operation entry                  |
+| `nv.nvrx.ftl.node`                       | str  | resource, launcher spans                   | node identity                                                |
+| `nv.nvrx.ftl.group.rank`                 | int  | active cycle, run, launch, fault, teardown | elastic group rank, once assigned                            |
+| `nv.nvrx.ftl.group.world_size`           | int  | active cycle, run, launch, fault, teardown | active node count                                            |
+| `nv.nvrx.ftl.cycle.failures`             | int  | `cycle`, `fault`                           | failed worker count                                          |
+| `nv.nvrx.ftl.cycle.state`                | str  | `cycle`                                    | `WorkerState` at detection, on a `failed` outcome            |
+| `nv.nvrx.cycle.outcome`                  | str  | `cycle`                                    | see above                                                    |
+| `nv.nvrx.ftl.membership`                 | str  | cycle, run, rendezvous and worker operations | `active`, `unjoined`, `standby`, or `late_joiner`          |
+| `nv.nvrx.ftl.max_restarts`               | int  | `cycle`                                    | configured budget                                            |
+| `nv.nvrx.ftl.remaining_restarts`         | int  | `cycle`                                    | budget left when the round was joined                        |
+| `nv.nvrx.ftl.rdzv.run_id`                | str  | `cycle`                                    | rendezvous run id                                            |
+| `nv.nvrx.ftl.infra.rank`                 | int  | `cycle`, resource                          | physical node ordinal                                        |
+| `nv.dl.launch.nnodes.active`             | int  | resource                                   | configured `min_nodes`                                       |
+| `nv.dl.launch.nnodes.spare`              | int  | resource                                   | `max_nodes - min_nodes`                                      |
+| `nv.nvrx.ftl.segment`                    | int  | resource                                   | under `--ft-segment` only                                    |
+| `nv.nvrx.ftl.infra.cluster_uuid`         | str  | resource                                   | under `--ft-segment` only; NVLink domain                     |
+| `nv.nvrx.ftl.attribution.analyzed_cycle` | int  | `attribution`                              | the cycle the verdict is about                               |
+| `nv.nvrx.ckpt.call_idx`                  | int  | `ckpt.*`                                   | checkpoint call index; joins across ranks                    |
 
-Spans do not carry a complete roster of the job's nodes. Each node emits its own `nv.nvrx.ftl.membership` and `nv.nvrx.ftl.group.rank` on each cycle. The complete roster may be obtained using a group-by over `job.uid` (or a similarly named identifier, set outside NVRX) and `nv.nvrx.cycle.index`.
+Spans do not carry a complete roster of the job's nodes. Each node emits its own membership and group rank. Post-processing reconstructs global attempt membership from the two counter snapshots, timestamps, parent relationships, worker Resource identity, and job identity supplied outside NVRx. Counter disagreement is retained as observed; instrumentation does not infer a grouping index.
 
 ## Checkpointing
 
@@ -316,7 +321,7 @@ A single checkpoint save requires three traces to store:
 
 We do not use links between these traces as these would require additional data be carried across the IPC boundary. This would have been an API change purely for telemetry, which contravenes the no-API-changes-for-telemetry rule.
 
-The persistent async worker inherits the trainer's current `OTEL_RESOURCE_ATTRIBUTES` when `Process.start()` runs. This includes attributes that the trainer published after NVRx was imported. The worker keeps the trainer's rank, including an explicitly empty value; `defaults={"nv.dl.rank": rank}` supplies a rank only when the key is absent. NVRx sets the worker's role to `ckpt_worker` and its instance ID to `nvrx-ckpt{rank}`. The job UUID, run UUID and other trainer attributes are retained.
+The persistent async worker inherits the trainer's current `OTEL_RESOURCE_ATTRIBUTES` when `Process.start()` runs. This includes attributes that the trainer published after NVRx was imported. The worker keeps the trainer's rank, including an explicitly empty value; `defaults={"nv.dl.rank": rank}` supplies a rank only when the key is absent. NVRx sets the worker's role to `ckpt_worker` and its instance ID to `nvrx-ckpt{rank}`. Other trainer attributes are retained without interpretation.
 
 Checkpoint startup makes current-environment selection and composition explicit:
 

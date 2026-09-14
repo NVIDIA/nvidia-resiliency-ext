@@ -22,12 +22,16 @@ names are dotted and cannot be Python keywords.
 Design and rationale: docs/design/telemetry/NEMO_LENS.md.
 """
 
+import functools
 import logging
 import os
 import threading
 import time
 from contextlib import ExitStack, contextmanager
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import SpanContext
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +66,9 @@ try:
     from nemo.lens import get_tracer as _get_tracer
     from nemo.lens import is_span_group_enabled as _is_span_group_enabled
     from nemo.lens import managed_span as _managed_span
-    from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
     from nemo.lens import span_attributes as _span_attributes
-    from nemo.lens import trace_fn
+    from nemo.lens import trace_fn as _trace_fn
     from nemo.lens.resources.attributes import (
         extend_otel_resource_attributes,
         get_otel_resource_attributes,
@@ -121,14 +124,6 @@ if not _AVAILABLE:
     def _managed_span(group, name, tracer=None, **attributes):
         """No-op stand-in for ``nemo.lens.managed_span``."""
         yield None
-
-    def trace_fn(group, name, tracer=None):
-        """No-op stand-in for ``nemo.lens.trace_fn``."""
-
-        def decorator(func):
-            return func
-
-        return decorator
 
 
 class _NoOpHandle:
@@ -245,6 +240,34 @@ def get_inherited_resource_attributes() -> str:
     return _INHERITED_RESOURCE_ATTRIBUTES
 
 
+def trace_fn(group, name, tracer=None, attrs=None):
+    """Decorate a function with an optional gated attribute callback.
+
+    ``attrs`` receives the decorated function's arguments. It is evaluated only
+    when the span group is enabled and supplies attributes directly to the new
+    span. Existing callers that omit it retain Lens's ``trace_fn`` behavior.
+    """
+
+    def decorator(func):
+        if not _AVAILABLE:
+            return func
+        if attrs is None:
+            return _trace_fn(group, name, tracer)(func)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if not _is_span_group_enabled(group):
+                return func(*args, **kwargs)
+            attributes = attrs(*args, **kwargs)
+            active_tracer = tracer if tracer is not None else _get_tracer("nemo.lens")
+            with _managed_span(group, name, active_tracer, **(attributes or {})):
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def span(group: str, name: str, attributes: Optional[dict] = None):
     """A span around a block, yielding it (or None when the group is off).
 
@@ -261,7 +284,7 @@ def _emit(
     end: float,
     attributes: Optional[dict] = None,
     context=None,
-):
+) -> Optional["SpanContext"]:
     """Emit one span over an explicit window. Returns its ``SpanContext``, or None.
 
     ``context`` of None inherits the ambient span, the way an ordinary span does;
@@ -274,10 +297,11 @@ def _emit(
         name,
         start,
         end,
+        group=group,
         context=context,
         attributes=attributes,
     )
-    return recorded.get_span_context()
+    return recorded.get_span_context() if recorded is not None else None
 
 
 def backdated_span(
@@ -287,14 +311,16 @@ def backdated_span(
     end: Optional[float],
     attributes: Optional[dict] = None,
     parent=None,
-) -> None:
+) -> Optional["SpanContext"]:
     """Record a span for a window that elapsed before there was a tracer.
 
     ``start`` and ``end`` are wall-clock seconds; ``parent`` is usually the
     ``SpanContext`` of the ``mark`` that opened the window, and without one the span
-    roots its own trace. A no-op unless the window is a positive interval.
+    starts a new trace. Lens validates timestamps, checks whether the group is
+    enabled, and ends the span. Zero duration is valid. Return the recorded span's
+    context, or None if no span was recorded.
     """
-    if start is None or end is None or end <= start:
+    if start is None or end is None:
         return
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return
@@ -303,25 +329,20 @@ def backdated_span(
     context = _otel_context.Context()
     if parent is not None:
         context = _otel_trace.set_span_in_context(_otel_trace.NonRecordingSpan(parent), context)
-    _emit(group, name, start, end, attributes, context)
+    return _emit(group, name, start, end, attributes, context)
 
 
-def mark(group: str, name: str, attributes: Optional[dict] = None):
+def mark(group: str, name: str, attributes: Optional[dict] = None) -> Optional["SpanContext"]:
     """Record an instant: a zero-duration span pinning a moment in time.
 
     Returns its ``SpanContext``, or None when the group is off. A mark exports
     immediately, so the context outlives it -- ids, not a handle to anything live.
     Inherits the ambient span, so a mark nests where an ordinary span would.
     """
+    if not _AVAILABLE or not _is_span_group_enabled(group):
+        return None
     now = time.time()
     return _emit(group, name, now, now, attributes)
-
-
-def set_span_attributes(attributes: dict) -> None:
-    """Set attributes on the active span, for inside a ``@trace_fn``. No-op if none."""
-    if not _AVAILABLE:
-        return
-    _safe_set_span_attributes(_otel_trace.get_current_span(), attributes)
 
 
 def record_process_startup(
@@ -348,13 +369,13 @@ def record_process_startup(
 
 
 class Phase:
-    """A long window, recorded as a start mark now and a backdated span later.
+    """A long window, recorded as a start anchor and a duration summary.
 
     For a window too long to hold a span open across, since a span exports only
-    when it ends. ``open()`` marks ``<name>_start`` and makes it the active context,
-    so spans on this thread nest under the phase; ``close()`` emits ``<name>``
-    backdated to that mark. A phase that never closes still leaves the mark and
-    everything that ran inside it.
+    when it ends. ``open()`` emits ``<name>_start`` as a zero-duration anchor and
+    makes its context active, so spans on this thread nest under the phase.
+    ``close()`` emits ``<name>`` as a duration summary from the saved start time.
+    A phase that never closes still leaves the anchor and its recorded children.
 
     ``open`` attributes go on both records; ``set`` and ``close`` reach only the
     span and override by name.

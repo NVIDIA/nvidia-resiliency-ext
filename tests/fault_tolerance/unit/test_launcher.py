@@ -552,6 +552,7 @@ class TestLauncherRunBehavior(unittest.TestCase):
         )
         agent._worker_group.state = WorkerState.HEALTHY
         agent._worker_group.group_rank = 0
+        agent._worker_group.group_world_size = 2
         failure = MagicMock()
         failures = {7: failure}
 
@@ -565,6 +566,8 @@ class TestLauncherRunBehavior(unittest.TestCase):
             patch.object(agent, '_handle_restart_decision', return_value=False),
             patch.object(agent, '_stop_workers'),
             patch.object(launcher, 'record_profiling_event'),
+            patch.object(launcher, 'get_profiling_cycle', return_value=4),
+            patch.object(launcher.telemetry, 'mark') as mark,
             patch.object(launcher, 'put_metric'),
             patch.object(launcher.time, 'sleep'),
         ):
@@ -572,6 +575,19 @@ class TestLauncherRunBehavior(unittest.TestCase):
 
         self.assertEqual(result.state, WorkerState.FAILED)
         self.assertEqual(result.failures, failures)
+        mark.assert_called_once_with(
+            "nvrx.ft",
+            "nv.nvrx.ftl.fault",
+            {
+                "nv.nvrx.ftl.rdzv.round": 3,
+                "nv.nvrx.ftl.profiling.cycle": 4,
+                "nv.nvrx.ftl.cycle.failures": 1,
+                "nv.nvrx.ftl.node": agent._node_id,
+                "nv.nvrx.ftl.group.rank": 0,
+                "nv.nvrx.ftl.group.world_size": 2,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
 
 
 class TestHandleRestartDecision(unittest.TestCase):
@@ -1938,6 +1954,65 @@ class TestLauncherAllowedRoots:
 
 
 class TestCycleTelemetry(unittest.TestCase):
+    def test_run_phase_keeps_its_starting_counter_snapshot(self):
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._node_id = "node"
+        agent._run_phase = MagicMock()
+        worker_group = MagicMock(group_rank=1, group_world_size=2)
+        with (
+            patch.object(launcher.SimpleElasticAgent, "_initialize_workers"),
+            patch.object(agent, "_get_global_cycle_number", return_value=3),
+            patch.object(launcher, "get_profiling_cycle", return_value=4),
+        ):
+            launcher.LocalElasticAgent._initialize_workers(agent, worker_group)
+
+        agent._run_phase.open.assert_called_once_with(
+            "nvrx.ft",
+            "nv.nvrx.ftl.run",
+            {
+                "nv.nvrx.ftl.rdzv.round": 3,
+                "nv.nvrx.ftl.profiling.cycle": 4,
+                "nv.nvrx.ftl.group.rank": 1,
+                "nv.nvrx.ftl.group.world_size": 2,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
+
+    def test_rendezvous_failure_closes_the_cycle_opened_for_the_wait(self):
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._cycle_phase = MagicMock()
+        worker_group = MagicMock()
+        cases = (
+            (
+                launcher.UnhealthyNodeException("unhealthy"),
+                {"nv.nvrx.cycle.outcome": "excluded"},
+            ),
+            (
+                launcher.RendezvousGracefulExitError("closed"),
+                {
+                    "nv.nvrx.cycle.outcome": "standby",
+                    "nv.nvrx.ftl.membership": "standby",
+                },
+            ),
+        )
+        for error, outcome in cases:
+            with self.subTest(error=type(error).__name__):
+                agent._cycle_phase.reset_mock()
+                with (
+                    patch.object(
+                        launcher.SimpleElasticAgent,
+                        "_rendezvous",
+                        side_effect=error,
+                    ),
+                    self.assertRaises(type(error)),
+                ):
+                    launcher.LocalElasticAgent._rendezvous(agent, worker_group)
+                agent._cycle_phase.close.assert_called_once_with(outcome)
+
     def test_worker_environment_uses_generic_carrier_and_current_round(self):
         from nvidia_resiliency_ext.fault_tolerance import launcher
         from nvidia_resiliency_ext.shared_utils import telemetry

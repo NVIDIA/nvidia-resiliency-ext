@@ -119,7 +119,11 @@ from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
-from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
+from nvidia_resiliency_ext.shared_utils.profiling import (
+    ProfilingEvent,
+    get_profiling_cycle,
+    record_profiling_event,
+)
 
 __imports_finished__ = time.time()
 
@@ -761,8 +765,13 @@ class LocalElasticAgent(SimpleElasticAgent):
                     "nvrx.ft",
                     "nv.nvrx.ftl.fault",
                     {
+                        "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+                        "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
                         "nv.nvrx.ftl.cycle.failures": failures,
                         "nv.nvrx.ftl.node": self._node_id,
+                        "nv.nvrx.ftl.group.rank": self._worker_group.group_rank,
+                        "nv.nvrx.ftl.group.world_size": self._worker_group.group_world_size,
+                        "nv.nvrx.ftl.membership": "active",
                     },
                 )
                 # Set now; the span stays open until the next rendezvous so teardown
@@ -1064,14 +1073,24 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    @telemetry.trace_fn("nvrx.ft", "nv.nvrx.ftl.teardown")
+    @telemetry.trace_fn(
+        "nvrx.ft",
+        "nv.nvrx.ftl.teardown",
+        attrs=lambda self, worker_group, *args, **kwargs: {
+            "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+            "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            "nv.nvrx.ftl.node": self._node_id,
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+        },
+    )
     def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
         # - 2.5.1: _stop_workers(self, worker_group: WorkerGroup, is_restarter: bool = False) -> None
         # - 2.7.1+: _stop_workers(self, worker_group: WorkerGroup) -> None (reverted back)
         # We use *args and **kwargs to handle both cases transparently
-        telemetry.set_span_attributes({"nv.nvrx.ftl.node": self._node_id})
         logger.info(f"Stopping workers... Timeout = {self._workers_stop_timeout} sec.")
 
         # Rank monitors will detect worker shutdown when worker processes disconnect
@@ -1137,7 +1156,18 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
-    @telemetry.trace_fn("nvrx.ft", "nv.nvrx.ftl.worker_launch")
+    @telemetry.trace_fn(
+        "nvrx.ft",
+        "nv.nvrx.ftl.worker_launch",
+        attrs=lambda self, worker_group: {
+            "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+            "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            "nv.nvrx.ftl.node": self._node_id,
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+        },
+    )
     def _start_workers(self, worker_group: WorkerGroup) -> Dict[int, Any]:
         spec = worker_group.spec
         store = worker_group.store
@@ -1149,9 +1179,6 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
-        telemetry.set_span_attributes(
-            {"nv.nvrx.cycle.index": restart_count, "nv.nvrx.ftl.node": self._node_id}
-        )
 
         worker_resource_attrs = {
             "nv.nvrx.cycle.index": restart_count,
@@ -1509,7 +1536,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         rosters are deliberately not among them: each node recording every other
         node's address costs bytes quadratic in job size, on every cycle span of
         every node, to say something each node already reports about itself.
-        Who was active in a cycle is a GROUP BY over nv.nvrx.cycle.index, not a list.
+        Global attempt membership is reconstructed from these per-node records,
+        their counter snapshots, timestamps, and parent relationships.
         """
         spec = worker_group.spec
         attrs = {
@@ -1526,7 +1554,17 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _initialize_workers(self, worker_group: WorkerGroup) -> None:
         """Override to open the run phase once the workers are actually running."""
         super()._initialize_workers(worker_group)
-        self._run_phase.open("nvrx.ft", "nv.nvrx.ftl.run")
+        self._run_phase.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.run",
+            {
+                "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+                "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+                "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
 
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
