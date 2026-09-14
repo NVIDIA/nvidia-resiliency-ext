@@ -352,6 +352,11 @@ class Phase:
 
     def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
         """Mark the start of the phase, closing any phase this handle had open."""
+        # Without nemo-lens nothing downstream can record anything, so leave _start
+        # unset: that is the flag set() and close() already bail on, which makes the
+        # whole handle inert for the cost of one module-global read.
+        if not _AVAILABLE:
+            return
         self.close()
         self._group, self._name = group, name
         self._start = time.time()
@@ -359,7 +364,7 @@ class Phase:
         # attributes, so a key left only there cannot be grouped on.
         self._attributes = dict(attributes or {})
         self._parent = mark(group, f"{name}_start", attributes)
-        if not _AVAILABLE or self._parent is None:
+        if self._parent is None:  # group off; the phase still spans nothing to nest in
             return
         try:
             from opentelemetry import context as otel_context

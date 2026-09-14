@@ -277,7 +277,14 @@ class TestPhase(unittest.TestCase):
         def fake_backdated(group, name, start, end, attributes=None, parent=None):
             self.spans.append((group, name, start, end, attributes, parent))
 
-        for target, replacement in (("mark", fake_mark), ("backdated_span", fake_backdated)):
+        for target, replacement in (
+            ("mark", fake_mark),
+            ("backdated_span", fake_backdated),
+            # Stands in for nemo-lens being importable, alongside the two primitives
+            # it would have supplied. Without it open() takes its unavailable-so-inert
+            # path and none of the logic below is reachable.
+            ("_AVAILABLE", True),
+        ):
             patcher = unittest.mock.patch.object(telemetry, target, replacement)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -346,6 +353,17 @@ class TestPhase(unittest.TestCase):
 
     def test_close_without_open_is_a_no_op(self):
         telemetry.Phase().close({"nv.nvrx.cycle.outcome": "completed"})
+        self.assertEqual(self.spans, [])
+
+    def test_is_inert_without_nemo_lens(self):
+        # Nothing downstream can record, so open() does no work at all rather than
+        # building attributes and a mark name for primitives that will drop them.
+        with unittest.mock.patch.object(telemetry, "_AVAILABLE", False):
+            phase = telemetry.Phase()
+            phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 1})
+            phase.set({"nv.nvrx.ftl.group.rank": 0})
+            phase.close({"nv.nvrx.cycle.outcome": "completed"})
+        self.assertEqual(self.marks, [])
         self.assertEqual(self.spans, [])
 
     def test_open_closes_the_previous_phase(self):
