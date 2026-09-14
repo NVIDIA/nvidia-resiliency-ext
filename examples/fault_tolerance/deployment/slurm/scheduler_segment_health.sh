@@ -161,6 +161,11 @@ _scheduler_segment_health_inactive_path() {
         "${NVRX_SEGMENT_HEALTH_CHECK_DIR}" "${SLURM_ARRAY_JOB_ID}" "$1"
 }
 
+_scheduler_segment_health_pidfile_path() {
+    printf '%s/segment_health_producer.%s.pid' \
+        "${NVRX_SEGMENT_HEALTH_CHECK_DIR}" "${SLURM_ARRAY_JOB_ID}"
+}
+
 _scheduler_segment_health_state_lookup() {
     local source="$1"
     local task_id="$2"
@@ -600,6 +605,57 @@ scheduler_segment_health_poll_once() {
     fi
 
     return "${last_status}"
+}
+
+scheduler_segment_health_serve() {
+    # Long-running poll loop with an operator fast-path. Publishes host+PID to
+    #   ${NVRX_SEGMENT_HEALTH_CHECK_DIR}/segment_health_producer.<array_job_id>.pid
+    # so an operator who just drained a suspect node can request an IMMEDIATE poll
+    # (SIGUSR1) instead of waiting up to one interval for the drain to propagate to
+    # the per-task control files. SIGUSR1 only interrupts the sleep; poll_once is
+    # idempotent, so an on-demand poll is safe and changes nothing when Slurm state
+    # is unchanged. The caller backgrounds this and owns the returned PID for
+    # teardown (a TERM/INT/EXIT here also removes the pidfile and temp workspace).
+    #
+    # Backward compatible and additive: callers that still drive configure +
+    # poll_once + sleep themselves keep working; this only centralizes the cadence,
+    # the signal handler, and the pidfile so every caller need not reimplement them.
+    local interval="${1:-${SEGMENT_HEALTH_POLL_INTERVAL:-300}}"
+    local pidfile sleep_pid
+
+    scheduler_segment_health_configure || return $?
+    _scheduler_segment_health_validate_positive_integer \
+        SEGMENT_HEALTH_POLL_INTERVAL "${interval}" || return $?
+
+    pidfile=$(_scheduler_segment_health_pidfile_path) || return 1
+    # $BASHPID is THIS process (this function is meant to run backgrounded, so it is
+    # the subshell an operator must signal -- $$ would be the parent shell). Host is
+    # recorded because the poller runs on array task 0's node, which the operator
+    # reaches over ssh to send the signal.
+    if ! printf '%s %s\n' "$(hostname)" "${BASHPID}" >"${pidfile}"; then
+        _scheduler_segment_health_log "could not write pidfile ${pidfile}"
+        pidfile=""
+    fi
+
+    # EXIT/TERM/INT: best-effort teardown. USR1: a no-op handler whose only job is to
+    # make the trapped signal INTERRUPT the wait below (an ignored '' trap would not).
+    # shellcheck disable=SC2064
+    trap "scheduler_segment_health_cleanup || true; [[ -n '${pidfile}' ]] && rm -f '${pidfile}' 2>/dev/null; exit 0" TERM INT EXIT
+    trap ':' USR1
+
+    _scheduler_segment_health_log \
+        "serving interval=${interval}s pidfile=${pidfile:-<none>} (SIGUSR1 = poll now)"
+
+    while true; do
+        scheduler_segment_health_poll_once || \
+            _scheduler_segment_health_log "poll failed; prior decision preserved."
+        # Interruptible sleep: on SIGUSR1 the wait returns early; kill the still-live
+        # sleep child so it does not linger, then loop straight into the next poll.
+        sleep "${interval}" &
+        sleep_pid=$!
+        wait "${sleep_pid}" 2>/dev/null || true
+        kill "${sleep_pid}" 2>/dev/null || true
+    done
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
