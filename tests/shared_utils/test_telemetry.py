@@ -31,8 +31,79 @@ import unittest.mock
 from nvidia_resiliency_ext.shared_utils import telemetry
 
 
+@unittest.skipUnless(telemetry._AVAILABLE, "requires nemo-lens")
+class TestCycleAttributeScope(unittest.TestCase):
+    def test_spans_use_current_cycle_scope_and_clear_it_on_close(self):
+        from nemo.lens import NemoLensConfig
+        from nemo.lens.providers import build_providers
+        from nemo.lens.state import enabled_span_groups, set_enabled_span_groups
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        self.addCleanup(set_enabled_span_groups, enabled_span_groups())
+        set_enabled_span_groups(frozenset({"nvrx.ft"}))
+        exporter = InMemorySpanExporter()
+        with unittest.mock.patch("opentelemetry.trace.set_tracer_provider") as install:
+            build_providers(
+                NemoLensConfig(enabled=True, metrics_enabled=False), span_exporter=exporter
+            )
+        provider = install.call_args.args[0]
+        self.addCleanup(provider.shutdown)
+        self.enterContext(unittest.mock.patch.object(telemetry, "_get_tracer", provider.get_tracer))
+        self.enterContext(
+            unittest.mock.patch("opentelemetry.trace.get_tracer", provider.get_tracer)
+        )
+        phase = telemetry.Phase()
+        self.addCleanup(phase.close)
+
+        @telemetry.trace_fn("nvrx.ft", "work")
+        def work():
+            with telemetry.span("nvrx.ft", "child"):
+                pass
+
+        for index in (0, 3):
+            exporter.clear()
+            cycle_attributes = {"nv.nvrx.cycle.index": index}
+            phase.open("nvrx.ft", "cycle", scoped_attributes=cycle_attributes)
+            joined = {
+                "nv.nvrx.ftl.group.rank": 0,
+                "nv.nvrx.ftl.group.world_size": 2,
+                "nv.nvrx.ftl.membership": "active",
+            }
+            phase.set(scoped_attributes=joined)
+            work()
+            telemetry.backdated_span("nvrx.ft", "interval", 1, 2)
+            phase.close()
+            provider.force_flush()
+            spans = exporter.get_finished_spans()
+            self.assertEqual(
+                {s.name for s in spans}, {"cycle_start", "work", "child", "interval", "cycle"}
+            )
+            for recorded in spans:
+                self.assertEqual(
+                    dict(recorded.attributes),
+                    (
+                        cycle_attributes
+                        if recorded.name == "cycle_start"
+                        else {**cycle_attributes, **joined}
+                    ),
+                )
+            with telemetry.span("nvrx.ft", "waiting"):
+                pass
+            provider.force_flush()
+            self.assertEqual(dict(exporter.get_finished_spans()[-1].attributes), {})
+
+
 class TestTelemetryIsInert(unittest.TestCase):
     """Instrumentation must be a no-op before/without setup_telemetry()."""
+
+    def test_cycle_scope_without_lens(self):
+        with unittest.mock.patch.object(telemetry, "_AVAILABLE", False):
+            phase = telemetry.Phase()
+            phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", scoped_attributes={"nv.nvrx.cycle.index": 3})
+            self.assertIsNone(phase._start)
+            phase.close()
+            handle = telemetry.setup_telemetry("nvrx.ft_launcher")
+            handle.shutdown()
 
     def test_managed_span_yields_and_runs_body(self):
         ran = False
@@ -348,6 +419,26 @@ class TestSetupTelemetry(unittest.TestCase):
         self.assertTrue(hasattr(handle, "shutdown"))
         handle.shutdown()
         handle.shutdown()
+
+    def test_uses_the_current_lens_setup_signature(self):
+        original = telemetry._AVAILABLE
+        telemetry._AVAILABLE = True
+        handle = unittest.mock.MagicMock()
+
+        def strict_setup(config, resource_attributes=None):
+            self.assertIsNotNone(config)
+            self.assertEqual(resource_attributes, {"service.instance.id": "nvrx-test0"})
+            return handle
+
+        try:
+            with (
+                unittest.mock.patch.object(telemetry, "_setup_telemetry", strict_setup),
+                unittest.mock.patch.object(telemetry, "_NemoLensConfig", create=True) as config_cls,
+            ):
+                config_cls.from_env.return_value = unittest.mock.MagicMock()
+                self.assertIs(telemetry.setup_telemetry("nvrx.test", "nvrx-test0"), handle)
+        finally:
+            telemetry._AVAILABLE = original
 
     def test_init_failure_does_not_propagate(self):
         original = telemetry._AVAILABLE

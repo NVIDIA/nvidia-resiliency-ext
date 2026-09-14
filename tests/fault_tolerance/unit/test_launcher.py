@@ -1935,3 +1935,83 @@ class TestLauncherAllowedRoots:
         from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
 
         assert _resolve_grpc_log_allowed_roots(self._args()) == []
+
+
+class TestCycleTelemetry(unittest.TestCase):
+    def test_worker_environment_uses_generic_carrier_and_current_round(self):
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+        from nvidia_resiliency_ext.shared_utils import telemetry
+
+        if not telemetry._AVAILABLE:
+            self.skipTest("requires nemo-lens")
+        from nemo.lens.resources.attributes import parse_otel_resource_attributes
+
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._infra_placement_attrs.return_value = {}
+        agent._launch_budget_attrs.return_value = {}
+        agent._current_cycle_info_path.return_value = None
+        agent._log_line_prefix_template = None
+        group = agent._worker_group
+        group.spec.rdzv_handler.get_run_id.return_value = "rdzv"
+        group.spec.role = "trainer"
+        group.spec.args = ()
+        group.spec.entrypoint = lambda: None
+        group.workers = [MagicMock(local_rank=0)]
+        with (
+            patch.object(launcher, "start_processes") as start,
+            patch.object(launcher, "record_profiling_event"),
+            patch.object(
+                telemetry,
+                "_INHERITED_RESOURCE_ATTRIBUTES",
+                "example.attribute=imported",
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "OTEL_RESOURCE_ATTRIBUTES": "example.attribute=live,live.only=true",
+                },
+            ),
+        ):
+            start.return_value.pids.return_value = {}
+            for round_number in (0, 3):
+                with self.subTest(round_number=round_number):
+                    agent._get_global_cycle_number.return_value = round_number
+                    launcher.LocalElasticAgent._start_workers(agent, group)
+                    env = start.call_args.kwargs["envs"][0]
+                    attrs = parse_otel_resource_attributes(env["OTEL_RESOURCE_ATTRIBUTES"])
+                    self.assertEqual(attrs["example.attribute"], "imported")
+                    self.assertNotIn("live.only", attrs)
+                    self.assertEqual(attrs["nv.nvrx.cycle.index"], str(round_number))
+                    self.assertEqual(env["TORCHELASTIC_RESTART_COUNT"], str(round_number))
+
+    def test_worker_restart_values_do_not_depend_on_telemetry(self):
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+        from nvidia_resiliency_ext.shared_utils import telemetry
+
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._get_global_cycle_number.return_value = 4
+        agent._infra_placement_attrs.return_value = {}
+        agent._launch_budget_attrs.return_value = {}
+        agent._current_cycle_info_path.return_value = None
+        agent._log_line_prefix_template = None
+        group = agent._worker_group
+        group.spec.rdzv_handler.get_run_id.return_value = "rdzv"
+        group.spec.role = "trainer"
+        group.spec.args = ()
+        group.spec.entrypoint = lambda: None
+        group.workers = [MagicMock(local_rank=0)]
+        with (
+            patch.object(launcher, "start_processes") as start,
+            patch.object(launcher, "record_profiling_event"),
+            patch.object(telemetry, "_AVAILABLE", False),
+            patch.object(telemetry, "get_inherited_resource_attributes", return_value=""),
+            patch.object(telemetry, "extend_otel_resource_attributes", return_value=""),
+        ):
+            start.return_value.pids.return_value = {}
+            launcher.LocalElasticAgent._start_workers(agent, group)
+
+        env = start.call_args.kwargs["envs"][0]
+        self.assertEqual(env["TORCHELASTIC_RESTART_COUNT"], "4")
+        agent._send_cycle_to_rank_monitors.assert_called_once_with(4)

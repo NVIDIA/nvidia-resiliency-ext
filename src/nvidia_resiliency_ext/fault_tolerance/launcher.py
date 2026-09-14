@@ -466,6 +466,20 @@ class LocalElasticAgent(SimpleElasticAgent):
 
     DEFAULT_ROLE = "default"  # FIXME
 
+    def open_telemetry_cycle(self, attributes: dict) -> None:
+        self._cycle_phase.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.cycle",
+            {
+                **attributes,
+                "nv.nvrx.ftl.node": self._node_id,
+                "nv.nvrx.ftl.membership": "unjoined",
+            },
+        )
+
+    def close_telemetry_cycle(self, attributes: Optional[dict] = None) -> None:
+        self._cycle_phase.close(attributes)
+
     # ============================================================================
     # Global Restart/Cycle Tracking for Job Array Deployments
     # ============================================================================
@@ -1129,9 +1143,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         store = worker_group.store
         assert store is not None
 
-        # Get the current cycle number from the rendezvous handler
-        # At this point, rendezvous has completed and we're about to start workers.
-        # The cycle number is used for profiling and environment variable setting.
+        # The rendezvous round is operational state. Worker launch must not depend
+        # on telemetry state being available or initialized.
         restart_count = self._get_global_cycle_number()
 
         # Send current cycle number to rank monitors for logging
@@ -1524,24 +1537,20 @@ class LocalElasticAgent(SimpleElasticAgent):
         # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
-        opening = {
-            "nv.nvrx.cycle.index": self._get_global_cycle_number(),
-            "nv.nvrx.ftl.node": self._node_id,
-            "nv.nvrx.ftl.membership": "unjoined",
-        }
-        self._cycle_phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", opening)
         try:
             # Call the parent class _rendezvous method
             super()._rendezvous(worker_group)
         except UnhealthyNodeException:
-            self._cycle_phase.close({CYCLE_OUTCOME: "excluded"})  # failed the health check
+            # The node failed the health check.
+            self._cycle_phase.close({CYCLE_OUTCOME: "excluded"})
             raise
         except (RendezvousClosedError, RendezvousGracefulExitError):
             # job ended while it waited
-            self._cycle_phase.close({CYCLE_OUTCOME: "standby", "nv.nvrx.ftl.membership": "standby"})
+            self._cycle_phase.close(
+                {CYCLE_OUTCOME: "standby", "nv.nvrx.ftl.membership": "standby"}
+            )
             raise
         self._cycle_phase.set(self._joined_cycle_attrs(worker_group))
-
 
 # Source
 # https://github.com/pytorch/pytorch/blob/release/2.3/torch/distributed/launcher/api.py

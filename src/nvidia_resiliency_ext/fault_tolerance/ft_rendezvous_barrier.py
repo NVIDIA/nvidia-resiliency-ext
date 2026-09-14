@@ -1907,12 +1907,20 @@ class _RendezvousBarrierState:
             # opens the next round. Also checks for permanent shutdown.
             # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
             #
-            # Telemetry rendezvous span closed before the wait, so a hot spare
-            # idling here does not sit inside the previous round's span.
+            # Finish the previous operation and grouping before starting the
+            # incoming grouping. The round may change while the wait is active.
             self._rdzv_span.close()
+            if self._agent is not None:
+                self._agent.close_telemetry_cycle()
+            await_attributes = {
+                "nv.nvrx.ftl.rdzv.round": self._round,
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            }
+            if self._agent is not None:
+                self._agent.open_telemetry_cycle(await_attributes)
             record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
             try:
-                with span("nvrx.ft", "nv.nvrx.ftl.await_round"):
+                with span("nvrx.ft", "nv.nvrx.ftl.await_round", await_attributes):
                     self._wait_for_rendezvous_open(node_desc)
             finally:
                 record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
@@ -1927,10 +1935,15 @@ class _RendezvousBarrierState:
                 ProfilingEvent.RENDEZVOUS_STARTED,
                 node_id=node_desc,
             )
+            rendezvous_attributes = {
+                "nv.nvrx.ftl.rdzv.round": self._round,
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            }
             self._rdzv_span.open(
                 "nvrx.ft",
                 "nv.nvrx.ftl.rendezvous",
-                {"nv.nvrx.ftl.rdzv.round": self._round},
+                rendezvous_attributes,
+                inherit_attributes=True,
             )
 
             if pre_join_hook is not None:
@@ -2028,6 +2041,9 @@ class _RendezvousBarrierState:
                     f"[{node_desc}] Detected newer rendezvous round {e.observed_round} "
                     f"while joining round {e.attempted_round}; retrying"
                 )
+                self._rdzv_span.close()
+                if self._agent is not None:
+                    self._agent.close_telemetry_cycle({"nv.nvrx.cycle.outcome": "peer_restart"})
                 continue
 
             log.debug(f"[slot={self._slot}] [Step 1] Joined round {self._round}")
@@ -2065,6 +2081,16 @@ class _RendezvousBarrierState:
                     f"waiting for round {self._round + 1} to open"
                 )
                 self._rdzv_span.set({"nv.nvrx.ftl.membership": "standby"})
+            self._rdzv_span.close()
+            if self._agent is not None:
+                self._agent.close_telemetry_cycle(
+                    {
+                        "nv.nvrx.cycle.outcome": "standby",
+                        "nv.nvrx.ftl.membership": (
+                            "late_joiner" if rank == GroupRankStatus.UNASSIGNED.value else "standby"
+                        ),
+                    }
+                )
             # Loop back to Step 0; _sync_from_per_round_state() will advance _round
             # from N to N+1 when it sees round_done_N=1 (closed).
 

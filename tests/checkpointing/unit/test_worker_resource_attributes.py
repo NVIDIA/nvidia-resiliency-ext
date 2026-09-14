@@ -73,13 +73,13 @@ def _start_worker(carrier, start_error=None, observed=None):
 @pytest.mark.parametrize("trainer_rank", ["7", ""])
 def test_worker_start_uses_live_trainer_resource_and_preserves_rank(trainer_rank):
     trainer = (
-        f"nv.dl.run.uuid=run-1,nv.dl.job.uuid=job-1,nv.dl.rank={trainer_rank},"
+        f"example.attribute=trainer-value,nv.dl.job.uuid=job-1,nv.dl.rank={trainer_rank},"
         "nv.dl.role=trainer,service.instance.id=trainer-7"
     )
     observed = _start_worker(trainer)
     worker = _parse(observed["carrier"])
 
-    assert worker["nv.dl.run.uuid"] == "run-1"
+    assert worker["example.attribute"] == "trainer-value"
     assert worker["nv.dl.job.uuid"] == "job-1"
     assert worker["nv.dl.rank"] == trainer_rank
     assert worker["nv.dl.role"] == "ckpt_worker"
@@ -101,7 +101,7 @@ def test_worker_start_fills_missing_rank_without_trainer_carrier():
 
 @pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")
 def test_worker_start_restores_trainer_resource_when_process_start_fails():
-    trainer = "nv.dl.run.uuid=run-1,nv.dl.rank=3,nv.dl.role=trainer"
+    trainer = "example.attribute=trainer-value,nv.dl.rank=3,nv.dl.role=trainer"
     observed = {}
     with pytest.raises(RuntimeError, match="Process.start failed"):
         _start_worker(trainer, RuntimeError("Process.start failed"), observed)
@@ -156,7 +156,7 @@ def test_exported_worker_resource_restores_types_from_spawn_carrier():
     import sys
 
     trainer = (
-        "nv.dl.run.uuid=run-1,nv.dl.job.uuid=job-1,nv.dl.rank=7,"
+        "example.attribute=trainer-value,nv.dl.job.uuid=job-1,nv.dl.rank=7,"
         "nv.dl.world_size=8,nv.dl.local_rank=1,nv.dl.topology.size.tp=2,"
         "nv.dl.training.target.train_tokens=9007199254740993,"
         "nv.dl.role=trainer,service.instance.id=trainer-7,software.version=001"
@@ -201,7 +201,7 @@ handle.shutdown()
     }.items():
         assert type(resource[key]) is int
         assert resource[key] == expected
-    assert resource["nv.dl.run.uuid"] == "run-1"
+    assert resource["example.attribute"] == "trainer-value"
     assert resource["nv.dl.job.uuid"] == "job-1"
     assert resource["nv.dl.role"] == "ckpt_worker"
     assert resource["service.instance.id"] == "nvrx-ckpt3"

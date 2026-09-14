@@ -51,8 +51,7 @@ _PRESETS = {
 _INHERITED_RESOURCE_ATTRIBUTES = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
 
 try:
-    # Underscored names exist only when nemo-lens is installed. trace_fn's alias
-    # is the PEP 484 re-export form, marking a name this module never calls.
+    # Underscored imports exist only when nemo-lens is installed.
     #
     # OpenTelemetry is imported here, not where it is used, so that NVRx depends on
     # it in its own right rather than on nemo-lens continuing to pull it in. A
@@ -65,7 +64,8 @@ try:
     from nemo.lens import managed_span as _managed_span
     from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
-    from nemo.lens import trace_fn as trace_fn
+    from nemo.lens import span_attributes as _span_attributes
+    from nemo.lens import trace_fn
     from nemo.lens.resources.attributes import (
         extend_otel_resource_attributes,
         get_otel_resource_attributes,
@@ -197,11 +197,32 @@ class ManualSpan:
         self._stack: Optional[ExitStack] = None
         self._span = None
 
-    def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
-        """Start a span, closing any span this handle already had open."""
+    def open(
+        self,
+        group: str,
+        name: str,
+        attributes: Optional[dict] = None,
+        *,
+        inherit_attributes: bool = False,
+    ) -> None:
+        """Start a span, closing any open span.
+
+        Attributes apply only to this span unless ``inherit_attributes`` is true.
+        """
         self.close()
         self._stack = ExitStack()
-        self._span = self._stack.enter_context(span(group, name, attributes))
+        try:
+            if inherit_attributes and attributes and _AVAILABLE and _is_span_group_enabled(group):
+                # The scope is entered before the span so nested instrumentation
+                # inherits this operation's starting snapshot. ExitStack closes the
+                # span first and restores the previous attribute scope second.
+                self._stack.enter_context(_span_attributes(attributes))
+            self._span = self._stack.enter_context(span(group, name, attributes))
+        except BaseException:
+            self._stack.close()
+            self._stack = None
+            self._span = None
+            raise
 
     def set(self, attributes: Optional[dict] = None) -> None:
         """Set attributes on the open span."""
@@ -249,7 +270,12 @@ def _emit(
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return None
     recorded = _emit_span(
-        _get_tracer(__name__), name, start, end, context=context, attributes=attributes or {}
+        _get_tracer(__name__),
+        name,
+        start,
+        end,
+        context=context,
+        attributes=attributes,
     )
     return recorded.get_span_context()
 
@@ -346,7 +372,7 @@ class Phase:
         self._attributes: dict = {}
 
     def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
-        """Mark the start of the phase, closing any phase this handle had open."""
+        """Emit the start anchor, closing any phase this handle had open."""
         # Without nemo-lens nothing downstream can record anything, so leave _start
         # unset: that is the flag set() and close() already bail on, which makes the
         # whole handle inert for the cost of one module-global read.
@@ -358,7 +384,12 @@ class Phase:
         # Seeded, not emptied: a consumer filtering spans never sees the mark's
         # attributes, so a key left only there cannot be grouped on.
         self._attributes = dict(attributes or {})
-        self._parent = mark(group, f"{name}_start", attributes)
+        try:
+            self._parent = mark(group, f"{name}_start", attributes)
+        except BaseException:
+            self._group = self._name = self._start = self._parent = None
+            self._attributes = {}
+            raise
         if self._parent is None:  # group off; the phase still spans nothing to nest in
             return
         try:
@@ -370,10 +401,11 @@ class Phase:
             logger.debug("Could not make %s the active context", self._name, exc_info=True)
 
     def set(self, attributes: Optional[dict] = None) -> None:
-        """Record attributes to be emitted on the backdated span at close."""
-        if self._start is None or not attributes:
+        """Update attributes saved for the duration summary."""
+        if self._start is None:
             return
-        self._attributes.update(attributes)
+        if attributes:
+            self._attributes.update(attributes)
 
     def close(self, attributes: Optional[dict] = None) -> None:
         """Emit the backdated span covering the phase. Idempotent."""
@@ -389,13 +421,15 @@ class Phase:
                 # the stale ambient context.
                 logger.debug("Out-of-order close for phase %s", self._name, exc_info=True)
             self._token = None
-        backdated_span(
-            self._group,
-            self._name,
-            self._start,
-            time.time(),
-            self._attributes,
-            parent=self._parent,
-        )
-        self._group = self._name = self._start = self._parent = None
-        self._attributes = {}
+        try:
+            backdated_span(
+                self._group,
+                self._name,
+                self._start,
+                time.time(),
+                self._attributes,
+                parent=self._parent,
+            )
+        finally:
+            self._group = self._name = self._start = self._parent = None
+            self._attributes = {}
