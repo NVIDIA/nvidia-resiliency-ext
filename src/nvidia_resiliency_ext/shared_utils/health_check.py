@@ -1832,7 +1832,6 @@ class AttributionService:
         # the latter advances every cycle, while a terminal verdict is only requested for
         # cycles that actually failed and may still be pending when the next cycle starts.
         self._terminal_pending: Optional[str] = None
-        self._terminal_pending_cycle: Optional[int] = None
         self._stop_latched = False
         # How many STOP verdicts have been observed. In log-only mode this is the
         # number that decides whether the precision is good enough to enforce.
@@ -1990,10 +1989,11 @@ class AttributionService:
             ProfilingEvent.ATTRIBUTION_GET_STARTED,
             node_id=node_id,
         )
-        attrs = {"nv.nvrx.ftl.node": str(node_id)}
-        if self._terminal_pending_cycle is not None:
-            attrs["nv.nvrx.ftl.attribution.analyzed_cycle"] = self._terminal_pending_cycle
-        self._attribution_span.open("nvrx.ft", "nv.nvrx.ftl.attribution", attrs)
+        self._attribution_span.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.attribution",
+            {"nv.nvrx.ftl.node": str(node_id)},
+        )
 
     def _submit_log(self, log_path: str) -> None:
         """
@@ -2006,7 +2006,7 @@ class AttributionService:
         self._last_submitted = log_path
         self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_PROGRESSIVE)
 
-    def request_terminal_analysis(self, cycle: Optional[int] = None) -> None:
+    def request_terminal_analysis(self) -> None:
         """
         Request terminal analysis for the last submitted workload log.
 
@@ -2082,7 +2082,6 @@ class AttributionService:
             return
         with self._lock:
             self._terminal_pending = log_path
-            self._terminal_pending_cycle = cycle
             self._get_started_recorded = False
 
     def _do_submit_log(
