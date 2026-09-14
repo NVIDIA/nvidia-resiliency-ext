@@ -3,6 +3,7 @@
 
 """Public HTTP lifecycle tests for attrsvc's direct Restart Agent path."""
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -36,6 +37,7 @@ class _Runtime:
         *,
         on_deterministic_ready,
         on_route_complete,
+        on_l0_ready=None,
         retain_detailed_artifacts=True,
     ):
         assert retain_detailed_artifacts is False
@@ -67,7 +69,7 @@ class _Runtime:
         return SimpleNamespace(result=SimpleNamespace(model_results=(model_result,)))
 
 
-def test_public_progressive_terminal_and_get_lifecycle(tmp_path, monkeypatch):
+def test_public_progressive_terminal_and_get_lifecycle(tmp_path, monkeypatch, caplog):
     key_file = tmp_path / "key"
     key_file.write_text("secret", encoding="utf-8")
     monkeypatch.setenv("LLM_API_KEY_FILE", str(key_file))
@@ -84,6 +86,7 @@ def test_public_progressive_terminal_and_get_lifecycle(tmp_path, monkeypatch):
         _env_file=None,
     )
     log_path = tmp_path / "train_cycle0.log"
+    caplog.set_level(logging.INFO)
 
     with TestClient(create_app(cfg)) as client:
         start = client.post(
@@ -120,6 +123,9 @@ def test_public_progressive_terminal_and_get_lifecycle(tmp_path, monkeypatch):
     assert len(runtime.requests) == 1
     assert runtime.requests[0].job_id == "job-7"
     assert runtime.requests[0].cycle_id == 8
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "event=restart_agent.candidate.ready" in messages
+    assert "event=restart_agent.analysis.completed" in messages
 
 
 def test_public_submit_rejects_boolean_cycle_id(tmp_path, monkeypatch):

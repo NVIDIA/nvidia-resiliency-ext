@@ -22,6 +22,10 @@ STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install .
 
 The build process (`build.py`) compiles three proto files (`nvhcd.proto`, `log_aggregation.proto`, `nvrx_interface.proto`) and optionally builds a pybind11 CUPTI extension for straggler detection. Generated `*_pb2.py` / `*_pb2_grpc.py` files are gitignored and regenerated at build time.
 
+Built wheels intentionally exclude source-only legacy LogSage code under
+`src/nvidia_resiliency_ext/attribution/legacy_logsage/`. Use a source checkout
+with `PYTHONPATH=src` for legacy LogSage tests or tools.
+
 ## Code Quality
 
 ```bash
@@ -49,7 +53,9 @@ pytest -s -vvv ./tests/inprocess/
 pytest -s -vvv ./tests/checkpointing/unit/
 pytest -s -vvv ./tests/ptl_resiliency/unit/
 pytest -s -vvv ./tests/straggler/unit/
-pytest -s -vvv ./tests/attribution/unit/
+
+# Attribution includes source-only legacy LogSage tests:
+PYTHONPATH=src pytest -s -vvv ./tests/attribution/unit/
 
 # Run a single test file
 pytest -s -vvv ./tests/fault_tolerance/unit/test_rank_monitor.py
@@ -83,8 +89,14 @@ Two submodules:
 ### `attribution/`
 Log and trace analysis for failure attribution. Contains:
 - `straggler/` — CUPTI-based GPU performance monitoring (`cupti_src/` is the C++ source). `straggler.py` exposes the main API. `reporting.py` handles statistical scoring and all-gather across ranks.
-- `log_analyzer/`, `combined_log_fr/`, `trace_analyzer/` — LLM-based log analysis pipeline
-- `mcp_integration/` — MCP (Model Context Protocol) server for AI log analysis
+- `restart_agent/` — packaged restart-agent log decision engine used by attrsvc/restart-agent flows.
+- `trace_analyzer/` — packaged Flight Recorder analysis.
+- `mcp_integration/` — MCP (Model Context Protocol) server for packaged `restart_agent` and `fr_analyzer`; legacy LogSage MCP tools are opt-in from a source checkout.
+- `legacy_logsage/` — source-checkout-only legacy LogSage, SPLITLOG, old `log_analyzer`, and old `combined_log_fr` excluded from built wheels.
+
+### `skills/`
+Current NVRx skill bundles:
+- `nvrx-attr/` — restart-agent log analysis, packaged FR analysis, and the Megatron-LM fault-injection feedback loop. LogSage-specific implementations are not part of this skill bundle.
 
 ### `ptl_resiliency/`
 PyTorch Lightning callbacks that wrap the above features:
@@ -121,6 +133,9 @@ Generated stubs are gitignored. If you modify `.proto` files, rebuild with `pip 
 
 - CPU-only tests run without GPU. GPU/multi-node functional tests require real hardware.
 - Install the wheel before running tests in CI: `pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER}-*.whl`
+- Tests that import `nvidia_resiliency_ext.attribution.legacy_logsage` require
+  source-checkout mode (`PYTHONPATH=src`) because `legacy_logsage/**` is
+  intentionally excluded from wheels.
 - Some straggler tests require CUPTI; use `-k` filtering to select CPU-only tests.
 - `MKL_SERVICE_FORCE_INTEL=1` may be needed to work around MKL threading issues in test environments.
 

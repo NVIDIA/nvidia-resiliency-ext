@@ -4,7 +4,7 @@
 """Configuration and result types for log-side analysis and the unified attribution API.
 
 Compute/cache timing (:class:`~nvidia_resiliency_ext.attribution.coalescing.RequestCoalescer`)
-is configured on :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer`, not
+is configured on :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine.Analyzer`, not
 ``LogAnalyzerConfig``.
 """
 
@@ -147,11 +147,11 @@ def _string_value(value: Any) -> str:
 class LogAnalyzerConfig:
     """Bundled settings shape (e.g. docs, tests, or HTTP settings aggregation).
 
-    :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` takes ``allowed_root``,
+    :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine.Analyzer` takes ``allowed_root``,
     optional ``log_sage`` (:class:`~nvidia_resiliency_ext.attribution.orchestration.config.LogSageExecutionConfig`),
     coalescer timing, etc. — not this dataclass as a single ``config=`` argument. Use
     :meth:`log_sage_execution` to build ``log_sage`` from the LLM / lib-vs-MCP fields here; use a
-    custom :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer` if you
+    custom :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer.LogAnalyzer` if you
     need ``analysis_pipeline_mode`` from this bundle.
     """
 
@@ -173,7 +173,7 @@ class LogAnalyzerConfig:
             raise ValueError("allowed_root must be an absolute path")
 
     def log_sage_execution(self) -> LogSageExecutionConfig:
-        """Settings for :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer` (lib/MCP)."""
+        """Settings for :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer.LogAnalyzer` (lib/MCP)."""
         from .config import LogSageExecutionConfig
 
         return LogSageExecutionConfig(
@@ -188,7 +188,7 @@ class LogAnalyzerConfig:
 
 @dataclass
 class LogAnalyzerError:
-    """Error result from :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` operations."""
+    """Error result from :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine.Analyzer` operations."""
 
     error_code: ErrorCode
     message: str

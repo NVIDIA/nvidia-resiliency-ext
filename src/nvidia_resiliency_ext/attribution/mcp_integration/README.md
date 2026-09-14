@@ -4,9 +4,19 @@
 
 This document describes the architecture and design decisions behind the MCP integration for NVIDIA Resiliency Extension (NVRX) Attribution modules.
 
-MCP support is optional and is not installed by the default NVRx wheel. Install
-`nvidia-resiliency-ext[attribution]` before launching the MCP server or
-using the MCP client transport.
+Packaged MCP support includes restart-agent log analysis and Flight Recorder
+analysis:
+
+```bash
+pip install 'nvidia-resiliency-ext[attribution]'
+python -m nvidia_resiliency_ext.attribution.mcp_integration.server_launcher \
+  --modules restart_agent fr_analyzer
+```
+
+Legacy LogSage-backed MCP tools (`log_analyzer`, `log_analyzer_progressive_start`,
+and `log_fr_analyzer`) are source-checkout-only. Run them with
+`--enable-legacy-logsage` after installing
+`src/nvidia_resiliency_ext/attribution/legacy_logsage/requirements.txt`.
 
 ## Design Goals
 
@@ -45,9 +55,9 @@ using the MCP client transport.
 ┌────────────────────────┴────────────────────────────────────┐
 │              Attribution Module Implementations              │
 │  ┌───────────────┐  ┌───────────────┐  ┌──────────────┐    │
-│  │ FR Analyzer   │  │ LogSage       │  │ Combined     │    │
-│  │ (Collective)  │  │ Analyzer      │  │ Log + FR     │    │
-│  │               │  │               │  │ Analyzer     │    │
+│  │ Restart Agent │  │ FR Analyzer   │  │ Legacy       │    │
+│  │ (packaged)    │  │ (packaged)    │  │ LogSage      │    │
+│  │               │  │               │  │ source-only  │    │
 │  └───────────────┘  └───────────────┘  └──────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -68,10 +78,10 @@ using the MCP client transport.
 **Design Pattern**: Singleton pattern with global registry instance
 
 ```python
-# Register a module
+# Register a packaged module
 global_registry.register(
-    name="log_analyzer",
-    module_class=NVRxLogAnalyzer,
+    name="restart_agent",
+    module_class=RestartAgentMCPModule,
     description="...",
     input_schema={...},
     output_schema={...},
@@ -79,8 +89,8 @@ global_registry.register(
 )
 
 # Get execution order
-order = global_registry.get_execution_order(["log_analyzer", "fr_analyzer", "log_fr_analyzer"])
-# Returns: ["log_analyzer", "fr_analyzer", "log_fr_analyzer"] (respecting dependencies)
+order = global_registry.get_execution_order(["restart_agent", "fr_analyzer"])
+# Returns: ["restart_agent", "fr_analyzer"]
 ```
 
 ### 2. MCP Server (`mcp_server.py`)
@@ -98,13 +108,13 @@ order = global_registry.get_execution_order(["log_analyzer", "fr_analyzer", "log
 - Output: JSON-serialized results
 
 **Tool Types**:
-1. **Module tools**: One per registered module (`log_analyzer`, `fr_analyzer`, etc.)
+1. **Module tools**: One per registered module (`restart_agent` and `fr_analyzer` by default; legacy LogSage tools only when enabled)
 2. **Utility tools**: `status`, `get_result`
 
 **Resource Pattern**:
 ```
 attribution://<module_name>/<result_id>
-Example: attribution://log_analyzer/f47ac10b-58cc-4372-a567-0e02b2c3d479
+Example: attribution://restart_agent/f47ac10b-58cc-4372-a567-0e02b2c3d479
 ```
 
 ### 3. MCP Client (`mcp_client.py`)
@@ -126,12 +136,17 @@ Example: attribution://log_analyzer/f47ac10b-58cc-4372-a567-0e02b2c3d479
 **Usage Pattern**:
 ```python
 async with NVRxMCPClient(server_command) as client:
-    result = await client.run_module("log_analyzer", log_path="/path/to/app.log")
+    result = await client.run_module("restart_agent", log_path="/path/to/cycle.log")
 ```
 
 ### 4. Module Definitions (`module_definitions.py`)
 
-**Purpose**: Register all built-in NVRX attribution modules.
+**Purpose**: Register built-in packaged NVRX attribution modules.
+
+The packaged `module_definitions.py` registers `restart_agent` and
+`fr_analyzer`. The source-checkout-only
+`legacy_logsage/log_analyzer/mcp_module_definitions.py` registers legacy
+LogSage-backed tools when the launcher is run with `--enable-legacy-logsage`.
 
 **Module Metadata Includes**:
 - Input/output JSON schemas (for MCP)
@@ -144,7 +159,7 @@ async with NVRxMCPClient(server_command) as client:
 ### Single Module Execution
 
 ```
-1. Client calls tool "log_analyzer" with module-specific arguments such as `log_path`
+1. Client calls tool "restart_agent" with module-specific arguments such as `log_path`
        ↓
 2. MCP Server receives call
        ↓

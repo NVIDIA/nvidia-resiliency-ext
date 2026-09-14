@@ -34,8 +34,9 @@ Superseded decisions remain in git history.
 - **Context:** Model-authored class names and fingerprints vary in wording and
   granularity across models and repeated runs.
 - **Decision:** L0 derives deterministic identity and L2 derives the grounded
-  enriched equivalent. Identity consists of a normalized root and optional
-  exact affected entity.
+  enriched equivalent. Identity is either a normalized root with an optional
+  exact affected entity, a separately typed observation-only fingerprint, or
+  unavailable.
 - **Rejected alternative:** Compare free-form L1 classes, summaries, or
   model-generated fingerprints directly.
 - **Consequence:** L3 can perform deterministic recurrence comparison while L1
@@ -47,8 +48,8 @@ Superseded decisions remain in git history.
 
 - **Context:** Showing history to L1 would mix current-log interpretation with
   recurrence and could make model behavior depend on record ordering.
-- **Decision:** L1 assesses only the current attempt. L3 receives the selected
-  current failure facts and an immutable exact-job `PriorAttemptView`.
+- **Decision:** L1 assesses only the current attempt. L3 receives all typed
+  current failure tracks and an immutable exact-job `PriorAttemptView`.
 - **Rejected alternative:** Include prior logs or attempt summaries in the L1
   prompt and ask the model whether the issue recurred.
 - **Consequence:** Current-attempt semantics and history policy can be evaluated
@@ -70,18 +71,21 @@ Superseded decisions remain in git history.
 - **Revisit when:** A distributed runtime requires a different store
   implementation, while preserving the same injected interfaces.
 
-## D6: Use Deterministic Prior Facts For MVP History
+## D6: Preserve And Compare Independent Failure Tracks
 
-- **Context:** Each route may produce a different enriched identity, while MVP
-  has no canonical route-selection policy.
-- **Decision:** Store route-keyed enriched facts for observation, but compare
-  prior attempts using their deterministic L0 facts.
-- **Rejected alternative:** Let completion order or an arbitrary preferred
-  route determine the history identity.
-- **Consequence:** Model timing and route availability cannot change recurrence
-  policy.
-- **Revisit when:** A production route-arbitration contract defines which
-  enriched result becomes canonical.
+- **Context:** L0, a grounded L1 primary, and a grounded observed failure answer
+  different questions. Selecting one before history discards useful provenance
+  and can turn a valid model result into a deterministic fallback.
+- **Decision:** Store deterministic facts once and route-keyed primary and
+  observation facts independently. L3 compares like-kind, same-route tracks;
+  L4 alone selects primary, observation, deterministic, or none for policy.
+- **Rejected alternative:** Collapse a cycle to one fingerprint before L3, or
+  silently use deterministic prior facts when enriched route history is absent.
+- **Consequence:** History can measure each evidence path without conflating an
+  observed surface with a root, while L4 precedence remains explicit and
+  auditable.
+- **Revisit when:** Cross-route canonicalization is corpus-qualified and a
+  production route-arbitration contract defines winner and migration behavior.
 
 ## D7: Integrate Attrsvc Through The Library Boundary
 
@@ -109,17 +113,17 @@ Superseded decisions remain in git history.
 - **Revisit when:** Calibration evidence demonstrates a specific probabilistic
   policy improves outcomes and can remain independently observable.
 
-## D9: Declare Workload-Managed Recovery
+## D9: Declare Policy Context Outside Log Semantics
 
-- **Context:** Behavior such as retry-then-skip is a workload capability that
-  cannot be reliably inferred from generic failure text.
-- **Decision:** Trusted configuration declares recovery capabilities; L4 applies
-  one only when grounded classifier, behavior, and affected entity match.
+- **Context:** Product policy such as retry-then-skip or zero-retry CUDA OOM
+  handling cannot be reliably inferred from generic failure text.
+- **Decision:** Trusted configuration declares policy contexts; L4 applies one
+  only when that context's complete typed signature matches.
 - **Rejected alternative:** Ask L1 to invent or infer retry/skip support.
 - **Consequence:** Special retry budgets are explicit, testable, and cannot
   silently spread to unrelated failures.
 - **Revisit when:** A structured workload/runtime signal can declare the same
-  capability more directly.
+  policy context more directly.
 
 ## D10: Publish The Deterministic Recommendation Before L1
 
@@ -176,3 +180,22 @@ Superseded decisions remain in git history.
   incidental time-related text cannot bypass normal recurrence accounting.
 - **Revisit when:** A caller provides a structured scheduler outcome with a
   product requirement for a distinct recommendation.
+
+## D14: Keep Visible Failure Surfaces Separate From Root Cause
+
+- **Context:** An application-only log may omit the event that killed another
+  process while still showing terminal peer-visible effects such as TCPStore
+  connection loss. Treating the effect as primary creates a false root; dropping
+  it entirely leaves no useful account of what failed.
+- **Decision:** Keep `primary_failure` strict and nullable. When no primary is
+  supportable, L0A/L1 may select at most one canonical terminal observation and
+  L0/L2 may derive a separate observation fingerprint. Null roots never compare,
+  and observation identity never enters root or concrete retry ledgers.
+- **Rejected alternative:** Promote the first terminal symptom to primary, or
+  treat all no-primary attempts as the same implicit root.
+- **Consequence:** The result can preserve and correlate the visible failure
+  surface without claiming a shared initiating cause. L4 may still apply
+  root-independent general retry using same-job progress.
+- **Revisit when:** A structured runtime or scheduler signal supplies the
+  missing initiating event, or corpus evidence supports a stronger typed causal
+  relationship for a specific observation family.

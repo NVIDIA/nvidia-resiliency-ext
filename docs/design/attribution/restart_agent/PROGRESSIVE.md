@@ -295,6 +295,37 @@ L0A additionally reports source decode, source index/classification, and
 canonical reduction time. These subphase durations explain cost; they are not
 summed with overlapping drain time.
 
+## Service Logging
+
+Progressive registration emits INFO once:
+
+```text
+event=restart_agent.progressive.registered
+status=<scheduled|disabled|precompute_skipped_capacity>
+pre_end_poll_seconds=<seconds> active_idle_seconds=<seconds>
+```
+
+Periodic pre-end polling is DEBUG to avoid one INFO record per poll:
+
+```text
+event=restart_agent.progressive.refresh.completed changed=<bool>
+wall_clock_s=<seconds> phase=<phase> bytes_ingested=<count>
+source_ingest_s=<seconds> l0a_reduction_s=<seconds>
+l0a_build_count=<count> poll_count=<count> growth_count=<count>
+```
+
+Terminal drain emits INFO once:
+
+```text
+event=restart_agent.terminal.drain_completed converged=<bool>
+completion_reason=<reason> wall_clock_s=<seconds> poll_count=<count>
+growth_count=<count> incomplete_tail_included=<bool>
+```
+
+Capacity skips, max-wait expiry, and precompute failure use WARNING with the same identity and
+timing fields. DEBUG may add source decode/classification, reread, reset,
+replacement-character, and pending-tail counts; it must not log source text.
+
 ## Validation
 
 Progressive qualification must verify:

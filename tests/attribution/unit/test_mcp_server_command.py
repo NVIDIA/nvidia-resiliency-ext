@@ -26,6 +26,13 @@ class TestGetServerCommand(unittest.TestCase):
         self.assertTrue(cmd[1].endswith("server_launcher.py"))
         self.assertEqual(cmd[2:], ["--log-level", "DEBUG"])
 
+    def test_legacy_logsage_flag_is_opt_in(self):
+        cmd = get_server_command(enable_legacy_logsage=True)
+
+        self.assertEqual(cmd[0], sys.executable)
+        self.assertTrue(cmd[1].endswith("server_launcher.py"))
+        self.assertEqual(cmd[2:], ["--log-level", "INFO", "--enable-legacy-logsage"])
+
 
 if __name__ == "__main__":
     unittest.main()

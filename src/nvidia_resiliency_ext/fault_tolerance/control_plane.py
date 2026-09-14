@@ -161,7 +161,24 @@ def _start_control_services(
         applog_prefix = args.ft_per_cycle_applog_prefix
         log_funnel_ports = None
         grpc_log_prefix = None
-        if args.ft_enable_log_server:
+        # The funnel writes to paths its clients choose, so it can only run confined to the
+        # directories those logs live in. --ft-log-server-log-prefix names where the funnel's
+        # own diagnostics go and cannot define that boundary. Co-located control gets this
+        # structurally (the launcher only funnels inside `if base_log_file:`); mirror it here
+        # rather than failing startup, since log funneling is on by default for nvrx-control.
+        log_funnel_enabled = bool(args.ft_enable_log_server) and bool(
+            args.ft_per_cycle_applog_prefix or args.ft_nvrx_logfile
+        )
+        if args.ft_enable_log_server and not log_funnel_enabled:
+            logger.warning(
+                "Log funneling is enabled but neither --ft-per-cycle-applog-prefix nor "
+                "--ft-nvrx-logfile is set, so there is no client log destination to confine "
+                "the funnel to; not starting the gRPC log server(s). Launchers that are "
+                "themselves configured to funnel will block waiting for this host's funnel "
+                "port -- they do not fall back to direct writes. Pass the same applog prefix "
+                "here, or disable --ft-enable-log-server on those launchers."
+            )
+        if log_funnel_enabled:
             grpc_log_prefix = _resolve_grpc_log_server_log_prefix(args)
             assert grpc_log_prefix is not None
             log_funnel_ports = LogFunnelPorts.from_launcher_args(args)
@@ -182,7 +199,7 @@ def _start_control_services(
                 )
                 services.attribution_service.start_poller()
 
-        if args.ft_enable_log_server:
+        if log_funnel_enabled:
             assert log_funnel_ports is not None
             assert grpc_log_prefix is not None
             services.grpc_processes = _start_grpc_log_servers(

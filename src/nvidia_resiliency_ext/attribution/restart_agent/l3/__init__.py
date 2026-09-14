@@ -3,6 +3,20 @@
 
 """L3 deterministic cross-attempt history comparison."""
 
-from .history import DETERMINISTIC_FACT_SELECTOR, HistoryEvaluationInput, evaluate_history
+from .history import (
+    DETERMINISTIC_FACT_SELECTOR,
+    HistoryEvaluationInput,
+    evaluate_cycle_history,
+    evaluate_history,
+    observation_fact_selector,
+    primary_fact_selector,
+)
 
-__all__ = ["DETERMINISTIC_FACT_SELECTOR", "HistoryEvaluationInput", "evaluate_history"]
+__all__ = [
+    "DETERMINISTIC_FACT_SELECTOR",
+    "HistoryEvaluationInput",
+    "evaluate_cycle_history",
+    "evaluate_history",
+    "observation_fact_selector",
+    "primary_fact_selector",
+]

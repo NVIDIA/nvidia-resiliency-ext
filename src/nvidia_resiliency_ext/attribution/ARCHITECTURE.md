@@ -6,15 +6,16 @@ This document describes how `nvidia_resiliency_ext.attribution` is structured an
 
 ## 1. Scope
 
-The package is **library-only**: no HTTP server. The usual entry point is **`Analyzer`** (`analyzer/engine.py`): request coalescing, `submit` / `analyze`, and delegation to **`LogAnalyzer`**. You can also embed **`LogAnalyzer`** directly if you do not need the coalescer. Path validation, job tracking, LLM calls, and optional posting hooks are expressed as Python APIs.
+The packaged attribution surface is **library-only**: restart-agent/attrsvc, FR analysis, request coalescing, and shared attrsvc response/config types. Legacy LogSage, SPLITLOG orchestration, the old `Analyzer` / `LogAnalyzer`, and LogSage-backed MCP tools live under `legacy_logsage/` and are excluded from built wheels.
 
 ---
 
 ## 2. Diagrams
 
-### 2.1 End-to-end flow
+### 2.1 Legacy LogSage end-to-end flow
 
-How a typical `analyze` path moves through the library (cache miss shown).
+How a typical source-checkout-only legacy `analyze` path moves through the
+library (cache miss shown).
 
 ```mermaid
 flowchart TB
@@ -22,11 +23,11 @@ flowchart TB
         APP[Your code]
     end
 
-    subgraph analyzer_pkg [analyzer]
+    subgraph analyzer_pkg [legacy_logsage/analyzer]
         AN[Analyzer]
     end
 
-    subgraph orchestration_pkg [orchestration]
+    subgraph orchestration_pkg [legacy_logsage/orchestration]
         LA[LogAnalyzer]
         SP[slurm_parser / SplitlogTracker]
     end
@@ -38,9 +39,9 @@ flowchart TB
     subgraph run [Analysis execution]
         RLLM["_run_llm_analysis"]
         RAP["run_attribution_pipeline"]
-        LS["LogSage\n(MCP or in-process)"]
+        LS["Legacy LogSage\n(MCP or in-process)"]
         FR["trace_analyzer\nextract + analyze_fr_dump"]
-        MERGE["log_fr_analyzer\noptional merge_log_fr_llm"]
+        MERGE["legacy log_fr_analyzer\noptional merge_log_fr_llm"]
         PP[postprocessing]
     end
 
@@ -80,7 +81,7 @@ flowchart LR
     PAR2 --> M[merge_log_fr_llm]
 ```
 
-### 2.3 Major modules (dependency view)
+### 2.3 Legacy LogSage dependency view
 
 ```mermaid
 flowchart TB
@@ -93,12 +94,12 @@ flowchart TB
 
     subgraph inputs [Inputs]
         MCP[mcp_integration]
-        NV[NVRxLogAnalyzer]
+        NV[Legacy NVRxLogAnalyzer]
         TA[trace_analyzer]
     end
 
     subgraph fusion [Optional fusion]
-        CLF[log_fr_analyzer]
+        CLF[Legacy log_fr_analyzer]
     end
 
     subgraph out [Outputs]
@@ -190,7 +191,8 @@ tracked-job summary, MCP health, Slack/dataflow configured-or-error state, and r
 
 The **analysis engine** layer owns compute:
 
-- MCP module tools such as `log_analyzer`, `fr_analyzer`, and `log_fr_analyzer`
+- MCP module tools: packaged `fr_analyzer`, plus source-checkout-only legacy
+  `log_analyzer` and `log_fr_analyzer`
 - in-process equivalents loaded by the controller when a subprocess boundary is unnecessary
 - future external attribution services or adapters
 
@@ -207,22 +209,19 @@ implemented using MCP transport, it should expose service-grade methods such as
 
 | Area | Responsibility |
 |------|------------------|
-| **`controller.py`** | **`AttributionController`** and nested config dataclasses: frontend-facing attribution boundary; owns startup config, LLM API key validation, cache persistence, health/status policy, postprocessing wiring, dataflow/Slack stats, and delegates analysis to **`Analyzer`**. |
-| **`analyzer/`** | **`Analyzer`** (`engine.py`): path policy, `RequestCoalescer`, `submit` / `analyze`, splitlog branches; delegates heavy lifting to **`LogAnalyzer`**. Re-exports pipeline symbols from `orchestration.analysis_pipeline` for convenience. |
-| **`log_analyzer/`** | LogSage package surface only: `NVRxLogAnalyzer` implementation plus its minimal `__init__.py` export. It no longer owns orchestration, parsing, splitlog, or config/types modules. |
-| **`orchestration/`** | Log-side orchestration subsystem: **`LogAnalyzer`**, `Job` / `FileInfo`, SLURM parsing, splitlog polling, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, wire keys (`RESP_*`), and LogSage execution config/runtime helpers. |
+| **`legacy_logsage/`** | Source-checkout-only legacy island: old **`Analyzer`**, **`AttributionController`**, `NVRxLogAnalyzer`, SPLITLOG tracking/parsing, legacy LogSage MCP registrations, and combined LogSage+FR+LLM merge tools. This subtree is excluded from built wheels. |
+| **`orchestration/`** | Packaged shared orchestration primitives: `Job` / `FileInfo`, **`run_attribution_pipeline`** / **`AnalysisPipelineMode`**, `LogAnalyzerConfig` and result dataclasses, path validation, response parsing, wire keys (`RESP_*`), and LogSage-related config shapes consumed by source-only legacy code. |
 | **`coalescing/`** | `RequestCoalescer`: dedupe concurrent analysis for the same path; cache entries as `LogAnalysisCoalesced` (LogSage dict + optional FR fields + optional LLM merge summary) |
 | **`trace_analyzer/`** | Flight-recorder dump discovery/analysis (`extract_fr_dump_path`, `analyze_fr_dump`, `CollectiveAnalyzer`, etc.) |
-| **`combined_log_fr/`** | MCP tool **`log_fr_analyzer`** for one-call LogSage + FR collection; optional **log + FR LLM fusion** (`CombinedLogFR`, `merge_log_fr_llm()`) for `LOG_AND_TRACE_WITH_LLM` |
 | **`postprocessing/`** | Build records, optional direct dataflow HTTP post, Slack; `post_analysis_items` / `post_results` run as best-effort observability after analysis |
-| **`mcp_integration/`** | Subprocess MCP client/server so LogSage can run isolated from the caller (see `mcp_integration/README.md`) |
+| **`mcp_integration/`** | Packaged MCP client/server for FR analysis; source checkout can opt into legacy LogSage-backed tools with `--enable-legacy-logsage` (see `mcp_integration/README.md`) |
 | **`restart_agent/`** | Experimental evidence-first restart agent: deterministic L0 bundle, optional structured L1 interpretation, history-aware policy, and `STOP`/`RESTART` output. Canonical specs live under `docs/design/attribution/restart_agent/`. |
 
 ---
 
-## 4. Analysis pipeline (conceptual)
+## 4. Legacy LogSage analysis pipeline (conceptual)
 
-1. **Submit / classify** (`Analyzer.submit` → `LogAnalyzer.submit`): validate path under `allowed_root`, parse job output for `LOGS_DIR` and modes (`PENDING` → `SINGLE` / `SPLITLOG`).
+1. **Submit / classify** (`legacy_logsage.Analyzer.submit` → `legacy_logsage.LogAnalyzer.submit`): validate path under `allowed_root`, parse job output for `LOGS_DIR` and modes (`PENDING` → `SINGLE` / `SPLITLOG`).
 2. **Analyze** (`Analyzer.analyze`): resolve job mode, file + optional `wl_restart`; on cache hit return from `RequestCoalescer`; on miss call **`_run_llm_analysis`** → **`LogAnalyzer.run_attribution_for_path`**.
 3. **`run_attribution_for_path`** loads log text via **MCP** or **in-process** LogSage (`LogSageExecutionConfig.use_lib_log_analysis`), then runs **`run_attribution_pipeline`**:
    - **`LogAnalyzer.analysis_pipeline_mode`** selects log-only, trace-only, log+trace, or log+trace+LLM merge. The default **`Analyzer`** constructs **`LogAnalyzer`** with **`LOG_AND_TRACE`**; override by passing a custom **`log_analyzer`** (or embed **`LogAnalyzer`** directly).
@@ -242,14 +241,18 @@ These concepts drive `Job`, `FileInfo`, and HTTP query parameters such as `wl_re
 
 Hierarchy (conceptual): **Job** → scheduler-restart blocks → within each, one or more **workload** cycles in the same file or across files.
 
-Implementation details: `orchestration/job.py`, `orchestration/splitlog.py`,
-`orchestration/slurm_parser.py`.
+Implementation details: packaged `orchestration/job.py` plus source-only legacy
+`legacy_logsage/orchestration/splitlog.py` and
+`legacy_logsage/orchestration/slurm_parser.py`.
 
 ---
 
 ## 6. Content splitting (multi-cycle files)
 
-For logs with multiple workload cycles in one file, analysis uses chunking (e.g. `chunk_logs_strict` in `log_analyzer`) guided by **`Cycle: N`** markers (pattern such as `profiling.py:.*Cycle: N`):
+For logs with multiple workload cycles in one file, source-checkout-only legacy
+LogSage analysis uses chunking (e.g. `chunk_logs_strict` in
+`legacy_logsage/log_analyzer`) guided by **`Cycle: N`** markers (pattern such
+as `profiling.py:.*Cycle: N`):
 
 1. Find all cycle markers in the file.
 2. Take lines from `Cycle: N` to `Cycle: N+1` (or EOF).
@@ -259,11 +262,11 @@ If no markers are found, the whole file is treated as a single cycle.
 
 ---
 
-## 7. Configuration: `Analyzer` ctor vs `LogAnalyzerConfig` vs `LogSageExecutionConfig`
+## 7. Legacy LogSage configuration: `Analyzer` ctor vs `LogAnalyzerConfig` vs `LogSageExecutionConfig`
 
 Do **not** conflate the bundled type **`LogAnalyzerConfig`** (`orchestration/types.py`) with the **`Analyzer`** constructor. They overlap conceptually but are wired differently.
 
-### 7.1 `Analyzer` (`analyzer/engine.py`)
+### 7.1 Legacy `Analyzer` (`legacy_logsage/analyzer/engine.py`)
 
 Constructed with **keyword and positional arguments**, not `config=...`:
 
@@ -298,7 +301,12 @@ The subset that **`LogSageRunner`** / **`LogAnalyzer`** actually consume for Log
 
 ### 7.4 LogSage backends
 
-**MCP (Model Context Protocol):** stdio subprocess to the MCP server in `mcp_integration/`; the client calls the `log_analyzer` tool with `log_path` and LLM parameters. No separate network server for MCP itself. Details: `mcp_integration/README.md`.
+**MCP (Model Context Protocol):** stdio subprocess to the MCP server in
+`mcp_integration/`; packaged installs expose `fr_analyzer`. Source-checkout
+legacy LogSage orchestration launches the same server with
+`--enable-legacy-logsage` and calls `log_analyzer` / `log_fr_analyzer` with log
+paths and LLM parameters. No separate network server for MCP itself. Details:
+`mcp_integration/README.md`.
 
 **In-process:** same LogSage logic without a subprocess; `LogAnalyzer` holds the analyzer under a lock.
 
@@ -376,17 +384,12 @@ workload stop/restart policy and does not override the LogSage-derived
 attribution/
 ├── ARCHITECTURE.md          ← this file
 ├── README.md
-├── analyzer/
-│   ├── engine.py            # Analyzer (coalescing, submit/analyze, delegates to LogAnalyzer)
-│   └── __init__.py          # re-exports pipeline + result types for convenience
 ├── api_keys.py
 ├── base.py
-├── combined_log_fr/         # CombinedLogFR + merge_log_fr_llm
 ├── coalescing/              # RequestCoalescer, LogAnalysisCoalesced, coalesced_cache
-├── controller.py            # AttributionController boundary and config
-├── log_analyzer/            # NVRxLogAnalyzer implementation and package export
-├── mcp_integration/         # MCP client/server (see mcp_integration/README.md)
-├── orchestration/           # LogAnalyzer, analysis_pipeline, job, splitlog, slurm_parser, types, config
+├── legacy_logsage/          # source-only old Analyzer/LogAnalyzer/SPLITLOG/LogSage/MCP tools
+├── mcp_integration/         # packaged FR MCP client/server (see mcp_integration/README.md)
+├── orchestration/           # packaged shared types/config/http/pipeline helpers
 ├── postprocessing/          # Dataflow record, poster, Slack
 ├── trace_analyzer/          # FR dumps, collective analysis
 └── straggler/               # Profiling utilities; separate from LogAnalyzer attribution

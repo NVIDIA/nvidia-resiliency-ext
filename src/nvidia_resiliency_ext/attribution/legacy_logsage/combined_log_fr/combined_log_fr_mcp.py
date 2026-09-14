@@ -11,9 +11,15 @@ import os
 from typing import Any
 
 from nvidia_resiliency_ext.attribution.base import AttributionState
-from nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr import CombinedLogFR
-from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import unpack_run_result
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+from nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr import (
+    CombinedLogFR,
+)
+from nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.llm_merge import (
+    unpack_run_result,
+)
+from nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage import (
+    NVRxLogAnalyzer,
+)
 from nvidia_resiliency_ext.attribution.orchestration.config import (
     MODULE_LOG_ANALYZER,
     MODULE_LOG_FR_ANALYZER,
@@ -215,10 +221,8 @@ class CombinedLogFRMCPOrchestrator:
         fr_kw: dict[str, Any] = {
             "fr_path": fr_path,
             "pattern": str(arguments.get("pattern", "_dump_*")),
-            "model": arguments.get("model"),
             "verbose": bool(arguments.get("verbose", False)),
             "health_check": bool(arguments.get("health_check", False)),
-            "llm_analyze": bool(arguments.get("llm_analyze", False)),
             "threshold": arguments.get("threshold"),
         }
 

@@ -11,7 +11,9 @@ import unittest
 PY310_PLUS = sys.version_info >= (3, 10)
 
 if PY310_PLUS:
-    from nvidia_resiliency_ext.attribution.orchestration.splitlog import SplitlogTracker
+    from nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.splitlog import (
+        SplitlogTracker,
+    )
 
 
 @unittest.skipUnless(PY310_PLUS, "attribution tests require Python 3.10+")
@@ -41,6 +43,31 @@ class TestFindLogFiles(unittest.TestCase):
             tracker = SplitlogTracker()
             found = tracker._find_log_files(tmp, "2058365")
             self.assertEqual(len(found), 1)
+
+    def test_symlinked_log_file_outside_allowed_root_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            allowed = os.path.join(tmp, "allowed")
+            logs_dir = os.path.join(allowed, "logs")
+            outside = os.path.join(tmp, "outside")
+            os.makedirs(logs_dir)
+            os.makedirs(outside)
+
+            valid = os.path.join(logs_dir, "app_2058365_cycle1.log")
+            outside_target = os.path.join(outside, "app_2058365_cycle0.log")
+            escaped_link = os.path.join(logs_dir, "app_2058365_cycle0.log")
+            with open(valid, "w", encoding="utf-8") as f:
+                f.write("safe")
+            with open(outside_target, "w", encoding="utf-8") as f:
+                f.write("outside")
+            try:
+                os.symlink(outside_target, escaped_link)
+            except (AttributeError, NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink not available: {exc}")
+
+            tracker = SplitlogTracker(allowed_root=allowed)
+            found = tracker._find_log_files(logs_dir, "2058365")
+
+            self.assertEqual(found, [valid])
 
 
 if __name__ == "__main__":

@@ -20,7 +20,13 @@ from .l1 import (
     EvidenceExtractor,
     EvidenceToolsFactory,
     L1EvidenceResult,
+    L1ExecutionAssessment,
+    L1ExecutionReason,
+    L1ExecutionStatus,
+    L1ParseStatus,
+    L1ResultQuality,
     ModelRoute,
+    pending_output_health,
 )
 from .l2 import L2Result
 from .models import (
@@ -213,7 +219,8 @@ class MultiRouteCoordinator:
 
         model_results = tuple(run[0] for run in route_runs)
         deadline_exceeded_route_count = sum(
-            result.execution_status == "deadline_exceeded" for result in model_results
+            _route_unusable_reason(result) == L1ExecutionReason.ANALYSIS_DEADLINE_EXCEEDED.value
+            for result in model_results
         )
         shared_analysis = _collect_all_shared_analysis(
             prepared,
@@ -246,6 +253,7 @@ class MultiRouteCoordinator:
                         route.route_id: {
                             "route": _model_route_metadata(route),
                             "execution_status": route_result.execution_status,
+                            "l1_execution_assessment": dict(route_result.l1_execution_assessment),
                             "l1_usable": route_result.l1_usable,
                             "error": route_result.error,
                             "analysis_result": route_result.analysis_result.to_payload(),
@@ -299,7 +307,7 @@ def _publish_collect_all_deterministic(
 ) -> _DeterministicPublication:
     bundle, decision_evidence = _prepared_evidence(prepared)
     pending_l1_result = L1EvidenceResult.disabled()
-    pending_l1_health = {"status": "pending", "usable": False, "errors": []}
+    pending_l1_health = pending_output_health()
     deterministic_outcome = build_decision_outcome(
         bundle=bundle,
         decision_evidence=decision_evidence,
@@ -361,6 +369,8 @@ def _publish_collect_all_deterministic(
                 deterministic_failure_facts=(deterministic_outcome.deterministic_failure_facts),
                 selected_failure_facts=deterministic_outcome.selected_failure_facts,
                 history=deterministic_outcome.history,
+                cycle_history=deterministic_outcome.cycle_history,
+                path_selection=deterministic_outcome.path_selection.to_payload(),
                 retry_policy=deterministic_outcome.retry_policy,
                 l0_reused=prepared.l0_reused,
                 l2_wall_clock_s=0.0,
@@ -413,9 +423,10 @@ def _log_unavailable_collect_all_run(
             model=route.model,
             endpoint=route.endpoint,
             credential_ref=route.credential_ref,
-            execution_status="not_run_log_unavailable",
+            execution_status=L1ExecutionStatus.NOT_RUN.value,
             l1_usable=False,
             analysis_result=deterministic_result,
+            l1_execution_assessment=_not_run_l1_assessment(),
         )
         for route in routes
     )
@@ -450,7 +461,7 @@ def _log_unavailable_collect_all_run(
         "model_routes": {
             route.route_id: {
                 "route": _model_route_metadata(route),
-                "execution_status": "not_run_log_unavailable",
+                "execution_status": L1ExecutionStatus.NOT_RUN.value,
                 "l1_usable": False,
                 "analysis_result": deterministic_result.to_payload(),
                 "analyzer_trace": deterministic_trace,
@@ -588,9 +599,13 @@ def _run_model_route(
                 model=route.model,
                 endpoint=route.endpoint,
                 credential_ref=route.credential_ref,
-                execution_status="orchestration_error",
+                execution_status=L1ExecutionStatus.FAILED.value,
                 l1_usable=False,
                 analysis_result=deterministic_result,
+                l1_execution_assessment=_failed_l1_assessment(
+                    L1ExecutionReason.ORCHESTRATION_ERROR,
+                    error,
+                ),
                 error=error,
             ),
             {
@@ -603,23 +618,18 @@ def _run_model_route(
     result = run.result
     trace = run.trace
     l1_layer = (trace.get("layers") or {}).get("L1") or {}
-    l1_usable = bool(l1_layer.get("output_usable"))
+    l1_execution_assessment = dict(l1_layer.get("execution_assessment") or {})
+    l1_usable = bool(l1_execution_assessment.get("usable"))
     l1_trace = trace.get("l1") or {}
     errors = [str(error) for error in l1_trace.get("errors") or ()]
-    anomalies = l1_trace.get("anomalies") or {}
-    if l1_usable:
-        execution_status = "completed"
-    elif anomalies.get("deadline_exceeded"):
-        execution_status = "deadline_exceeded"
-    elif anomalies.get("provider_error"):
-        execution_status = "provider_error"
-    elif l1_trace.get("malformed"):
-        execution_status = "malformed"
-    else:
-        execution_status = "degraded"
-    route_analysis_result = (
-        deterministic_result if execution_status == "deadline_exceeded" else result
+    execution_status = str(
+        l1_execution_assessment.get("execution_status") or L1ExecutionStatus.FAILED.value
     )
+    deadline_exceeded = (
+        l1_execution_assessment.get("unusable_reason")
+        == L1ExecutionReason.ANALYSIS_DEADLINE_EXCEEDED.value
+    )
+    route_analysis_result = deterministic_result if deadline_exceeded else result
     return (
         ModelAnalysisResult(
             route_id=route.route_id,
@@ -629,6 +639,7 @@ def _run_model_route(
             execution_status=execution_status,
             l1_usable=l1_usable,
             analysis_result=route_analysis_result,
+            l1_execution_assessment=l1_execution_assessment,
             error="; ".join(errors) if errors else None,
         ),
         dict(trace),
@@ -732,9 +743,13 @@ def _orchestration_error_route_result(
             model=route.model,
             endpoint=route.endpoint,
             credential_ref=route.credential_ref,
-            execution_status="orchestration_error",
+            execution_status=L1ExecutionStatus.FAILED.value,
             l1_usable=False,
             analysis_result=deterministic_result,
+            l1_execution_assessment=_failed_l1_assessment(
+                L1ExecutionReason.ORCHESTRATION_ERROR,
+                error,
+            ),
             error=error,
         ),
         {"routing_error": error, "route": _model_route_metadata(route)},
@@ -753,19 +768,51 @@ def _deadline_exceeded_route_result(
             model=route.model,
             endpoint=route.endpoint,
             credential_ref=route.credential_ref,
-            execution_status="deadline_exceeded",
+            execution_status=L1ExecutionStatus.FAILED.value,
             l1_usable=False,
             analysis_result=deterministic_result,
+            l1_execution_assessment=_failed_l1_assessment(
+                L1ExecutionReason.ANALYSIS_DEADLINE_EXCEEDED,
+                error,
+            ),
             error=error,
         ),
         {
             "route": _model_route_metadata(route),
-            "execution_status": "deadline_exceeded",
+            "execution_status": L1ExecutionStatus.FAILED.value,
             "deadline_exceeded": True,
             "routing_error": error,
         },
         None,
     )
+
+
+def _not_run_l1_assessment() -> dict[str, Any]:
+    return L1ExecutionAssessment(
+        execution_status=L1ExecutionStatus.NOT_RUN,
+        result_quality=L1ResultQuality.NOT_APPLICABLE,
+        parse_status=L1ParseStatus.NOT_RUN,
+        evidence_present=False,
+    ).to_payload()
+
+
+def _failed_l1_assessment(
+    reason: L1ExecutionReason,
+    error: str,
+) -> dict[str, Any]:
+    return L1ExecutionAssessment(
+        execution_status=L1ExecutionStatus.FAILED,
+        result_quality=L1ResultQuality.UNUSABLE,
+        parse_status=L1ParseStatus.NOT_AVAILABLE,
+        evidence_present=False,
+        reason_codes=(reason,),
+        errors=(error,),
+    ).to_payload()
+
+
+def _route_unusable_reason(result: ModelAnalysisResult) -> str | None:
+    value = result.l1_execution_assessment.get("unusable_reason")
+    return str(value) if value else None
 
 
 def _model_route_metadata(route: ModelRoute) -> dict[str, Any]:

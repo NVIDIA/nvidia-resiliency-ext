@@ -40,7 +40,8 @@ from nvidia_resiliency_ext.attribution.orchestration.types import (
 
 _ATTRIBUTION_EXTRA_MESSAGE = (
     "LogSage attribution dependencies are not installed. "
-    "Install with: pip install 'nvidia-resiliency-ext[attribution]'"
+    "Install src/nvidia_resiliency_ext/attribution/legacy_logsage/requirements.txt "
+    "in a source checkout."
 )
 
 try:

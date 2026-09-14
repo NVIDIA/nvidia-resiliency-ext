@@ -24,17 +24,22 @@ source "${USER_ENV_FILE}"
 SKILL_DIR="$(dirname "${SCRIPT_DIR}")"
 NVRX_SRC_DIR="$(cd "${SKILL_DIR}/../../.." && pwd)"
 
-LOGSAGE_PY="${SKILL_DIR}/log-analysis/scripts/nvrx_logsage.py"
+RESTART_AGENT_MODULE="nvidia_resiliency_ext.attribution.restart_agent.cli"
 FR_ANALYSIS_MODULE="nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution"
 SCORE_PY="${SCRIPT_DIR}/score_attribution.py"
-LOG_ANALYSIS_MODEL="${LOG_ANALYSIS_MODEL:-${NVRX_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b}}"
-LOG_ANALYSIS_BASE_URL="${LOG_ANALYSIS_BASE_URL:-${NVRX_LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}}"
+RESTART_AGENT_CONFIG="${RESTART_AGENT_CONFIG:-}"
+RESTART_AGENT_MODEL="${RESTART_AGENT_MODEL:-${LOG_ANALYSIS_MODEL:-${NVRX_LLM_MODEL:-nvidia/nemotron-3-super-120b-a12b}}}"
+RESTART_AGENT_BASE_URL="${RESTART_AGENT_BASE_URL:-${LOG_ANALYSIS_BASE_URL:-${NVRX_LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}}}"
 JUDGE_MODEL="${JUDGE_MODEL:-qwen/qwen3.5-397b-a17b}"
 JUDGE_BASE_URL="${JUDGE_BASE_URL:-https://integrate.api.nvidia.com/v1}"
 FR_PATTERN="${FR_PATTERN:-_dump_*}"
 
 # Ensure nvidia_resiliency_ext is importable from source tree
 export PYTHONPATH="${NVRX_SRC_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+export LLM_API_KEY="${LLM_API_KEY:-}"
+export LLM_API_KEY_FILE="${LLM_API_KEY_FILE:-}"
+export JUDGE_API_KEY="${JUDGE_API_KEY:-}"
+export JUDGE_API_KEY_FILE="${JUDGE_API_KEY_FILE:-}"
 
 strip_injection_markers() {
     local input_log="$1"
@@ -108,7 +113,7 @@ while true; do
             fi
             echo "    run_valid: ${RUN_VALID}"
 
-            # Strip fault-injection markers so neither nvrx_logsage nor the judge
+            # Strip fault-injection markers so neither restart-agent nor the judge
             # can see which rank/fault was injected — evaluation must be fair.
             # This removes:
             # - scheduler lines from megatron.core.fault_injector ("FAULT INJECTION")
@@ -116,19 +121,38 @@ while true; do
             STRIPPED_LOG=$(mktemp /tmp/fi_log_stripped.XXXXXX)
             strip_injection_markers "${LOG_FILE}" "${STRIPPED_LOG}"
 
-            # nvrx_logsage.py prints 5 newline-joined fields to stdout:
-            #   line 1: restart_decision
-            #   line 2: error_explanation  (often empty)
-            #   line 3+: attribution_text  (multi-line, starts with "Attribution:")
-            #   then: additional_detail    (often empty)
-            #   last line: checkpoint_saved ("True" / "False")
-            LOG_OUT=$(python3 "${LOGSAGE_PY}" \
-                --log-path "${STRIPPED_LOG}" \
-                --model "${LOG_ANALYSIS_MODEL}" \
-                --base_url "${LOG_ANALYSIS_BASE_URL}" \
-                --emit-stdout \
-                --exclude_nvrx_logs 2>/dev/null || echo "")
-            LOG_RESTART=$(echo "${LOG_OUT}" | head -1)
+            # restart-agent prints one JSON object to stdout.
+            RESTART_AGENT_ARGS=("${STRIPPED_LOG}" "--job-id" "${JOB_ID}")
+            if [[ -n "${RESTART_AGENT_CONFIG}" ]]; then
+                RESTART_AGENT_ARGS+=("--config" "${RESTART_AGENT_CONFIG}")
+            else
+                RESTART_AGENT_ARGS+=(
+                    "--llm-model" "${RESTART_AGENT_MODEL}"
+                    "--llm-base-url" "${RESTART_AGENT_BASE_URL}"
+                )
+                if [[ -n "${LLM_API_KEY_FILE:-}" ]]; then
+                    RESTART_AGENT_ARGS+=("--llm-api-key-file" "${LLM_API_KEY_FILE}")
+                fi
+            fi
+            LOG_OUT=$(python3 -m "${RESTART_AGENT_MODULE}" "${RESTART_AGENT_ARGS[@]}" 2>/dev/null || echo "")
+            LOG_RESTART=$(printf '%s' "${LOG_OUT}" | python3 -c \
+                'import json,sys
+payload=json.load(sys.stdin)
+if isinstance(payload, dict) and payload.get("decision"):
+    print(payload["decision"])
+    raise SystemExit(0)
+if isinstance(payload, dict):
+    for route in payload.get("model_results") or ():
+        result = route.get("analysis_result") if isinstance(route, dict) else None
+        if isinstance(result, dict) and result.get("decision"):
+            print(result["decision"])
+            raise SystemExit(0)
+    deterministic = payload.get("deterministic_result")
+    if isinstance(deterministic, dict):
+        print(deterministic.get("decision", ""))
+        raise SystemExit(0)
+print("")' \
+                2>/dev/null || echo "")
             echo "    restart_decision: ${LOG_RESTART:-<empty>}"
         else
             echo "    WARN: no log file at ${LOG_GLOB}"

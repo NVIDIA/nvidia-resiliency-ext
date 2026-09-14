@@ -86,6 +86,38 @@ def test_chunked_reader_replaces_invalid_utf8_without_replaying_boundary(tmp_pat
     assert snapshot.lines == ("valid", "invalid \N{REPLACEMENT CHARACTER} byte")
 
 
+@pytest.mark.parametrize("chunk_bytes", [1, 2, 3, 5])
+def test_malformed_multibyte_input_has_chunk_independent_l0a_output(tmp_path, chunk_bytes):
+    # Arrange
+    log_path = tmp_path / "malformed-boundary.log"
+    log_path.write_bytes(
+        "iteration 7 / 100 | consumed samples: 64 | café\n".encode("utf-8")
+        + b"RuntimeError: invalid bytes \xe2\x82 before failure\n"
+    )
+
+    # Act
+    chunked = ProgressiveL0Accumulator(
+        str(log_path),
+        reader=ChunkedLogReader(chunk_bytes=chunk_bytes),
+    ).finalize()
+    single_snapshot = ProgressiveL0Accumulator(
+        str(log_path),
+        reader=ChunkedLogReader(read_mode=SOURCE_READ_MODE_SINGLE_SNAPSHOT),
+    ).finalize()
+
+    # Assert
+    assert canonical_l0a_payload(
+        chunked.bundle,
+        chunked.decision_evidence,
+    ) == canonical_l0a_payload(
+        single_snapshot.bundle,
+        single_snapshot.decision_evidence,
+    )
+    assert chunked.canonical_hash == single_snapshot.canonical_hash
+    assert chunked.source_log.lines == single_snapshot.source_log.lines
+    assert chunked.source_log.lines[1] == "RuntimeError: invalid bytes \ufffd before failure"
+
+
 @pytest.mark.parametrize("terminal_chunk_bytes", [1, 2, 3, 7, 11, 64 * 1024])
 def test_terminal_progressive_and_single_snapshot_have_identical_l0a(
     tmp_path,

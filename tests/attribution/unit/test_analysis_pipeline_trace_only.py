@@ -58,7 +58,7 @@ class TestAnalysisPipelineTraceOnly(unittest.TestCase):
                     return_value="key",
                 ),
                 patch(
-                    "nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge.merge_log_fr_llm",
+                    "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.llm_merge.merge_log_fr_llm",
                     new=fake_merge,
                 ),
             ):
@@ -146,7 +146,7 @@ class TestAnalysisPipelineTraceOnly(unittest.TestCase):
                 return {"fr": "analysis"}
 
             with patch(
-                "nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge.merge_log_fr_llm",
+                "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.llm_merge.merge_log_fr_llm",
                 new=fake_merge,
             ):
                 result = await run_attribution_pipeline(
@@ -168,7 +168,7 @@ class TestAnalysisPipelineTraceOnly(unittest.TestCase):
 
         async def _run():
             with patch(
-                "nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge.merge_log_fr_llm",
+                "nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.llm_merge.merge_log_fr_llm",
                 new=fake_merge,
             ):
                 result = await run_attribution_pipeline(

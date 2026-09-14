@@ -13,7 +13,9 @@ from nvidia_resiliency_ext.attribution.base import (
     merged_attribution_config,
     normalize_attribution_args,
 )
-from nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage import NVRxLogAnalyzer
+from nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage import (
+    NVRxLogAnalyzer,
+)
 from nvidia_resiliency_ext.attribution.logging_utils import bounded_log_value
 from nvidia_resiliency_ext.attribution.orchestration.config import (
     DEFAULT_LLM_BASE_URL,
@@ -146,9 +148,6 @@ def main():
         '-c', '--health-check', action='store_true', help='Show node health check results'
     )
     parser.add_argument(
-        '-l', '--llm-analyze', action='store_true', help='Use LLM to analyze the output'
-    )
-    parser.add_argument(
         '--exclude_nvrx_logs', action='store_true', help='Exclude nvrx logs from the input data'
     )
     parser.add_argument(
@@ -164,7 +163,7 @@ def main():
 
     log_analyzer = NVRxLogAnalyzer(args_dict)
     log_result = log_analyzer.run_sync(args_dict)
-    fr_kw = {**args_dict, "llm_analyze": False}
+    fr_kw = dict(args_dict)
     fr_result = CollectiveAnalyzer(fr_kw).run_sync(fr_kw)
     log_actual, _ = unpack_run_result(log_result)
     fr_actual, _ = unpack_run_result(fr_result)

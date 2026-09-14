@@ -3,7 +3,7 @@
 
 """Orchestrate LogSage (log LLM) and optional NCCL flight-recorder (FR) analysis.
 
-Lives under :mod:`nvidia_resiliency_ext.attribution.orchestration` so :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`
+Lives under :mod:`nvidia_resiliency_ext.attribution.orchestration` so :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer.LogAnalyzer`
 can run **log-only** or **log + FR** (via :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.trace_analyzer.TraceAnalyzer`).
 
 Callers inject LogSage via ``run_logsage`` when the mode needs it.
@@ -40,6 +40,12 @@ from nvidia_resiliency_ext.attribution.trace_analyzer.fr_support import (
 )
 
 from .config import llm_runtime_overrides
+
+_LEGACY_LOG_FR_MERGE_UNAVAILABLE = (
+    "Legacy LogSage/FR LLM merge is not shipped in the main nvidia-resiliency-ext "
+    "wheel. Use the current attrsvc restart-agent backend, or run the legacy merge "
+    "path from a source checkout with langchain-core and langchain-openai installed."
+)
 
 
 class FrDumpPathNotFoundError(Exception):
@@ -189,7 +195,18 @@ async def run_attribution_pipeline(
         and log_result is not None
         and fr_analysis is not None
     ):
-        from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import merge_log_fr_llm
+        try:
+            from nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.llm_merge import (
+                merge_log_fr_llm,
+            )
+        except ModuleNotFoundError as exc:
+            name = exc.name or ""
+            if name.startswith("nvidia_resiliency_ext.attribution.legacy_logsage") or name in {
+                "langchain_core",
+                "langchain_openai",
+            }:
+                raise RuntimeError(_LEGACY_LOG_FR_MERGE_UNAVAILABLE) from exc
+            raise
 
         merge_key = llm_api_key if llm_api_key is not None else load_llm_api_key()
         llm_merged_summary = await merge_log_fr_llm(

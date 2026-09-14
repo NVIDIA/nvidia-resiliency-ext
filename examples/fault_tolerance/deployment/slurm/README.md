@@ -7,7 +7,7 @@ training rank and the rendezvous host. See [../README.md](../README.md) for why.
 ```
 nvrx_singleton_array.sbatch   one generation: rendezvous, gate, ft_launcher, teardown
 submit_chain.sh               computes the array shape and enqueues K generations
-drain_poller.sh               optional: bridges Slurm drain state into an in-job restart
+scheduler_segment_health.sh    optional: publishes scheduler-unavailable array tasks
 ```
 
 ## Requirements
@@ -204,64 +204,88 @@ neither the job nor `squeue` will tell you about.
    precedes the exit that triggers the teardown, and any node that exited cleanly is a
    better witness than task 0's own code. The flag is per-generation and needs no cleanup;
    `cancel_chain` remains the one mechanism that stops the successors.
-
 ---
 
-The section below documents a helper that is **independent of the singleton chain**: it
-serves any in-job (InJob) restart deployment. It ships here because its two safety
-invariants are deployment properties, and `nvrx_singleton_array.sbatch` happens to satisfy
-both — see the end of the section.
+## Scheduler segment-health producer
 
-## `drain_poller.sh` — feed SLURM drained-node info into an in-job (InJob) restart
+`scheduler_segment_health.sh` exposes a sourceable interface:
+`scheduler_segment_health_configure` validates and initializes configuration
+without querying Slurm, `scheduler_segment_health_poll_once` performs one poll,
+and `scheduler_segment_health_cleanup` releases producer-owned temporary state
+at caller exit. The producer publishes non-empty per-task control markers
+consumed by `SegmentHealthCheck`. The caller owns cadence and handles a failed
+pass:
 
-An InJob restart re-forms the ft_launcher rendezvous **without giving up the SLURM
-allocation**, so it can rejoin a node the scheduler has marked `drain`. SLURM drain state is
-only visible **outside** the container (needs the slurm client), so this poller bridges it in
-via a shared filesystem.
+```bash
+if [[ "${SLURM_ARRAY_TASK_ID}" == "0" ]]; then
+  export NVRX_SEGMENT_HEALTH_CHECK_DIR="<shared-dir>/${SLURM_ARRAY_JOB_ID}/scheduler-segment-health"
+  export SLURM_JOB_PARTITION
+  source scheduler_segment_health.sh
 
-**Producer (this script).** Run it backgrounded on **array task 0's** batch step (outside the
-container). Once per interval it queries `sinfo` for DRAIN-flagged nodes, intersects them with
-each running array task's nodes, and writes one file per task:
-
+  scheduler_segment_health_configure || exit 1
+  scheduler_segment_health_poll_once || \
+    echo "scheduler segment-health poll failed; prior decision preserved" >&2
+fi
 ```
-# STATE_DIR must be per-generation -- key it by SLURM_ARRAY_JOB_ID (invariant 2 below)
-STATE_DIR="<shared-dir>/${SLURM_ARRAY_JOB_ID}/drained" ARRAY_JOB_ID="${SLURM_ARRAY_JOB_ID}" \
-  bash drain_poller.sh &
+
+`nvrx_singleton_array.sbatch` integrates this lifecycle directly. Setting
+`NVRX_SEGMENT_HEALTH_CHECK_DIR` enables the feature; leaving it empty preserves
+the existing launch path. `submit_chain.sh` copies the producer into the run
+directory, and the example's host-side control loop invokes
+`scheduler_segment_health_poll_once` and performs best-effort cleanup when that
+loop exits. The producer itself is a one-shot function: it does not create a
+loop or background process. Every task receives the same
+`--ft-segment-health-check-dir` value:
+
+```bash
+NVRX_SEGMENT_HEALTH_CHECK_DIR=/lustre/run/segment-health ./submit_chain.sh
 ```
 
-Output `${STATE_DIR}/task_<K>.drained`: non-empty ⇒ a node in task K's segment is drained;
-empty ⇒ clean; missing ⇒ not yet polled. One producer serves the whole array (2 slurm queries
-per interval regardless of scale). See the header of `drain_poller.sh` for all knobs.
+The example control-loop interval is 600 seconds and can be changed with
+`NVRX_CONTROL_LOOP_INTERVAL_SECONDS`. A direct `sbatch` submission must
+place `scheduler_segment_health.sh` under `NVRX_WORK_DIR` or set
+`NVRX_SEGMENT_HEALTH_CHECK_PRODUCER` to its readable path.
 
-**Consumer (your integration).** Each task's **first node** reads its own `task_<K>.drained`
-in-container and folds it into ft_launcher's node-health-check **at rendezvous**: non-empty ⇒
-report unhealthy ⇒ ft_launcher exits failure ⇒ SLURM terminates the array task ⇒ a cold spare
-replaces it. Exit non-zero, but not your deployment's "no-restart" code. Only the first node
-needs to read (the file is segment-scoped and SLURM tears down the rest), so there is no
-filesystem read storm.
+### Poll and publication behavior
 
-**Two deployment invariants keep this safe — both load-bearing.** The marker is keyed by task
-index alone and carries no allocation identity, so it is only meaningful while an index maps to
-at most one allocation. Break either invariant and a replacement inherits the previous
-allocation's verdict: it exits unhealthy on a healthy node and loops through spares, or is waved
-through onto a node that really is drained.
+Every poll performs one partition-filtered `sinfo`. When unavailable nodes or
+existing active decisions exist, one array-wide `squeue` builds the complete
+running task-to-node map. Local `scontrol show hostnames` expansion does not
+query `slurmctld` for ordinary bracket hostlists.
 
-1. **`--no-requeue`**, set explicitly in the sbatch. Requeue is the only way an index is
-   re-allocated within an array job, and `NODE_FAIL` requeues automatically wherever the cluster
-   sets `JobRequeue=1` — so it must not be left to inheritance. Requeue preserves both the array
-   job id and the index, so per-generation scoping cannot cover it. Cold spares are fine: a spare
-   comes up under a *new* index whose marker is missing, which fails open. Enforce this where the
-   restart model is known — a launcher that supports both models should refuse to start the poller
-   unless the job declares the no-requeue one, rather than leaving it to convention.
-2. **`STATE_DIR` keyed by `SLURM_ARRAY_JOB_ID`**, i.e. per generation, alongside the other
-   control files. A singleton chain restarts the next generation at index 0, so a `STATE_DIR`
-   shared across generations puts the previous generation's `task_0.drained` exactly where the
-   new task 0 looks. Same rule, and the same reason, as the control dir.
+The producer maps nodes in `DRAIN`, `DOWN`, `FAIL`, or `NO_RESPOND` state and
+publishes:
 
-`nvrx_singleton_array.sbatch` satisfies both already. A deployment that cannot should put the
-allocation identity *in* the marker — e.g. a `nodelist=` line the consumer compares against
-`$SLURM_JOB_NODELIST`, failing open on a mismatch — rather than loosening the consumer's
-single-read contract.
+```text
+segment_health_check.<array_job_id>.<task_id>
+segment_health_check.<array_job_id>.<task_id>.inactive
+segment_health_check_history.<array_job_id>.log
+```
 
-An out-of-container consumer was deliberately avoided: it can't set a controlled exit code and
-would fight ft_launcher's restart logic — the decision belongs where the restart is made.
+A non-empty current task file excludes its task; zero bytes or absence means no
+current exclusion. Its canonical unavailable-node CSV is diagnostic context.
+When a tracked task is absent from two consecutive complete `squeue` results,
+its unsuffixed file is renamed to `.inactive`. One omitted result preserves the
+current decision, guarding against a transiently incomplete scheduler response.
+The producer keeps a process-local set of tasks missing from the prior complete
+poll. Current absence is derived from the new running-task map: a task already
+in the prior set moves inactive, while a first miss becomes the set used by the
+next poll. A producer restart resets this one-poll memory.
+The centralized `.log` is best-effort JSONL audit history.
+
+Each poll reconstructs prior task state from the unsuffixed task files, then changes
+them only after deriving a complete scheduler result. Failed polls preserve
+prior decisions until 30 minutes have elapsed since the last complete poll;
+the producer then clears non-empty current task files and fails open. Per-task
+publication errors do not block other tasks and are reconciled by the next
+invocation's filesystem scan. `sinfo` and `squeue` have 30-second timeouts. The
+surrounding `sbatch` control flow owns invocation cadence.
+
+The clean path performs only `sinfo`: when there are no unavailable nodes and
+no prior decisions, it skips `squeue` and hostlist expansion. Reconciliation
+queries all running array tasks and expands their hostlists locally, so that
+path scales with the number of running tasks and their total allocated nodes.
+
+The initial deployment requires an explicitly non-requeued array and an output
+directory scoped to `SLURM_ARRAY_JOB_ID`. Producer logs remain in batch
+stdout/stderr.

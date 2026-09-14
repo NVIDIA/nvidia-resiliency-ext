@@ -10,13 +10,13 @@ results are cached per file path—same mapping as the HTTP service. We run a
 dedicated thread with an event loop and submit work to it from sync code.
 
 **MCP backend** (``use_lib_log_analysis=False``): after
-:meth:`~nvidia_resiliency_ext.attribution.controller.AttributionController.start`,
+:meth:`~nvidia_resiliency_ext.attribution.legacy_logsage.controller.AttributionController.start`,
 the controller's analyzer runs ``LOG_AND_TRACE`` with flight-recorder discovery enabled.
 Plain ``LOG_AND_TRACE`` uses the MCP ``log_fr_analyzer`` tool to collect LogSage + FR
 without merge LLM; ``LOG_AND_TRACE_WITH_LLM`` uses the same tool with merge enabled.
 
 The HTTP service (nvidia_resiliency_ext.services.attrsvc) does not use this module; it builds
-:class:`~nvidia_resiliency_ext.attribution.controller.AttributionController` with
+:class:`~nvidia_resiliency_ext.attribution.legacy_logsage.controller.AttributionController` with
 ``ALLOWED_ROOT`` from config, and ``analyze()`` / ``submit()`` validate paths
 under that root.
 
@@ -220,7 +220,7 @@ def run_log_analysis_sync(
     Returns:
         Result dict from the controller on success, or None on timeout/error/skip.
     """
-    from .types import LogAnalyzerError
+    from nvidia_resiliency_ext.attribution.orchestration.types import LogAnalyzerError
 
     ts = timeout_seconds if timeout_seconds is not None else 60.0
     if not _get_or_create_controller(
@@ -281,7 +281,7 @@ def notify_log_path_sync(
     Intended for a short fire-and-forget call (e.g. daemon thread) before workers start;
     failures are logged only.
     """
-    from .types import LogAnalyzerError
+    from nvidia_resiliency_ext.attribution.orchestration.types import LogAnalyzerError
 
     ts = timeout_seconds if timeout_seconds is not None else 60.0
     if not _get_or_create_controller(

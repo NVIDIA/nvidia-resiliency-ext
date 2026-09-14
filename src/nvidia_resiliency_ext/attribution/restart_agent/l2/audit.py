@@ -9,19 +9,23 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from ..current_failure_facts import build_attempt_failure_facts
 from ..identity import (
     canonical_observed_fingerprint,
-    extract_data_position_fingerprint,
     extract_failure_iteration,
     extract_gpu,
     extract_node,
     extract_rank,
-    grounded_artifact_path,
 )
 from ..infrastructure.log_source import LogSnapshot
 from ..l0.decision import canonical_identity_anchor_line, distributed_incident_for_line
 from ..l1.contracts import L1EvidenceResult
-from ..l1.response_contract import FAILURE_DOMAIN_SUPPORT_TAG, RETRY_OUTLOOK_SUPPORT_TAG
+from ..l1.response_contract import (
+    AFFECTED_ARTIFACT_PATH_FIELD,
+    DIRECT_FAILURE_OBJECT_PATH_FIELD,
+    FAILURE_DOMAIN_SUPPORT_TAG,
+    RETRY_OUTLOOK_SUPPORT_TAG,
+)
 from ..models import (
     AffectedEntity,
     AssessmentStatus,
@@ -32,19 +36,17 @@ from ..models import (
     FaultOutcome,
     L0Bundle,
     L0ModelFacingView,
-    ModelRecoveryAssessment,
 )
-from .failure_facts import build_attempt_failure_facts, build_grounded_affected_entity
-from .grounding import model_visible_line_numbers, model_visible_line_texts
+from .failure_facts import select_grounded_affected_entity
+from .grounding import (
+    model_visible_line_texts,
+    model_visible_value_line_numbers,
+    text_contains_exact_value,
+)
 
-PROHIBITED_MODEL_FIELDS = {
-    "user_failure",
-    "not_user_failure",
-    "decision",
-    "decision_basis",
-    "evidence_coverage",
-}
 NEARBY_EVIDENCE_LINE_RADIUS = 5
+MIN_ABBREVIATED_FRAGMENT_ALNUM_CHARS = 8
+_ELLIPSIS_RE = re.compile(r"(?:\.\.\.\[truncated\]|\.\.\.|…)")
 
 
 @dataclass(frozen=True)
@@ -59,44 +61,74 @@ class L2GroundingInput:
 
 @dataclass(frozen=True)
 class L2Result:
-    """Grounded L1 semantics plus optional audit diagnostics."""
+    """Independently grounded L1 primary and selected-observation tracks."""
 
     primary: FailureEvidence | None
-    enriched_failure_facts: AttemptFailureFacts | None
-    used: bool
+    selected_observed_failure: FailureEvidence | None
+    primary_failure_facts: AttemptFailureFacts | None
+    observation_failure_facts: AttemptFailureFacts | None
     grounding_status: str
     audit_status: str
-    root_cause_assessment: Mapping[str, Any] | None = None
-    model_recovery_assessment: ModelRecoveryAssessment | None = None
-    recovery_assessment_used: bool = False
-    recovery_assessment_policy_grounded: bool = False
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def used(self) -> bool:
+        return self.primary_failure_facts is not None or self.observation_failure_facts is not None
 
     def to_payload(self) -> dict[str, Any]:
         payload = dict(self.diagnostics)
+        observation_grounding = payload.get("observation_grounding")
+        observation_status = (
+            str(observation_grounding.get("grounding_status") or "unavailable")
+            if isinstance(observation_grounding, Mapping)
+            else (
+                self.grounding_status
+                if self.observation_failure_facts is not None
+                else "unavailable"
+            )
+        )
+        primary_status = str(payload.get("primary_grounding_status") or self.grounding_status)
         payload.update(
             {
                 "used": self.used,
                 "grounding_status": self.grounding_status,
                 "audit_status": self.audit_status,
                 "primary_used": self.primary is not None and self.used,
-                "enriched_failure_facts": (
-                    self.enriched_failure_facts.to_payload()
-                    if self.enriched_failure_facts is not None
+                "selected_observation_used": (
+                    self.selected_observed_failure is not None and self.used
+                ),
+                "grounded_selected_observation": (
+                    self.selected_observed_failure.to_failure_payload()
+                    if self.selected_observed_failure is not None
                     else None
                 ),
-                "recovery_assessment_used": self.recovery_assessment_used,
-                "recovery_assessment_policy_grounded": (self.recovery_assessment_policy_grounded),
-                "root_cause_assessment": (
-                    dict(self.root_cause_assessment)
-                    if self.root_cause_assessment is not None
-                    else None
-                ),
-                "model_recovery_assessment": (
-                    self.model_recovery_assessment.to_payload()
-                    if self.model_recovery_assessment is not None
-                    else None
-                ),
+                "track_grounding": {
+                    "primary": {
+                        "status": (
+                            primary_status
+                            if self.primary_failure_facts is not None
+                            else "unavailable"
+                        ),
+                        "published": self.primary_failure_facts is not None,
+                    },
+                    "observation": {
+                        "status": observation_status,
+                        "published": self.observation_failure_facts is not None,
+                    },
+                },
+                "enriched_failure_tracks": {
+                    "primary": (
+                        self.primary_failure_facts.to_payload()
+                        if self.primary_failure_facts is not None
+                        else None
+                    ),
+                    "observation": (
+                        self.observation_failure_facts.to_payload()
+                        if self.observation_failure_facts is not None
+                        else None
+                    ),
+                },
+                "audit_influence": "observational_only",
             }
         )
         return payload
@@ -105,17 +137,17 @@ class L2Result:
     def not_run(cls, reason: str) -> "L2Result":
         return cls(
             primary=None,
-            enriched_failure_facts=None,
-            used=False,
+            selected_observed_failure=None,
+            primary_failure_facts=None,
+            observation_failure_facts=None,
             grounding_status="not_run",
             audit_status="not_run",
-            recovery_assessment_policy_grounded=False,
             diagnostics={
+                "audit_influence": "observational_only",
                 "not_run_reason": reason,
                 "field_findings": {},
                 "field_finding_codes": {},
                 "findings": [],
-                "ignored_prohibited_fields": [],
                 "citation_audits": [],
                 "grounding_adjustments": [],
                 "recovery_field_audits": [],
@@ -131,38 +163,14 @@ class PrimaryGrounding:
     line: int
     log_line: str
     source_line_available: bool
+    model_visible_support: bool
+    primary_grounded: bool
     grounding_method: str
     grounded_evidence: tuple[Mapping[str, Any], ...]
     resolved_lines: Mapping[int, int]
     cited_lines: frozenset[int]
-    visible_lines: frozenset[int]
-
-
-@dataclass(frozen=True)
-class RecoveryAudit:
-    """Grounded support and credibility signals for the model recovery assessment."""
-
-    root_cause_assessment: Mapping[str, Any]
-    recovery_assessment: Mapping[str, Any]
-    failure_domain_value: str
-    failure_domain_status: str
-    failure_domain_confidence: int
-    retry_outlook_value: str
-    retry_outlook_status: str
-    retry_outlook_confidence: int
-    root_cause_status: str
-    failure_domain_supporting_lines: frozenset[int]
-    retry_outlook_supporting_lines: frozenset[int]
-    unresolved_supporting_lines: tuple[int, ...]
-
-
-@dataclass(frozen=True)
-class RecoverySupport:
-    """Resolved source support attached to the model recovery assessment."""
-
-    failure_domain_lines: frozenset[int]
-    retry_outlook_lines: frozenset[int]
-    unresolved_lines: tuple[int, ...]
+    text_visible_lines: frozenset[int]
+    failure_identity_grounding: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -192,45 +200,69 @@ class CitationGrounding:
 
 def result_from_payload(
     primary: FailureEvidence | None,
+    selected_observed_failure: FailureEvidence | None,
     payload: Mapping[str, Any],
     model_view: L0ModelFacingView,
 ) -> L2Result:
     details = dict(payload)
-    root_cause = details.pop("root_cause_assessment", None)
-    assessment = details.pop("model_recovery_assessment", None)
-    used = bool(details.pop("used", False))
+    details.pop("used", None)
     grounding_status = str(details.pop("grounding_status", "unavailable"))
     audit_status = str(details.pop("audit_status", "findings"))
-    recovery_assessment_used = bool(details.pop("recovery_assessment_used", False))
-    recovery_assessment_policy_grounded = bool(
-        details.pop("recovery_assessment_policy_grounded", False)
-    )
+    details["primary_grounding_status"] = grounding_status if primary is not None else "unavailable"
     details.pop("primary_used", None)
-    enriched_failure_facts = (
+    identity_lineage = details.get("identity_lineage")
+    same_l0_incident = bool(
+        isinstance(identity_lineage, Mapping)
+        and identity_lineage.get("relationship_to_l0") == "same_canonical_incident"
+    )
+    primary_failure_facts = (
         build_attempt_failure_facts(
             primary,
             model_view.decision_evidence,
             source=AttemptFailureFactsSource.L2_GROUNDED,
             identity_anchor_line=_optional_int(details.get("stable_identity_anchor_line")),
             identity_anchor_reason=_optional_str(details.get("stable_identity_anchor_reason")),
+            root_locality=(model_view.decision_evidence.locality if same_l0_incident else {}),
+            selected_observation=None,
         )
         if primary is not None
         else None
     )
+    observation_failure_facts = (
+        build_attempt_failure_facts(
+            None,
+            model_view.decision_evidence,
+            source=AttemptFailureFactsSource.L2_GROUNDED,
+            identity_anchor_line=selected_observed_failure.line,
+            identity_anchor_reason="model_selected_observation",
+            selected_observation=selected_observed_failure,
+        )
+        if selected_observed_failure is not None
+        else None
+    )
+    observation_grounding = details.get("observation_grounding")
+    observation_status = (
+        str(observation_grounding.get("grounding_status") or "unavailable")
+        if isinstance(observation_grounding, Mapping)
+        else (grounding_status if primary is None else "unavailable")
+    )
+    aggregate_grounding_status = (
+        "grounded"
+        if primary_failure_facts is not None or observation_failure_facts is not None
+        else grounding_status
+    )
+    if (
+        isinstance(observation_grounding, Mapping)
+        and observation_grounding.get("audit_status") == "findings"
+    ):
+        audit_status = "findings"
     return L2Result(
         primary=primary,
-        enriched_failure_facts=enriched_failure_facts,
-        used=used,
-        grounding_status=grounding_status,
+        selected_observed_failure=selected_observed_failure,
+        primary_failure_facts=primary_failure_facts,
+        observation_failure_facts=observation_failure_facts,
+        grounding_status=aggregate_grounding_status,
         audit_status=audit_status,
-        root_cause_assessment=(dict(root_cause) if isinstance(root_cause, Mapping) else None),
-        model_recovery_assessment=(
-            ModelRecoveryAssessment.from_mapping(assessment)
-            if isinstance(assessment, Mapping)
-            else None
-        ),
-        recovery_assessment_used=recovery_assessment_used,
-        recovery_assessment_policy_grounded=recovery_assessment_policy_grounded,
         diagnostics=details,
     )
 
@@ -238,26 +270,30 @@ def result_from_payload(
 def ground_and_audit_model_evidence(
     grounding_input: L2GroundingInput,
 ) -> L2Result:
-    primary, payload = _audit_model_evidence_payload(
+    primary, selected_observed_failure, payload = _audit_model_evidence_payload(
         grounding_input.bundle,
         grounding_input.model_view,
         grounding_input.l1_result,
         grounding_input.source_log,
     )
-    return result_from_payload(primary, payload, grounding_input.model_view)
+    return result_from_payload(
+        primary,
+        selected_observed_failure,
+        payload,
+        grounding_input.model_view,
+    )
 
 
 def _new_audit(l1_result: L1EvidenceResult) -> dict[str, Any]:
     return {
         "used": False,
         "audit_status": "findings",
+        "audit_influence": "observational_only",
         "primary_used": False,
-        "recovery_assessment_used": False,
-        "recovery_assessment_policy_grounded": False,
+        "recovery_assessment_audited": False,
         "field_findings": {},
         "field_finding_codes": {},
         "findings": [],
-        "ignored_prohibited_fields": [],
         "citation_audits": [],
         "grounding_adjustments": [],
         "recovery_field_audits": [],
@@ -269,22 +305,10 @@ def _normalized_l1_evidence(
     l1_result: L1EvidenceResult,
     audit: dict[str, Any],
 ) -> dict[str, Any]:
-    if not l1_result.success or l1_result.evidence is None:
+    if not l1_result.success or l1_result.semantic_payload is None:
         raise ValueError("L2 grounding requires a structurally usable L1 response")
 
-    evidence = dict(l1_result.evidence)
-    prohibited = sorted(PROHIBITED_MODEL_FIELDS.intersection(evidence))
-    if not prohibited:
-        return evidence
-
-    audit["ignored_prohibited_fields"] = prohibited
-    _record_field_finding(
-        audit,
-        "top_level",
-        "ignored prohibited model fields: " + ", ".join(prohibited),
-        code="prohibited_fields_ignored",
-    )
-    return {key: value for key, value in evidence.items() if key not in prohibited}
+    return dict(l1_result.semantic_payload)
 
 
 def _ground_primary_selection(
@@ -302,12 +326,16 @@ def _ground_primary_selection(
     assert isinstance(primary, Mapping)
 
     causal_role = str(primary.get("causal_role") or "")
-    if causal_role not in {CausalRole.INITIATING.value, CausalRole.UNKNOWN.value}:
+    primary_role_eligible = causal_role in {
+        CausalRole.INITIATING.value,
+        CausalRole.UNKNOWN.value,
+    }
+    if not primary_role_eligible:
         _record_field_finding(
             audit,
             "primary_failure",
-            "primary_failure causal_role is not initiating or unknown",
-            code="primary_causal_role_suspect",
+            "primary_failure causal_role cannot represent an initiating primary",
+            code="primary_causal_role_ineligible",
         )
 
     line = _optional_int(primary.get("line"))
@@ -323,16 +351,24 @@ def _ground_primary_selection(
         )
         log_line = "unverified model-selected failure"
 
-    visible_lines = model_visible_line_numbers(model_view, l1_result)
+    visible_texts = model_visible_line_texts(model_view, l1_result)
+    failure_identity = primary.get("failure_identity")
+    failure_identity_grounding = _ground_failure_identity_paths(
+        failure_identity if isinstance(failure_identity, Mapping) else {},
+        model_view=model_view,
+        l1_result=l1_result,
+        source_log=source_log,
+    )
+    audit["failure_identity_grounding"] = failure_identity_grounding
     grounded_evidence, resolved_lines = _audited_model_evidence(
         bundle,
         evidence,
         audit,
         source_log=source_log,
-        model_visible_texts=model_visible_line_texts(model_view, l1_result),
+        model_visible_texts=visible_texts,
     )
     resolved_primary_line = resolved_lines.get(line, line)
-    grounding_method = "exact_source_line" if source_line_available else "unavailable"
+    grounding_method = "unavailable"
     if resolved_primary_line != line:
         audit.setdefault("grounding_adjustments", []).append(
             {
@@ -347,20 +383,41 @@ def _ground_primary_selection(
         if log_line is None:
             raise AssertionError("resolved evidence line must exist in source log")
         source_line_available = True
-        grounding_method = "nearby_unique_quote_match"
+    model_visible_support = bool(visible_texts.get(line))
+    primary_grounded = source_line_available and model_visible_support and primary_role_eligible
+    if primary_grounded:
+        grounding_method = (
+            "nearby_unique_quote_match"
+            if resolved_primary_line != int(primary["line"])
+            else "exact_source_line"
+        )
+    elif source_line_available and not model_visible_support:
+        _record_field_finding(
+            audit,
+            "primary_failure",
+            "primary_failure line exists in the source log but its text was not visible "
+            "to the model",
+            code="primary_evidence_not_model_visible",
+        )
 
-    audit["grounding_status"] = "grounded" if source_line_available else "unavailable"
+    audit["source_line_available"] = source_line_available
+    audit["primary_model_visible_support"] = model_visible_support
+    audit["primary_causal_role_eligible"] = primary_role_eligible
+    audit["grounding_status"] = "grounded" if primary_grounded else "unavailable"
     audit["grounding_method"] = grounding_method
     return PrimaryGrounding(
         model_primary=primary,
         line=line,
         log_line=log_line,
         source_line_available=source_line_available,
+        model_visible_support=model_visible_support,
+        primary_grounded=primary_grounded,
         grounding_method=grounding_method,
         grounded_evidence=grounded_evidence,
         resolved_lines=resolved_lines,
         cited_lines=frozenset(int(item["line"]) for item in grounded_evidence),
-        visible_lines=frozenset(visible_lines),
+        text_visible_lines=frozenset(visible_texts),
+        failure_identity_grounding=failure_identity_grounding,
     )
 
 
@@ -371,7 +428,7 @@ def _audit_recovery_assessment(
     root_cause_assessment: Mapping[str, Any],
     recovery_assessment: Mapping[str, Any],
     audit: dict[str, Any],
-) -> RecoveryAudit:
+) -> None:
     failure_domain = recovery_assessment.get("failure_domain")
     retry_outlook = recovery_assessment.get("retry_outlook_without_workload_change")
     assert isinstance(failure_domain, Mapping)
@@ -390,8 +447,6 @@ def _audit_recovery_assessment(
             "model_retry_outlook_status": retry_outlook_status,
             "model_retry_outlook_confidence": int(retry_outlook.get("confidence") or 0),
             "model_root_cause_status": root_cause_status,
-            "root_cause_assessment": dict(root_cause_assessment),
-            "model_recovery_assessment": dict(recovery_assessment),
             "path_namespace_summary": dict(bundle.path_namespace_summary),
         }
     )
@@ -401,7 +456,12 @@ def _audit_recovery_assessment(
         recovery_assessment,
         audit,
     )
-    support = _ground_recovery_support(grounding=grounding, audit=audit)
+    _ground_recovery_support(
+        grounding=grounding,
+        audit=audit,
+        failure_domain_status=failure_domain_status,
+        retry_outlook_status=retry_outlook_status,
+    )
     _audit_progress_claim(
         bundle,
         root_cause_assessment,
@@ -409,25 +469,14 @@ def _audit_recovery_assessment(
         audit,
     )
 
-    return RecoveryAudit(
-        root_cause_assessment=root_cause_assessment,
-        recovery_assessment=recovery_assessment,
-        failure_domain_value=failure_domain_value,
-        failure_domain_status=failure_domain_status,
-        failure_domain_confidence=int(failure_domain.get("confidence") or 0),
-        retry_outlook_value=retry_outlook_value,
-        retry_outlook_status=retry_outlook_status,
-        retry_outlook_confidence=int(retry_outlook.get("confidence") or 0),
-        root_cause_status=root_cause_status,
-        failure_domain_supporting_lines=support.failure_domain_lines,
-        retry_outlook_supporting_lines=support.retry_outlook_lines,
-        unresolved_supporting_lines=support.unresolved_lines,
-    )
-
 
 def _ground_recovery_support(
-    *, grounding: PrimaryGrounding, audit: dict[str, Any]
-) -> RecoverySupport:
+    *,
+    grounding: PrimaryGrounding,
+    audit: dict[str, Any],
+    failure_domain_status: str,
+    retry_outlook_status: str,
+) -> None:
     domain_lines = frozenset(
         int(item["line"])
         for item in grounding.grounded_evidence
@@ -438,38 +487,49 @@ def _ground_recovery_support(
         for item in grounding.grounded_evidence
         if RETRY_OUTLOOK_SUPPORT_TAG in item.get("supports", [])
     )
-    unresolved = tuple(
+    domain_unresolved = tuple(
         sorted(
             int(item["original_line"])
             for item in audit.get("citation_audits") or []
             if item.get("resolved_line") is None
-            and set(item.get("supports") or []).intersection(
-                {FAILURE_DOMAIN_SUPPORT_TAG, RETRY_OUTLOOK_SUPPORT_TAG}
-            )
+            and FAILURE_DOMAIN_SUPPORT_TAG in set(item.get("supports") or [])
+            and isinstance(item.get("original_line"), int)
+        )
+    )
+    retry_unresolved = tuple(
+        sorted(
+            int(item["original_line"])
+            for item in audit.get("citation_audits") or []
+            if item.get("resolved_line") is None
+            and RETRY_OUTLOOK_SUPPORT_TAG in set(item.get("supports") or [])
             and isinstance(item.get("original_line"), int)
         )
     )
     audit.update(
         {
+            "failure_domain_support_expected": _support_audit_expected(failure_domain_status),
+            "retry_outlook_support_expected": _support_audit_expected(retry_outlook_status),
             "failure_domain_supporting_lines": sorted(domain_lines),
             "retry_outlook_supporting_lines": sorted(retry_lines),
-            "recovery_unresolved_supporting_lines": list(unresolved),
+            "failure_domain_unresolved_supporting_lines": list(domain_unresolved),
+            "retry_outlook_unresolved_supporting_lines": list(retry_unresolved),
         }
     )
-    if not domain_lines:
+    if _support_audit_expected(failure_domain_status) and not domain_lines:
         _record_field_finding(
             audit,
             "model_recovery_assessment",
             "failure_domain has no grounded evidence",
             code="failure_domain_support_missing",
         )
-    if not retry_lines:
+    if _support_audit_expected(retry_outlook_status) and not retry_lines:
         _record_field_finding(
             audit,
             "model_recovery_assessment",
             "retry_outlook has no grounded evidence",
             code="retry_outlook_support_missing",
         )
+    unresolved = tuple(sorted(set(domain_unresolved).union(retry_unresolved)))
     if unresolved:
         _record_field_finding(
             audit,
@@ -478,7 +538,15 @@ def _ground_recovery_support(
             + ", ".join(str(value) for value in unresolved),
             code="recovery_support_ungrounded",
         )
-    return RecoverySupport(domain_lines, retry_lines, unresolved)
+
+
+def _support_audit_expected(status: str) -> bool:
+    """Return whether a substantive recovery claim is expected to cite support."""
+
+    return status in {
+        AssessmentStatus.ESTABLISHED_BY_CURRENT_LOG.value,
+        AssessmentStatus.SUPPORTED_BUT_UNCONFIRMED.value,
+    }
 
 
 def _audit_progress_claim(
@@ -501,7 +569,6 @@ def _audit_progress_claim(
         "that interval",
         code="observed_failure_position_treated_as_completed_progress",
         severity="credibility",
-        policy_material=False,
     )
 
 
@@ -510,9 +577,18 @@ def _audit_model_evidence_payload(
     model_view: L0ModelFacingView,
     l1_result: L1EvidenceResult,
     source_log: LogSnapshot,
-) -> tuple[FailureEvidence | None, dict[str, Any]]:
+) -> tuple[FailureEvidence | None, FailureEvidence | None, dict[str, Any]]:
     audit = _new_audit(l1_result)
     evidence = _normalized_l1_evidence(l1_result, audit)
+    observation_audit = _new_audit(l1_result)
+    selected_observation = _ground_selected_observation(
+        bundle=bundle,
+        model_view=model_view,
+        l1_result=l1_result,
+        source_log=source_log,
+        evidence=evidence,
+        audit=observation_audit,
+    )
     grounding = _ground_primary_selection(
         bundle=bundle,
         model_view=model_view,
@@ -522,14 +598,20 @@ def _audit_model_evidence_payload(
         audit=audit,
     )
     if grounding is None:
-        return None, audit
+        return None, selected_observation, observation_audit
+
+    audit["observation_grounding"] = {
+        key: value
+        for key, value in observation_audit.items()
+        if key not in {"model", "audit_influence"}
+    }
 
     primary = grounding.model_primary
     root_cause_assessment = evidence.get("root_cause_assessment")
     recovery_assessment = evidence.get("model_recovery_assessment")
     assert isinstance(root_cause_assessment, Mapping)
     assert isinstance(recovery_assessment, Mapping)
-    recovery = _audit_recovery_assessment(
+    _audit_recovery_assessment(
         bundle=bundle,
         grounding=grounding,
         root_cause_assessment=dict(root_cause_assessment),
@@ -551,38 +633,47 @@ def _audit_model_evidence_payload(
         evidence,
         audit,
         source_log=source_log,
-        visible_lines=grounding.visible_lines,
+        text_visible_lines=grounding.text_visible_lines,
     )
     audit["audited_related_failures"] = related_failures
 
-    l0_match = _l0_match_for_line(bundle, grounding.line)
-    model_identity = primary.get("failure_identity")
-    model_mechanism = (
-        _optional_str(model_identity.get("mechanism"))
-        if isinstance(model_identity, Mapping)
-        else None
-    )
-    failure_class = (
-        l0_match.failure_class if l0_match else model_mechanism or "model_selected_failure"
-    )
-    signature = l0_match.signature if l0_match else quote[:120]
-    if l0_match is not None:
-        audit["same_line_l0_registry_id"] = l0_match.registry_id
-
-    fault_outcome = (
-        l0_match.fault_outcome
-        if l0_match is not None
-        else _client_fault_outcome(bundle, grounding.line)
-    )
+    _finalize_model_audit(grounding, audit)
+    if not grounding.primary_grounded:
+        audit.update(
+            {
+                "stable_identity_anchor_line": None,
+                "stable_identity_anchor_reason": None,
+                "stable_root_fingerprint": None,
+                "root_fingerprint_source": "unavailable",
+                "history_identity_ready": False,
+                "affected_entity": None,
+            }
+        )
+        return None, selected_observation, audit
 
     history_identity = _build_history_identity(
         bundle=bundle,
         source_log=source_log,
         grounding=grounding,
-        model_primary=primary,
         audit=audit,
     )
-    _finalize_model_audit(grounding, recovery, audit)
+    l0_match = _l0_match_for_line(bundle, grounding.line)
+    canonical_l0_match = history_identity.l0_match or l0_match
+    failure_class = canonical_l0_match.failure_class if canonical_l0_match else "observed_failure"
+    signature = canonical_l0_match.signature if canonical_l0_match else quote[:120]
+    if l0_match is not None:
+        audit["same_line_l0_registry_id"] = l0_match.registry_id
+    audit["identity_lineage"] = _identity_lineage(
+        bundle,
+        model_selected_line=grounding.line,
+        identity_anchor_line=history_identity.anchor_line,
+    )
+
+    fault_outcome = (
+        canonical_l0_match.fault_outcome
+        if canonical_l0_match is not None
+        else _client_fault_outcome(bundle, grounding.line)
+    )
     return (
         _build_grounded_failure_evidence(
             model_primary=primary,
@@ -594,7 +685,191 @@ def _audit_model_evidence_payload(
             fault_outcome=fault_outcome,
             quote=quote,
         ),
+        selected_observation,
         audit,
+    )
+
+
+def _audit_observation_evidence_references(
+    *,
+    evidence: Mapping[str, Any],
+    audit: dict[str, Any],
+) -> None:
+    canonical_evidence_ids = {
+        item.get("id")
+        for item in evidence.get("evidence") or ()
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    unresolved: set[str] = set()
+    for index, observation in enumerate(evidence.get("observed_failures") or ()):
+        if not isinstance(observation, Mapping):
+            continue
+        cited_ids = {
+            item for item in observation.get("evidence_ids") or () if isinstance(item, str)
+        }
+        dangling_ids = sorted(cited_ids.difference(canonical_evidence_ids))
+        if not dangling_ids:
+            continue
+        unresolved.update(dangling_ids)
+        _record_field_finding(
+            audit,
+            f"observed_failures[{index}].evidence_ids",
+            "observation references undefined evidence ids: " + ", ".join(dangling_ids),
+            code="dangling_evidence_reference",
+        )
+    if unresolved:
+        audit["unresolved_evidence_references"] = sorted(unresolved)
+
+
+def _ground_selected_observation(
+    *,
+    bundle: L0Bundle,
+    model_view: L0ModelFacingView,
+    l1_result: L1EvidenceResult,
+    source_log: LogSnapshot,
+    evidence: Mapping[str, Any],
+    audit: dict[str, Any],
+) -> FailureEvidence | None:
+    selected_id = evidence.get("selected_observed_failure_id")
+    observations = evidence.get("observed_failures") or []
+    _audit_observation_evidence_references(evidence=evidence, audit=audit)
+    if not isinstance(selected_id, str):
+        _mark_observation_track_unavailable(audit)
+        return None
+    selected_matches = [
+        item for item in observations if isinstance(item, Mapping) and item.get("id") == selected_id
+    ]
+    if len(selected_matches) != 1:
+        if not selected_matches:
+            code = "selected_observation_id_unresolved"
+            message = (
+                f"selected_observed_failure_id {selected_id!r} does not resolve to an "
+                "observed failure"
+            )
+        else:
+            code = "selected_observation_id_ambiguous"
+            message = (
+                f"selected_observed_failure_id {selected_id!r} resolves to "
+                f"{len(selected_matches)} observed failures"
+            )
+        _record_field_finding(
+            audit,
+            "selected_observed_failure_id",
+            message,
+            code=code,
+        )
+        _mark_observation_track_unavailable(audit)
+        return None
+    selected = selected_matches[0]
+    visible_texts = model_visible_line_texts(model_view, l1_result)
+    grounded_evidence, resolved_lines = _audited_model_evidence(
+        bundle,
+        evidence,
+        audit,
+        source_log=source_log,
+        model_visible_texts=visible_texts,
+    )
+    cited_ids = set(selected.get("evidence_ids") or ())
+    selected_evidence = tuple(item for item in grounded_evidence if item.get("id") in cited_ids)
+    original_line = _optional_int(selected.get("line"))
+    if original_line is None:
+        return None
+    line = resolved_lines.get(original_line, original_line)
+    log_line = _line_text(source_log, line)
+    grounded = bool(log_line is not None and visible_texts.get(line))
+    audit.update(
+        {
+            "used": grounded,
+            "grounding_status": "grounded" if grounded else "unavailable",
+            "selected_observation_model_visible_support": bool(visible_texts.get(line)),
+            "grounded_evidence": selected_evidence,
+            "grounded_observed_failures": [dict(selected)] if grounded else [],
+            "selected_observation_used": grounded,
+            "primary_used": False,
+            "recovery_assessment_audited": grounded,
+        }
+    )
+    if not grounded or log_line is None:
+        return None
+    l0_match = next((match for match in bundle.registry_matches if match.line == line), None)
+    l0_selected = bundle.selected_observed_failure
+    canonical = l0_selected if l0_selected is not None and l0_selected.line == line else l0_match
+    observation_fingerprint = (
+        canonical.observation_fingerprint
+        if canonical is not None and canonical.observation_fingerprint
+        else canonical_observed_fingerprint(log_line, _identity_source_context(source_log, line))
+    )
+    observation_source = (
+        canonical.observation_fingerprint_source
+        if canonical is not None and canonical.observation_fingerprint_source
+        else "l2_grounded_observation"
+    )
+    audit.update(
+        {
+            "stable_identity_anchor_line": line,
+            "stable_identity_anchor_reason": "model_selected_observation",
+            "stable_root_fingerprint": None,
+            "root_fingerprint_source": None,
+            "stable_observation_fingerprint": observation_fingerprint,
+            "observation_fingerprint_source": observation_source,
+            "history_identity_ready": True,
+            "identity_kind": "observation_only",
+            "affected_entity": None,
+        }
+    )
+    if audit["field_findings"]:
+        audit["audit_status"] = "findings"
+    else:
+        audit["audit_status"] = "clean"
+    identity = selected.get("failure_identity")
+    failure_identity_grounding = _ground_failure_identity_paths(
+        identity if isinstance(identity, Mapping) else {},
+        model_view=model_view,
+        l1_result=l1_result,
+        source_log=source_log,
+    )
+    audit["failure_identity_grounding"] = failure_identity_grounding
+    mechanism = identity.get("mechanism") if isinstance(identity, Mapping) else None
+    return FailureEvidence(
+        failure_class=str(
+            mechanism or (canonical.failure_class if canonical else "observed_failure")
+        ),
+        signature=(canonical.signature if canonical is not None else log_line[:120]),
+        root_fingerprint=None,
+        root_fingerprint_source=None,
+        observation_fingerprint=observation_fingerprint,
+        observation_fingerprint_source=observation_source,
+        fault_outcome=(
+            canonical.fault_outcome
+            if canonical is not None
+            else _client_fault_outcome(bundle, line)
+        ),
+        causal_role=str(selected.get("causal_role") or CausalRole.UNKNOWN.value),
+        line=line,
+        quote=next(
+            (str(item.get("quote")) for item in selected_evidence if item.get("quote")),
+            log_line,
+        ),
+        rank=extract_rank(log_line),
+        node=extract_node(log_line),
+        gpu=extract_gpu(log_line),
+        registry_id=(canonical.registry_id if canonical is not None else "model_observation"),
+        role=(canonical.role if canonical is not None else None),
+        retry_lifecycle=(canonical.retry_lifecycle if canonical is not None else None),
+    )
+
+
+def _mark_observation_track_unavailable(audit: dict[str, Any]) -> None:
+    audit.update(
+        {
+            "used": False,
+            "grounding_status": "unavailable",
+            "audit_status": "findings" if audit["field_findings"] else "clean",
+            "selected_observation_model_visible_support": None,
+            "grounded_observed_failures": [],
+            "selected_observation_used": False,
+            "recovery_assessment_audited": False,
+        }
     )
 
 
@@ -603,7 +878,6 @@ def _build_history_identity(
     bundle: L0Bundle,
     source_log: LogSnapshot,
     grounding: PrimaryGrounding,
-    model_primary: Mapping[str, Any],
     audit: dict[str, Any],
 ) -> HistoryIdentity:
     anchor_line, anchor_reason = canonical_identity_anchor_line(
@@ -634,23 +908,11 @@ def _build_history_identity(
         root_fingerprint_source = "observed_exception"
         root_fingerprint = canonical_observed_fingerprint(log_line, source_context)
 
-    model_identity = model_primary.get("failure_identity")
-    artifact_path = grounded_artifact_path(
-        model_identity.get("artifact_path") if isinstance(model_identity, Mapping) else None,
-        texts=(
-            log_line,
-            *source_context,
-            *tuple(
-                str(item.get("quote")) for item in grounding.grounded_evidence if item.get("quote")
-            ),
-        ),
+    affected_entity_selection = select_grounded_affected_entity(
+        grounding.failure_identity_grounding
     )
-    affected_entity = build_grounded_affected_entity(
-        quote=log_line,
-        signature=log_line,
-        data_position_fingerprint=extract_data_position_fingerprint(log_line),
-        artifact_path=artifact_path,
-        evidence_line=anchor_line,
+    affected_entity = (
+        affected_entity_selection.entity if affected_entity_selection is not None else None
     )
     audit.update(
         {
@@ -661,6 +923,11 @@ def _build_history_identity(
             "history_identity_ready": bool(root_fingerprint),
             "affected_entity": (
                 affected_entity.to_payload() if affected_entity is not None else None
+            ),
+            "affected_entity_selection": (
+                affected_entity_selection.to_payload()
+                if affected_entity_selection is not None
+                else None
             ),
         }
     )
@@ -675,25 +942,96 @@ def _build_history_identity(
     )
 
 
+def _ground_failure_identity_paths(
+    identity: Mapping[str, Any],
+    *,
+    model_view: L0ModelFacingView,
+    l1_result: L1EvidenceResult,
+    source_log: LogSnapshot,
+) -> dict[str, Any]:
+    return {
+        field: _ground_model_path(
+            identity.get(field),
+            model_view=model_view,
+            l1_result=l1_result,
+            source_log=source_log,
+        )
+        for field in (DIRECT_FAILURE_OBJECT_PATH_FIELD, AFFECTED_ARTIFACT_PATH_FIELD)
+    }
+
+
+def _ground_model_path(
+    value: Any,
+    *,
+    model_view: L0ModelFacingView,
+    l1_result: L1EvidenceResult,
+    source_log: LogSnapshot,
+) -> dict[str, Any]:
+    model_value = _optional_str(value)
+    if model_value is None:
+        return {
+            "model_value": None,
+            "grounded_value": None,
+            "evidence_lines": [],
+            "status": "not_provided",
+        }
+    visible_lines = model_visible_value_line_numbers(model_view, l1_result, model_value)
+    source_lines = sorted(
+        line
+        for line in visible_lines
+        if (source_text := _line_text(source_log, line)) is not None
+        and text_contains_exact_value(source_text, model_value)
+    )
+    grounded = bool(source_lines)
+    return {
+        "model_value": model_value,
+        "grounded_value": model_value if grounded else None,
+        "evidence_lines": source_lines,
+        "status": "grounded" if grounded else "unavailable",
+    }
+
+
+def _identity_lineage(
+    bundle: L0Bundle,
+    *,
+    model_selected_line: int,
+    identity_anchor_line: int,
+) -> Mapping[str, Any]:
+    l0_primary = bundle.deterministic_primary_candidate
+    l0_primary_line = l0_primary.line if l0_primary is not None else None
+    if l0_primary_line is None:
+        relationship = "l0_identity_unavailable"
+    else:
+        l0_anchor_line, _ = canonical_identity_anchor_line(
+            bundle,
+            l0_primary_line,
+            selection_label="l0_primary",
+        )
+        relationship = (
+            "same_canonical_incident"
+            if l0_anchor_line == identity_anchor_line
+            else "different_grounded_incident"
+        )
+    return {
+        "model_selected_line": model_selected_line,
+        "l0_primary_line": l0_primary_line,
+        "canonical_identity_anchor_line": identity_anchor_line,
+        "relationship_to_l0": relationship,
+        "client_identity_source": (
+            "l0_canonical_identity"
+            if relationship == "same_canonical_incident"
+            else "l2_source_grounding"
+        ),
+    }
+
+
 def _finalize_model_audit(
     grounding: PrimaryGrounding,
-    recovery: RecoveryAudit,
     audit: dict[str, Any],
 ) -> None:
-    audit["recovery_assessment_used"] = True
-    audit["recovery_assessment_policy_grounded"] = bool(
-        grounding.source_line_available
-        and recovery.root_cause_status
-        in {
-            AssessmentStatus.ESTABLISHED_BY_CURRENT_LOG.value,
-            AssessmentStatus.SUPPORTED_BUT_UNCONFIRMED.value,
-        }
-        and recovery.failure_domain_supporting_lines
-        and recovery.retry_outlook_supporting_lines
-        and not recovery.unresolved_supporting_lines
-    )
-    audit["used"] = True
-    audit["primary_used"] = True
+    audit["recovery_assessment_audited"] = grounding.primary_grounded
+    audit["used"] = grounding.primary_grounded
+    audit["primary_used"] = grounding.primary_grounded
     if audit["field_findings"]:
         audit["audit_status"] = "findings"
     elif any(item.get("status") != "exact" for item in audit["citation_audits"]):
@@ -714,6 +1052,7 @@ def _build_grounded_failure_evidence(
     quote: str,
 ) -> FailureEvidence:
     identity_l0_match = history_identity.l0_match
+    lifecycle_match = identity_l0_match or l0_match
     log_line = grounding.log_line
     return FailureEvidence(
         failure_class=failure_class,
@@ -725,15 +1064,6 @@ def _build_grounded_failure_evidence(
             identity_l0_match.failure_iteration
             if identity_l0_match
             else extract_failure_iteration(history_identity.log_line)
-        ),
-        data_position_fingerprint=(
-            l0_match.data_position_fingerprint
-            if l0_match
-            else (
-                extract_data_position_fingerprint(log_line)
-                if grounding.source_line_available
-                else None
-            )
         ),
         line=grounding.line,
         quote=quote,
@@ -755,9 +1085,9 @@ def _build_grounded_failure_evidence(
         ),
         registry_id=l0_match.registry_id if l0_match else "model_selected",
         role=l0_match.role if l0_match else None,
-        recovery_behavior=l0_match.recovery_behavior if l0_match else "none",
         root_fingerprint_source=history_identity.root_fingerprint_source,
         affected_entity=history_identity.affected_entity,
+        retry_lifecycle=(lifecycle_match.retry_lifecycle if lifecycle_match is not None else None),
     )
 
 
@@ -936,9 +1266,10 @@ def _resolve_citation(
         return CitationGrounding(line, line, quote, supports, "exact")
     if quote and any(quote in visible_text for visible_text in visible_texts):
         return CitationGrounding(line, line, quote, supports, "rendered_exact")
-    if quote and (
-        _quote_matches(log_line, quote)
-        or any(_quote_matches(visible_text, quote) for visible_text in visible_texts)
+    if (
+        quote
+        and _abbreviated_quote_matches(log_line, quote)
+        and any(_abbreviated_quote_matches(visible_text, quote) for visible_text in visible_texts)
     ):
         return CitationGrounding(line, line, quote, supports, "abbreviated_exact")
     nearby = tuple(
@@ -971,7 +1302,10 @@ def _visible_quote_matches(
         candidate
         for candidate, texts in model_visible_texts.items()
         if start <= candidate <= stop
-        and any(quote in text or _quote_matches(text, quote) for text in texts)
+        and any(
+            quote in text or (candidate == line and _abbreviated_quote_matches(text, quote))
+            for text in texts
+        )
     )
 
 
@@ -996,12 +1330,17 @@ def _nearby_quote_matches(
 def _quote_matches(source: str, quote: str) -> bool:
     if quote in source:
         return True
-    fragments = [
-        fragment.strip()
-        for fragment in re.split(r"(?:\.\.\.\[truncated\]|\.\.\.|…)", quote)
-        if fragment.strip()
-    ]
-    if len(fragments) == 1 and not ("..." in quote or "…" in quote):
+    return _abbreviated_quote_matches(source, quote)
+
+
+def _abbreviated_quote_matches(source: str, quote: str) -> bool:
+    if _ELLIPSIS_RE.search(quote) is None:
+        return False
+    fragments = [fragment.strip() for fragment in _ELLIPSIS_RE.split(quote) if fragment.strip()]
+    if len(fragments) < 2 or any(
+        sum(character.isalnum() for character in fragment) < MIN_ABBREVIATED_FRAGMENT_ALNUM_CHARS
+        for fragment in fragments
+    ):
         return False
     offset = 0
     for fragment in fragments:
@@ -1009,7 +1348,7 @@ def _quote_matches(source: str, quote: str) -> bool:
         if index < 0:
             return False
         offset = index + len(fragment)
-    return bool(fragments)
+    return True
 
 
 def _audit_unverified_path_identity_claims(
@@ -1050,7 +1389,7 @@ def _audited_related_failures(
     audit: dict[str, Any],
     *,
     source_log: LogSnapshot,
-    visible_lines: frozenset[int],
+    text_visible_lines: frozenset[int],
 ) -> tuple[Mapping[str, Any], ...]:
     primary = evidence.get("primary_failure")
     primary_line = _optional_int(primary.get("line")) if isinstance(primary, Mapping) else None
@@ -1077,7 +1416,7 @@ def _audited_related_failures(
                 code="related_failure_invalid_reference",
             )
             continue
-        if line not in visible_lines:
+        if line not in text_visible_lines:
             _record_field_finding(
                 audit,
                 "related_failures",
@@ -1114,7 +1453,6 @@ def _audited_related_failures(
                 f"related_failures[{index}] cannot precede the primary with role {role}",
                 code="related_failure_impossible_chronology",
             )
-            continue
         audited_roles.append({"line": line, "causal_role": role, "rationale": rationale})
         l0_match = _l0_match_for_line(bundle, line)
         failure_class = l0_match.failure_class if l0_match else "related_failure"
@@ -1144,6 +1482,7 @@ def _audited_related_failures(
                 if l0_match and l0_match.root_fingerprint
                 else "observed_exception"
             ),
+            retry_lifecycle=(l0_match.retry_lifecycle if l0_match is not None else None),
         ).to_failure_payload()
         payload["relationship_rationale"] = rationale
         result.append(payload)
@@ -1158,7 +1497,6 @@ def _record_field_finding(
     *,
     code: str,
     severity: str = "credibility",
-    policy_material: bool = True,
 ) -> None:
     field_findings = audit.setdefault("field_findings", {})
     field_findings.setdefault(field, []).append(message)
@@ -1170,7 +1508,7 @@ def _record_field_finding(
             "code": code,
             "message": message,
             "severity": severity,
-            "policy_material": policy_material,
+            "observational_only": True,
         }
     )
 

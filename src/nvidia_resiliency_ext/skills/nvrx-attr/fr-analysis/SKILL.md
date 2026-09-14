@@ -5,7 +5,7 @@ description: >
   isolate the responsible ranks using CollectiveAnalyzer. Use when a distributed training job
   hangs due to an NCCL collective timeout and FR dump files are available. Detects the wavefront
   process group where collectives diverge and returns the root-cause suspect ranks.
-compatibility: Requires PyTorch NCCL FR dumps (TORCH_NCCL_TRACE_BUFFER_SIZE > 0 must be set during training). LLM_API_KEY and langchain-openai are required only when using --llm-analyze.
+compatibility: Requires PyTorch NCCL FR dumps (TORCH_NCCL_TRACE_BUFFER_SIZE > 0 must be set during training).
 metadata:
   entry-point: CollectiveAnalyzer
   script: scripts/fr_attribution.py
@@ -27,8 +27,6 @@ and isolate the ranks responsible, using `CollectiveAnalyzer`.
 3. Groups collectives by process group and sequence ID across ranks to detect mismatches.
 4. Identifies the **wavefront** — the process group boundary where collectives diverge — and
    returns the missing ranks at that boundary as the root-cause suspects.
-5. Optionally runs an LLM pass (`--llm-analyze`) over the structured findings for a
-   human-readable summary.
 
 ---
 
@@ -40,8 +38,6 @@ python scripts/fr_attribution.py \
     [-p "_dump_*"] \
     [--verbose] \
     [--health-check] \
-    [--llm-analyze] \
-    [--model MODEL] \
     [--debug]
 ```
 
@@ -51,8 +47,6 @@ python scripts/fr_attribution.py \
 | `--pattern`, `-p` | `_dump_*` | Glob pattern for dump files within `--fr-path` |
 | `--verbose`, `-v` | off | Print detailed per-rank collective tables |
 | `--health-check`, `-c` | off | Include node health check results in output |
-| `--llm-analyze`, `-l` | off | Pass structured findings to the LLM for a narrative summary |
-| `--model`, `-m` | `nvidia/nemotron-3-super-120b-a12b` | LLM model (only used with `--llm-analyze`) |
 | `--debug` | off | Convert binary trace files to JSON for inspection |
 
 ---
@@ -67,8 +61,6 @@ analyzer = CollectiveAnalyzer({
     "pattern": "_dump_*",
     "verbose": False,
     "health_check": False,
-    "llm_analyze": False,
-    "model": "nvidia/nemotron-3-super-120b-a12b",
 })
 results = analyzer.run_sync({
     "fr_path": "/path/to/fr_dumps/",
@@ -86,7 +78,6 @@ Returns `(result, AttributionState)` where `result` is the FR analysis table and
 - **Missing ranks** at that process group (root-cause suspects)
 - Per-rank collective status tables (when `--verbose`)
 - Node health summary (when `--health-check`)
-- LLM narrative (when `--llm-analyze`)
 
 `AttributionState.STOP` indicates the hang is unrecoverable; `CONTINUE` indicates the job
 may be restartable after isolating the identified ranks.
@@ -108,6 +99,4 @@ or triggered automatically on NCCL timeout.
 ## Prerequisites
 
 - FR dump files produced by PyTorch NCCL (set `TORCH_NCCL_TRACE_BUFFER_SIZE` > 0)
-- `LLM_API_KEY` required only when using `--llm-analyze`
-- `langchain-openai` required only when using `--llm-analyze`
 - `FR_DEBUG=1` env var enables verbose debug logging in the script

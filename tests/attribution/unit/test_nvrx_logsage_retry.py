@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 try:
     nvrx_logsage = importlib.import_module(
-        "nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage"
+        "nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage"
     )
     IMPORT_ERROR = None
 except ImportError as exc:

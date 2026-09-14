@@ -176,7 +176,7 @@ def run_dispatch_all_cycles(
     poll_interval_sec: float,
     end_window_minutes: float,
 ) -> None:
-    from nvidia_resiliency_ext.attribution.log_analyzer import nvrx_logsage
+    from nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer import nvrx_logsage
 
     first_path = cycle_log_path(log_dir, 0)
     # Writer truncates files up front, so the file is expected to exist
@@ -352,7 +352,7 @@ def _assert_canonical_run(
         )
         return
 
-    from nvidia_resiliency_ext.attribution.log_analyzer import nvrx_logsage
+    from nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer import nvrx_logsage
 
     assert (
         len(per_cycle_result) == num_cycles

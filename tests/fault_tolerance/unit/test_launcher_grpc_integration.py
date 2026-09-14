@@ -71,7 +71,7 @@ def _get_util_script_path():
 # ==============================================================================
 
 
-def test_grpc_server_can_start_and_shutdown():
+def test_grpc_server_can_start_and_shutdown(tmp_dir):
     """Test that gRPC server can be started and shut down cleanly."""
 
     # Try to start the gRPC server directly
@@ -86,6 +86,8 @@ def test_grpc_server_can_start_and_shutdown():
             '50052',  # Use different port to avoid conflicts
             '--max-workers',
             '10',
+            '--allowed-root',
+            tmp_dir,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -108,7 +110,7 @@ def test_grpc_server_can_start_and_shutdown():
         pytest.fail("gRPC server did not shut down within 5 seconds")
 
 
-def test_grpc_server_health_check():
+def test_grpc_server_health_check(tmp_dir):
     """Test that gRPC server responds to health check requests."""
 
     port = 50053  # Use unique port
@@ -123,6 +125,8 @@ def test_grpc_server_health_check():
             str(port),
             '--max-workers',
             '10',
+            '--allowed-root',
+            tmp_dir,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -208,6 +212,8 @@ def test_grpc_client_can_connect_and_stream_logs(tmp_dir):
             str(port),
             '--max-workers',
             '10',
+            '--allowed-root',
+            tmp_dir,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

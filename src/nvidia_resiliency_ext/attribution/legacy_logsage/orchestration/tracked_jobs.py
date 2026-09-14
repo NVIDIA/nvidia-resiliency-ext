@@ -3,7 +3,7 @@
 
 """Tracked job storage, splitlog polling, and detection counters for log analysis.
 
-:mod:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` composes this; attribution stays thin.
+:mod:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine.Analyzer` composes this; attribution stays thin.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from .config import (
+from nvidia_resiliency_ext.attribution.orchestration.config import (
     RESP_FILES_ANALYZED,
     RESP_LOGS_DIR,
     RESP_MODE,
@@ -27,10 +27,15 @@ from .config import (
     TTL_PENDING_SECONDS,
     ErrorCode,
 )
-from .job import Job, JobMode
+from nvidia_resiliency_ext.attribution.orchestration.job import Job, JobMode
+from nvidia_resiliency_ext.attribution.orchestration.types import (
+    LogAnalyzerError,
+    LogAnalyzerSubmitResult,
+)
+from nvidia_resiliency_ext.attribution.path_utils import path_is_under_allowed_root
+
 from .slurm_parser import read_and_parse_slurm_output
 from .splitlog import SplitlogTracker
-from .types import LogAnalyzerError, LogAnalyzerSubmitResult
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +51,15 @@ class TrackedJobs:
         *,
         track_submission: Callable[[str], Awaitable[None]],
         splitlog_tracker: SplitlogTracker | None = None,
+        allowed_root: Optional[str] = None,
     ):
         self._track_submission = track_submission
-        self._splitlog_tracker = splitlog_tracker or SplitlogTracker()
+        self._allowed_root = os.path.realpath(allowed_root) if allowed_root else None
+        self._splitlog_tracker = splitlog_tracker or SplitlogTracker(
+            allowed_root=self._allowed_root
+        )
+        if splitlog_tracker is not None and self._allowed_root is not None:
+            splitlog_tracker.set_allowed_root(self._allowed_root)
         self._jobs: Dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
 
@@ -91,6 +102,51 @@ class TrackedJobs:
     def record_file_permission_error(self) -> None:
         self._total_permission_errors += 1
         self._file_permission_errors += 1
+
+    def _record_logs_dir_policy_error(self, error: LogAnalyzerError) -> None:
+        if error.error_code in {ErrorCode.LOGS_DIR_NOT_READABLE, ErrorCode.OUTSIDE_ROOT}:
+            self._total_permission_errors += 1
+            self._logs_dir_permission_errors += 1
+
+    def _resolve_splitlog_dir(
+        self,
+        logs_dir: str,
+    ) -> tuple[Optional[str], Optional[LogAnalyzerError]]:
+        """Resolve and validate a parsed ``LOGS_DIR`` before splitlog promotion."""
+        try:
+            real_logs_dir = os.path.realpath(logs_dir)
+        except (OSError, ValueError):
+            return None, LogAnalyzerError(
+                error_code=ErrorCode.INVALID_PATH,
+                message="LOGS_DIR path is invalid",
+            )
+
+        if self._allowed_root is not None and not path_is_under_allowed_root(
+            real_logs_dir,
+            self._allowed_root,
+        ):
+            logger.warning(
+                "LOGS_DIR outside allowed_root rejected: logs_dir=%r allowed_root=%r",
+                logs_dir,
+                self._allowed_root,
+            )
+            return None, LogAnalyzerError(
+                error_code=ErrorCode.OUTSIDE_ROOT,
+                message="LOGS_DIR outside allowed root is not permitted",
+            )
+
+        if not os.path.isdir(real_logs_dir):
+            logger.debug("LOGS_DIR not a directory: %s", logs_dir)
+            return None, None
+
+        if not os.access(real_logs_dir, os.R_OK | os.X_OK):
+            logger.debug("LOGS_DIR not readable/searchable: %s", real_logs_dir)
+            return None, LogAnalyzerError(
+                error_code=ErrorCode.LOGS_DIR_NOT_READABLE,
+                message=f"LOGS_DIR not readable: {real_logs_dir}",
+            )
+
+        return real_logs_dir, None
 
     def handle_existing_job(self, job: Job, validated: str) -> LogAnalyzerSubmitResult:
         if job.is_splitlog():
@@ -142,41 +198,36 @@ class TrackedJobs:
                 info.cycle_count if info else None,
             )
             if info and info.logs_dir:
-                if os.path.isdir(info.logs_dir):
-                    if os.access(info.logs_dir, os.R_OK):
-                        self._total_splitlog += 1
-                        job = Job(
-                            path=validated,
-                            user=user,
-                            mode=JobMode.SPLITLOG,
-                            job_id=job_id,
-                            logs_dir=info.logs_dir,
-                        )
-                        with self._jobs_lock:
-                            self._jobs[validated] = job
-                        logger.debug(
-                            "Created SPLITLOG job: path=%s, job_id=%s, logs_dir=%s",
-                            validated,
-                            job_id,
-                            info.logs_dir,
-                        )
-                        self._splitlog_tracker.initialize_job(job)
-                        return LogAnalyzerSubmitResult(
-                            submitted=True,
-                            normalized_path=validated,
-                            mode=JobMode.SPLITLOG.value,
-                            logs_dir=info.logs_dir,
-                            sched_restarts=job.sched_restarts,
-                            files_analyzed=job.files_complete(),
-                        )
-                    logger.debug("create_new_job: logs_dir not readable: %s", info.logs_dir)
-                    self._total_permission_errors += 1
-                    self._logs_dir_permission_errors += 1
-                    return LogAnalyzerError(
-                        error_code=ErrorCode.LOGS_DIR_NOT_READABLE,
-                        message=f"LOGS_DIR not readable: {info.logs_dir}",
+                logs_dir, error = self._resolve_splitlog_dir(info.logs_dir)
+                if error is not None:
+                    self._record_logs_dir_policy_error(error)
+                    return error
+                if logs_dir is not None:
+                    self._total_splitlog += 1
+                    job = Job(
+                        path=validated,
+                        user=user,
+                        mode=JobMode.SPLITLOG,
+                        job_id=job_id,
+                        logs_dir=logs_dir,
                     )
-                logger.debug("create_new_job: logs_dir not a directory: %s", info.logs_dir)
+                    with self._jobs_lock:
+                        self._jobs[validated] = job
+                    logger.debug(
+                        "Created SPLITLOG job: path=%s, job_id=%s, logs_dir=%s",
+                        validated,
+                        job_id,
+                        logs_dir,
+                    )
+                    self._splitlog_tracker.initialize_job(job)
+                    return LogAnalyzerSubmitResult(
+                        submitted=True,
+                        normalized_path=validated,
+                        mode=JobMode.SPLITLOG.value,
+                        logs_dir=logs_dir,
+                        sched_restarts=job.sched_restarts,
+                        files_analyzed=job.files_complete(),
+                    )
             else:
                 logger.debug("create_new_job: no logs_dir, deferring to PENDING")
 
@@ -254,19 +305,32 @@ class TrackedJobs:
                 info.logs_dir if info else None,
             )
             if info and info.logs_dir:
-                is_dir = os.path.isdir(info.logs_dir)
-                is_readable = os.access(info.logs_dir, os.R_OK) if is_dir else False
+                logs_dir, error = self._resolve_splitlog_dir(info.logs_dir)
+                if error is not None:
+                    self._record_logs_dir_policy_error(error)
+                    with self._jobs_lock:
+                        if self._jobs.get(job.path) is job:
+                            job.demote_to_single()
+                            self._total_single += 1
+                            self._deferred_single += 1
+                    logger.warning(
+                        "check_pending_jobs: job %s demoted to SINGLE after rejecting "
+                        "LOGS_DIR=%r: %s",
+                        job.job_id,
+                        info.logs_dir,
+                        error.message,
+                    )
+                    continue
                 logger.debug(
-                    "check_pending_jobs: job %s logs_dir - is_dir=%s, is_readable=%s",
+                    "check_pending_jobs: job %s logs_dir - valid=%s",
                     job.job_id,
-                    is_dir,
-                    is_readable,
+                    logs_dir is not None,
                 )
-                if is_dir and is_readable:
+                if logs_dir is not None:
                     with self._jobs_lock:
                         if self._jobs.get(job.path) is not job:
                             continue
-                        job.promote_to_splitlog(info.logs_dir)
+                        job.promote_to_splitlog(logs_dir)
                     self._splitlog_tracker.initialize_job(job)
                     self._total_splitlog += 1
                     self._deferred_splitlog += 1
@@ -274,7 +338,7 @@ class TrackedJobs:
                     logger.debug(
                         "check_pending_jobs: job %s promoted to SPLITLOG (logs_dir=%s)",
                         job.job_id,
-                        info.logs_dir,
+                        logs_dir,
                     )
 
         if expired_count > 0:

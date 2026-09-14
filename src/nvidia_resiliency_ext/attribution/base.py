@@ -24,7 +24,7 @@ def normalize_attribution_args(args: Any) -> Dict[str, Any]:
     - :class:`argparse.Namespace` (CLIs)
     - Any :class:`collections.abc.Mapping` (preferred for services)
     - A length-2 :class:`list` or :class:`tuple` (``[log_result, fr_result]`` →
-      ``{"input_data": [log_result, fr_result]}`` for :class:`~nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr.CombinedLogFR`)
+      ``{"input_data": [log_result, fr_result]}`` for :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr.CombinedLogFR`)
     - Other objects with a writable ``__dict__`` (e.g. simple test doubles; discouraged for new code)
     """
     if isinstance(args, argparse.Namespace):

@@ -13,13 +13,7 @@ from .execution import L0Artifacts
 from .infrastructure.log_source import LocalLogSource, LogSnapshot, LogSource
 from .l0 import build_l0_model_facing_view
 from .l0.streaming import FinalizedL0A, ProgressiveL0Accumulator, finalize_log_snapshot
-from .models import (
-    AnalysisExecutionContext,
-    AnalysisMode,
-    DecisionEvidence,
-    L0Bundle,
-    L0ModelFacingView,
-)
+from .models import AnalysisExecutionContext, DecisionEvidence, L0Bundle, L0ModelFacingView
 from .runtime import SYSTEM_CLOCK, Clock
 
 _T = TypeVar("_T")
@@ -55,10 +49,6 @@ def prepare_analysis(
 ) -> PreparedAnalysis:
     analysis_started = clock.monotonic()
     execution_context = _snapshot_execution_context(execution_context)
-    if execution_context.analysis_mode != AnalysisMode.TERMINAL.value:
-        raise NotImplementedError(
-            f"analysis_mode={execution_context.analysis_mode!r} is not implemented"
-        )
 
     source = log_source_factory(execution_context.log_path)
     if source.path != execution_context.log_path:
@@ -173,7 +163,7 @@ def _snapshot_execution_context(
         request=replace(execution_context.request),
         prior_attempts=deepcopy(execution_context.prior_attempts),
         retry_policy=deepcopy(dict(execution_context.retry_policy)),
-        declared_recovery_capabilities=tuple(execution_context.declared_recovery_capabilities),
+        policy_contexts=execution_context.policy_contexts,
     )
 
 

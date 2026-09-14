@@ -1,28 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Attribution module for failure attribution and log analysis.
+"""Current packaged attribution APIs and shared service wire types.
 
-This module provides:
-- Analyzer: main API for analyzing logs (usable without HTTP)
-- Core configuration and error codes
-- Request coalescing for deduplication and caching
-- Job/FileInfo data model for tracking analysis state
-- SLURM parser for extracting metadata from scheduler output
-- SplitlogTracker for multi-file job tracking
-
-Example usage (no HTTP required):
-    from nvidia_resiliency_ext.attribution import Analyzer
-
-    analyzer = Analyzer(allowed_root="/logs", use_lib_log_analysis=False)
-    
-    # Submit and analyze
-    await analyzer.submit("/logs/slurm-12345.out", user="alice")
-    result = await analyzer.analyze("/logs/slurm-12345.out")
-    
-    analyzer.shutdown()
-
-See ``README.md`` and ``ARCHITECTURE.md`` in this package for how the library is organized.
+The built wheel ships restart-agent, FR analysis, request coalescing, and
+shared attrsvc response/config types. Legacy LogSage, SPLITLOG orchestration,
+and LogSage-backed MCP tools live under ``legacy_logsage`` in source checkouts
+and are intentionally excluded from built wheels.
 """
 
 from __future__ import annotations
@@ -31,14 +15,6 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .analyzer import (
-        AnalysisPipelineMode,
-        Analyzer,
-        CombinedAnalysisResult,
-        FrDumpPathNotFoundError,
-        TraceAnalyzer,
-        run_attribution_pipeline,
-    )
     from .coalescing import (
         DEFAULT_COMPUTE_TIMEOUT_SECONDS,
         CacheResult,
@@ -50,13 +26,11 @@ if TYPE_CHECKING:
         SubmittedResult,
         coalesced_from_cache,
     )
-    from .controller import (
-        AttributionAnalysisConfig,
-        AttributionCacheConfig,
-        AttributionController,
-        AttributionControllerConfig,
-        AttributionCredentialsConfig,
-        AttributionPostprocessingConfig,
+    from .orchestration.analysis_pipeline import (
+        AnalysisPipelineMode,
+        CombinedAnalysisResult,
+        FrDumpPathNotFoundError,
+        run_attribution_pipeline,
     )
     from .orchestration.client_response import (
         AttrSvcResult,
@@ -87,7 +61,6 @@ if TYPE_CHECKING:
         ErrorCode,
     )
     from .orchestration.job import FileInfo, Job, JobMode
-    from .orchestration.splitlog import SplitlogTracker
     from .orchestration.types import (
         AttributionRecommendation,
         LogAnalysisCycleResult,
@@ -99,14 +72,14 @@ if TYPE_CHECKING:
         LogAnalyzerSubmitResult,
         RawAnalysisResultItem,
     )
+    from .trace_analyzer.trace_analyzer import TraceAnalyzer
 
 _EXPORTS = {
-    "AnalysisPipelineMode": ".analyzer",
-    "Analyzer": ".analyzer",
-    "CombinedAnalysisResult": ".analyzer",
-    "FrDumpPathNotFoundError": ".analyzer",
-    "TraceAnalyzer": ".analyzer",
-    "run_attribution_pipeline": ".analyzer",
+    "AnalysisPipelineMode": ".orchestration.analysis_pipeline",
+    "CombinedAnalysisResult": ".orchestration.analysis_pipeline",
+    "FrDumpPathNotFoundError": ".orchestration.analysis_pipeline",
+    "TraceAnalyzer": ".trace_analyzer.trace_analyzer",
+    "run_attribution_pipeline": ".orchestration.analysis_pipeline",
     "DEFAULT_COMPUTE_TIMEOUT_SECONDS": ".coalescing",
     "CacheResult": ".coalescing",
     "CoalescerStats": ".coalescing",
@@ -116,12 +89,6 @@ _EXPORTS = {
     "StatsResult": ".coalescing",
     "SubmittedResult": ".coalescing",
     "coalesced_from_cache": ".coalescing",
-    "AttributionController": ".controller",
-    "AttributionControllerConfig": ".controller",
-    "AttributionAnalysisConfig": ".controller",
-    "AttributionCacheConfig": ".controller",
-    "AttributionCredentialsConfig": ".controller",
-    "AttributionPostprocessingConfig": ".controller",
     "MAX_JOBS": ".orchestration.config",
     "MIN_FILE_SIZE_KB": ".orchestration.config",
     "POLL_INTERVAL_SECONDS": ".orchestration.config",
@@ -149,7 +116,6 @@ _EXPORTS = {
     "FileInfo": ".orchestration.job",
     "Job": ".orchestration.job",
     "JobMode": ".orchestration.job",
-    "SplitlogTracker": ".orchestration.splitlog",
     "AttributionRecommendation": ".orchestration.types",
     "LogAnalysisCycleResult": ".orchestration.types",
     "LogAnalysisSplitlogResult": ".orchestration.types",
@@ -179,7 +145,7 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    # Log + FR orchestration (no LogSage import here)
+    # Log + FR orchestration helpers (LogSage runner is source-only legacy)
     "AnalysisPipelineMode",
     "CombinedAnalysisResult",
     "FrDumpPathNotFoundError",
@@ -188,7 +154,6 @@ __all__ = [
     "LogAnalysisCoalesced",
     "coalesced_from_cache",
     # Main API
-    "Analyzer",
     "TraceAnalyzer",
     "LogAnalyzerConfig",
     "AttributionRecommendation",
@@ -202,12 +167,6 @@ __all__ = [
     "LogAnalysisSplitlogResult",
     "LogAnalyzerFilePreview",
     "RawAnalysisResultItem",
-    "AttributionController",
-    "AttributionControllerConfig",
-    "AttributionAnalysisConfig",
-    "AttributionCacheConfig",
-    "AttributionCredentialsConfig",
-    "AttributionPostprocessingConfig",
     # Configuration and error codes
     "ErrorCode",
     "TTL_PENDING_SECONDS",
@@ -242,6 +201,4 @@ __all__ = [
     "Job",
     "FileInfo",
     "JobMode",
-    # Splitlog tracking
-    "SplitlogTracker",
 ]

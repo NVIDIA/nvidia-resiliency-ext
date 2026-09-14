@@ -3,7 +3,7 @@
 
 """Fuse LogSage output with NCCL flight-recorder analysis via an LLM (LangChain + ChatOpenAI).
 
-Used by :class:`~nvidia_resiliency_ext.attribution.combined_log_fr.combined_log_fr.CombinedLogFR` and
+Used by :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.combined_log_fr.CombinedLogFR` and
 by :func:`~nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline.run_attribution_pipeline` (``LOG_AND_TRACE_WITH_LLM``).
 Kept as a standalone function so library code does not need ``NVRxAttribution`` or CLI wiring.
 """
@@ -35,9 +35,9 @@ def unpack_run_result(result: Any) -> Tuple[Any, AttributionState]:
     Many analyzers (e.g. :class:`~nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution.CollectiveAnalyzer`)
     return ``(payload, AttributionState)``.
 
-    :class:`~nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage.NVRxLogAnalyzer` returns
+    :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage.NVRxLogAnalyzer` returns
     ``tuple[list[RawAnalysisResultItem], AttributionState]`` from
-    :meth:`~nvidia_resiliency_ext.attribution.log_analyzer.nvrx_logsage.NVRxLogAnalyzer.print_output`.
+    :meth:`~nvidia_resiliency_ext.attribution.legacy_logsage.log_analyzer.nvrx_logsage.NVRxLogAnalyzer.print_output`.
     The outer 2-tuple is unpacked first (``payload = list[RawAnalysisResultItem]``, ``state``),
     then the inner list is unpacked on a second call to join per-cycle strings.
     """

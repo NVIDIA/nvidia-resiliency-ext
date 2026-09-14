@@ -30,6 +30,8 @@ from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode as 
 
 logger = logging.getLogger(__name__)
 
+_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
 # Service-specific constants
 DEFAULT_HOST = "127.0.0.1"
 
@@ -451,6 +453,19 @@ class Settings(BaseSettings):
         return path
 
 
+def configure_logging(log_level: str = "INFO") -> None:
+    """Configure attrsvc logging, including the pre-configuration startup window."""
+
+    root_level = getattr(logging, log_level, logging.INFO)
+    logging.basicConfig(level=root_level, format=_LOG_FORMAT)
+    # ``basicConfig`` is a no-op when the embedding process already has a
+    # handler. The explicit level assignment still honors attrsvc configuration.
+    logging.getLogger().setLevel(root_level)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+
 def setup() -> Settings:
     """
     Group environment configuration and logging setup for nvidia_resiliency_ext.services.attrsvc.
@@ -460,21 +475,9 @@ def setup() -> Settings:
     Field validators handle validation of PORT, LOG_LEVEL, COMPUTE_TIMEOUT,
     ALLOWED_ROOT, CACHE_FILE (when set), and rate limits. See Settings class for details.
     """
-    try:
-        cfg = Settings()  # type: ignore[call-arg]
-        _ = cfg.SERVICE_ENDPOINT
-    except Exception as e:
-        # Fail fast if required settings are missing or invalid
-        raise SystemExit(f"nvrx-attrsvc configuration error: {e}") from e
+    cfg = Settings()  # type: ignore[call-arg]
+    _ = cfg.SERVICE_ENDPOINT
 
-    _root_lvl = getattr(logging, cfg.LOG_LEVEL, logging.INFO)
-    logging.basicConfig(
-        level=_root_lvl,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    # Suppress verbose logs from dependencies
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    configure_logging(cfg.LOG_LEVEL)
 
     return cfg

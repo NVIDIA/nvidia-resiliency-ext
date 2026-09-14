@@ -9,7 +9,9 @@ PY310_PLUS = sys.version_info >= (3, 10)
 
 if PY310_PLUS:
     from nvidia_resiliency_ext.attribution.base import AttributionState
-    from nvidia_resiliency_ext.attribution.combined_log_fr.llm_merge import unpack_run_result
+    from nvidia_resiliency_ext.attribution.legacy_logsage.combined_log_fr.llm_merge import (
+        unpack_run_result,
+    )
     from nvidia_resiliency_ext.attribution.mcp_integration.registry import serialize_result
     from nvidia_resiliency_ext.attribution.orchestration.types import (
         AttributionRecommendation,

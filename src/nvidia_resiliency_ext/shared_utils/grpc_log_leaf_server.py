@@ -37,9 +37,14 @@ import threading
 import time
 import urllib.parse
 from concurrent import futures
-from typing import Any, Iterator, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 import grpc
+
+from nvidia_resiliency_ext.shared_utils.os_utils import (
+    normalize_allowed_roots,
+    resolve_under_allowed_roots,
+)
 
 try:
     from nvidia_resiliency_ext.shared_utils.proto import (
@@ -60,6 +65,17 @@ _DEFAULT_GRPC_BIND_HOST = "0.0.0.0"  # nosec B104
 
 # Sentinel placed on queue after graceful drain to end upstream StreamLogs
 _STOP = object()
+
+# Per-RPC memo of validated file paths, keeping the confinement check off the per-chunk hot
+# path without any shared-state locking.
+#
+# Sizing: a stream's *concurrent* working set is 2 paths — the fixed launcher log and the
+# current per-cycle application log (per_cycle_logs passes the same launcher log to every
+# update_pipes, and rotates only ``<prefix>_cycleN.log``). A long-lived stream accumulates one
+# more distinct path per restart cycle, so the cap must not be read as a cycle budget: entries
+# are evicted FIFO, and old cycle logs go permanently cold the moment a new cycle starts.
+# 32 leaves wide headroom over a working set of 2 while hard-bounding per-stream memory.
+_LEAF_VALIDATED_PATH_CACHE_MAX = 32
 
 # Slice timeout for Queue.put / Condition.wait so StreamLogs handlers can poll
 # ``reject_new_streams`` and exit during shutdown (no uninterruptible block).
@@ -88,11 +104,18 @@ _GRPC_OPTS = [
 ]
 
 
-def _copy_chunk(chunk: log_aggregation_pb2.LogChunk) -> log_aggregation_pb2.LogChunk:
+def _copy_chunk(
+    chunk: log_aggregation_pb2.LogChunk, file_path: Optional[str] = None
+) -> log_aggregation_pb2.LogChunk:
+    """Copy ``chunk``, optionally substituting an already-validated ``file_path``.
+
+    Forwarding the resolved path means the root does not have to re-resolve a string that
+    could resolve differently later.
+    """
     return log_aggregation_pb2.LogChunk(
         node_id=chunk.node_id,
         data=chunk.data,
-        file_path=chunk.file_path,
+        file_path=chunk.file_path if file_path is None else file_path,
     )
 
 
@@ -265,12 +288,62 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
         chunk_queue: _LeafChunkQueue,
         reject_new_streams: threading.Event,
         upstream_ready: threading.Event,
+        *,
+        allowed_roots: Sequence[str],
     ):
+        """
+        Args:
+            chunk_queue: Bounded queue drained by the upstream forwarder.
+            reject_new_streams: Set during shutdown to stop accepting work.
+            upstream_ready: Set while the leaf->root StreamLogs RPC is active.
+            allowed_roots: Non-empty directories that client-supplied ``file_path`` values
+                must resolve under. Rejecting here keeps out-of-root chunks from consuming
+                queue capacity and from reaching the root at all. Required with no default:
+                every chunk names its own destination, so there is no safe unconfined mode.
+
+        Raises:
+            ValueError: If ``allowed_roots`` is empty.
+        """
+        resolved_roots = normalize_allowed_roots(allowed_roots)
+        if not resolved_roots:
+            raise ValueError(
+                "allowed_roots must contain at least one directory: clients name their own "
+                "destination on every chunk, so an unconfined leaf would let any peer make "
+                "the root append to any file it can write"
+            )
         self._chunkq = chunk_queue
         self._reject = reject_new_streams
         self._upstream_ready = upstream_ready
+        self._allowed_roots: List[str] = resolved_roots
         self.connected_clients = 0
         self.clients_lock = threading.Lock()
+        logger.info(f"Leaf log write confinement enabled, allowed roots: {self._allowed_roots}")
+
+    def _resolve_target_path(self, file_path: str, memo: Dict[str, str]) -> str:
+        """
+        Validate a client-supplied path, memoizing per RPC so it costs syscalls only once.
+
+        Args:
+            file_path: ``LogChunk.file_path`` as sent by the peer (untrusted).
+            memo: Per-RPC cache of already-validated paths; only successes are cached.
+
+        Returns:
+            The fully resolved path to forward upstream.
+
+        Raises:
+            ValueError: If the path escapes every allowed root.
+        """
+        cached = memo.get(file_path)
+        if cached is not None:
+            return cached
+        resolved = resolve_under_allowed_roots(file_path, self._allowed_roots)
+        if len(memo) >= _LEAF_VALIDATED_PATH_CACHE_MAX:
+            # Evict oldest first (dicts preserve insertion order). Refusing to insert once
+            # full would be backwards here: the newest path is the hot one (the current
+            # cycle log), so it would be the one permanently re-resolved on every chunk.
+            del memo[next(iter(memo))]
+        memo[file_path] = resolved
+        return resolved
 
     def StreamLogs(self, request_iterator, context):
         if self._reject.is_set():
@@ -283,6 +356,7 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
         source_node_id = None
         total = 0
         nchunks = 0
+        validated_paths: Dict[str, str] = {}
         try:
             for chunk in request_iterator:
                 if self._reject.is_set():
@@ -292,7 +366,25 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
                     logger.info(
                         f"Compute node StreamLogs opened peer={peer} source_node_id={source_node_id}"
                     )
-                copied = _copy_chunk(chunk)
+                if not chunk.file_path:
+                    msg = f"peer={peer} node_id={chunk.node_id!r} sent chunk without file_path"
+                    logger.error(f"Protocol error in leaf StreamLogs: {msg}")
+                    context.abort(grpc.StatusCode.INVALID_ARGUMENT, msg)
+                    return log_aggregation_pb2.StreamResponse(
+                        status="INVALID_ARGUMENT", bytes_received=total
+                    )
+                try:
+                    target_path = self._resolve_target_path(chunk.file_path, validated_paths)
+                except ValueError as e:
+                    logger.error(
+                        f"Rejected log chunk in leaf StreamLogs peer={peer} "
+                        f"source_node_id={source_node_id}: {e}"
+                    )
+                    context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+                    return log_aggregation_pb2.StreamResponse(
+                        status="INVALID_ARGUMENT", bytes_received=total
+                    )
+                copied = _copy_chunk(chunk, file_path=target_path)
                 if not self._chunkq.put_chunk(
                     copied,
                     self._reject,
@@ -330,7 +422,31 @@ def serve(
     max_workers: int,
     max_queue_chunks: int,
     graceful_shutdown_timeout: float,
+    allowed_roots: Sequence[str],
 ) -> None:
+    """
+    Run a leaf aggregator that forwards downstream chunks to the root server.
+
+    Args:
+        host: Bind host for the downstream port.
+        port: Bind port for the downstream port.
+        upstream: Root server ``host:port``.
+        max_workers: gRPC worker threads (one per downstream stream).
+        max_queue_chunks: Bounded queue capacity for backpressure.
+        graceful_shutdown_timeout: Seconds to wait for downstream clients on shutdown.
+        allowed_roots: Non-empty list of directories that client-supplied ``file_path``
+            values must resolve under. Required because this entry point binds an
+            unauthenticated network port.
+
+    Raises:
+        ValueError: If ``allowed_roots`` is empty.
+    """
+    resolved_roots = normalize_allowed_roots(allowed_roots)
+    if not resolved_roots:
+        raise ValueError(
+            "allowed_roots must contain at least one directory: this leaf binds an "
+            "unauthenticated port and must not forward client-chosen write destinations"
+        )
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] [%(process)5s] %(filename)s:%(lineno)d %(message)s',
@@ -357,7 +473,9 @@ def serve(
         forwarder.join(timeout=10.0)
         sys.exit(1)
 
-    servicer = LeafLogServicer(chunk_queue, reject_new, forwarder.upstream_ready)
+    servicer = LeafLogServicer(
+        chunk_queue, reject_new, forwarder.upstream_ready, allowed_roots=resolved_roots
+    )
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=max_workers),
         options=_GRPC_OPTS,
@@ -479,6 +597,17 @@ def main() -> None:
         'chunks are often smaller.',
     )
     p.add_argument('--graceful-shutdown-timeout', type=float, default=60.0)
+    p.add_argument(
+        '--allowed-root',
+        type=str,
+        action='append',
+        required=True,
+        dest='allowed_roots',
+        metavar='DIR',
+        help='Directory that client-supplied log file paths must resolve under. Repeatable. '
+        'Required: this leaf binds an unauthenticated port, so without confinement any peer '
+        'that can reach it could make the root append to any file it can write.',
+    )
     args = p.parse_args()
     serve(
         host=args.host,
@@ -487,6 +616,7 @@ def main() -> None:
         max_workers=args.max_workers,
         max_queue_chunks=args.max_queue_chunks,
         graceful_shutdown_timeout=args.graceful_shutdown_timeout,
+        allowed_roots=args.allowed_roots,
     )
 
 

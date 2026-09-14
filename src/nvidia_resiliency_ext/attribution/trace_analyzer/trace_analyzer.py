@@ -3,7 +3,7 @@
 
 """NCCL flight-recorder discovery and dump analysis.
 
-Used by :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer` when the
+Used by :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer.LogAnalyzer` when the
 attribution pipeline includes flight-recorder analysis (see :mod:`~nvidia_resiliency_ext.attribution.orchestration.analysis_pipeline`).
 """
 

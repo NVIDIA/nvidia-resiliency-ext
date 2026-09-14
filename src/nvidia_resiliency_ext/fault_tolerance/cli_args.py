@@ -217,9 +217,14 @@ def add_log_funnel_args(
         help="Prefix for per-cycle application log files (must be absolute path, e.g. /lustre/logs/job_12345.log). "
         "Creates training worker logs per cycle: /lustre/logs/job_12345_cycle0.log, job_12345_cycle1.log, etc. "
         "All ranks/nodes capture logs with automatic rank prefixes (like 'srun -l'). "
-        "Without --ft-enable-log-server: Each node writes directly to Lustre with O_APPEND (safe concurrent writes). "
-        "With --ft-enable-log-server (recommended): All nodes stream logs to gRPC server on rank 0, which becomes the single Lustre writer. "
-        "gRPC mode eliminates Lustre lock contention and scales to 1000+ nodes. "
+        "Recommended: also pass --ft-nvrx-logfile, which enables --ft-enable-log-server "
+        "automatically; all nodes then stream logs to a gRPC server on the rendezvous host, "
+        "which becomes the single writer. That eliminates lock contention and scales to 1000+ nodes. "
+        "Without --ft-enable-log-server every node appends to the same shared file with O_APPEND. "
+        "Multi-writer direct append is not a recommended deployment on any filesystem: on Lustre "
+        "the writers serialise on the same extent lock and it does not scale, and on NFS/VAST-style "
+        "storage the append is not atomic across clients, so lines can interleave or be lost with "
+        "no error reported. "
         "Note: NVRx launcher logs go to stdout/stderr by default unless --ft-nvrx-logfile is specified.",
     )
     _add_argument(
@@ -253,7 +258,10 @@ def add_log_funnel_args(
         "(3) Root server writes to Lustre (single writer). "
         "With --ft-log-aggregator-count=N>1, N leaf processes plus one root use ports P..P+N (see --ft-log-server-port). "
         "Use --ft-log-aggregator-count=1 for a single server on P only. "
-        "Benefits: No Lustre lock contention, scales to 1500+ nodes. "
+        "Benefits: no lock contention, scales to 1500+ nodes, and a single writer means shared "
+        "storage does not need atomic cross-client O_APPEND. This is the recommended deployment "
+        "for multi-node jobs; the direct-write alternative does not scale on Lustre and can "
+        "silently interleave or lose lines on NFS/VAST-style storage. "
         f"Requires: grpcio. Default: {enable_default_help}.",
     )
     _add_argument(

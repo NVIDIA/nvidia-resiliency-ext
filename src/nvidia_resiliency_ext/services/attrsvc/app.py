@@ -27,7 +27,7 @@ from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ANALYSIS_INTENTS,
 )
 
-from .config import ErrorCode, Settings, setup
+from .config import ErrorCode, Settings, configure_logging, setup
 from .routes import PARAM_LOG_PATH, ROUTE_LOGS
 from .service import (
     AttributionHttpAdapter,
@@ -403,7 +403,7 @@ def _prepare_uds_path(path: str) -> None:
         return
     mode = os.stat(path).st_mode
     if not stat.S_ISSOCK(mode):
-        raise SystemExit(f"nvrx-attrsvc endpoint exists and is not a socket: {path}")
+        raise FileExistsError(f"nvrx-attrsvc endpoint exists and is not a socket: {path}")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(0.5)
         try:
@@ -414,37 +414,52 @@ def _prepare_uds_path(path: str) -> None:
             try:
                 os.unlink(path)
             except OSError as e:
-                raise SystemExit(
+                raise OSError(
                     f"nvrx-attrsvc stale endpoint could not be removed: {path}: {e}"
                 ) from e
             return
         except OSError as e:
-            raise SystemExit(
-                f"nvrx-attrsvc endpoint could not be probed safely: {path}: {e}"
-            ) from e
-    raise SystemExit(f"nvrx-attrsvc endpoint already has a listener: {path}")
+            raise OSError(f"nvrx-attrsvc endpoint could not be probed safely: {path}: {e}") from e
+    raise OSError(f"nvrx-attrsvc endpoint already has a listener: {path}")
 
 
 def main() -> None:
     """Entry point for the NVRX Attribution Service."""
-    cfg = setup()
+    # Configuration can fail before its requested log level is known. Establish
+    # a minimal sink first, then ``setup`` applies the configured level.
+    configure_logging()
+    startup_phase = "configuration"
+    try:
+        cfg = setup()
+        run_kwargs: dict[str, Any] = {
+            "access_log": False,
+            # Wait up to 30s for in-flight requests on shutdown.
+            "timeout_graceful_shutdown": 30,
+        }
+        startup_phase = "endpoint"
+        endpoint = cfg.SERVICE_ENDPOINT
+        if endpoint.uds_path:
+            _prepare_uds_path(endpoint.uds_path)
+            logger.info(
+                "Starting NVRX Attribution Service (nvrx-attrsvc) on %s",
+                endpoint.display_url,
+            )
+            run_kwargs["uds"] = endpoint.uds_path
+        else:
+            logger.info(
+                "Starting NVRX Attribution Service (nvrx-attrsvc) on %s",
+                endpoint.display_url,
+            )
+            logger.info("nvrx-attrsvc API Documentation: %s/docs", endpoint.display_url)
+            run_kwargs["host"] = endpoint.host
+            run_kwargs["port"] = endpoint.port
 
-    # Log unhandled exceptions (main and background threads) so crashes are visible in log
+        startup_phase = "adapter"
+        service_app = create_app(cfg)
+    except Exception:
+        logger.exception("event=attrsvc.startup.failed phase=%s", startup_phase)
+        raise SystemExit(1) from None
+
+    # Log unhandled exceptions after startup, including background-thread failures.
     _install_exception_logging()
-
-    run_kwargs: dict[str, Any] = {
-        "access_log": False,
-        "timeout_graceful_shutdown": 30,  # Wait up to 30s for in-flight requests on shutdown
-    }
-    endpoint = cfg.SERVICE_ENDPOINT
-    if endpoint.uds_path:
-        _prepare_uds_path(endpoint.uds_path)
-        logger.info("Starting NVRX Attribution Service (nvrx-attrsvc) on %s", endpoint.display_url)
-        run_kwargs["uds"] = endpoint.uds_path
-    else:
-        logger.info("Starting NVRX Attribution Service (nvrx-attrsvc) on %s", endpoint.display_url)
-        logger.info("nvrx-attrsvc API Documentation: %s/docs", endpoint.display_url)
-        run_kwargs["host"] = endpoint.host
-        run_kwargs["port"] = endpoint.port
-
-    uvicorn.run(create_app(cfg), **run_kwargs)
+    uvicorn.run(service_app, **run_kwargs)

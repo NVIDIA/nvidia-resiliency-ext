@@ -8,7 +8,7 @@ description: >
   After all jobs complete, runs /log-analysis and /fr-analysis on every experiment,
   scores attribution vs. ground truth, aggregates gaps, and iterates on attribution
   modules to close them.
-compatibility: Requires SLURM cluster access, sbatch, LLM_API_KEY, and nvidia-resiliency-ext[attribution] installed. This workflow has only been validated with Megatron-LM workloads.
+compatibility: Requires SLURM cluster access, sbatch, NVRx attribution support, and LLM_API_KEY for restart-agent L1 enrichment. This workflow has only been validated with Megatron-LM workloads.
 metadata:
   author: nvidia
   sub-skills: [log-analysis, fr-analysis]
@@ -38,7 +38,7 @@ gaps across the matrix, and proposes targeted improvements to attribution module
 │               per completed job, streaming as jobs finish              │
 │  4. SCORE    → compare attribution output vs injected ground truth     │
 │  5. AGGREGATE→ build results table; identify systematic failure modes  │
-│  6. IMPROVE  → patch log_analyzer/nvrx_logsage.py                     │
+│  6. IMPROVE  → patch restart_agent/ policy or evidence extraction      │
 │  7. LOOP     → re-run same pool with updated attribution code          │
 └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -118,6 +118,7 @@ LLM_API_KEY_FILE="${HOME}/.llm_api_key"
 JUDGE_API_KEY_FILE="${HOME}/.llm_api_key"
 NVRX_LLM_MODEL="nvidia/nemotron-3-super-120b-a12b"
 NVRX_LLM_BASE_URL="https://integrate.api.nvidia.com/v1"
+# RESTART_AGENT_CONFIG="/path/to/restart_agent.json"
 JUDGE_MODEL="qwen/qwen3.5-397b-a17b"
 JUDGE_BASE_URL="https://integrate.api.nvidia.com/v1"
 FR_SEGMENT_SIZE=32
@@ -152,6 +153,7 @@ Environment variables:
 | `CONTAINER_IMAGE` | `nvcr.io/nvidia/nemo:26.04` | Container image used by the workload script |
 | `LLM_API_KEY_FILE` | _unset_ | File containing the log-analysis API key |
 | `JUDGE_API_KEY_FILE` | _unset_ | File containing the judge API key |
+| `RESTART_AGENT_CONFIG` | _unset_ | Optional restart-agent config JSON; when set, it owns model-route behavior |
 | `NVRX_LLM_MODEL` | `nvidia/nemotron-3-super-120b-a12b` | Model for log-analysis |
 | `NVRX_LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Base URL for log-analysis |
 | `JUDGE_MODEL` | `qwen/qwen3.5-397b-a17b` | Model for judge scoring |
@@ -228,8 +230,8 @@ bash scripts/watch_and_analyze.sh \
 
 The watcher:
 1. Reads each row from the tracking TSV
-2. Calls `nvrx_logsage.py --exclude_nvrx_logs` and parses the text output to get
-   `restart_decision` and `attribution_text`
+2. Calls restart-agent as `python -m nvidia_resiliency_ext.attribution.restart_agent.cli`
+   and parses the JSON `decision`
 3. Calls FR analysis as `python -m nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution --fr-path "${EXPERIMENT_DIR}/checkpoints" -p "_dump_*"` and passes the raw table output to the judge
 4. Scores 7 dimensions (restart correctness, rank primary, rank any, category, type, FR rank)
 5. Appends a scored row to `<session>_report.md` as a markdown table row
@@ -237,8 +239,10 @@ The watcher:
 
 To also run the sub-skills interactively for a single experiment:
 ```bash
-/log-analysis --log-path "${EXPERIMENT_DIR}/logs/slurm/${JOB_ID}.*.1.main_workload.log"
-/fr-analysis  --fr-path "${EXPERIMENT_DIR}/checkpoints" -p "_dump_*"
+python -m nvidia_resiliency_ext.attribution.restart_agent.cli \
+  "${EXPERIMENT_DIR}/logs/slurm/${JOB_ID}.*.1.main_workload.log" --job-id "${JOB_ID}"
+python -m nvidia_resiliency_ext.attribution.trace_analyzer.fr_attribution \
+  --fr-path "${EXPERIMENT_DIR}/checkpoints" -p "_dump_*"
 ```
 
 ---
@@ -246,7 +250,7 @@ To also run the sub-skills interactively for a single experiment:
 ## Step 4 — Score Each Experiment
 
 Scoring is performed by `scripts/score_attribution.py`, an LLM judge that
-receives the ground truth, the filtered raw log, the logsage attribution output, and the FR
+receives the ground truth, the filtered raw log, the restart-agent attribution output, and the FR
 analysis output, then returns structured JSON scores with a reasoning note.
 
 | Column | Values | Meaning |
@@ -261,8 +265,8 @@ analysis output, then returns structured JSON scores with a reasoning note.
 The judge is given:
 1. Ground truth: `fault_type`, `rank`, `iter`, `nodes`
 2. Expected restart decision + rationale (derived from `score_attribution.py:_RESTART_TABLE`)
-3. Filtered raw log (last 400 lines, same `exclude_nvrx_logs` filtering as logsage)
-4. Raw logsage stdout (5-field text format)
+3. Filtered raw log (last 400 lines, with fault-injection markers removed)
+4. Raw restart-agent JSON output
 5. Raw FR analysis table output from `fr_attribution.py --fr-path ... -p "_dump_*"`
 6. `GPUS_PER_NODE` and `FR_SEGMENT_SIZE` to map the injected rank to exact node-sized and segment-sized scopes for FR scoring
 
@@ -293,8 +297,8 @@ Common failure mode patterns and their meaning:
 
 | Pattern | Interpretation |
 |---|---|
-| `rank_primary=false`, `rank_any=true` | Rank detected but treated as collateral; logsage putting it in secondary issues |
-| `rank_any=false` for rank-0 | Rank-0 hang silences watchdog on other ranks; logsage lacks rank-0 signal |
+| `rank_primary=false`, `rank_any=true` | Rank detected but treated as collateral rather than the primary root cause |
+| `rank_any=false` for rank-0 | Rank-0 hang silences watchdog on other ranks; log attribution lacks rank-0 signal |
 | `fault_described=partial` for crash types | Crash keywords present but fault type not specifically named |
 | `restart_correct=false` for GPU_ERROR | LLM conflating hardware error with recoverable hang |
 | `fr_rank_correct=no_dumps` | NCCL watchdog did not fire before job ended — adjust `TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC` |
@@ -313,15 +317,15 @@ Note misidentifications and escalate to the team.
 
 | Observation | Target location | Suggested fix |
 |---|---|---|
-| Wrong restart for hang | `nvrx_logsage.py` fast-path | Strengthen NCCL timeout → `RESTART IMMEDIATE` mapping |
-| Missing rank in attr text | `nvrx_logsage.py` prompt | Extract rank from NCCL watchdog lines; add regex |
-| Crash misclassified as hang | `nvrx_logsage.py` | Add SIGKILL/SEGFAULT/GPU_ERROR keyword patterns |
-| `ERRORS NOT FOUND` when errors exist | `return_application_errors` config | Loosen error extraction filter |
-| rank-0 not detected | prompt or fast-path | Add explicit rank-0 hang heuristic (other ranks silent) |
-| attr off by many iters | prompt context | Increase weight of iteration-stamped log lines |
-| LLM wrong on GPU_ERROR | prompt | Distinguish `cudaError` → crash from NCCL timeout → hang |
+| Wrong restart for hang | `restart_agent/l0` or `restart_agent/l4` | Strengthen NCCL timeout → `RESTART` mapping |
+| Missing rank in attr text | `restart_agent/l0` evidence extraction or L1 prompt/tooling | Extract rank from NCCL watchdog lines; add regex |
+| Crash misclassified as hang | `restart_agent/l0` evidence extraction or L1 prompt/tooling | Add SIGKILL/SEGFAULT/GPU_ERROR keyword patterns |
+| Missing `primary_failure` when errors exist | `restart_agent/l0` evidence extraction or L1 tooling | Loosen failure-candidate extraction/filtering |
+| rank-0 not detected | `restart_agent/l0` evidence extraction or L1 prompt/tooling | Add explicit rank-0 hang heuristic (other ranks silent) |
+| attr off by many iters | `restart_agent/l0` progress/failure-position evidence or L1 prompt | Increase weight of iteration-stamped log lines |
+| LLM wrong on GPU_ERROR | `restart_agent/l1` prompt or recovery assessment | Distinguish `cudaError` → crash from NCCL timeout → hang |
 
-Editable file: `attribution/log_analyzer/nvrx_logsage.py`
+Editable area: `attribution/restart_agent/`
 
 After each patch, re-run the same pool subset that previously failed:
 ```bash

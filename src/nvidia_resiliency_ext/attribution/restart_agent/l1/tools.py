@@ -7,29 +7,99 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable
 
+from ..identity import extract_rank, normalized_pattern
 from ..infrastructure.log_source import LogSnapshot
-from ..models import CausalRole, L0Bundle, L0ModelFacingView, LogLine
+from ..models import (
+    CausalRole,
+    DistributedFailureIncident,
+    L0Bundle,
+    L0ModelFacingView,
+    LogLine,
+    NormalizedOccurrenceGroup,
+)
 from .contracts import EvidenceTools, L1EvidenceContext
-
-OVERVIEW_HEAD_LINES = 40
-OVERVIEW_TAIL_LINES = 80
-OVERVIEW_MAX_CHARS = 12_000
-GREP_MAX_MATCHES = 50
-GREP_MAX_MATCHES_HARD_LIMIT = 200
-READ_WINDOW_MAX_LINES = 240
-READ_WINDOW_MAX_CHARS = 50_000
-TOOL_LINE_MAX_CHARS = 2_000
-EVIDENCE_OBJECTS_SCHEMA_VERSION = "restart_agent_evidence_objects.v1"
-EVIDENCE_OBJECTS_MAX_REFS = 8
-EVIDENCE_OBJECTS_MAX_CHARS = 50_000
-EVIDENCE_OBJECT_REF_MAX_CHARS = 128
-EVIDENCE_OBJECTS_METADATA_RESERVE_CHARS = 2_048
-
+from .tool_contracts import (
+    EVIDENCE_OBJECT_REF_MAX_CHARS,
+    EVIDENCE_OBJECTS_MAX_CHARS,
+    EVIDENCE_OBJECTS_MAX_REFS,
+    EVIDENCE_OBJECTS_METADATA_RESERVE_CHARS,
+    EVIDENCE_OBJECTS_SCHEMA_VERSION,
+    GREP_MAX_MATCHES,
+    GREP_MAX_MATCHES_HARD_LIMIT,
+    OVERVIEW_HEAD_LINES,
+    OVERVIEW_MAX_CHARS,
+    OVERVIEW_TAIL_LINES,
+    READ_WINDOW_MAX_CHARS,
+    READ_WINDOW_MAX_LINES,
+    TOOL_LINE_MAX_CHARS,
+)
 
 EvidenceToolsFactory = Callable[[L0Bundle, LogSnapshot], EvidenceTools]
+GREP_GROUP_SAMPLE_LINES = 5
+GREP_GROUP_SAMPLE_RANKS = 5
+
+
+@dataclass
+class _CompactGrepGroup:
+    representative: dict[str, Any]
+    group_kind: str
+    incident_id: str | None
+    first_line: int
+    last_line: int
+    occurrence_count: int = 0
+    sample_lines: list[int] = field(default_factory=list)
+    ranks: set[str] = field(default_factory=set)
+    unattributed_occurrence_count: int = 0
+    occurrence_group: NormalizedOccurrenceGroup | None = None
+
+    def add(self, item: LogLine) -> None:
+        self.occurrence_count += 1
+        self.last_line = item.line
+        if len(self.sample_lines) < GREP_GROUP_SAMPLE_LINES:
+            self.sample_lines.append(item.line)
+        rank = extract_rank(item.text)
+        if rank is None:
+            self.unattributed_occurrence_count += 1
+        else:
+            self.ranks.add(rank)
+
+    def payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            **self.representative,
+            "group_kind": self.group_kind,
+            "occurrence_count": self.occurrence_count,
+            "distinct_rank_count": len(self.ranks),
+            "unattributed_occurrence_count": self.unattributed_occurrence_count,
+            "first_line": self.first_line,
+            "last_line": self.last_line,
+            "sample_lines": list(self.sample_lines),
+            "sample_ranks": sorted(self.ranks, key=_rank_sort_key)[:GREP_GROUP_SAMPLE_RANKS],
+        }
+        if self.incident_id is not None:
+            payload["incident_id"] = self.incident_id
+        if self.occurrence_group is not None:
+            payload.update(
+                {
+                    "occurrence_group_id": self.occurrence_group.occurrence_group_id,
+                    "normalized_shape": self.occurrence_group.normalized_shape,
+                    "occurrence_group_total_count": self.occurrence_group.count,
+                    "occurrence_group_distinct_rank_count": len(self.occurrence_group.rank_spread),
+                    "classification": self.occurrence_group.classification,
+                    "registry_id": self.occurrence_group.registry_id,
+                }
+            )
+        return payload
+
+
+@dataclass(frozen=True)
+class _InitialModelEvidenceIndex:
+    available: bool = False
+    line_numbers: frozenset[int] = frozenset()
+    occurrence_group_ids: frozenset[str] = frozenset()
+    incident_ids: frozenset[str] = frozenset()
 
 
 def build_l1_evidence_context(
@@ -40,14 +110,33 @@ def build_l1_evidence_context(
 ) -> L1EvidenceContext:
     """Assemble the provider-neutral L1 view and controlled expansion tools."""
 
-    factory = tools_factory or LogTools
-    return L1EvidenceContext(model_view=model_view, tools=factory(bundle, source_log))
+    tools = (
+        tools_factory(bundle, source_log)
+        if tools_factory is not None
+        else LogTools(bundle, source_log, model_view=model_view)
+    )
+    return L1EvidenceContext(model_view=model_view, tools=tools)
 
 
 class LogTools:
-    def __init__(self, bundle: L0Bundle, source_log: LogSnapshot):
+    def __init__(
+        self,
+        bundle: L0Bundle,
+        source_log: LogSnapshot,
+        *,
+        model_view: L0ModelFacingView | None = None,
+    ):
         self._bundle = bundle
         self._source_log = source_log
+        self._initial_model_evidence = _initial_model_evidence_index(model_view)
+        (
+            self._occurrence_groups_by_sample_line,
+            self._occurrence_groups_by_shape,
+        ) = _occurrence_group_indexes(bundle, source_log)
+
+    @property
+    def line_count(self) -> int:
+        return self._bundle.line_count
 
     def overview(self) -> dict[str, Any]:
         return _build_overview(self._bundle, self._source_log)
@@ -58,23 +147,162 @@ class LogTools:
         *,
         ignore_case: bool = True,
         max_matches: int = GREP_MAX_MATCHES,
+        result_mode: str = "compact",
     ) -> dict[str, Any]:
         max_matches = min(max(max_matches, 0), GREP_MAX_MATCHES_HARD_LIMIT)
         flags = re.I if ignore_case else 0
         regex = re.compile(pattern, flags)
+        if result_mode == "raw":
+            return self._grep_log_raw(regex, pattern=pattern, max_matches=max_matches)
+        return self._grep_log_compact(regex, pattern=pattern, max_matches=max_matches)
+
+    def _grep_log_raw(
+        self,
+        regex: re.Pattern[str],
+        *,
+        pattern: str,
+        max_matches: int,
+    ) -> dict[str, Any]:
         matches: list[dict[str, Any]] = []
         total = 0
+        represented_count = 0
         for item in self._source_log.log_lines():
             if not regex.search(item.text):
                 continue
             total += 1
+            if item.line in self._initial_model_evidence.line_numbers:
+                represented_count += 1
             if len(matches) < max_matches:
                 matches.append(_line_payload(item))
         return {
             "pattern": pattern,
+            "result_mode": "raw",
             "matches": matches,
-            "total_matches": total,
-            "truncated": total > len(matches),
+            "total_raw_matches": total,
+            "total_match_groups": total,
+            "collapsed_matches": 0,
+            "scan_complete": True,
+            "samples_truncated": total > len(matches),
+            "initial_view_overlap": _initial_view_overlap(
+                available=self._initial_model_evidence.available,
+                represented_count=represented_count,
+                matched_group_count=total,
+            ),
+        }
+
+    def _grep_log_compact(
+        self,
+        regex: re.Pattern[str],
+        *,
+        pattern: str,
+        max_matches: int,
+    ) -> dict[str, Any]:
+        incident_by_line = _distributed_incident_by_line(self._bundle)
+        retained: dict[tuple[str, ...], dict[str, Any] | _CompactGrepGroup] = {}
+        retained_groups: dict[tuple[str, ...], _CompactGrepGroup] = {}
+        seen_groups: dict[tuple[str, ...], bool] = {}
+        total_raw_matches = 0
+        total_match_groups = 0
+
+        for item in self._source_log.log_lines():
+            if not regex.search(item.text):
+                continue
+            total_raw_matches += 1
+            incident = incident_by_line.get(item.line)
+            occurrence_group = _occurrence_group_for_line(
+                item,
+                self._occurrence_groups_by_sample_line,
+                self._occurrence_groups_by_shape,
+            )
+            if occurrence_group is None and incident is None:
+                group_key = ("line", str(item.line))
+                seen_groups[group_key] = _is_initially_represented(
+                    self._initial_model_evidence,
+                    item=item,
+                )
+                total_match_groups += 1
+                _retain_compact_match(
+                    retained,
+                    group_key,
+                    {
+                        **_line_payload(item),
+                        "group_kind": "individual_match",
+                        "occurrence_count": 1,
+                    },
+                    max_matches=max_matches,
+                    retained_groups=retained_groups,
+                )
+                continue
+
+            group_key = (
+                (
+                    "occurrence_group",
+                    occurrence_group.occurrence_group_id,
+                    incident.incident_id if incident is not None else "",
+                )
+                if occurrence_group is not None
+                else (
+                    "incident_shape",
+                    incident.incident_id,
+                    normalized_pattern(item.text),
+                )
+            )
+            represented = _is_initially_represented(
+                self._initial_model_evidence,
+                item=item,
+                occurrence_group=occurrence_group,
+                incident=incident,
+            )
+            group = retained_groups.get(group_key)
+            if group is not None:
+                group.add(item)
+                seen_groups[group_key] = seen_groups[group_key] or represented
+                continue
+            if group_key in seen_groups:
+                seen_groups[group_key] = seen_groups[group_key] or represented
+                continue
+
+            seen_groups[group_key] = represented
+            total_match_groups += 1
+            group = _CompactGrepGroup(
+                representative=_line_payload(item),
+                group_kind=(
+                    "normalized_occurrence_group"
+                    if occurrence_group is not None
+                    else incident.incident_kind
+                ),
+                incident_id=incident.incident_id if incident is not None else None,
+                first_line=item.line,
+                last_line=item.line,
+                occurrence_group=occurrence_group,
+            )
+            group.add(item)
+            if _retain_compact_match(
+                retained,
+                group_key,
+                group,
+                max_matches=max_matches,
+                retained_groups=retained_groups,
+            ):
+                retained_groups[group_key] = group
+
+        return {
+            "pattern": pattern,
+            "result_mode": "compact",
+            "matches": [
+                item.payload() if isinstance(item, _CompactGrepGroup) else item
+                for item in sorted(retained.values(), key=_compact_match_priority)
+            ],
+            "total_raw_matches": total_raw_matches,
+            "total_match_groups": total_match_groups,
+            "collapsed_matches": total_raw_matches - total_match_groups,
+            "scan_complete": True,
+            "samples_truncated": total_match_groups > len(retained),
+            "initial_view_overlap": _initial_view_overlap(
+                available=self._initial_model_evidence.available,
+                represented_count=sum(seen_groups.values()),
+                matched_group_count=total_match_groups,
+            ),
         }
 
     def read_window(
@@ -233,6 +461,12 @@ def _build_overview(bundle: L0Bundle, source_log: LogSnapshot) -> dict[str, Any]
                     "terminal_exception_causal_role_hint": (
                         episode.terminal_exception_causal_role_hint
                     ),
+                    "lifecycle_family": episode.lifecycle_family,
+                    "lifecycle_source_dialects": list(episode.lifecycle_source_dialects),
+                    "lifecycle_entities": list(episode.lifecycle_entities),
+                    "lifecycle_fault_lines": list(episode.lifecycle_fault_lines),
+                    "recovery_attempt_lines": list(episode.recovery_attempt_lines),
+                    "recovery_confirmation_lines": list(episode.recovery_confirmation_lines),
                     "exception_chain_lines": list(episode.exception_chain_lines),
                     "duplicate_rendering_lines": list(episode.duplicate_rendering_lines),
                     "wrapper_exception_lines": list(episode.wrapper_exception_lines),
@@ -420,6 +654,210 @@ def _json_chars(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
 
 
+def _initial_model_evidence_index(
+    model_view: L0ModelFacingView | None,
+) -> _InitialModelEvidenceIndex:
+    if model_view is None:
+        return _InitialModelEvidenceIndex()
+
+    line_numbers: set[int] = set()
+    occurrence_group_ids: set[str] = set()
+    incident_ids: set[str] = set()
+
+    def collect(value: Any, *, field_name: str | None = None) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                collect(item, field_name=str(key))
+            return
+        if isinstance(value, (list, tuple)):
+            if field_name and field_name.endswith("lines"):
+                line_numbers.update(
+                    int(item)
+                    for item in value
+                    if isinstance(item, int) and not isinstance(item, bool) and item > 0
+                )
+            if field_name == "occurrence_group_ids":
+                occurrence_group_ids.update(item for item in value if isinstance(item, str))
+            for item in value:
+                collect(item)
+            return
+        if (
+            field_name
+            and (field_name == "line" or field_name.endswith("_line"))
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+        ):
+            line_numbers.add(value)
+        elif field_name in {"occurrence_group_id", "occurrence_group_ids"} and isinstance(
+            value, str
+        ):
+            occurrence_group_ids.add(value)
+        elif field_name in {"incident_id", "distributed_incident_id"} and isinstance(value, str):
+            incident_ids.add(value)
+
+    collect(model_view.prompt_payload())
+    return _InitialModelEvidenceIndex(
+        available=True,
+        line_numbers=frozenset(line_numbers),
+        occurrence_group_ids=frozenset(occurrence_group_ids),
+        incident_ids=frozenset(incident_ids),
+    )
+
+
+def _retain_compact_match(
+    retained: dict[tuple[str, ...], dict[str, Any] | _CompactGrepGroup],
+    group_key: tuple[str, ...],
+    candidate: dict[str, Any] | _CompactGrepGroup,
+    *,
+    max_matches: int,
+    retained_groups: dict[tuple[str, ...], _CompactGrepGroup],
+) -> bool:
+    if max_matches <= 0:
+        return False
+    if len(retained) < max_matches:
+        retained[group_key] = candidate
+        return True
+
+    worst_key = max(retained, key=lambda key: _compact_match_priority(retained[key]))
+    if _compact_match_priority(candidate) >= _compact_match_priority(retained[worst_key]):
+        return False
+    retained.pop(worst_key)
+    retained_groups.pop(worst_key, None)
+    retained[group_key] = candidate
+    return True
+
+
+def _compact_match_priority(
+    item: dict[str, Any] | _CompactGrepGroup,
+) -> tuple[int, int]:
+    if isinstance(item, dict):
+        return (4, int(item.get("line") or 0))
+    if item.occurrence_group is None:
+        return (3, item.first_line)
+    classification = item.occurrence_group.classification
+    return (
+        {
+            "cause_confirmation": 0,
+            "error": 0,
+            "cascade": 1,
+            "recovery": 2,
+            "checkpoint": 2,
+            "progress": 2,
+            "setup_progress": 2,
+            "diagnostic": 3,
+        }.get(classification, 3),
+        item.first_line,
+    )
+
+
+def _occurrence_group_indexes(
+    bundle: L0Bundle,
+    source_log: LogSnapshot,
+) -> tuple[
+    dict[int, tuple[NormalizedOccurrenceGroup, ...]],
+    dict[str, tuple[NormalizedOccurrenceGroup, ...]],
+]:
+    by_sample_line: dict[int, list[NormalizedOccurrenceGroup]] = {}
+    by_shape: dict[str, list[NormalizedOccurrenceGroup]] = {}
+    for group in bundle.occurrence_groups:
+        by_shape.setdefault(group.normalized_shape, []).append(group)
+        for line in group.sample_lines:
+            by_sample_line.setdefault(line, []).append(group)
+            sample_text = source_log.line(line)
+            if sample_text is not None:
+                by_shape.setdefault(normalized_pattern(sample_text), []).append(group)
+    return (
+        {line: tuple(groups) for line, groups in by_sample_line.items()},
+        {
+            shape: tuple({group.occurrence_group_id: group for group in groups}.values())
+            for shape, groups in by_shape.items()
+        },
+    )
+
+
+def _occurrence_group_for_line(
+    item: LogLine,
+    by_sample_line: dict[int, tuple[NormalizedOccurrenceGroup, ...]],
+    by_shape: dict[str, tuple[NormalizedOccurrenceGroup, ...]],
+) -> NormalizedOccurrenceGroup | None:
+    candidates = by_sample_line.get(item.line)
+    if candidates is None:
+        candidates = by_shape.get(normalized_pattern(item.text))
+    if not candidates:
+        return None
+    return min(candidates, key=_occurrence_group_priority)
+
+
+def _occurrence_group_priority(group: NormalizedOccurrenceGroup) -> tuple[int, int, int, str]:
+    classification_priority = {
+        "cause_confirmation": 0,
+        "error": 1,
+        "cascade": 2,
+        "recovery": 3,
+        "checkpoint": 4,
+        "progress": 5,
+        "setup_progress": 6,
+        "diagnostic": 7,
+    }
+    return (
+        classification_priority.get(group.classification, 8),
+        0 if group.registry_id is not None else 1,
+        group.first_line,
+        group.occurrence_group_id,
+    )
+
+
+def _is_initially_represented(
+    index: _InitialModelEvidenceIndex,
+    *,
+    item: LogLine,
+    occurrence_group: NormalizedOccurrenceGroup | None = None,
+    incident: DistributedFailureIncident | None = None,
+) -> bool:
+    return bool(
+        item.line in index.line_numbers
+        or (
+            occurrence_group is not None
+            and occurrence_group.occurrence_group_id in index.occurrence_group_ids
+        )
+        or (incident is not None and incident.incident_id in index.incident_ids)
+    )
+
+
+def _initial_view_overlap(
+    *,
+    available: bool,
+    represented_count: int,
+    matched_group_count: int,
+) -> dict[str, Any]:
+    new_count = max(0, matched_group_count - represented_count)
+    return {
+        "available": available,
+        "matched_group_count": matched_group_count,
+        "represented_group_count": represented_count if available else None,
+        "new_group_count": new_count if available else None,
+        "new_evidence_beyond_initial_view": bool(new_count) if available else None,
+    }
+
+
+def _distributed_incident_by_line(
+    bundle: L0Bundle,
+) -> dict[int, DistributedFailureIncident]:
+    by_line: dict[int, DistributedFailureIncident] = {}
+    for incident in bundle.distributed_failure_incidents:
+        for line in incident.member_event_lines:
+            by_line.setdefault(line, incident)
+    return by_line
+
+
+def _rank_sort_key(value: str) -> tuple[int, int | str]:
+    try:
+        return (0, int(value))
+    except ValueError:
+        return (1, value)
+
+
 def _line_payload_with_char_cap(
     lines: Iterable[LogLine],
     max_chars: int,
@@ -501,7 +939,7 @@ def _run_progress_summary_payload(summary: Any) -> dict[str, Any]:
         "progress_after_failure_episode": summary.progress_after_failure_episode,
         "first_terminal_incident_line": summary.first_terminal_incident_line,
         "first_terminal_incident_timestamp": summary.first_terminal_incident_timestamp,
-        "configured_terminal_timeout_seconds": summary.configured_terminal_timeout_seconds,
+        "incident_configured_timeout_seconds": summary.incident_configured_timeout_seconds,
         "seconds_from_last_progress_to_terminal_incident": (
             summary.seconds_from_last_progress_to_terminal_incident
         ),

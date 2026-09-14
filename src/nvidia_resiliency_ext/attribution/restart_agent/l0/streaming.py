@@ -56,6 +56,8 @@ class ProgressiveL0State:
     source_decode_wall_clock_s: float
     source_index_classify_wall_clock_s: float
     source_ingest_wall_clock_s: float
+    l0a_bundle_wall_clock_s: float
+    decision_evidence_wall_clock_s: float
     l0a_reduction_wall_clock_s: float
     last_growth_monotonic: float | None
     last_poll_monotonic: float | None
@@ -127,6 +129,8 @@ class ProgressiveL0Accumulator:
         self._l0a_build_count = 0
         self._source_decode_wall_clock_s = 0.0
         self._source_index_classify_wall_clock_s = 0.0
+        self._l0a_bundle_wall_clock_s = 0.0
+        self._decision_evidence_wall_clock_s = 0.0
         self._l0a_reduction_wall_clock_s = 0.0
         self._last_growth_monotonic: float | None = None
         self._last_poll_monotonic: float | None = None
@@ -171,6 +175,14 @@ class ProgressiveL0Accumulator:
                 ),
                 source_ingest_wall_clock_s=round(
                     self._source_decode_wall_clock_s + self._source_index_classify_wall_clock_s,
+                    6,
+                ),
+                l0a_bundle_wall_clock_s=round(
+                    self._l0a_bundle_wall_clock_s,
+                    6,
+                ),
+                decision_evidence_wall_clock_s=round(
+                    self._decision_evidence_wall_clock_s,
                     6,
                 ),
                 l0a_reduction_wall_clock_s=round(
@@ -376,6 +388,8 @@ class ProgressiveL0Accumulator:
             decision_evidence_wall_clock_s=round(decision_wall_clock_s, 3),
         )
         self._l0a_build_count += 1
+        self._l0a_bundle_wall_clock_s += l0a_wall_clock_s
+        self._decision_evidence_wall_clock_s += decision_wall_clock_s
         self._l0a_reduction_wall_clock_s += l0a_wall_clock_s + decision_wall_clock_s
 
 
@@ -398,6 +412,7 @@ def finalize_log_snapshot(
             observations=observations,
         )
     else:
+        _validate_replayed_bundle(source_log, l0_bundle)
         bundle = l0_bundle
     l0a_wall_clock_s = clock.monotonic() - l0a_started
     decision_started = clock.monotonic()
@@ -420,6 +435,17 @@ def finalize_log_snapshot(
         progressive_metrics={},
         canonical_hash=canonical_l0a_hash(bundle, decision_evidence),
     )
+
+
+def _validate_replayed_bundle(source_log: LogSnapshot, bundle: L0Bundle) -> None:
+    """Reject a direct replay that does not match the captured source view."""
+
+    if bundle.log_path != source_log.path:
+        raise ValueError("replayed L0 bundle log_path does not match captured source")
+    if bundle.byte_size != source_log.byte_size:
+        raise ValueError("replayed L0 bundle byte_size does not match captured source")
+    if bundle.line_count != source_log.line_count:
+        raise ValueError("replayed L0 bundle line_count does not match captured source")
 
 
 def canonical_l0a_payload(

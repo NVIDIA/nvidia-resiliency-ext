@@ -14,7 +14,7 @@ Constants overview:
 - MIN_FILE_SIZE_KB: Minimum file size for analysis
 
 Compute timeout defaults live on :class:`~nvidia_resiliency_ext.attribution.coalescing.RequestCoalescer`
-(see ``DEFAULT_COMPUTE_TIMEOUT_SECONDS`` in ``attribution.coalescing``); :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer` accepts ``compute_timeout`` / ``grace_period_seconds`` for the coalescer.
+(see ``DEFAULT_COMPUTE_TIMEOUT_SECONDS`` in ``attribution.coalescing``); :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine.Analyzer` accepts ``compute_timeout`` / ``grace_period_seconds`` for the coalescer.
 """
 
 import os
@@ -46,7 +46,7 @@ MIN_FILE_SIZE_KB = 4  # Minimum file size (KB) for classification
 
 @dataclass
 class LogSageExecutionConfig:
-    """Lib/MCP runtime override knobs for :class:`~nvidia_resiliency_ext.attribution.orchestration.log_analyzer.LogAnalyzer`.
+    """Lib/MCP runtime override knobs for :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.orchestration.log_analyzer.LogAnalyzer`.
 
     ``use_lib_log_analysis`` selects **both** LogSage and flight-recorder analysis: in-process vs the
     same MCP subprocess used for ``log_analyzer`` / ``fr_analyzer`` tools.
@@ -54,7 +54,7 @@ class LogSageExecutionConfig:
     LogSage/MCP/merge layer applies its own default.
 
     Subset of orchestration :class:`~nvidia_resiliency_ext.attribution.orchestration.types.LogAnalyzerConfig`
-    (no ``allowed_root`` — path policy stays in the attribution :class:`~nvidia_resiliency_ext.attribution.analyzer.engine.Analyzer`).
+    (no ``allowed_root`` — path policy stays in the attribution :class:`~nvidia_resiliency_ext.attribution.legacy_logsage.analyzer.engine.Analyzer`).
     """
 
     use_lib_log_analysis: bool = False

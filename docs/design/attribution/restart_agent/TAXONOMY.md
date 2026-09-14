@@ -11,13 +11,16 @@ shapes live in `SCHEMA.md`; stage behavior lives in `L0A.md` through `L4.md`.
 | --- | --- | --- | --- |
 | L0A | Registry role | How may a deterministic match contribute to evidence? | `root_candidate`, `cascade_candidate`, `cause_confirmation` |
 | L0A/L1 | Causal role | Where does an event sit in the observed failure chain? | `initiating`, `cascade`, `teardown`, `unknown` |
+| L0A/L1 | Selected observed failure | Which terminal failure surface best describes what remained visible when no initiating primary can be established? | TCPStore peer connection loss with the store-owner failure absent |
 | L0A/L2 | Failure class | What stable mechanism was observed by the client? | `observed_exception`, `cuda_oom`, `nccl_cascade` |
 | L1 | Failure identity | What operation, mechanism, component, and artifact does the model infer? | checkpoint load, metadata deserialization, checkpoint component, exact path |
 | L1 | Root-cause status | How strongly does the current log support the explanation? | `supported_but_unconfirmed` |
 | L1 | Failure domain | Where does the failure originate? | `workload`, `infrastructure`, `unknown` |
 | L1 | Retry outlook | Can the next cycle recover without changing workload code, data, or configuration? | `cannot_recover`, `may_recover`, `unknown` |
-| L2 | History identity | Which stable root and optional affected entity may be compared across cycles? | exception fingerprint plus checkpoint path |
-| L3 | Recurrence and progress | Has the same root recurred, and did the job advance between occurrences? | same root and artifact, checkpoint step advanced |
+| L0A/L2 | Identity kind | Is the client identity an initiating root, an observation-only surface, or unavailable? | `root`, `observation_only`, `none` |
+| L2 | Root history identity | Which stable initiating root and optional affected entity may be compared across cycles? | exception fingerprint plus checkpoint path |
+| L2 | Observation identity | Which stable visible failure surface may be compared without claiming a shared cause? | TCPStore connection-loss fingerprint |
+| L3 | Recurrence and progress | Has the same root or observation recurred, and did the job advance between occurrences? | same root and artifact, checkpoint step advanced |
 | L4 | Retry rule and action | Which rule applies, and are the general ceiling or a narrower selected-rule budget exhausted? | `general_retry` leading to `RESTART` |
 
 ## Structural Roles
@@ -45,8 +48,34 @@ A registry match is observed structure, not semantic root cause or policy.
 | `teardown` | Shutdown or cleanup activity after failure. |
 | `unknown` | The available evidence cannot establish the relationship. |
 
+Causal roles apply to fault-related observations; initialization, progress,
+and recovery are represented by their own observation and outcome fields. None
+of these labels defines a contiguous log phase. Roles may overlap across ranks,
+and buffered or interleaved output may differ from causal order. L0A constructs
+failure episodes from the available chronology and associations rather than
+partitioning the log by line range.
+
 Diagnostic advice, such as CUDA asynchronous-reporting warnings or debugging
 suggestions, remains visible as context but is not a failure anchor.
+
+### Primary Versus Selected Observation
+
+`primary_failure` is the best-supported initiating failure visible in the log.
+It is null when the initiating event is absent or only downstream effects are
+available. A `selected_observed_failure` is weaker: it is one canonical terminal
+failure surface retained to describe what the log did show. It may have causal
+role `unknown`, `cascade`, or `teardown`; it never becomes initiating merely
+because no better evidence exists.
+
+The corresponding identities answer different questions:
+
+| Identity | Question | Generic policy use |
+| --- | --- | --- |
+| Root fingerprint | Did the same initiating mechanism recur? | Root and root-plus-entity ledgers |
+| Observation fingerprint | Did the same visible terminal surface recur? | Diagnostic recurrence; root-independent general retry does not require it |
+
+Two null roots never match. An observation fingerprint is never copied into the
+root field, even when the same symptom appears across attempts.
 
 ## Semantic Assessment
 
@@ -69,9 +98,16 @@ Each claim has an independent evidence status:
 Confidence from 1 to 99 records model self-confidence for calibration. It is
 not an action score or an L4 threshold.
 
-The retry outlook assumes failed processes are recreated, normal restart delay
-occurs, hardware allocation may change, and mutable external-service state may
-change. Same-attempt fanout cannot establish cross-cycle persistence; L3 owns
+The retry outlook uses the immutable `ClusterExecutionContext` defined in
+`L1.md`: process recreation and normal delay occur, while any physical
+replacement comes from the same homogeneous resource envelope. Independent
+health handling may quarantine a relevant faulty resource. Infrastructure
+alternatives remain relevant when the failed operation depends on that path and
+the alternative can produce the observed mechanism, even if the exact physical
+component is unknown; generic component fallibility is not evidence. Failure
+domain remains independent from retry outlook, so unknown domain may pair with
+`may_recover`. The transition is context, not evidence that recovery will
+happen. Same-attempt fanout cannot establish cross-cycle persistence; L3 owns
 observed recurrence.
 
 ## Worked Example
@@ -107,6 +143,9 @@ transient read failure; the current log need not prove which one occurred.
 - A registry match does not establish semantic domain or recovery outlook.
 - Diagnostic text cannot become a primary failure or history fingerprint.
 - Cascade and teardown events cannot replace an earlier initiating failure.
+- A selected observation cannot be relabeled as an initiating primary merely
+  to create a root fingerprint.
+- Matching observation fingerprints do not establish matching root causes.
 - Same-attempt repetition across ranks is not cross-cycle persistence.
 - L1 semantics do not directly choose an action; L3 supplies history and L4
   applies retry policy.
