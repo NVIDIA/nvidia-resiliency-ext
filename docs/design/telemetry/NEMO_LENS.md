@@ -249,7 +249,7 @@ A hot spare produces one `await_round` / `rendezvous` pair per round, so volume 
 | Health check exclusion (`UnhealthyNodeException`)  | `excluded`                                         |
 | Standby/late joiner leaves an attempted round       | `standby`                                          |
 | Attribution stop / peer no-restart                 | `terminated`                                       |
-| Signal                                             | _(no cycle span emitted; the marker stands alone)_ |
+| Signal                                             | _(cycle closed during final cleanup; outcome may be absent)_ |
 
 The exclusion and standby handlers live in `_rendezvous`, so they cover the first rendezvous as well as every restart.
 

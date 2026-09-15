@@ -1954,6 +1954,60 @@ class TestLauncherAllowedRoots:
 
 
 class TestCycleTelemetry(unittest.TestCase):
+    def test_shutdown_failure_still_closes_phases_and_telemetry(self):
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._worker_group.spec.max_restarts = 5
+        agent._get_global_cycle_number.return_value = 3
+        agent._shutdown.side_effect = RuntimeError("shutdown failed")
+        events = MagicMock()
+        agent._run_phase = events.run
+        agent._cycle_phase = events.cycle
+        with (
+            patch.object(launcher.telemetry, "setup_telemetry") as setup,
+            patch.object(launcher.telemetry, "record_process_startup"),
+            patch.object(launcher.telemetry, "shutdown", events.shutdown),
+            self.assertRaisesRegex(RuntimeError, "shutdown failed"),
+        ):
+            launcher.LocalElasticAgent.run(agent)
+        self.assertEqual(
+            events.mock_calls,
+            [
+                unittest.mock.call.run.close(),
+                unittest.mock.call.cycle.close(),
+                unittest.mock.call.shutdown(setup.return_value),
+            ],
+        )
+
+    def test_phase_close_failure_still_closes_cycle_and_telemetry(self):
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._worker_group.spec.max_restarts = 5
+        agent._get_global_cycle_number.return_value = 3
+        events = MagicMock()
+        events.run.close.side_effect = RuntimeError("run close failed")
+        agent._run_phase = events.run
+        agent._cycle_phase = events.cycle
+        with (
+            patch.object(launcher.telemetry, "setup_telemetry") as setup,
+            patch.object(launcher.telemetry, "record_process_startup"),
+            patch.object(launcher.telemetry, "shutdown", events.shutdown),
+            self.assertRaisesRegex(RuntimeError, "run close failed"),
+        ):
+            launcher.LocalElasticAgent.run(agent)
+        self.assertEqual(
+            events.mock_calls,
+            [
+                unittest.mock.call.run.close(),
+                unittest.mock.call.cycle.close(),
+                unittest.mock.call.shutdown(setup.return_value),
+            ],
+        )
+
     def test_run_phase_keeps_its_starting_counter_snapshot(self):
         from nvidia_resiliency_ext.fault_tolerance import launcher
 
