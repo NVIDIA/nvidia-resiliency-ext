@@ -106,8 +106,9 @@ failure in-job restart cannot repair.</p>
 generation’s liveness. Every other task can be replaced from the spare pool; task 0
 cannot, because the endpoint every other task dials is its hostname. Submitting the
 array with <code class="docutils literal notranslate"><span class="pre">--dependency=singleton</span></code> makes that loss cheap instead of fatal: losing
-task 0 ends the current array, and the scheduler immediately starts the next one, which
-rendezvouses on a new task 0 and resumes from the last checkpoint.</p>
+task 0 makes the current generation unrecoverable. All remaining array tasks must exit
+or be cancelled before the dependency is satisfied; the next generation is then eligible
+to run, rendezvous on a new task 0, and resume from the last checkpoint.</p>
 <p>The example trains public <a class="reference external" href="https://github.com/NVIDIA/Megatron-LM">Megatron-LM</a> on mock
 data, so it needs no corpus and no tokenizer model.</p>
 <p>Files (under <code class="docutils literal notranslate"><span class="pre">examples/fault_tolerance/deployment/</span></code>):</p>
@@ -117,9 +118,10 @@ data, so it needs no corpus and no tokenizer model.</p>
 <dt><code class="docutils literal notranslate"><span class="pre">slurm/nvrx_singleton_array.sbatch</span></code></dt><dd><p>One generation: rendezvous host publication, the peer gate, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>, and the
 teardown that releases the spare pool when task 0 exits.</p>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">slurm/submit_chain.sh</span></code></dt><dd><p>Computes the array shape from one setting and enqueues K generations.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">slurm/submit_chain.sh</span></code></dt><dd><p>Computes the array shape from the training-task, hot-spare, and cold-spare settings,
+then enqueues K generations.</p>
 </dd>
-<dt><code class="docutils literal notranslate"><span class="pre">slurm/README.md</span></code></dt><dd><p>Knobs, and hot vs cold spares.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">slurm/README.md</span></code></dt><dd><p>Run modes, prerequisites, knobs, and hot vs cold spares.</p>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">watch/</span></code></dt><dd><p><code class="docutils literal notranslate"><span class="pre">nvrx-watch</span></code>: an out-of-job watcher that reconciles the chain and detects restart
 anomalies – restart storms, restarts that never advance the checkpoint iteration,
@@ -129,10 +131,37 @@ scheduler-independent. See <code class="docutils literal notranslate"><span clas
 </dl>
 <section id="quick-start">
 <h2>Quick start<a class="headerlink" href="#quick-start" title="Link to this heading"></a></h2>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>examples/fault_tolerance/deployment/slurm
-
+<p><code class="docutils literal notranslate"><span class="pre">NVRX_WORK_DIR</span></code> must be creatable on the submission host and visible at the same path
+from every compute node. Then choose one of these workload environments:</p>
+<ul>
+<li><p><strong>Container mode</strong> (the mode exercised by the singleton QA cases): set the image and
+mount the shared work directory. <code class="docutils literal notranslate"><span class="pre">MEGATRON_PATH</span></code> is a path inside the image.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_WORK_DIR</span><span class="o">=</span>/shared/<span class="nv">$USER</span>/nvrx-run
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_CONTAINER_IMAGE</span><span class="o">=</span>/path/to/pytorch+nvrx.sqsh
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_CONTAINER_MOUNTS</span><span class="o">=</span>/shared:/shared
 <span class="nb">export</span><span class="w"> </span><span class="nv">MEGATRON_PATH</span><span class="o">=</span>/workspace/megatron-lm
-<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_WORK_DIR</span><span class="o">=</span>/shared/<span class="nv">$USER</span>/nvrx-run
+</pre></div>
+</div>
+</li>
+<li><p><strong>Bare-metal mode</strong> (not currently exercised by the singleton QA cases): leave
+<code class="docutils literal notranslate"><span class="pre">NVRX_CONTAINER_IMAGE</span></code> unset. Megatron-LM must be available at <code class="docutils literal notranslate"><span class="pre">MEGATRON_PATH</span></code>
+on the submission host and every compute node, and nvidia-resiliency-ext
+(<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>) must be installed on every compute node.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_WORK_DIR</span><span class="o">=</span>/shared/<span class="nv">$USER</span>/nvrx-run
+<span class="nb">unset</span><span class="w"> </span>NVRX_CONTAINER_IMAGE
+<span class="nb">export</span><span class="w"> </span><span class="nv">MEGATRON_PATH</span><span class="o">=</span>/shared/path/to/Megatron-LM
+</pre></div>
+</div>
+</li>
+</ul>
+<p>The example defaults to segment-aware mode (<code class="docutils literal notranslate"><span class="pre">NVRX_SEGMENT=1</span></code>), which requires
+<code class="docutils literal notranslate"><span class="pre">nvidia-smi</span> <span class="pre">-q</span></code> to report a GPU ClusterUUID. On systems without a ClusterUUID, select
+simple hot-spare mode by setting <code class="docutils literal notranslate"><span class="pre">NVRX_SEGMENT</span></code> to an explicit empty value:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_SEGMENT</span><span class="o">=</span>
+</pre></div>
+</div>
+<p>Submit the chain:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>examples/fault_tolerance/deployment/slurm
 
 <span class="nv">NVRX_DRY_RUN</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./submit_chain.sh<span class="w">    </span><span class="c1"># print the sbatch commands only</span>
 ./submit_chain.sh<span class="w">                   </span><span class="c1"># default: no-restart (exit 93) demo</span>
@@ -140,11 +169,13 @@ scheduler-independent. See <code class="docutils literal notranslate"><span clas
 
 <span class="c1"># real training: injection off, scale up</span>
 <span class="nv">NVRX_NO_RESTART_DEMO</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="nv">NVRX_FAULT_INJECT</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="nv">NVRX_INJECT_GPU_FAILURE</span><span class="o">=</span><span class="w"> </span><span class="se">\</span>
-<span class="nv">NVRX_MODEL_PROFILE</span><span class="o">=</span>8b<span class="w"> </span><span class="nv">NVRX_TRAIN_TASKS</span><span class="o">=</span><span class="m">32</span><span class="w"> </span>./submit_chain.sh
+<span class="nv">NVRX_MODEL_PROFILE</span><span class="o">=</span>8b<span class="w"> </span><span class="nv">NVRX_TRAIN_TASKS</span><span class="o">=</span><span class="m">32</span><span class="w"> </span><span class="nv">NVRX_HOT_SPARES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="nv">NVRX_COLD_SPARES</span><span class="o">=</span><span class="m">32</span><span class="w"> </span><span class="se">\</span>
+<span class="nv">NVRX_CHAIN_DEPTH</span><span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="nv">NVRX_TIME_LIMIT</span><span class="o">=</span><span class="m">02</span>:00:00<span class="w"> </span>./submit_chain.sh
 </pre></div>
 </div>
 <p>Then watch the run from a login node by its Slurm job id (name, owner and work dir
-resolve from Slurm; observe-only by default, <code class="docutils literal notranslate"><span class="pre">--act</span></code> to enable the one action):</p>
+resolve from Slurm; observe-only by default, <code class="docutils literal notranslate"><span class="pre">--act</span></code> cancels pending cold-spare tasks
+from an orphaned generation):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>../watch
 python3<span class="w"> </span>-m<span class="w"> </span>nvrx_watch<span class="w"> </span>&lt;job_id&gt;
 </pre></div>

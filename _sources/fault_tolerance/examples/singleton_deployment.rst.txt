@@ -9,8 +9,9 @@ Array task 0 is both a training rank and the rendezvous host, so its liveness is
 generation's liveness. Every other task can be replaced from the spare pool; task 0
 cannot, because the endpoint every other task dials is its hostname. Submitting the
 array with ``--dependency=singleton`` makes that loss cheap instead of fatal: losing
-task 0 ends the current array, and the scheduler immediately starts the next one, which
-rendezvouses on a new task 0 and resumes from the last checkpoint.
+task 0 makes the current generation unrecoverable. All remaining array tasks must exit
+or be cancelled before the dependency is satisfied; the next generation is then eligible
+to run, rendezvous on a new task 0, and resume from the last checkpoint.
 
 The example trains public `Megatron-LM <https://github.com/NVIDIA/Megatron-LM>`_ on mock
 data, so it needs no corpus and no tokenizer model.
@@ -25,10 +26,11 @@ Files (under ``examples/fault_tolerance/deployment/``):
    teardown that releases the spare pool when task 0 exits.
 
 ``slurm/submit_chain.sh``
-   Computes the array shape from one setting and enqueues K generations.
+   Computes the array shape from the training-task, hot-spare, and cold-spare settings,
+   then enqueues K generations.
 
 ``slurm/README.md``
-   Knobs, and hot vs cold spares.
+   Run modes, prerequisites, knobs, and hot vs cold spares.
 
 ``watch/``
    ``nvrx-watch``: an out-of-job watcher that reconciles the chain and detects restart
@@ -39,12 +41,43 @@ Files (under ``examples/fault_tolerance/deployment/``):
 Quick start
 -----------
 
+``NVRX_WORK_DIR`` must be creatable on the submission host and visible at the same path
+from every compute node. Then choose one of these workload environments:
+
+* **Container mode** (the mode exercised by the singleton QA cases): set the image and
+  mount the shared work directory. ``MEGATRON_PATH`` is a path inside the image.
+
+  .. code-block:: bash
+
+     export NVRX_WORK_DIR=/shared/$USER/nvrx-run
+     export NVRX_CONTAINER_IMAGE=/path/to/pytorch+nvrx.sqsh
+     export NVRX_CONTAINER_MOUNTS=/shared:/shared
+     export MEGATRON_PATH=/workspace/megatron-lm
+
+* **Bare-metal mode** (not currently exercised by the singleton QA cases): leave
+  ``NVRX_CONTAINER_IMAGE`` unset. Megatron-LM must be available at ``MEGATRON_PATH``
+  on the submission host and every compute node, and nvidia-resiliency-ext
+  (``ft_launcher``) must be installed on every compute node.
+
+  .. code-block:: bash
+
+     export NVRX_WORK_DIR=/shared/$USER/nvrx-run
+     unset NVRX_CONTAINER_IMAGE
+     export MEGATRON_PATH=/shared/path/to/Megatron-LM
+
+The example defaults to segment-aware mode (``NVRX_SEGMENT=1``), which requires
+``nvidia-smi -q`` to report a GPU ClusterUUID. On systems without a ClusterUUID, select
+simple hot-spare mode by setting ``NVRX_SEGMENT`` to an explicit empty value:
+
+.. code-block:: bash
+
+   export NVRX_SEGMENT=
+
+Submit the chain:
+
 .. code-block:: bash
 
    cd examples/fault_tolerance/deployment/slurm
-
-   export MEGATRON_PATH=/workspace/megatron-lm
-   export NVRX_WORK_DIR=/shared/$USER/nvrx-run
 
    NVRX_DRY_RUN=1 ./submit_chain.sh    # print the sbatch commands only
    ./submit_chain.sh                   # default: no-restart (exit 93) demo
@@ -52,10 +85,12 @@ Quick start
 
    # real training: injection off, scale up
    NVRX_NO_RESTART_DEMO=0 NVRX_FAULT_INJECT=0 NVRX_INJECT_GPU_FAILURE= \
-   NVRX_MODEL_PROFILE=8b NVRX_TRAIN_TASKS=32 ./submit_chain.sh
+   NVRX_MODEL_PROFILE=8b NVRX_TRAIN_TASKS=32 NVRX_HOT_SPARES=1 NVRX_COLD_SPARES=32 \
+   NVRX_CHAIN_DEPTH=8 NVRX_TIME_LIMIT=02:00:00 ./submit_chain.sh
 
 Then watch the run from a login node by its Slurm job id (name, owner and work dir
-resolve from Slurm; observe-only by default, ``--act`` to enable the one action):
+resolve from Slurm; observe-only by default, ``--act`` cancels pending cold-spare tasks
+from an orphaned generation):
 
 .. code-block:: bash
 

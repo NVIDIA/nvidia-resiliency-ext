@@ -157,6 +157,13 @@ See <a class="reference internal" href="#node-health-check-service">Node health 
 <p>If <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, the launcher restarts failed workers.
 The <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> parameter is deprecated; only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> is supported: all workers
 are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.</p>
+<section id="rendezvous-implementation">
+<h4>Rendezvous implementation<a class="headerlink" href="#rendezvous-implementation" title="Link to this heading"></a></h4>
+<p>Barrier rendezvous is the only supported fault-tolerance rendezvous implementation. The
+<code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span></code> option may be omitted because it defaults to <code class="docutils literal notranslate"><span class="pre">barrier</span></code>. Existing launch
+scripts may continue to pass <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">barrier</span></code> for compatibility, but the removed
+<code class="docutils literal notranslate"><span class="pre">legacy</span></code> value is rejected.</p>
+</section>
 <section id="node-health-check-service">
 <h4>Node health check service<a class="headerlink" href="#node-health-check-service" title="Link to this heading"></a></h4>
 <p>The launcher can query an optional node-local health check service before workers enter
