@@ -161,6 +161,11 @@ _scheduler_segment_health_inactive_path() {
         "${NVRX_SEGMENT_HEALTH_CHECK_DIR}" "${SLURM_ARRAY_JOB_ID}" "$1"
 }
 
+_scheduler_segment_health_pidfile_path() {
+    printf '%s/segment_health_producer.%s.pid' \
+        "${NVRX_SEGMENT_HEALTH_CHECK_DIR}" "${SLURM_ARRAY_JOB_ID}"
+}
+
 _scheduler_segment_health_state_lookup() {
     local source="$1"
     local task_id="$2"
@@ -600,6 +605,77 @@ scheduler_segment_health_poll_once() {
     fi
 
     return "${last_status}"
+}
+
+_scheduler_segment_health_serve_teardown() {
+    # Best-effort teardown for the serve loop's TERM/INT/EXIT traps. Reads the
+    # pidfile at trap time (nothing is interpolated into the trap string) and
+    # removes it ONLY when it still records this process, so a successor producer
+    # that already republished the shared pidfile is not left undiscoverable.
+    scheduler_segment_health_cleanup || true
+    local recorded=""
+    if [[ -n "${pidfile:-}" && -r "${pidfile}" ]]; then
+        recorded=$(awk '{print $2}' "${pidfile}" 2>/dev/null)
+        [[ "${recorded}" == "${BASHPID}" ]] && rm -f "${pidfile}" 2>/dev/null
+    fi
+}
+
+scheduler_segment_health_serve() {
+    # Long-running poll loop with an operator fast-path. Publishes host+PID to
+    #   ${NVRX_SEGMENT_HEALTH_CHECK_DIR}/segment_health_producer.<array_job_id>.pid
+    # so an operator who just drained a suspect node can request an IMMEDIATE poll
+    # (SIGUSR1) instead of waiting up to one interval for the drain to propagate to
+    # the per-task control files. SIGUSR1 only interrupts the sleep; poll_once is
+    # idempotent, so an on-demand poll is safe and changes nothing when Slurm state
+    # is unchanged. The caller backgrounds this and owns the returned PID for
+    # teardown (a TERM/INT/EXIT here also removes the pidfile and temp workspace).
+    #
+    # Backward compatible and additive: callers that still drive configure +
+    # poll_once + sleep themselves keep working; this only centralizes the cadence,
+    # the signal handler, and the pidfile so every caller need not reimplement them.
+    local interval="${1:-${SEGMENT_HEALTH_POLL_INTERVAL:-300}}"
+    local pidfile sleep_pid poll_pending
+
+    # Validate BEFORE configure so a bad interval cannot leak the temp workspace
+    # (configure allocates it) or leave configured state behind.
+    _scheduler_segment_health_validate_positive_integer \
+        SEGMENT_HEALTH_POLL_INTERVAL "${interval}" || return $?
+    scheduler_segment_health_configure || return $?
+
+    pidfile=$(_scheduler_segment_health_pidfile_path) || return 1
+    # $BASHPID is THIS process (this function is meant to run backgrounded, so it is
+    # the subshell an operator must signal -- $$ would be the parent shell). Host is
+    # recorded because the poller runs on array task 0's node, which the operator
+    # reaches over ssh to send the signal.
+    if ! printf '%s %s\n' "$(hostname)" "${BASHPID}" >"${pidfile}"; then
+        _scheduler_segment_health_log "could not write pidfile ${pidfile}"
+        pidfile=""
+    fi
+
+    # EXIT/TERM/INT: best-effort teardown via a function that reads $pidfile at trap
+    # time (no config data interpolated into the trap string). USR1: record a pending
+    # request AND interrupt the wait below; the loop honors it even if it arrived
+    # while poll_once was running, so an operator poll is never lost to the window.
+    trap '_scheduler_segment_health_serve_teardown; exit 0' TERM INT EXIT
+    trap 'poll_pending=1' USR1
+
+    _scheduler_segment_health_log \
+        "serving interval=${interval}s pidfile=${pidfile:-<none>} (SIGUSR1 = poll now)"
+
+    while true; do
+        poll_pending=0
+        scheduler_segment_health_poll_once || \
+            _scheduler_segment_health_log "poll failed; prior decision preserved."
+        # A SIGUSR1 delivered during poll_once set poll_pending; re-poll immediately
+        # instead of sleeping a full interval.
+        (( poll_pending )) && continue
+        # Interruptible sleep: on SIGUSR1 the wait returns early; kill the still-live
+        # sleep child so it does not linger, then loop straight into the next poll.
+        sleep "${interval}" &
+        sleep_pid=$!
+        wait "${sleep_pid}" 2>/dev/null || true
+        kill "${sleep_pid}" 2>/dev/null || true
+    done
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
