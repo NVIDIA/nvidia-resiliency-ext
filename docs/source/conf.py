@@ -26,7 +26,7 @@ copyright = '2024, NVIDIA Corporation'
 author = 'NVIDIA Corporation'
 
 # The full version, including alpha/beta/rc tags
-release = '0.1'
+release = '0.7.0'
 
 
 # -- General configuration ---------------------------------------------------
@@ -35,6 +35,7 @@ release = '0.1'
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    'myst_parser',
     'sphinx.ext.autodoc',
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
@@ -53,7 +54,7 @@ templates_path = ['_templates']
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # This pattern also affects html_static_path and html_extra_path.
-exclude_patterns = []
+exclude_patterns = ['fault_tolerance/README-pci-topo-file.md']
 
 autoclass_content = 'both'
 autodoc_typehints = 'description'
