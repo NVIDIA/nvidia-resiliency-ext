@@ -79,7 +79,10 @@ Restart Agent config may name another key-file environment variable through its
 **Slack Notifications** (optional; no `NVRX_ATTRSVC_` prefix):
 
 These settings are retained for the controller/manual path. The current
-`nvrx-attrsvc` direct backend does not send Slack notifications.
+`nvrx-attrsvc` direct backend does not send Slack notifications. For deployments
+that want Slack alerts on the direct Restart Agent path, configure them on
+**nvrx-smonsvc**, which notifies from the recommendation it already fetches:
+see [smonsvc/README.md](../smonsvc/README.md#slack-notifications).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -308,4 +311,5 @@ asyncio.run(main())
 - **`AttributionHttpAdapter`** translates `Settings` into `RestartAgentConfig`
   for the direct Restart Agent backend.
 - Dataflow and Slack postprocessing remain on the controller/manual path;
-  the direct backend does not invoke them.
+  the direct backend does not invoke them. Slack alerting for the direct path
+  lives in `nvrx-smonsvc`.

@@ -7,7 +7,7 @@ Automated log analysis and failure attribution for distributed training jobs.
 | Component | Description | Documentation |
 |-----------|-------------|---------------|
 | **nvrx-attrsvc** | FastAPI server for LLM-based log analysis | [attrsvc/README.md](attrsvc/README.md) |
-| **nvrx-smonsvc** | SLURM job monitor for automatic log submission | [smonsvc/README.md](smonsvc/README.md) |
+| **nvrx-smonsvc** | SLURM job monitor for automatic log submission and Slack alerts | [smonsvc/README.md](smonsvc/README.md) |
 
 See component READMEs for quick start, configuration, and API details.
 

@@ -34,6 +34,52 @@ Environment variables (prefix: `NVRX_SMONSVC_`) or command-line arguments:
 
 CLI arguments override environment variables.
 
+## Slack Notifications
+
+The monitor posts attribution results to Slack. Credentials use unprefixed
+environment variables (matching the equivalent attrsvc settings):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SLACK_BOT_TOKEN` | `""` | Bot token. If empty, falls back to `SLACK_BOT_TOKEN_FILE`, then `~/.slack_bot_token`, `~/.slack_token`, `~/.config/nvrx/slack_bot_token` |
+| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token |
+| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env` files, quote values starting with `#` |
+| `NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS` | `STOP` | Comma- or space-separated recommendation actions that trigger a message. Valid: `STOP`, `RESTART`, `CONTINUE`, `UNKNOWN`, `TIMEOUT` |
+
+Requires `slack-sdk`:
+
+```bash
+pip install 'nvidia-resiliency-ext[attribution]'
+```
+
+Notifications are **off by default**. They activate only when `slack-sdk` is
+installed *and* both a token and a channel are configured; otherwise the
+monitor logs `Slack alerts: disabled (...)` at startup and runs unchanged.
+
+By default only `STOP` pages, since `RESTART` is the routine outcome and would
+be noisy. To page on more actions:
+
+```bash
+export SLACK_BOT_TOKEN_FILE=/secure/slack_bot_token
+export SLACK_CHANNEL="#trng-alerts"
+export NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
+```
+
+Each message carries the recommendation action and reason, the job ID and name,
+the attributed issues, the terminal-issue explanation, and the log path. The
+job owner is mentioned when their `{user}@nvidia.com` address resolves to a
+Slack account.
+
+Delivery is best effort: a Slack outage is counted and logged, never propagated
+into the monitor's polling loop. Counters are exposed under `slack` in `/stats`:
+
+```json
+{"slack": {"attempts": 12, "sent": 11, "failed": 1, "skipped_action": 143}}
+```
+
+The bot must be invited to the target channel (`/invite @your-bot`) and needs
+the `chat:write` scope, plus `users:read.email` for owner mentions.
+
 ## API Endpoints
 
 When `PORT` is set, the monitor exposes an HTTP server:
@@ -50,6 +96,7 @@ When `PORT` is set, the monitor exposes an HTTP server:
 2. For each terminal job, extracts the output log path
 3. Submits the log to the Attribution Service via POST /logs
 4. Tracks job state to avoid duplicate submissions
+5. Posts a Slack alert when the recommendation matches the configured actions
 
 ## Architecture
 
@@ -142,6 +189,7 @@ nvrx-smonsvc -v
 | `slurm.py` | SLURM subprocess calls (squeue, scontrol, sacct) with batching and het job support |
 | `attrsvc_client.py` | HTTP client for Attribution Service |
 | `status_server.py` | Status server (/stats, /jobs, /healthz) |
+| `slack.py` | Slack notifications for attribution results |
 | `models.py` | Data models (JobState, SlurmJob, MonitorState) |
 | `deploy/run_smonsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_smonsvc.sh` | Periodic endpoint snapshot for debugging |

@@ -14,6 +14,7 @@ from types import FrameType
 from .attrsvc_client import AttrsvcClient
 from .job_handlers import fetch_results, submit_log
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
+from .slack import SlackNotifier
 from .slurm import SlurmClient, expand_slurm_patterns
 from .stats import format_stats_summary, get_health_status, get_jobs_list, get_stats_dict
 from .status_server import DEFAULT_STATUS_HOST, StatusServer
@@ -53,6 +54,7 @@ class SlurmJobMonitor:
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         port: int | None = None,
         host: str = DEFAULT_STATUS_HOST,
+        slack_notifier: SlackNotifier | None = None,
     ):
         """
         Initialize the SLURM job monitor.
@@ -67,6 +69,7 @@ class SlurmJobMonitor:
             timeout: HTTP request timeout in seconds
             port: Port for HTTP server with stats/health/jobs endpoints (None to disable)
             host: Host/interface for the HTTP status server
+            slack_notifier: Notifier for Slack alerts (default: built from environment)
         """
         self.attrsvc_url = attrsvc_url.rstrip("/")
         self.poll_interval = poll_interval
@@ -81,6 +84,8 @@ class SlurmJobMonitor:
         self.timeout = timeout
         self.state = MonitorState()
         self._shutdown_requested = False
+        # Always present; reports itself disabled when Slack is not configured.
+        self._slack_notifier = SlackNotifier() if slack_notifier is None else slack_notifier
 
         # Attribution service client
         self._attrsvc_client = AttrsvcClient(
@@ -177,7 +182,7 @@ class SlurmJobMonitor:
 
     def _get_stats_for_http(self) -> dict:
         """Get monitor statistics for HTTP endpoint."""
-        return get_stats_dict(self.state, self._state_lock)
+        return get_stats_dict(self.state, self._state_lock, slack_stats=self._slack_notifier.stats)
 
     def _get_jobs_for_http(self) -> list:
         """Get jobs list for HTTP endpoint."""
@@ -204,6 +209,7 @@ class SlurmJobMonitor:
             logger.info(f"  Partitions: {', '.join(self.partitions)}")
             if self.job_pattern:
                 logger.info(f"  Job name pattern: {self.job_pattern.pattern}")
+            logger.info(f"  Slack alerts: {self._slack_notifier.describe()}")
 
             self._start_status_server()
             logger.info("=" * 60)
@@ -474,7 +480,9 @@ class SlurmJobMonitor:
 
     def _fetch_results(self, job: SlurmJob, log_path: str) -> None:
         """Fetch attribution results for a completed job."""
-        fetch_results(job, log_path, self.state, self._attrsvc_client)
+        fetch_results(
+            job, log_path, self.state, self._attrsvc_client, slack_notifier=self._slack_notifier
+        )
 
     def _cleanup_old_jobs(self) -> None:
         """Remove old completed jobs from state to prevent memory growth."""
