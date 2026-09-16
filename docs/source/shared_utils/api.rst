@@ -1,5 +1,5 @@
 API Reference
-============
+=============
 
 This section provides detailed API documentation for the NVRx Shared Utilities, focusing on the logging system.
 
@@ -7,10 +7,11 @@ This section provides detailed API documentation for the NVRx Shared Utilities, 
    For configuration options, environment variables, examples, and usage guides, see :doc:`config_reference`.
 
 Log Manager
-----------
+-----------
 
 .. automodule:: nvidia_resiliency_ext.shared_utils.log_manager
    :members:
+   :exclude-members: LogManager, LogConfig, setup_logger
    :undoc-members:
    :show-inheritance:
 
@@ -23,15 +24,13 @@ Log Aggregator
    :show-inheritance:
 
 Log Configuration
-----------------
+-----------------
 
-.. automodule:: nvidia_resiliency_ext.shared_utils.log_config
-   :members:
-   :undoc-members:
-   :show-inheritance:
+Configuration is provided by :class:`~nvidia_resiliency_ext.shared_utils.log_manager.LogConfig`,
+documented below.
 
 Core Classes
------------
+------------
 
 LogManager
 ~~~~~~~~~~
@@ -40,8 +39,6 @@ LogManager
    :members:
    :undoc-members:
    :show-inheritance:
-
-   .. automethod:: __init__
 
 LogConfig
 ~~~~~~~~~
@@ -52,25 +49,23 @@ LogConfig
    :show-inheritance:
 
 NodeLogAggregator
-~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~
 
-.. autoclass:: nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator
+.. autoclass:: nvidia_resiliency_ext.shared_utils.log_node_local_tmp.NodeLogAggregator
    :members:
    :undoc-members:
    :show-inheritance:
 
-   .. automethod:: __init__
-
 Core Functions
--------------
+--------------
 
 setup_logger
-~~~~~~~~~~~
+~~~~~~~~~~~~
 
 .. autofunction:: nvidia_resiliency_ext.shared_utils.log_manager.setup_logger
 
 Quick Reference
---------------
+---------------
 
 For quick access to configuration options and environment variables, see the :doc:`config_reference` page which contains:
 

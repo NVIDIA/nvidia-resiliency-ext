@@ -187,6 +187,7 @@ By default it is disabled. When enabled (via CLI or YAML), it:
 * Discovers distributed mount targets and checks that each mount is reachable.
 
 * ``--ft-enable-dist-storage-healthcheck`` (alias: ``--ft_enable_dist_storage_healthcheck``)
+
   - Accepts a boolean-like value only to enable the mount checks
     (e.g., ``--ft-enable-dist-storage-healthcheck true``).
 

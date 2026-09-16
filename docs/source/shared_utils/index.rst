@@ -1,5 +1,5 @@
 Shared Utilities
-===============
+================
 
 The Shared Utilities package provides essential infrastructure components for NVRx, including:
 

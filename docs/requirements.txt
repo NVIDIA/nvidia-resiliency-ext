@@ -1,0 +1,10 @@
+sphinx
+sphinx-rtd-theme
+sphinxcontrib-napoleon
+sphinx-copybutton
+myst-parser
+lightning
+psutil
+defusedxml
+httpx
+nvidia-ml-py

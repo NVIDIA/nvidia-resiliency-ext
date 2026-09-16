@@ -468,18 +468,20 @@ class CallWrapper:
         exception occurs within the context.
 
         Example:
-            def my_training_function(call_wrapper: CallWrapper):
-                # Normal operations subject to hang protection
-                train_step()
+            .. code-block:: python
 
-                # Disable hang protection for long-running checkpoint operation
-                with call_wrapper.disable_hang_protection():
-                    load_data()  # This won't trigger hang detection
+                def my_training_function(call_wrapper: CallWrapper):
+                    # Normal operations subject to hang protection
+                    train_step()
 
-                train_step()   # This will trigger hang detection
+                    # Disable hang protection for long-running checkpoint operation
+                    with call_wrapper.disable_hang_protection():
+                        load_data()  # This won't trigger hang detection
 
-                # Hang protection is automatically re-enabled
-                train_step()
+                    train_step()   # This will trigger hang detection
+
+                    # Hang protection is automatically re-enabled
+                    train_step()
         '''
         self._disable_hang_protection()
         try:

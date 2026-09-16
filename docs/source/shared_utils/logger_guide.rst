@@ -10,7 +10,7 @@ The NVRx Logger is a sophisticated logging system designed specifically for mult
 The term "distributed logging" in this context refers to the fact that logs are collected from multiple ranks/processes across multiple nodes, but the actual storage and aggregation happens locally on each node. This is different from traditional distributed logging systems that send all logs to a central location over the network. The NVRx approach keeps logging local to each node for better performance and reliability.
 
 Key Features
------------
+------------
 
 * **Node Local Temporary Logging**: When enabled, each rank writes logs to temporary files on local node storage, avoiding network filesystem bottlenecks
 * **Automatic Log Aggregation**: Local rank 0 acts as the node aggregator, collecting logs from all ranks on the same node and writing them to a single per-node log file
@@ -19,7 +19,7 @@ Key Features
 * **Dynamic Rank Detection**: Automatically reads rank information from environment variables (RANK, LOCAL_RANK, SLURM_PROCID, SLURM_LOCALID)
 
 Architecture
------------
+------------
 
 The logger operates in two modes:
 
@@ -30,7 +30,7 @@ The logger operates in two modes:
     Each rank writes logs to temporary files on local node storage (e.g., `/tmp`, `/scratch`, local SSDs). Local rank 0 aggregates these logs and writes them to a single per-node log file. This approach avoids network filesystem bottlenecks and provides better performance for high-throughput logging scenarios.
 
 Configuration
-------------
+-------------
 
 The logger is configured through environment variables. See :doc:`config_reference` for complete configuration details.
 
@@ -40,7 +40,7 @@ Key configuration variable:
 For advanced configuration options, environment variables, and troubleshooting, refer to the :doc:`config_reference`.
 
 Basic Usage
-----------
+-----------
 
 Setup the logger at the start of your program:
 
@@ -61,7 +61,7 @@ Setup the logger at the start of your program:
     log.error("Rank 0 failed")
 
 Node Local Temporary Logging Setup
---------------------------------
+----------------------------------
 
 For workloads that need node-local temporary logging, set the environment variable:
 
@@ -87,7 +87,7 @@ The logger automatically handles:
 - Log rotation and cleanup
 
 Advanced Configuration
----------------------
+----------------------
 
 Force logger reconfiguration for subprocesses:
 
@@ -101,7 +101,7 @@ Log formatting automatically includes:
 - Source file and line number
 
 Example Output Format
---------------------
+---------------------
 
 .. code-block:: text
 
@@ -110,7 +110,7 @@ Example Output Format
     2024-01-15 10:30:47,789 [ERROR] [node001] [workload:0(0) infra:0(0)] training.py:89 Rank 0 failed
 
 Integration with Other NVRx Components
-------------------------------------
+--------------------------------------
 
 The logger automatically integrates with these NVRx components:
 - **Fault Tolerance**: Automatic logging of restart events and health checks
@@ -120,7 +120,7 @@ The logger automatically integrates with these NVRx components:
 **Note**: Checkpointing and Straggler Detection components use their own logging mechanisms and do not integrate with the NVRx logger.
 
 Best Practices
--------------
+--------------
 
 1. **Setup Once**: Call ``setup_logger()`` once at the start of your main program
 2. **Use Standard Logger**: Access via ``logging.getLogger("nvrx")`` in other modules
@@ -129,7 +129,7 @@ Best Practices
 5. **Filesystem Selection**: Use local node storage, avoid network filesystems (NFS, Lustre)
 
 Troubleshooting
---------------
+---------------
 
 **Common Issues:**
 - **Logs not appearing**: Check ``NVRX_NODE_LOCAL_TMPDIR`` is set and directory is writable

@@ -606,6 +606,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         Args:
             resolved_plan_data (Tuple): Tuple containing
                 (checkpoint_dir, (identifier, data_structure)) where:
+
                 - identifier: ConsistentDataIdentifier (caching) or None
                 - data_structure: (separation_hint, cached_tensor_data,
                   uncached_tensor_data, byte_io_data, thread_count, storage_plan)
