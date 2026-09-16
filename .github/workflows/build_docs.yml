@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -21,16 +24,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon sphinx_copybutton myst-parser lightning psutil defusedxml
+          pip install -U -r docs/requirements.txt
 
       - name: Build Documentation
         run: |
-          sphinx-build -b html docs/source public/
+          sphinx-build -W --keep-going -b html docs/source public/
           if [ ! -d "public" ]; then
             echo "Error: Documentation build failed. 'public/' directory not found."
             exit 1
           fi
       - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"

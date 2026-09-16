@@ -110,10 +110,11 @@ class RankMonitorLogger(logging.Logger):
     def log_restarter_event(self, message, *args, **kwargs):
         """
         Log a restart event that should always be visible, but only if restarter logging is enabled.
+
         Args:
-            is_restarter_logger: Whether restarter logging is enabled
             message: The message to log
-            *args, **kwargs: Additional arguments for logging
+            *args: Additional positional arguments for logging
+            **kwargs: Additional keyword arguments for logging
         """
         if self.is_restarter_logger:
             self.log_for_restarter(message, *args, **kwargs)

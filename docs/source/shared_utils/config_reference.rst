@@ -1,5 +1,5 @@
 Configuration Reference
-======================
+=======================
 
 This is a comprehensive reference for all NVRx Logger configuration options, examples, and usage guides.
 
@@ -7,7 +7,7 @@ This is a comprehensive reference for all NVRx Logger configuration options, exa
    For detailed API documentation, class methods, and function signatures, see :doc:`api`.
 
 Environment Variables
---------------------
+---------------------
 
 .. list-table:: Complete Environment Variables Reference
    :widths: 25 15 20 40
@@ -39,7 +39,7 @@ Environment Variables
      - Maximum number of log files to keep per rank.
 
 Python API Parameters
---------------------
+---------------------
 
 .. list-table:: setup_logger Function Parameters
    :widths: 30 15 20 35
@@ -63,7 +63,7 @@ Python API Parameters
      - Custom prefix for log files in distributed mode.
 
 LogManager Constructor Parameters
--------------------------------
+---------------------------------
 
 .. list-table:: LogManager Class Parameters
    :widths: 30 15 20 35
@@ -83,10 +83,10 @@ LogManager Constructor Parameters
      - Prefix for log files in distributed mode.
 
 Configuration Examples
----------------------
+----------------------
 
 Basic Configuration
-~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
@@ -97,7 +97,7 @@ Basic Configuration
     export NVRX_LOG_DEBUG=1
 
 Advanced Configuration
-~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: bash
 
@@ -109,7 +109,7 @@ Advanced Configuration
     export NVRX_LOG_MAX_LOG_FILES=10
 
 Python Configuration
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -123,7 +123,7 @@ Python Configuration
     )
 
 SLURM Integration
-----------------
+-----------------
 
 .. code-block:: bash
 
@@ -141,7 +141,7 @@ SLURM Integration
     srun python training_script.py
 
 Docker Integration
------------------
+------------------
 
 .. code-block:: dockerfile
 
@@ -157,7 +157,7 @@ Docker Integration
     ENV NVRX_LOG_MAX_FILE_SIZE_KB=10240
 
 Kubernetes Integration
----------------------
+----------------------
 
 .. code-block:: yaml
 
@@ -181,7 +181,7 @@ Kubernetes Integration
               value: "10240"
 
 Configuration Precedence
------------------------
+------------------------
 
 1. **Python API parameters** (highest priority)
 2. **Environment variables**
@@ -209,7 +209,7 @@ Best Practices
 - Mix different logging configurations in the same job
 
 Filesystem Selection
--------------------
+--------------------
 
 **Critical Consideration**: The temporary directory for distributed logging experiences high write throughput from all ranks on each node. Choose your filesystem carefully:
 

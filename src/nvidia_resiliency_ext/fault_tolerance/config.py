@@ -68,6 +68,7 @@ class FaultToleranceConfig:
       high-frequency operations. Server logs errors instead of sending them back.
       Default: True (recommended for production). Set to False during development to catch errors immediately.
     * `segment` - Controls hot spare node behavior and rank assignment strategy:
+
       - None (default): Simple hot spare mode suitable for H100 and systems without NVLink domain segmentation.
         First min_nodes become active, extras become hot spares. No ClusterUUID parsing required.
       - N (integer): Segment-aware mode for NVSwitch-based systems (DGX H200, HGX B200).
@@ -75,8 +76,10 @@ class FaultToleranceConfig:
         Domains with fewer nodes are excluded. From each valid domain, as many complete segments
         as possible are selected (e.g., 12 nodes with segment=4 → use 12 nodes = 3 segments).
         min_nodes must be divisible by segment. When set, ClusterUUID is automatically queried.
+
       Note: segment=None and segment=1 have similar behavior in rank assignment, but segment=1
       requires ClusterUUID while segment=None does not.
+
     * `numa_bind_strict` - If True (default), use strict NUMA binding with both CPU and memory bound to the
       same NUMA node (--cpunodebind=N --membind=N). If False, only bind CPU to NUMA node
       and allow local memory allocation (--cpunodebind=N --localalloc). Default: True.
@@ -96,6 +99,7 @@ class FaultToleranceConfig:
       timeout monitoring as they can be significantly slower than steady-state iterations.
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
     * Attribution service (optional, disabled unless `attribution_endpoint` is set):
+
       - `attribution_endpoint` [str] endpoint of the attribution service
       - `attribution_stop_action` [str] what to do with a STOP verdict: `log` (default,
         record it without terminating) or `no-restart` (end the job, no requeue).
