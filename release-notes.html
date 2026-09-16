@@ -1,0 +1,636 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Release Notes &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="_static/copybutton.js?v=f281be69"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Fault Tolerance" href="fault_tolerance/index.html" />
+    <link rel="prev" title="nvidia-resiliency-ext" href="index.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Release Notes</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-7-0">NVIDIA Resiliency Extension v0.7.0</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#highlights">Highlights</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#deprecations-removals">Deprecations &amp; Removals</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#installation">Installation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#known-issues-limitations">Known Issues &amp; Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-6-0">NVIDIA Resiliency Extension v0.6.0</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id1">Highlights</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id2">Deprecations &amp; Removals</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id3">Installation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id4">Known Issues &amp; Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-5-0">NVIDIA Resiliency Extension v0.5.0</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id5">Highlights</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id6">Known Issues &amp; Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-4-1">NVIDIA Resiliency Extension v0.4.1</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id7">Highlights</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id8">Known Issues &amp; Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-4-0">NVIDIA Resiliency Extension v0.4.0</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id9">Highlights</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id10">Known Issues &amp; Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-3-0">NVIDIA Resiliency Extension v0.3.0</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id11">Highlights</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id12">Known Issues &amp; Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-2-1">NVIDIA Resiliency Extension v0.2.1</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id13">Highlights</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-2-0">NVIDIA Resiliency Extension v0.2.0</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id14">Highlights</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id15">Known Issues &amp; Limitations</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-1-3">NVIDIA Resiliency Extension v0.1.3</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id16">Highlights</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Release Notes</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/release-notes.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="release-notes">
+<h1>Release Notes<a class="headerlink" href="#release-notes" title="Link to this heading"></a></h1>
+<p>NVIDIA Resiliency Extension is a Python package for framework developers and users to implement fault-tolerant features. It improves effective training time by minimizing downtime due to failures and interruptions.</p>
+<section id="nvidia-resiliency-extension-v0-7-0">
+<h2>NVIDIA Resiliency Extension v0.7.0<a class="headerlink" href="#nvidia-resiliency-extension-v0-7-0" title="Link to this heading"></a></h2>
+<section id="highlights">
+<h3>Highlights<a class="headerlink" href="#highlights" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>In-job restart and resilient deployment</strong></p>
+<ul>
+<li><p><strong>Barrier rendezvous is now the only FT rendezvous implementation</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/379">#379</a>). The compatibility spelling <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">barrier</span></code> remains accepted; <code class="docutils literal notranslate"><span class="pre">legacy</span></code> is rejected.</p></li>
+<li><p>Hot-spare restart rounds prefer returning active nodes over early standbys and exclude every participant from an unhealthy Slurm array task (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/325">#325</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/326">#326</a>). Recovery is also hardened against transient over-subscription and stale participants from failed replacement groups (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/357">#357</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/391">#391</a>).</p></li>
+<li><p><strong>Scheduler segment-health integration</strong> lets each allocation unit publish and consume shared exclusion decisions before rendezvous, so unhealthy Slurm array tasks are omitted when eligible spares are available (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/398">#398</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/399">#399</a>). See the <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/integration/segment_health_check.rst">Segment Health Check guide</a>.</p></li>
+<li><p>A new <strong>singleton job-array deployment</strong> example combines in-job hot spares with scheduler-managed replacement of an unrecoverable rendezvous-host allocation (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/383">#383</a>). See the <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/examples/singleton_deployment.rst">deployment guide</a>.</p></li>
+<li><p>Successful node-health responses with unusable output now fail open; only an explicit service failure or a numeric <code class="docutils literal notranslate"><span class="pre">fail_count</span> <span class="pre">&gt;</span> <span class="pre">0</span></code> marks the node unhealthy (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/420">#420</a>).</p></li>
+<li><p>Local launcher failures no longer permanently close the shared rendezvous. Terminal worker-group failures and genuine job-wide shutdown decisions continue to close it (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/350">#350</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/421">#421</a>).</p></li>
+<li><p>Progress-tracker values supplied through YAML are preserved when the corresponding CLI options are omitted (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/329">#329</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Attribution and restart decisions (experimental)</strong></p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can run or contact the Attribution Service and submit per-cycle logs for restart analysis (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/338">#338</a>).</p></li>
+<li><p>Attribution analysis is asynchronous and does not delay restart. Acting on a <code class="docutils literal notranslate"><span class="pre">STOP</span></code> verdict is opt-in through <code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">no-restart</span></code>; the default <code class="docutils literal notranslate"><span class="pre">log</span></code> mode records verdicts without terminating the job (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/378">#378</a>).</p></li>
+<li><p>The new <strong>Restart Agent</strong> provides deterministic failure evidence and retry policy, with optional model-assisted enrichment, bounded history, operational logging, and auditable result artifacts (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/370">#370</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/400">#400</a>).</p></li>
+<li><p>The core wheel includes <code class="docutils literal notranslate"><span class="pre">attrsvc</span></code>, Flight Recorder analysis, and the direct Restart Agent backend. MCP and Slack integrations require <code class="docutils literal notranslate"><span class="pre">nvidia-resiliency-ext[attribution]</span></code>; legacy LogSage remains source-checkout-only and is excluded from wheels (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/404">#404</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/410">#410</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Health checks</strong></p>
+<ul>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">NVLinkWindowHealthCheck</span></code></strong> detects persistent NVLink replay and recovery counter growth across a configurable sampling window while ignoring isolated transient changes (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/302">#302</a>).</p></li>
+<li><p>The default <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> node-health request is limited to the <code class="docutils literal notranslate"><span class="pre">prolog</span></code>, <code class="docutils literal notranslate"><span class="pre">epilog</span></code>, <code class="docutils literal notranslate"><span class="pre">logs</span></code>, and <code class="docutils literal notranslate"><span class="pre">gpu</span></code> DCAHC groups; explicit caller arguments still override that default (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/356">#356</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Checkpointing</strong></p>
+<ul>
+<li><p>Persistent async checkpoint workers refresh cached CUDA IPC handles when tensor storage changes, preventing stale-buffer reuse (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/314">#314</a>).</p></li>
+<li><p>CPU tensors are cloned before persistent async serialization so optimizer steps and other live CPU state cannot mutate an in-flight checkpoint (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/376">#376</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Logging, packaging, and security</strong></p>
+<ul>
+<li><p>gRPC log servers confine client-selected write paths to launcher-derived allowed roots and reject traversal, symlink escape, and other out-of-root destinations (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/415">#415</a>).</p></li>
+<li><p>Multi-node direct append to a shared per-cycle log is no longer recommended. Enable the gRPC log funnel for a single shared-filesystem writer; direct append can serialize on Lustre and can lose or interleave data on NFS-style storage (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/418">#418</a>).</p></li>
+<li><p>Release wheels and CI target Python 3.12 and 3.14, including an <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> compatibility fix for Python 3.14. Python 3.10 and 3.11 are no longer covered by the wheel/unit-test matrix (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/342">#342</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/372">#372</a>).</p></li>
+<li><p>The optional MCP SDK is constrained to <code class="docutils literal notranslate"><span class="pre">&gt;=1.28.1,&lt;2.0.0</span></code>, incorporating the fix for CVE-2026-59950 while retaining compatibility with the NVRx MCP integration (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/388">#388</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/412">#412</a>).</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="deprecations-removals">
+<h3>Deprecations &amp; Removals<a class="headerlink" href="#deprecations-removals" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Legacy dynamic rendezvous has been removed.</strong> Remove <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">legacy</span></code>; omit the option or use <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">barrier</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/379">#379</a>).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> remains deprecated.</strong> Only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> is supported and it is already the default, so remove the option from launch scripts.</p></li>
+<li><p><strong>In-process restart remains deprecated.</strong> New deployments should use in-job restart through <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p><strong>The <code class="docutils literal notranslate"><span class="pre">[dataflow]</span></code> extra and <code class="docutils literal notranslate"><span class="pre">nvdataflow</span></code> dependency have been removed.</strong> Attribution export uses the configured direct HTTP endpoint instead (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/commit/9182c06dfc7bbf2bbe3430c13b94d9f58e84c3b0">9182c06</a>).</p></li>
+</ul>
+</section>
+<section id="installation">
+<h3>Installation<a class="headerlink" href="#installation" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core resiliency, attrsvc, and the direct Restart Agent backend</span>
+pip<span class="w"> </span>install<span class="w"> </span>nvidia-resiliency-ext
+
+<span class="c1"># Optional MCP and Slack attribution integrations</span>
+pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext[attribution]'</span>
+</pre></div>
+</div>
+</section>
+<section id="known-issues-limitations">
+<h3>Known Issues &amp; Limitations<a class="headerlink" href="#known-issues-limitations" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Linux wheel compatibility:</strong> published wheels target <code class="docutils literal notranslate"><span class="pre">manylinux_2_39</span></code>; systems with glibc older than 2.39, including standard Ubuntu 22.04 installations, must build from source.</p></li>
+<li><p><strong>Python:</strong> release wheels are published for Python 3.12 and 3.14. The package metadata still permits Python 3.10+, but Python 3.10 and 3.11 are not covered by the release wheel/CI matrix.</p></li>
+<li><p><strong>Attribution and Restart Agent features are experimental.</strong> APIs, service contracts, schemas, and model-route configuration may change.</p></li>
+<li><p><strong>External attribution endpoints:</strong> the in-job client currently submits logs over HTTP(S). Other endpoint schemes do not provide an additional transport implementation.</p></li>
+<li><p><strong>Segment-health decisions fail open</strong> when their artifact is missing or unusable. Slurm does not evict an already running allocation merely because a node becomes drained; the decision is consumed at the next rendezvous health-check boundary.</p></li>
+<li><p><strong>Per-cycle log aggregation is best-effort.</strong> Failure-adjacent output may be incomplete; retain launcher/rank-monitor logs and core dumps for authoritative diagnostics.</p></li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-6-0">
+<h2>NVIDIA Resiliency Extension v0.6.0<a class="headerlink" href="#nvidia-resiliency-extension-v0-6-0" title="Link to this heading"></a></h2>
+<section id="id1">
+<h3>Highlights<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<ul>
+<li><p><strong>In-job restart</strong></p>
+<ul class="simple">
+<li><p><strong>Barrier-based rendezvous (v2) is now the default</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/214">#214</a>). The legacy dynamic rendezvous (v1) is <strong>deprecated</strong> and will be removed in a future release (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282">#282</a>).</p></li>
+<li><p>Rendezvous protocol hardening — round-scoped keys, round-fenced CAS to prevent stale slot writes, and cleaner handling of participants exiting mid-rendezvous (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/262">#262</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/263">#263</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/300">#300</a>).</p></li>
+<li><p>Robust startup and shutdown — wait for TCPStore on initial connection (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/264">#264</a>), handle signals during rendezvous (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/246">#246</a>), notify peers to abort current workers on failure (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/228">#228</a>), fix <code class="docutils literal notranslate"><span class="pre">terminate_mp_processes</span></code> to cover failed workers (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/270">#270</a>).</p></li>
+<li><p><strong>Hot-spare node support</strong> — closes the v0.5 spare-node gap. Hot-spare is always-on and works with <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/226">#226</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/250">#250</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/266">#266</a>):</p>
+<ul>
+<li><p><strong>Simple mode</strong> (default, <code class="docutils literal notranslate"><span class="pre">--ft-segment=None</span></code>) for H100 / non-NVSwitch systems — first <code class="docutils literal notranslate"><span class="pre">min_nodes</span></code> from <code class="docutils literal notranslate"><span class="pre">--nnodes=min:max</span></code> become active, the rest become standbys with reserved ranks. No GPU ClusterUUID required.</p></li>
+<li><p><strong>Segment-aware mode</strong> (<code class="docutils literal notranslate"><span class="pre">--ft-segment=N</span></code>) for NVSwitch systems (DGX H200, HGX B200) — uses GPU ClusterUUID to identify NVLink domains; nodes in the same segment get contiguous group ranks for NVLink locality. Requires <code class="docutils literal notranslate"><span class="pre">min_nodes</span> <span class="pre">%</span> <span class="pre">segment</span> <span class="pre">==</span> <span class="pre">0</span></code>.</p></li>
+<li><p>Block-aware rank assignment (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/250">#250</a>) and hot-spare exit-handling fix (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/266">#266</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Progress-based early termination</strong> for in-job restarts and progress-tracker enhancements (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/218">#218</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/255">#255</a>).</p></li>
+<li><p><strong>External InJob control-plane (experimental)</strong> — embed <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> orchestration in a host control plane (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/321">#321</a>). Not yet QA-validated; APIs may change.</p></li>
+<li><p>Section-timeout fixes — out-of-section timeout now fires for section-less workloads, baseline iteration tracking corrected (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/261">#261</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/299">#299</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> now reflects job-level restart attempts (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/211">#211</a>); <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> runs with sensible defaults out of the box (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/205">#205</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/271">#271</a>).</p></li>
+<li><p><strong>NUMA binding</strong> support in <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> for optimized memory affinity (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/209">#209</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Health checks</strong></p>
+<ul class="simple">
+<li><p><strong>NIC link-state health check</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/230">#230</a>).</p></li>
+<li><p><strong>Distributed Storage health check</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/239">#239</a>).</p></li>
+<li><p><strong>DCA integration</strong> for HealthCheck (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/235">#235</a>).</p></li>
+<li><p>Fail-count tracking in <code class="docutils literal notranslate"><span class="pre">NodeHealthCheck</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/244">#244</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Checkpointing</strong></p>
+<ul class="simple">
+<li><p><strong>CPU shared-memory D2H path (experimental)</strong> in <code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync</span></code> removes a redundant H2H copy and resolves the prior shm D2H race (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/298">#298</a>).</p></li>
+<li><p><strong>PersistentAsyncCaller upgrades</strong>: QoS control, worker data cache, warmup, IPC-handle caching via <code class="docutils literal notranslate"><span class="pre">ConsistentDataIdentifier</span></code>, and class-level metadata cache in <code class="docutils literal notranslate"><span class="pre">CachedMetadataFileSystemReader</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/273">#273</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/274">#274</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/275">#275</a>).</p></li>
+<li><p>Reliability fixes: SIGSEGV on SIGKILL with dangling CUDA IPC handles (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/284">#284</a>), CUDA IPC handle errors in persistent worker (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/288">#288</a>), premature GC of preloaded pinned host tensors in <code class="docutils literal notranslate"><span class="pre">TemporalAsyncCaller</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/291">#291</a>), MXFP8/TE quantized tensor handling in IPC cache (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/276">#276</a>), spawned persistent worker CUDA-device init (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/238">#238</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Fault attribution — productized as standalone services (experimental)</strong></p>
+<blockquote>
+<div><p>The attribution module — including the Attribution Service, Flight Recorder integration, LogSage, and MCP integration — remains <strong>experimental</strong> in v0.6. APIs, CLI flags, and service contracts may change in subsequent releases.</p>
+</div></blockquote>
+<ul class="simple">
+<li><p><strong>NVRx Attribution Service (<code class="docutils literal notranslate"><span class="pre">attrsvc</span></code>)</strong> and <strong>NVRx Slurm Monitor Service (<code class="docutils literal notranslate"><span class="pre">smonsvc</span></code>)</strong> introduced as FastAPI-based standalone services (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/242">#242</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/248">#248</a>).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>-managed <code class="docutils literal notranslate"><span class="pre">attrsvc</span></code></strong> for co-located deployment (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/318">#318</a>); UDS endpoints for <code class="docutils literal notranslate"><span class="pre">attrsvc</span></code>/<code class="docutils literal notranslate"><span class="pre">smonsvc</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/315">#315</a>).</p></li>
+<li><p>Attribution is now an <strong>optional package</strong> — install with <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">nvidia-resiliency-ext[attribution]</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/305">#305</a>). Attribution internals refactored under a <code class="docutils literal notranslate"><span class="pre">svc</span></code> subpackage with a clear controller/runner boundary (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/295">#295</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/313">#313</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/316">#316</a>).</p></li>
+<li><p><strong>PyTorch Flight Recorder (experimental)</strong> support in <code class="docutils literal notranslate"><span class="pre">attrsvc</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/283">#283</a>); FR ordering switched to window-based instead of PG description (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/210">#210</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/216">#216</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/219">#219</a>).</p></li>
+<li><p><strong>LogSage (experimental)</strong> integrated as an attribution module — direct in-process API, configurable LLM model via env, LogSage v0.1.7 (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/224">#224</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/249">#249</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/267">#267</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/289">#289</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/297">#297</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/308">#308</a>).</p></li>
+<li><p>Triggers and outputs: last-cycle attribution trigger (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/247">#247</a>), job-completion handling (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/251">#251</a>), Slack bot notifications (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/253">#253</a>).</p></li>
+<li><p><strong>MCP (Model Context Protocol) integration (experimental)</strong> exposes the attribution module as a tool for the NVIDIA resiliency agent (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/215">#215</a>); <code class="docutils literal notranslate"><span class="pre">nvrx-attr</span></code> Claude skill bundle for the attribution workflow (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/312">#312</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Log aggregation &amp; observability</strong></p>
+<ul class="simple">
+<li><p><strong>Two-level gRPC log aggregation</strong> (N leaves + root) with auto-tier selection and end-to-end tests (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/280">#280</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/307">#307</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/309">#309</a>).</p></li>
+<li><p>Writer-thread + persistent-reader refactor (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/254">#254</a>); pipe-based per-cycle log capture and split-log support (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/225">#225</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/240">#240</a>).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">NVRxCycleInfo</span></code> protobuf</strong> exposes per-cycle metadata over the new gRPC interface (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/258">#258</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/292">#292</a>).</p></li>
+<li><p><strong>GPU memory logger</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/206">#206</a>).</p></li>
+</ul>
+</li>
+<li><p><strong>Build, packaging &amp; security</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">poetry-dynamic-versioning</span></code> — wheel versions are derived from git tags (<code class="docutils literal notranslate"><span class="pre">v0.6.0-rc1</span></code>, <code class="docutils literal notranslate"><span class="pre">v0.6.0</span></code>, etc.) (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/260">#260</a>).</p></li>
+<li><p>New optional extras: <code class="docutils literal notranslate"><span class="pre">[attribution]</span></code> for the attribution service stack (LogSage, MCP, FastAPI, Slack), <code class="docutils literal notranslate"><span class="pre">[dataflow]</span></code> for <code class="docutils literal notranslate"><span class="pre">nvdataflow</span></code> integration.</p></li>
+<li><p>Wheel security-scan cleanups and Bandit findings (<code class="docutils literal notranslate"><span class="pre">ionice</span></code> subprocess, FR module) (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/219">#219</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/294">#294</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/306">#306</a>).</p></li>
+<li><p>Torch 2.10 and <code class="docutils literal notranslate"><span class="pre">langchain</span></code> lock updates for CVE compliance.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id2">
+<h3>Deprecations &amp; Removals<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Legacy dynamic rendezvous (v1)</strong> is deprecated; barrier-based rendezvous (v2) is the default. Plan to remove v1 in a future release (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282">#282</a>).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code></strong> is deprecated (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/259">#259</a>). The <code class="docutils literal notranslate"><span class="pre">min-healthy</span></code> value has been removed; only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> remains (which is also the default), so the flag is effectively a no-op in v0.6. <strong>Migration: remove the flag from your launch scripts.</strong> No replacement is required. The flag itself will be removed in a future release.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">ptl_resiliency</span></code> package is deprecated and removed</strong> from the wheel (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282">#282</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/285">#285</a>). PyTorch Lightning users should pin v0.5.x or migrate to the underlying <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> / <code class="docutils literal notranslate"><span class="pre">checkpointing</span></code> / <code class="docutils literal notranslate"><span class="pre">attribution.straggler</span></code> APIs directly.</p></li>
+<li><p><strong>OneLogger integration</strong> removed (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/257">#257</a>).</p></li>
+<li><p><strong>In-process restart is deprecated in v0.6</strong> and will be removed in a future release. It is no longer the focus of the fast-restart solution. <strong>Migration: use in-job restart via <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code></strong> (see the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> usage guide). The existing <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess</span></code> APIs continue to work in v0.6 but are no longer maintained for new feature development; bug fixes will be considered on a case-by-case basis.</p></li>
+</ul>
+</section>
+<section id="id3">
+<h3>Installation<a class="headerlink" href="#id3" title="Link to this heading"></a></h3>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core resiliency (fault tolerance, checkpointing, health checks)</span>
+pip<span class="w"> </span>install<span class="w"> </span>nvidia-resiliency-ext
+
+<span class="c1"># With attribution stack (Attribution Service, LogSage, MCP, Slack notifications)</span>
+pip<span class="w"> </span>install<span class="w"> </span>nvidia-resiliency-ext<span class="o">[</span>attribution<span class="o">]</span>
+
+<span class="c1"># With nvdataflow integration</span>
+pip<span class="w"> </span>install<span class="w"> </span>nvidia-resiliency-ext<span class="o">[</span>dataflow<span class="o">]</span>
+</pre></div>
+</div>
+</section>
+<section id="id4">
+<h3>Known Issues &amp; Limitations<a class="headerlink" href="#id4" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>Ubuntu 22.04 / glibc &lt; 2.39</strong> users are advised to build from source — PyPI wheels target <code class="docutils literal notranslate"><span class="pre">manylinux_2_39</span></code> and default to CUDA 13.</p></li>
+<li><p><strong>Python</strong>: wheels are published for 3.10, 3.11, 3.12.</p></li>
+<li><p><strong>Attribution, Flight Recorder analysis, LogSage, and MCP integration are experimental.</strong> APIs, CLI flags, and service contracts may change in subsequent releases.</p></li>
+<li><p><strong>External InJob control-plane is experimental</strong> and not yet QA-validated; APIs may change in subsequent releases.</p></li>
+<li><p><strong>CPU shared-memory D2H path in <code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync</span></code> is experimental</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/298">#298</a>); enable only in non-production runs while we collect soak feedback.</p></li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-5-0">
+<h2>NVIDIA Resiliency Extension v0.5.0<a class="headerlink" href="#nvidia-resiliency-extension-v0-5-0" title="Link to this heading"></a></h2>
+<section id="id5">
+<h3>Highlights<a class="headerlink" href="#id5" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>In-job restarts</p>
+<ul>
+<li><p>PRs (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/185">185</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/190">190</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/201">201</a>) improve the scalability, profiling, and performance of in-job restarts through improvements to the rendezvous operation</p></li>
+<li><p>Key scaling and fault-tolerance improvements:</p>
+<ul>
+<li><p><strong>New barrier-based rendezvous operation</strong> introduces a substantial redesign that addresses several limitations of the previous dynamic rendezvous implementation. This provides more predictable, stable, and scalable in-job behavior</p></li>
+</ul>
+</li>
+<li><p>Faster termination path:</p>
+<ul>
+<li><p>The worker termination timeout (–workers-stop-timeout) has been reduced from 30 seconds to 15 seconds, improving failure recovery latency and overall job responsiveness</p></li>
+</ul>
+</li>
+<li><p>New Flag for Infra-Aligned Rank Assignment:</p>
+<ul>
+<li><p>A new flag, –ft-use-infra-group-rank, allows in-job scaling to follow the infrastructure scheduler’s rank assignment, preserving topology-aware placement decisions</p></li>
+</ul>
+</li>
+<li><p>Migration Guidance:</p>
+<ul>
+<li><p>While the previous dynamic rendezvous-based implementation (v1) remains supported, users are strongly encouraged to adopt barrier-based rendezvous (v2) for improved reliability, stability, and performance</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Enhanced GPU and NVLink health checks</p>
+<ul>
+<li><p>PR <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/145">145</a> introduces several improvements to health check module including</p>
+<ul>
+<li><p>Refactored <code class="docutils literal notranslate"><span class="pre">GPUHealthCheck</span></code> to support device-specific monitoring</p></li>
+<li><p>New <code class="docutils literal notranslate"><span class="pre">NVLHealthCheck</span></code> class for NVLink health validation</p></li>
+<li><p>Automatic health check chaining in <code class="docutils literal notranslate"><span class="pre">Wrapper</span></code> class <code class="docutils literal notranslate"><span class="pre">ChainedGPUHealthCheck</span></code> and <code class="docutils literal notranslate"><span class="pre">ChainedNVLHealthCheck</span></code> for in-process use</p></li>
+<li><p>Single GPU health check API for individual device validation and updated trace collector to use new GPU health check API</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Node health check service integration</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can query a node-local health check service before rendezvous by passing <code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code>.</p></li>
+<li><p>Users can reuse NVIDIA Base Command Manager (BCM) Slurm prolog or epilog health checks behind the same service interface. For example, customers can deploy an <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>-compatible daemon that invokes an existing BCM health check script and converts the result to the NVRx health check response format.</p></li>
+<li><p>The integration is service-compatible: users can provide any equivalent daemon that implements the NVRx <code class="docutils literal notranslate"><span class="pre">HealthCheckService.RunHealthCheck</span></code> gRPC API over a Unix domain socket and returns JSON output with numeric <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> results.</p></li>
+<li><p>Example: <code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span> <span class="pre">unix:///var/run/nvhcd.sock</span></code>. If the endpoint is not configured, or the optional service is unavailable, NVRx skips the external node health check. NVRx marks the node unhealthy when the service returns <code class="docutils literal notranslate"><span class="pre">success=false</span></code> or when a successful response contains structured JSON with <code class="docutils literal notranslate"><span class="pre">fail_count</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>; unusable successful responses are logged and ignored.</p></li>
+</ul>
+</li>
+<li><p>Checkpointing</p>
+<ul>
+<li><p>PRs (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/108">108</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/138">138</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/154">154</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/169">169</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/170">170</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/193">193</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/197">197</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/199">199</a>) improve the stability of checkpointing by deprecating the use of fork in asynchronous checkpointing, simplifying error propagation and shutdown cleanup logic</p>
+<ul>
+<li><p>Introduced the option to use <strong>Multithread File IO Instead of Multiprocess</strong> to simplify error propagation logic, improve shutdown cleanup and enhance overall stability</p></li>
+<li><p>Made persistent async checkpoint worker default (except for local checkpointing) and fixed cross-call state pollution</p></li>
+<li><p>Added ability to abort async checkpoint process</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>Fault attribution (new module introduced in v0.5)</p>
+<ul>
+<li><p>PR <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/141">141</a> introduces the base attribution class which can be used to define any attribution module. This provides asynchronous combining multiple modules directly.</p></li>
+<li><p>PR <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/172">172</a> improves error attribution by dumping NCCL traces from PyTorch for collective analysis on hang or watchdog timeout</p>
+<ul>
+<li><p>It is an experimental module to identify ranks interrupting workload progress by analyzing Flight Recorder traces. It detects GPU errors, host issues, and GIL locks</p></li>
+<li><p>PyT’s watchdog is currently configured to include the training process’s stack trace when generating Flight Recorder traces. However, this can lead to a deadlock if the trainer fails inside a routine that performs collectives while holding the GIL, since capturing the stack trace requires reacquiring the GIL. A new environment variable, TORCH_INCLUDE_STACK_TRACE=False (Default: True), has been added to PyTorch main to avoid this issue. This change will be included in the NGC PyT 25.11 container.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id6">
+<h3>Known Issues &amp; Limitations<a class="headerlink" href="#id6" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Spare-Node Support</p>
+<ul>
+<li><p>Spare nodes are not supported by either dynamic rendezvous or barrier-based rendezvous in the current release.</p></li>
+<li><p>The earlier dynamic rendezvous technically supported spare nodes, but only when infra group rank assignment was not used. That mode isn’t viable in real deployments because bypassing the infrastructure topology-aware rank assignment leads to degraded performance and inconsistent scaling behavior. Because of this, spare-node support isn’t available in this release.</p></li>
+<li><p>With barrier-based rendezvous, we’ve aligned fully with infra-assigned ranks to ensure correctness and performance. Spare-node support for barrier-based rendezvous is planned for a future update.</p></li>
+</ul>
+</li>
+<li><p>CUDA 12 and Ubuntu 22.04 users are advised to build from source, since PyPI wheel for v0.5 defaults to CUDA 13</p></li>
+<li><p>In-process restart requires NCCL &lt; v2.28.3 OR &gt;= 2.28.9 due to a segmentation fault issue</p></li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-4-1">
+<h2>NVIDIA Resiliency Extension v0.4.1<a class="headerlink" href="#nvidia-resiliency-extension-v0-4-1" title="Link to this heading"></a></h2>
+<section id="id7">
+<h3>Highlights<a class="headerlink" href="#id7" title="Link to this heading"></a></h3>
+<p>This hotfix release includes important bug fixes, performance improvements, and minor updates to enhance stability.</p>
+<ul class="simple">
+<li><p>Checkpointing</p>
+<ul>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/104">PR 104</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/106">PR 106</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/108">PR 108</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/111">PR 111</a> and <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/116">PR 116</a> fix the asynchronous checkpointing module to switch from temporal to using the persistent worker that uses <code class="docutils literal notranslate"><span class="pre">spawn</span></code> instead of <code class="docutils literal notranslate"><span class="pre">fork</span></code>.</p></li>
+<li><p>The fix in this release is working toward an intermediate milestone of deprecating the use of <code class="docutils literal notranslate"><span class="pre">fork</span></code> and instead using a <code class="docutils literal notranslate"><span class="pre">spawn</span></code> for asynchronous checkpointing. The complete transition to using <code class="docutils literal notranslate"><span class="pre">spawn</span></code> has the following dependencies on <code class="docutils literal notranslate"><span class="pre">fork</span></code> that will be eliminated in upcoming release:</p>
+<ul>
+<li><p>Local checkpointing must continue to use the <code class="docutils literal notranslate"><span class="pre">fork</span></code> based asynchronous checkpointing as clarified in the usage guide.</p></li>
+<li><p>File IO operations with multiprocessing can still trigger a <code class="docutils literal notranslate"><span class="pre">fork</span></code></p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p>In-process restart</p>
+<ul>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/103">PR 103</a> fixes a case where extra CUDA contexts were created on local rank 0 after restart, consuming extra GPU memory on local rank 0.</p></li>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/112">PR 112</a> fixes the workload state leaks across the restart boundary. The fix addresses a case where objects created in the wrapped function could not be garbage collected after a restart, manifesting as a memory leak.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id8">
+<h3>Known Issues &amp; Limitations<a class="headerlink" href="#id8" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>In a future release, we will add changes to automatically terminate the persistent process when the main process terminates.</p></li>
+<li><p>Until this change is implemented, job schedulers must ensure proper termination of the persistent process and its child workers for a graceful shutdown.</p></li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-4-0">
+<h2>NVIDIA Resiliency Extension v0.4.0<a class="headerlink" href="#nvidia-resiliency-extension-v0-4-0" title="Link to this heading"></a></h2>
+<section id="id9">
+<h3>Highlights<a class="headerlink" href="#id9" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Checkpointing</p>
+<ul>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/29">PR 29</a> - Support for storing checkpoints to cloud object stores</p>
+<ul>
+<li><p>Leverage cloud storage provider’s multithreaded SDK for rapid loading and saving checkpoints to object stores such as AWS S3, Azure Blob
+Storage, Google Cloud Storage and more using NVIDIA Multi-storage Client</p></li>
+<li><p>Provide scalable, reliable, cheaper, single source of truth across clouds/regions</p></li>
+<li><p>Provide opt-out configuration when creating FileSystemWriterAsync class instance to allow users to passthrough to the filesystem</p></li>
+</ul>
+</li>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/36">PR 36</a> - Critical bug fix to enable async checkpoint loading without errors</p></li>
+</ul>
+</li>
+<li><p>In-process &amp; In-job restart</p>
+<ul>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/35">PR 35</a> - Nested restarter updates for in-process restart to align with in-job
+restart, so users have a consistent experience across in-process and in-job restarts</p></li>
+<li><p>Updates to in-process nested restart functionality provided by Python Wrapper class and existing callback infrastructure with additional
+callbacks and logging</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id10">
+<h3>Known Issues &amp; Limitations<a class="headerlink" href="#id10" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Dependencies:</p>
+<ul>
+<li><p>In-process requires Pytorch, at least <a class="reference external" href="https://github.com/orgs/pytorch/packages/container/pytorch-nightly/398218496?tag=2.8.0.dev20250418-cuda12.6-cudnn9-devel">version</a>, that includes changes in <a class="reference external" href="https://github.com/pytorch/pytorch/pull/150690">PR 150690</a> to avoid
+deadlock in NCCL P2P communications (used in pipeline parallel)</p></li>
+<li><p>In-process requires Transformer Engine including at least <a class="reference external" href="https://github.com/NVIDIA/TransformerEngine/pull/1715">PR 1715</a> (merged) and <a class="reference external" href="https://github.com/NVIDIA/TransformerEngine/pull/1812">PR
+1812</a> (not yet merged) to reduce cross-restart memory leaks</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-3-0">
+<h2>NVIDIA Resiliency Extension v0.3.0<a class="headerlink" href="#nvidia-resiliency-extension-v0-3-0" title="Link to this heading"></a></h2>
+<section id="id11">
+<h3>Highlights<a class="headerlink" href="#id11" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Support for Blackwell GPU</p></li>
+<li><p>ARM based host CPU support</p></li>
+<li><p>In-process &amp; In-job restart</p>
+<ul>
+<li><p>Hierarchical in-process and in-job restart support</p></li>
+<li><p>Warm spare support</p></li>
+</ul>
+</li>
+<li><p>Health checks</p>
+<ul>
+<li><p>GPU health check based on NVML</p></li>
+<li><p>NIC</p></li>
+</ul>
+</li>
+<li><p>Checkpointing</p>
+<ul>
+<li><p>Existing capabilities that used to be part of Megatron Core is refactored to be part of NVRx. The checkpointing feature will be maintained as part of NVRx, and Megatron Core and NeMo will use the code from NVRx in the future.</p></li>
+<li><p>Added support for checkpoint metadata caching to improve performance for subsequent checkpoints.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id12">
+<h3>Known Issues &amp; Limitations<a class="headerlink" href="#id12" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>GPU health check requires NVML driver version &gt;= 570</p></li>
+<li><p>Current checkpointing implementation doesn’t support persistent queue with replication</p></li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-2-1">
+<h2>NVIDIA Resiliency Extension v0.2.1<a class="headerlink" href="#nvidia-resiliency-extension-v0-2-1" title="Link to this heading"></a></h2>
+<section id="id13">
+<h3>Highlights<a class="headerlink" href="#id13" title="Link to this heading"></a></h3>
+<p>This release includes important bug fixes, performance improvements, and minor updates to enhance stability.</p>
+<ul class="simple">
+<li><p><strong>Build Fixes &amp; Code Improvements</strong></p>
+<ul>
+<li><p>Fixed missing #include to ensure proper compilationv in pytorch:24.12-py3 container.</p></li>
+<li><p>Lazy loading of cupti_module.</p></li>
+<li><p>Fixed ForkingPickler to ensure proper installation in pytorch:25.01-py3 container.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-2-0">
+<h2>NVIDIA Resiliency Extension v0.2.0<a class="headerlink" href="#nvidia-resiliency-extension-v0-2-0" title="Link to this heading"></a></h2>
+<section id="id14">
+<h3>Highlights<a class="headerlink" href="#id14" title="Link to this heading"></a></h3>
+<p>We excited to introduce many new features in NVIDIA Resiliency Extension v0.2.0.</p>
+<ul class="simple">
+<li><p><strong>In-process restart</strong></p>
+<ul>
+<li><p>Provides a mechanism to restart the training without killing the running process via a Python function wrapper.</p></li>
+<li><p>Compared to a traditional scheduler-level restart, restarting within the same process removes overheads associated with launching a new scheduler job, starting a container, initializing a new Python interpreter, loading dependencies, and creating a new CUDA context.</p></li>
+</ul>
+</li>
+<li><p><strong>Asynchronous checkpoint</strong></p>
+<ul>
+<li><p>Provides core utilities to make checkpointing routines run in the background.</p></li>
+<li><p>It uses torch.multiprocessing to fork a temporary process to initiate asynchronous checkpointing routine.</p></li>
+<li><p>Application can check this asynchronous checkpoint save in a non-blocking manner and specify a user-defined finalization step when all ranks finish their background checkpoint saving.</p></li>
+</ul>
+</li>
+<li><p><strong>Local checkpoint</strong></p>
+<ul>
+<li><p>Provides a mechanism to create a checkpoint in local host memory.</p></li>
+<li><p>The local checkpointing mechanism is implemented via the Python LocalCheckpointManager class, which operates on a TensorAwareStateDict wrapper.</p></li>
+<li><p>This wrapper encapsulates the operations necessary for efficient replication and data transfers.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+<section id="id15">
+<h3>Known Issues &amp; Limitations<a class="headerlink" href="#id15" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong>For in-process restart</strong></p>
+<ul>
+<li><p>If there is hang, presence of SHARP raises an exception, which leads to triggering in-job restart and in-process restart.</p></li>
+<li><p>Customer needs to disable SHARP for using in-process restart with current version.</p></li>
+<li><p>Requires ENV VARs to be set as follows:</p>
+<ul>
+<li><p>NCCL_NVLS_ENABLE=0 to disable SHARP.</p></li>
+<li><p>NCCL_NET_PLUGIN=”none” if NCCL version &lt; 2.24.1 to avoid duplicate NCCL net plugin init.</p></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><p><strong>In-process and in-job restart</strong></p>
+<ul>
+<li><p>These work with PyTorch version 24.07, 24.08, 24.09, and 24.10 but not with 24.11 due to a known NCCL issue.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+<section id="nvidia-resiliency-extension-v0-1-3">
+<h2>NVIDIA Resiliency Extension v0.1.3<a class="headerlink" href="#nvidia-resiliency-extension-v0-1-3" title="Link to this heading"></a></h2>
+<section id="id16">
+<h3>Highlights<a class="headerlink" href="#id16" title="Link to this heading"></a></h3>
+<p>We are excited to announce the first release of NVIDIA Resiliency Extension v0.1.3!</p>
+<ul class="simple">
+<li><p><strong>Straggler Detection API</strong></p>
+<ul>
+<li><p>Provides tools for user to mark the section of code and configure the threshold to detect slow running GPU.</p></li>
+</ul>
+</li>
+<li><p><strong>Fault Tolerance API</strong></p>
+<ul>
+<li><p>Provides the rank monitor server and client, and modified torchrun launcher based on TorchElastic to automatically detect hang and ability to in-job restart the training.</p></li>
+</ul>
+</li>
+</ul>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="index.html" class="btn btn-neutral float-left" title="nvidia-resiliency-ext" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="fault_tolerance/index.html" class="btn btn-neutral float-right" title="Fault Tolerance" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
