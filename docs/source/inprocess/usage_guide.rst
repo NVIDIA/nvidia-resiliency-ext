@@ -95,7 +95,7 @@ behaviors that can interfere with the restart mechanism, so proper setup is
 essential.
 
 SLURM Configuration Requirements
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Use the ``--kill-on-bad-exit=0`` option with ``srun`` to prevent SLURM from
   terminating the entire job when some ranks exit on failure. This allows the
@@ -113,7 +113,7 @@ SLURM Configuration Requirements
   last process to exit, allowing it to complete its cleanup responsibilities.
 
 Complete SLURM Launch Command
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Use the following command format to launch your job with SLURM:
 
 .. code-block:: bash
@@ -125,7 +125,7 @@ Use the following command format to launch your job with SLURM:
   exit \$ret"
 
 Wrapper Configuration
-~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 When creating the :py:class:`nvidia_resiliency_ext.inprocess.Wrapper`, the training program
 must specify the ``monitor_process_pidfile`` parameter to match the path used in
 the wait_daemon command:
@@ -565,6 +565,8 @@ loop iteration, the thread queries the distributed store by invoking
 distributed workers, it may be necessary to increase the
 ``monitor_thread_interval`` to avoid creating a communication bottleneck in the
 distributed store caused by concurrent queries from multiple workers.
+
+.. _monitor_process:
 
 Monitor Process
 ^^^^^^^^^^^^^^^

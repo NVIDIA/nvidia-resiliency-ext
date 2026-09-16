@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
+r"""
 Node-Local Log Aggregator Service
 
 This module provides a standalone log aggregator service for single-node log collection.
@@ -23,6 +23,7 @@ on the same node, and aggregates their log messages into per-node log files stor
 shared filesystem (e.g., Lustre or NFS).
 
 **Key Features:**
+
 - **File-based**: Monitors temp directory for log files from local processes
 - **Single-node scope**: Aggregates logs from all processes on one node
 - **Per-node output**: Each node writes its own log file
@@ -30,24 +31,42 @@ shared filesystem (e.g., Lustre or NFS).
 
 **Comparison with grpc_log_server.py:**
 
-+--------------------+-------------------------+---------------------------+
-|                    | log_aggregator.py       | grpc_log_server.py       |
-+--------------------+-------------------------+---------------------------+
-| Scope              | Single node             | Multi-node (cluster)      |
-| Transport          | File-based (temp dir)   | Network (gRPC)            |
-| Input              | All processes on 1 node | All nodes in cluster      |
-| Output             | Per-node log files      | Single centralized file   |
-| Lustre writers     | N (one per node)        | 1 (optimal)               |
-| Deployment         | Manual (sbatch)         | Automatic (launcher)      |
-+--------------------+-------------------------+---------------------------+
+.. list-table::
+   :header-rows: 1
+
+   * - Property
+     - log_aggregator.py
+     - grpc_log_server.py
+   * - Scope
+     - Single node
+     - Multi-node (cluster)
+   * - Transport
+     - File-based (temp dir)
+     - Network (gRPC)
+   * - Input
+     - All processes on 1 node
+     - All nodes in cluster
+   * - Output
+     - Per-node log files
+     - Single centralized file
+   * - Lustre writers
+     - N (one per node)
+     - 1 (optimal)
+   * - Deployment
+     - Manual (sbatch)
+     - Automatic (launcher)
 
 **When to use:**
+
 - Use `log_aggregator.py` for node-local aggregation (multiple processes → one node file)
 - Use `grpc_log_server.py` for cluster-wide centralization (multiple nodes → one global file)
 
 Example sbatch Usage:
 
-# For PyPI installation:
+For PyPI installation:
+
+.. code-block:: bash
+
     export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
     # Call python module directly
     srun \
@@ -61,7 +80,10 @@ Example sbatch Usage:
           touch "${WAIT_FILE}"
         '
 
-# For source installation:
+For source installation:
+
+.. code-block:: bash
+
     export NVRX_NODE_LOCAL_TMPDIR=/tmp/nvrx
     NVRX_REPO=/../nvidia-resiliency-ext:/nvrx_repo
 
