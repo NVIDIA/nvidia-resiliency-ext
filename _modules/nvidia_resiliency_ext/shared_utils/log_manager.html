@@ -103,6 +103,7 @@
 <span class="sd">of GPUs. The design automatically adapts based on environment configuration.</span>
 
 <span class="sd">Key Design Principles:</span>
+
 <span class="sd">- Environment-driven behavior: NVRX_NODE_LOCAL_TMPDIR controls distributed vs regular logging</span>
 <span class="sd">- Per-node aggregation: When distributed logging is enabled, a separate aggregator service does log aggregation</span>
 <span class="sd">- Dynamic rank detection: Automatically reads rank info from environment variables</span>
@@ -112,6 +113,7 @@
 <span class="sd">- Service-based aggregation: Aggregator can run as a separate service for reliable log collection</span>
 
 <span class="sd">Features:</span>
+
 <span class="sd">- Dual mode operation: Regular logging (stderr/stdout) or distributed logging (file aggregation)</span>
 <span class="sd">- Per-node log files: When distributed logging is enabled (e.g., node_hostname.log)</span>
 <span class="sd">- Automatic rank and node identification in log messages</span>
@@ -132,6 +134,9 @@
 <span class="sd">the aggregator will automatically read from both current and backup files to ensure no messages are lost.</span>
 
 <span class="sd">Usage:</span>
+
+<span class="sd">.. code-block:: python</span>
+
 <span class="sd">    # In main script (launcher.py)</span>
 <span class="sd">    from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger</span>
 <span class="sd">    logger = setup_logger()  # Call once at startup</span>
@@ -146,8 +151,11 @@
 <span class="sd">    logger.critical("Critical error")</span>
 
 <span class="sd">Forking Support:</span>
-<span class="sd">    The logger is designed to work safely with process forking. When using fork():</span>
-<span class="sd">    </span>
+
+<span class="sd">The logger is designed to work safely with process forking. When using fork():</span>
+
+<span class="sd">.. code-block:: python</span>
+
 <span class="sd">    # In parent process</span>
 <span class="sd">    from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger</span>
 <span class="sd">    logger = setup_logger()  # Setup before forking</span>
@@ -164,8 +172,8 @@
 <span class="sd">        # Parent continues normally</span>
 <span class="sd">        logger.info("Parent continues")</span>
 <span class="sd">    </span>
-<span class="sd">    All ranks use file-based message passing, ensuring child processes can log</span>
-<span class="sd">    even when they don't inherit the aggregator thread from the parent.</span>
+<span class="sd">All ranks use file-based message passing, ensuring child processes can log</span>
+<span class="sd">even when they don't inherit the aggregator thread from the parent.</span>
 
 <span class="sd">Separate Aggregator Service, see log_aggregator.py for details.</span>
 <span class="sd">"""</span>
@@ -328,8 +336,6 @@
 <span class="sd">    Service-based: Aggregator can run as a separate service for reliable log collection.</span>
 <span class="sd">    """</span>
 
-<div class="viewcode-block" id="LogManager.__init__">
-<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_manager.LogManager.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span>
         <span class="n">node_local_tmp_dir</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -358,8 +364,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_log_file</span> <span class="o">=</span> <span class="n">log_file</span>
 
         <span class="c1"># Create logger</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_setup_logger</span><span class="p">()</span></div>
-
+        <span class="bp">self</span><span class="o">.</span><span class="n">_logger</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_setup_logger</span><span class="p">()</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">node_local_tmp_logging_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>

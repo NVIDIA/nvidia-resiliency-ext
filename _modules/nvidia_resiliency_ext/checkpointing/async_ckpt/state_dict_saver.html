@@ -331,6 +331,7 @@
 
 <span class="sd">    This is an async adjustment of torch.distributed.checkpoint.state_dict_saver.</span>
 <span class="sd">    In order to support async save, saving should be split into three parts:</span>
+
 <span class="sd">    1. Planning</span>
 <span class="sd">    2. Actual saving</span>
 <span class="sd">    3. Finalization</span>
@@ -353,10 +354,13 @@
 <span class="sd">        metadata_cache (CheckpointMetadataCache, optional): Custom metadata cache instance to use</span>
 <span class="sd">            for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.</span>
 
-<span class="sd">    Returns: Tuple of:</span>
-<span class="sd">        - storage writer (the one passed as input)</span>
-<span class="sd">        - metadata from planning (or None if we reuse cached global metadata)</span>
-<span class="sd">        - distributed wrapper used for planning</span>
+<span class="sd">    Returns:</span>
+<span class="sd">        tuple: Contains:</span>
+
+<span class="sd">            - storage writer (the one passed as input)</span>
+<span class="sd">            - metadata from planning (or None if we reuse cached global metadata)</span>
+<span class="sd">            - distributed wrapper used for planning</span>
+
 <span class="sd">    The return value of this function should be passed as an input to</span>
 <span class="sd">    `save_state_dict_async_finalize` and cached_plan to skip `reduce_scatter` at planning.</span>
 <span class="sd">    """</span>

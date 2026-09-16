@@ -263,14 +263,14 @@ time.</p>
 <h4>Distributed storage health check (Lustre + NFS)<a class="headerlink" href="#distributed-storage-health-check-lustre-nfs" title="Link to this heading"></a></h4>
 <p>The launcher can perform a distributed storage health check before rendezvous.
 By default it is disabled. When enabled (via CLI or YAML), it:</p>
-<ul>
+<ul class="simple">
 <li><p>Verifies Lustre health via <code class="docutils literal notranslate"><span class="pre">/sys/fs/lustre/health_check</span></code> (fails if not healthy).</p></li>
 <li><p>Discovers distributed mount targets and checks that each mount is reachable.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_enable_dist_storage_healthcheck</span></code>)
-- Accepts a boolean-like value only to enable the mount checks</p>
-<blockquote>
-<div><p>(e.g., <code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span> <span class="pre">true</span></code>).</p>
-</div></blockquote>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_enable_dist_storage_healthcheck</span></code>)</p>
+<ul>
+<li><p>Accepts a boolean-like value only to enable the mount checks
+(e.g., <code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span> <span class="pre">true</span></code>).</p></li>
+</ul>
 </li>
 </ul>
 </section>

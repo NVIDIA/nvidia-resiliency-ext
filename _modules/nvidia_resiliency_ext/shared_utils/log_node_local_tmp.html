@@ -264,11 +264,9 @@
 
 
 <div class="viewcode-block" id="NodeLogAggregator">
-<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator">[docs]</a>
+<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_node_local_tmp.NodeLogAggregator">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">NodeLogAggregator</span><span class="p">:</span>
 
-<div class="viewcode-block" id="NodeLogAggregator.__init__">
-<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.__init__">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span> <span class="n">log_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">temp_dir</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">log_file</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">max_file_size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">en_chrono_ord</span><span class="p">:</span> <span class="nb">bool</span>
     <span class="p">):</span>
@@ -288,11 +286,10 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">en_chrono_ord</span> <span class="o">=</span> <span class="n">en_chrono_ord</span>
 
         <span class="c1"># Track file positions for each rank to avoid re-reading</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_file_positions</span> <span class="o">=</span> <span class="p">{}</span></div>
-
+        <span class="bp">self</span><span class="o">.</span><span class="n">_file_positions</span> <span class="o">=</span> <span class="p">{}</span>
 
 <div class="viewcode-block" id="NodeLogAggregator.shutdown">
-<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.shutdown">[docs]</a>
+<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_node_local_tmp.NodeLogAggregator.shutdown">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_stop_event</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_aggregator_thread</span><span class="p">:</span>
@@ -301,7 +298,7 @@
 
 
 <div class="viewcode-block" id="NodeLogAggregator.start_aggregator">
-<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_aggregator.NodeLogAggregator.start_aggregator">[docs]</a>
+<a class="viewcode-back" href="../../../shared_utils/api.html#nvidia_resiliency_ext.shared_utils.log_node_local_tmp.NodeLogAggregator.start_aggregator">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">start_aggregator</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">"""Start the log aggregator thread."""</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_aggregator_thread</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>

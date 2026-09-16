@@ -151,6 +151,7 @@
 <span class="sd">      high-frequency operations. Server logs errors instead of sending them back.</span>
 <span class="sd">      Default: True (recommended for production). Set to False during development to catch errors immediately.</span>
 <span class="sd">    * `segment` - Controls hot spare node behavior and rank assignment strategy:</span>
+
 <span class="sd">      - None (default): Simple hot spare mode suitable for H100 and systems without NVLink domain segmentation.</span>
 <span class="sd">        First min_nodes become active, extras become hot spares. No ClusterUUID parsing required.</span>
 <span class="sd">      - N (integer): Segment-aware mode for NVSwitch-based systems (DGX H200, HGX B200).</span>
@@ -158,8 +159,10 @@
 <span class="sd">        Domains with fewer nodes are excluded. From each valid domain, as many complete segments</span>
 <span class="sd">        as possible are selected (e.g., 12 nodes with segment=4 → use 12 nodes = 3 segments).</span>
 <span class="sd">        min_nodes must be divisible by segment. When set, ClusterUUID is automatically queried.</span>
+
 <span class="sd">      Note: segment=None and segment=1 have similar behavior in rank assignment, but segment=1</span>
 <span class="sd">      requires ClusterUUID while segment=None does not.</span>
+
 <span class="sd">    * `numa_bind_strict` - If True (default), use strict NUMA binding with both CPU and memory bound to the</span>
 <span class="sd">      same NUMA node (--cpunodebind=N --membind=N). If False, only bind CPU to NUMA node</span>
 <span class="sd">      and allow local memory allocation (--cpunodebind=N --localalloc). Default: True.</span>
@@ -179,6 +182,7 @@
 <span class="sd">      timeout monitoring as they can be significantly slower than steady-state iterations.</span>
 <span class="sd">      Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).</span>
 <span class="sd">    * Attribution service (optional, disabled unless `attribution_endpoint` is set):</span>
+
 <span class="sd">      - `attribution_endpoint` [str] endpoint of the attribution service</span>
 <span class="sd">      - `attribution_stop_action` [str] what to do with a STOP verdict: `log` (default,</span>
 <span class="sd">        record it without terminating) or `no-restart` (end the job, no requeue).</span>

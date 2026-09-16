@@ -245,10 +245,12 @@ the <cite>write_results</cite> are retrieved from the storage_writer.</p>
 <span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">save_state_dict_async_plan</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_dict</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">storage_writer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">process_group</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">coordinator_rank</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">planner</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_cache</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metadata_cache</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#save_state_dict_async_plan"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan" title="Link to this definition"></a></dt>
 <dd><p>First stage of saving a state dict to storage.</p>
 <p>This is an async adjustment of torch.distributed.checkpoint.state_dict_saver.
-In order to support async save, saving should be split into three parts:
-1. Planning
-2. Actual saving
-3. Finalization</p>
+In order to support async save, saving should be split into three parts:</p>
+<ol class="arabic simple">
+<li><p>Planning</p></li>
+<li><p>Actual saving</p></li>
+<li><p>Finalization</p></li>
+</ol>
 <p>Out of these, step (2) <em>must</em> happen asynchronously.
 The first step is realized with this function.</p>
 <p>The planning part consists of several steps, described here:
@@ -268,16 +270,19 @@ previously saved metadata can be reused to speed up subsequent saves.</p></li>
 for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.</p></li>
 </ul>
 </dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><em>Tuple</em></a>[<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync">FileSystemWriterAsync</a>, <em>Metadata</em> | None, <em>_DistWrapper</em>]</p>
-</dd>
-</dl>
-<dl class="simple">
-<dt>Returns: Tuple of:</dt><dd><ul class="simple">
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><p>Contains:</p>
+<blockquote>
+<div><ul class="simple">
 <li><p>storage writer (the one passed as input)</p></li>
 <li><p>metadata from planning (or None if we reuse cached global metadata)</p></li>
 <li><p>distributed wrapper used for planning</p></li>
 </ul>
+</div></blockquote>
+</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple" title="(in Python v3.14)">tuple</a></p>
 </dd>
 </dl>
 <p>The return value of this function should be passed as an input to

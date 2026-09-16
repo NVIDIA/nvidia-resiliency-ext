@@ -144,12 +144,10 @@ before rendezvous. Used by the storage path health check. Default: None.</p></li
 for server response (unidirectional communication). This significantly reduces latency for
 high-frequency operations. Server logs errors instead of sending them back.
 Default: True (recommended for production). Set to False during development to catch errors immediately.</p></li>
-<li><p><cite>segment</cite> - Controls hot spare node behavior and rank assignment strategy:
-- None (default): Simple hot spare mode suitable for H100 and systems without NVLink domain segmentation.</p>
-<blockquote>
-<div><p>First min_nodes become active, extras become hot spares. No ClusterUUID parsing required.</p>
-</div></blockquote>
+<li><p><cite>segment</cite> - Controls hot spare node behavior and rank assignment strategy:</p>
 <ul class="simple">
+<li><p>None (default): Simple hot spare mode suitable for H100 and systems without NVLink domain segmentation.
+First min_nodes become active, extras become hot spares. No ClusterUUID parsing required.</p></li>
 <li><p>N (integer): Segment-aware mode for NVSwitch-based systems (DGX H200, HGX B200).
 Minimum number of nodes required per NVLink domain (identified by GPU ClusterUUID via nvidia-smi).
 Domains with fewer nodes are excluded. From each valid domain, as many complete segments
@@ -177,13 +175,11 @@ process reliably. Default: False.</p></li>
 out-of-section timeouts. The first N iterations (relative to cycle start) are excluded from
 timeout monitoring as they can be significantly slower than steady-state iterations.
 Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).</p></li>
-<li><p>Attribution service (optional, disabled unless <cite>attribution_endpoint</cite> is set):
-- <cite>attribution_endpoint</cite> [str] endpoint of the attribution service
-- <cite>attribution_stop_action</cite> [str] what to do with a STOP verdict: <cite>log</cite> (default,</p>
-<blockquote>
-<div><p>record it without terminating) or <cite>no-restart</cite> (end the job, no requeue).</p>
-</div></blockquote>
+<li><p>Attribution service (optional, disabled unless <cite>attribution_endpoint</cite> is set):</p>
 <ul class="simple">
+<li><p><cite>attribution_endpoint</cite> [str] endpoint of the attribution service</p></li>
+<li><p><cite>attribution_stop_action</cite> [str] what to do with a STOP verdict: <cite>log</cite> (default,
+record it without terminating) or <cite>no-restart</cite> (end the job, no requeue).</p></li>
 <li><p><cite>attribution_export_url</cite> [str] complete export posting URL for
 launcher-managed attribution service postprocessing.</p></li>
 </ul>

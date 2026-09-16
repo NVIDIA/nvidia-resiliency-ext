@@ -102,6 +102,63 @@
              
   <section id="rank-filter">
 <h1>Rank Filter<a class="headerlink" href="#rank-filter" title="Link to this heading"></a></h1>
+<dl class="py class">
+<dt class="sig sig-object py">
+<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">ActivateAllRanks</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#ActivateAllRanks"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dd><p>Activates all distributed ranks.</p>
+<p>All healthy distributed ranks will call the provided wrapped function in
+the next iteration of <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
+<p><code class="xref py py-class docutils literal notranslate"><span class="pre">ActivateAllRanks</span></code> unconditionally activates all ranks, and
+cannot be combined with any other <a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> performing
+rank activation.</p>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py">
+<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">ActiveWorldSizeDivisibleBy</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">divisor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#ActiveWorldSizeDivisibleBy"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dd><p><code class="xref py py-class docutils literal notranslate"><span class="pre">ActiveWorldSizeDivisibleBy</span></code> ensures that the active world size
+is divisible by a given number. Ranks within the adjusted world size are
+marked as active and are calling the wrapped function, while ranks outside
+this range are marked as inactive.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>divisor</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – the divisor to adjust the active world size by</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py">
+<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">MaxActiveWorldSize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">max_active_world_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#MaxActiveWorldSize"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dd><p><code class="xref py py-class docutils literal notranslate"><span class="pre">MaxActiveWorldSize</span></code> ensures that the active world size is no
+greater than the specified <code class="docutils literal notranslate"><span class="pre">max_active_world_size</span></code>. Ranks with indices
+less than the active world size are active and calling the wrapped
+function, while ranks outside this range are inactive.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>max_active_world_size</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – maximum active world size, no limit if
+<a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">None</span></code></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py">
+<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.inprocess.rank_assignment.</span></span><span class="sig-name descname"><span class="pre">RankFilter</span></span><a class="reference internal" href="../../_modules/nvidia_resiliency_ext/inprocess/rank_assignment.html#RankFilter"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dd><p><a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code></a> is a subclass of <a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> which
+selects which ranks are active in the current restart iteration of
+<code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Wrapper</span></code>.</p>
+<p>Active ranks call the wrapped function. Inactive ranks are waiting idle,
+and could serve as a pool of static, preallocated and preinitialized
+reserve ranks. Reserve ranks would be activated in a subsequent restart
+iteration if one of the active ranks is terminated or becomes unhealthy.</p>
+<p>Multiple <a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code></a> or <a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> instances can
+be composed using <code class="xref py py-class docutils literal notranslate"><span class="pre">inprocess.Compose</span></code> to achieve the desired
+behavior. Typically, all <a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankFilter"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankFilter</span></code></a> instances should follow any
+<a class="reference internal" href="rank_assignment.html#nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment" title="nvidia_resiliency_ext.inprocess.rank_assignment.RankAssignment"><code class="xref py py-class docutils literal notranslate"><span class="pre">RankAssignment</span></code></a> steps that recalculate rank indices or adjust
+the world size.</p>
+</dd></dl>
+
 </section>
 
 
