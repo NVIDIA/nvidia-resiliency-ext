@@ -88,7 +88,7 @@ git push -u origin <local-branch>:<remote-branch>
 When contributing documentation changes, ensure the documentation builds correctly. See the [docs CI workflow](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/main/.github/workflows/build_docs.yml) for up-to-date instructions:
 
    ```bash
-   pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon sphinx_copybutton lightning psutil defusedxml
+   pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon sphinx_copybutton myst-parser lightning psutil defusedxml
    sphinx-build -b html docs/source public/
 
    # alternatively,
