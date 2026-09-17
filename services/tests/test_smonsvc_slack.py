@@ -273,3 +273,126 @@ def test_log_attribution_result_notifies_on_timeout_when_configured(monkeypatch,
 
     assert "Attribution timeout" in capsys.readouterr().out
     assert len(client.messages) == 1
+
+
+# ─── restart-agent responses carry no "module" key ───
+
+
+def _restart_agent_response(action="STOP"):
+    """Shape produced by the direct Restart Agent backend: no module, no item list."""
+    return {
+        "result": {
+            "decision": action,
+            "decision_basis": "concrete_confirmation_retry_exhausted",
+            "justification": "Line 28693 matched failure class observed_exception.",
+            "schema_version": "restart_agent_response.v1",
+        },
+        "status": "completed",
+        "recommendation": {
+            "action": action,
+            "reason": "Line 28693 matched failure class observed_exception.",
+            "source": "deterministic",
+        },
+    }
+
+
+def test_log_attribution_result_accepts_restart_agent_response(capsys):
+    # The legacy guard required inner["module"], which no Restart Agent result
+    # sets, so every direct-backend result was dropped before being reported.
+    log_attribution_result(_job(), "/lustre/logs/job.log", _restart_agent_response())
+
+    output = capsys.readouterr().out
+    assert "Recommendation: STOP" in output
+    assert "unrecognized" not in output
+
+
+def test_restart_agent_response_reaches_slack(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    log_attribution_result(
+        _job(), "/lustre/logs/job.log", _restart_agent_response(), slack_notifier=notifier
+    )
+
+    assert len(client.messages) == 1
+    assert "*NVRx attribution:* `STOP`" in client.messages[0]["text"]
+
+
+def test_log_attribution_result_still_rejects_unusable_responses(capsys, caplog):
+    log_attribution_result(_job(), "/lustre/logs/job.log", {"result": {}})
+
+    assert capsys.readouterr().out == ""
+    assert "empty or unrecognized" in caplog.text
+
+
+# ─── restart-agent payloads have no LogSage item list ───
+
+
+def _restart_agent_payload():
+    return {
+        "result": {
+            "decision": "STOP",
+            "decision_basis": "concrete_confirmation_retry_exhausted",
+            "justification": "Line 28693 matched failure class observed_exception.",
+            "primary_failure": {
+                "failure_class": "cuda_oom",
+                "signature": "CUDA out of memory:",
+                "line": 28693,
+                "rank": "0",
+            },
+            "secondary_failures": [
+                {"failure_class": "observed_exception", "signature": "RuntimeError:"},
+                {"failure_class": "observed_exception", "signature": "RuntimeError:"},
+            ],
+            "schema_version": "restart_agent_response.v1",
+        },
+        "status": "completed",
+        "recommendation": {"action": "STOP", "reason": "cuda oom", "source": "deterministic"},
+    }
+
+
+def test_restart_agent_fields_extracts_failures_and_justification():
+    parsed = parse_attrsvc_response(_restart_agent_payload(), log_path="/x.log")
+    fields = slack_mod.attribution_fields(parsed)
+
+    assert fields.primary_issues == ["cuda_oom: CUDA out of memory"]
+    # Duplicate secondary failures collapse to one label.
+    assert fields.secondary_issues == ["observed_exception: RuntimeError"]
+    assert "Line 28693" in fields.explanation
+    assert "concrete_confirmation_retry_exhausted" in fields.explanation
+
+
+def test_restart_agent_fields_ignores_other_payload_shapes():
+    assert slack_mod.restart_agent_fields({"module": "log_analyzer"}) is None
+    assert slack_mod.restart_agent_fields(None) is None
+
+
+def test_build_slack_record_populates_body_from_restart_agent_payload():
+    parsed = parse_attrsvc_response(_restart_agent_payload(), log_path="/x.log")
+    record = build_slack_record(_job(), parsed)
+
+    assert record["s_primary_issues"] == ["cuda_oom: CUDA out of memory"]
+    assert "Line 28693" in record["s_auto_resume_explanation"]
+    assert json.loads(record["s_attribution_result_json"])["secondary_issues"] == [
+        "observed_exception: RuntimeError"
+    ]
+
+
+def test_restart_agent_message_has_no_placeholder_text(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+
+    text = client.messages[0]["text"]
+    assert "No attribution available" not in text
+    assert "No explanation available" not in text
+    assert "cuda_oom: CUDA out of memory" in text
+
+
+def test_logsage_item_still_takes_precedence():
+    parsed = _parsed()
+    fields = slack_mod.attribution_fields(parsed)
+
+    assert fields.primary_issues == ["hardware"]
+    assert fields.explanation == "checkpoint corrupted"

@@ -31,7 +31,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
 from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
 from nvidia_resiliency_ext.attribution.orchestration.client_response import AttrSvcResult
@@ -156,13 +156,83 @@ def latest_result_item(result: AttrSvcResult) -> Optional[RawAnalysisResultItem]
     return None
 
 
+#: Restart Agent results are identified by their response schema version.
+_RESTART_AGENT_SCHEMA_PREFIX = "restart_agent_response."
+
+
+@dataclass(frozen=True)
+class AttributionFields:
+    """Display fields shared by both backends' result shapes."""
+
+    primary_issues: list[str]
+    secondary_issues: list[str]
+    explanation: str
+
+
+def _failure_label(failure: Any) -> str:
+    """Render one Restart Agent failure record as ``class: signature``."""
+    if not isinstance(failure, Mapping):
+        return ""
+    failure_class = str(failure.get("failure_class") or "").strip()
+    signature = str(failure.get("signature") or "").strip().rstrip(":").strip()
+    if failure_class and signature:
+        return f"{failure_class}: {signature}"
+    return failure_class or signature
+
+
+def restart_agent_fields(payload: Any) -> Optional[AttributionFields]:
+    """Extract display fields from a ``restart_agent_response.v1`` payload.
+
+    Restart Agent results carry no LogSage item list, so the primary/secondary
+    failure records and the justification stand in for it. Returns ``None`` for
+    any other payload shape.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    schema = str(payload.get("schema_version") or "")
+    if not schema.startswith(_RESTART_AGENT_SCHEMA_PREFIX):
+        return None
+
+    primary = _failure_label(payload.get("primary_failure"))
+    secondary: list[str] = []
+    raw_secondary = payload.get("secondary_failures")
+    if isinstance(raw_secondary, Sequence) and not isinstance(raw_secondary, (str, bytes)):
+        for failure in raw_secondary:
+            label = _failure_label(failure)
+            if label and label not in secondary:
+                secondary.append(label)
+
+    explanation = str(payload.get("justification") or "").strip()
+    basis = str(payload.get("decision_basis") or "").strip()
+    # The justification usually already names the basis; only append when it does not.
+    if basis and basis not in explanation:
+        explanation = f"{explanation} (decision basis: {basis})" if explanation else basis
+
+    return AttributionFields(
+        primary_issues=[primary] if primary else [],
+        secondary_issues=secondary,
+        explanation=explanation,
+    )
+
+
+def attribution_fields(result: AttrSvcResult) -> Optional[AttributionFields]:
+    """Display fields for either backend, preferring a LogSage item when present."""
+    item = latest_result_item(result)
+    if item is not None:
+        return AttributionFields(
+            primary_issues=list(item.primary_issues),
+            secondary_issues=list(item.secondary_issues),
+            explanation=item.auto_resume_explanation,
+        )
+    return restart_agent_fields(result.result)
+
+
 def build_slack_record(job: "SlurmJob", result: AttrSvcResult) -> dict:
     """Build the posting record consumed by :func:`format_posting_markdown_body`.
 
     Uses the canonical ``s_``-prefixed dataflow keys so the message body matches
     the one produced by the attribution posting pipeline.
     """
-    item = latest_result_item(result)
     job_name = getattr(job, "name", "")
     job_label = f"{job.job_id} ({job_name})" if job_name else str(job.job_id)
 
@@ -173,10 +243,16 @@ def build_slack_record(job: "SlurmJob", result: AttrSvcResult) -> dict:
         "s_recommendation_action": result.recommendation.action,
         "s_recommendation_source": result.recommendation.source,
     }
-    if item is not None:
-        record["s_primary_issues"] = item.primary_issues
-        record["s_auto_resume_explanation"] = item.auto_resume_explanation
-        record["s_attribution_result_json"] = json.dumps(item.to_payload())
+    fields = attribution_fields(result)
+    if fields is not None:
+        record["s_primary_issues"] = fields.primary_issues
+        record["s_auto_resume_explanation"] = fields.explanation
+        record["s_attribution_result_json"] = json.dumps(
+            {
+                "primary_issues": fields.primary_issues,
+                "secondary_issues": fields.secondary_issues,
+            }
+        )
     return record
 
 
