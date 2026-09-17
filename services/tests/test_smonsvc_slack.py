@@ -347,7 +347,12 @@ def _restart_agent_payload():
             "schema_version": "restart_agent_response.v1",
         },
         "status": "completed",
-        "recommendation": {"action": "STOP", "reason": "cuda oom", "source": "deterministic"},
+        "recommendation": {
+            "action": "STOP",
+            # The Restart Agent reports its justification as the reason.
+            "reason": "Line 28693 matched failure class observed_exception.",
+            "source": "deterministic",
+        },
     }
 
 
@@ -396,3 +401,26 @@ def test_logsage_item_still_takes_precedence():
 
     assert fields.primary_issues == ["hardware"]
     assert fields.explanation == "checkpoint corrupted"
+
+
+def test_notification_does_not_repeat_reason_as_terminal_issue(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+
+    # The Restart Agent justification is both the reason and the terminal issue.
+    text = client.messages[0]["text"]
+    assert text.count("Line 28693 matched failure class observed_exception.") == 1
+    assert "*Reason:*" not in text
+
+
+def test_notification_keeps_reason_when_it_differs_from_explanation(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    notifier.notify(_job(), _parsed())
+
+    text = client.messages[0]["text"]
+    assert "*Reason:* terminal failure" in text
+    assert "checkpoint corrupted" in text

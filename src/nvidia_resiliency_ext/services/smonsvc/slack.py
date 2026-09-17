@@ -261,8 +261,12 @@ def format_notification(record: dict, result: AttrSvcResult) -> str:
     header = f"*NVRx attribution:* `{result.recommendation.action}`"
     if result.recommendation.source:
         header += f" _(source: {result.recommendation.source})_"
-    if result.recommendation.reason:
-        header += f"\n*Reason:* {result.recommendation.reason}"
+    # A Restart Agent justification is both the recommendation reason and the
+    # body's terminal-issue text; print it once rather than twice.
+    reason = result.recommendation.reason.strip()
+    explanation = str(record.get("s_auto_resume_explanation", "")).strip()
+    if reason and reason not in explanation:
+        header += f"\n*Reason:* {reason}"
     return f"{header}\n{format_posting_markdown_body(record)}"
 
 
