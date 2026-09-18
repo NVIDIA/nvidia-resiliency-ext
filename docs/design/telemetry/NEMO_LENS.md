@@ -10,6 +10,7 @@ Design rules for this implementation:
 2. **Spans must be self-contained:** A span must lie entirely within one logical unit of code, wherever possible given the current code architecture.
 3. **A span ends promptly:** A span must end promptly and not remain open. If a span covers a long-running task, e.g., a multi-iteration training run, we use a starting zero-duration span and emit a back-dated span at closing time.
 4. **Correlation is by attributes:** Use span attributes to filter and group records from different processes. Within a process, spans retain their parent relationships, including relationships to phase start anchors.
+5. **Telemetry is good-to-have, not mandatory:** Telemetry is completely optional. Missing packages should not cause a fatal error. Any misconfiguration in telemetry shouldn't cause a training job to fail.
 
 ## Scope
 
@@ -42,22 +43,6 @@ graph TD
 `shared_utils/telemetry.py` imports nemo-lens optionally: if the package is present it delegates to it, and if it is absent every export becomes a no-op. All other files in NVRX import telemetry, never anything from nemo-lens. This avoids any conditional checks for telemetry in NVRX logic.
 
 ## `shared_utils/telemetry.py`
-
-### Timed spans
-
-NVRx uses Lens's `span_utilities.emit_span()` to record intervals and zero-duration markers. Equal start and end timestamps are valid. Lens clamps inversions of at most 30 ms by default to zero duration and warns; larger inversions raise `ValueError`. Lens callers can override the finite, non-negative tolerance with `emit_span(..., eps_ms=...)`; zero rejects every inversion. NVRx passes its timestamps unchanged and uses the default, preserving the original import window. Startup intervals with missing timestamps are omitted. This requires a Lens revision containing the timestamp tolerance change; support for the `group` argument alone is insufficient.
-
-### Resource propagation and lifecycle snapshots
-
-NVRx does not create or interpret application run identity. Its Resource carrier operations preserve arbitrary application attributes without naming, validating, filtering, or deriving them. For example, an inherited `example.attribute` passes through worker publication unchanged.
-
-At each top-level fault-tolerance operation, NVRx records the rendezvous round and profiling cycle observed at entry. The values may differ. Later counter changes do not alter the snapshot. Global cycle attribution is determined in post-processing from both counters, timestamps, parent relationships, and process identity.
-
-The cycle start anchor is created before `await_round`, so the wait is its child even when synchronization changes the counters. Each subsequent operation takes a fresh snapshot. The rendezvous `ManualSpan` applies its snapshot through a short Lens attribute scope so the nested health check inherits the same values. Explicit span attributes take precedence. No cycle-long attribute scope is used.
-
-The launcher uses one provider for its lifetime. Application attributes remain Resource attributes supplied through the generic carrier. The worker's operational `nv.nvrx.cycle.index` remains a Resource attribute because it is fixed for that worker process. Attribute scopes do not change metrics, logs, or worker Resources. This requires Lens's `span_attributes` API and provider processor.
-
-Standby and retry paths close the current cycle before opening the next cycle and entering its wait.
 
 Provides (for use in NVRX) three groups of functions:
 
