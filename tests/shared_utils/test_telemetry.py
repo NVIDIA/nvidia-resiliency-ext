@@ -22,7 +22,6 @@ failure into the workload. They run with or without nemo-lens installed.
 """
 
 import ast
-import os
 import pathlib
 import threading
 import time
@@ -32,8 +31,119 @@ import unittest.mock
 from nvidia_resiliency_ext.shared_utils import telemetry
 
 
+@unittest.skipUnless(telemetry._AVAILABLE, "requires nemo-lens")
+class TestLifecycleSnapshots(unittest.TestCase):
+    def setUp(self):
+        from nemo.lens import NemoLensConfig
+        from nemo.lens.providers import build_providers
+        from nemo.lens.state import enabled_span_groups, set_enabled_span_groups
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        self.addCleanup(set_enabled_span_groups, enabled_span_groups())
+        set_enabled_span_groups(frozenset({"nvrx.ft"}))
+        self.exporter = InMemorySpanExporter()
+        with unittest.mock.patch("opentelemetry.trace.set_tracer_provider") as install:
+            build_providers(
+                NemoLensConfig(enabled=True, metrics_enabled=False),
+                span_exporter=self.exporter,
+            )
+        self.provider = install.call_args.args[0]
+        self.addCleanup(self.provider.shutdown)
+        self.enterContext(
+            unittest.mock.patch.object(telemetry, "_get_tracer", self.provider.get_tracer)
+        )
+        self.enterContext(
+            unittest.mock.patch("opentelemetry.trace.get_tracer", self.provider.get_tracer)
+        )
+
+    def _record_group(self, cycle_attributes, rendezvous_attributes):
+        phase = telemetry.Phase()
+        self.addCleanup(phase.close)
+        phase.open("nvrx.ft", "cycle", cycle_attributes)
+        with telemetry.span("nvrx.ft", "await_round", cycle_attributes):
+            pass
+        rendezvous = telemetry.ManualSpan()
+        rendezvous.open(
+            "nvrx.ft",
+            "rendezvous",
+            rendezvous_attributes,
+            inherit_attributes=True,
+        )
+        with telemetry.span("nvrx.ft", "health_check"):
+            pass
+        rendezvous.close()
+        phase.close({"nv.nvrx.cycle.outcome": "completed"})
+        self.provider.force_flush()
+
+    def test_cycle_parents_wait_and_operation_snapshots_do_not_change(self):
+        first = {
+            "nv.nvrx.ftl.rdzv.round": 0,
+            "nv.nvrx.ftl.profiling.cycle": 0,
+        }
+        self._record_group(first, first)
+        first_spans = {span.name: span for span in self.exporter.get_finished_spans()}
+
+        cycle_start = first_spans["cycle_start"]
+        for name in ("await_round", "rendezvous", "cycle"):
+            recorded = first_spans[name]
+            self.assertEqual(recorded.context.trace_id, cycle_start.context.trace_id)
+            self.assertEqual(recorded.parent.span_id, cycle_start.context.span_id)
+        self.assertEqual(
+            first_spans["health_check"].parent.span_id,
+            first_spans["rendezvous"].context.span_id,
+        )
+        for name in ("cycle_start", "await_round", "rendezvous", "health_check", "cycle"):
+            expected = {
+                **first,
+                **({"nv.nvrx.cycle.outcome": "completed"} if name == "cycle" else {}),
+            }
+            self.assertEqual(dict(first_spans[name].attributes), expected)
+
+        first_trace = cycle_start.context.trace_id
+        self.exporter.clear()
+        wait_snapshot = {
+            "nv.nvrx.ftl.rdzv.round": 0,
+            "nv.nvrx.ftl.profiling.cycle": 1,
+        }
+        rendezvous_snapshot = {
+            "nv.nvrx.ftl.rdzv.round": 1,
+            "nv.nvrx.ftl.profiling.cycle": 1,
+        }
+        self._record_group(wait_snapshot, rendezvous_snapshot)
+        restarted = {span.name: span for span in self.exporter.get_finished_spans()}
+
+        self.assertNotEqual(restarted["cycle_start"].context.trace_id, first_trace)
+        self.assertEqual(
+            restarted["await_round"].parent.span_id, restarted["cycle_start"].context.span_id
+        )
+        self.assertEqual(dict(restarted["await_round"].attributes), wait_snapshot)
+        self.assertEqual(dict(restarted["cycle_start"].attributes), wait_snapshot)
+        self.assertEqual(
+            dict(restarted["cycle"].attributes),
+            {**wait_snapshot, "nv.nvrx.cycle.outcome": "completed"},
+        )
+        self.assertEqual(dict(restarted["rendezvous"].attributes), rendezvous_snapshot)
+        self.assertEqual(dict(restarted["health_check"].attributes), rendezvous_snapshot)
+
+
 class TestTelemetryIsInert(unittest.TestCase):
     """Instrumentation must be a no-op before/without setup_telemetry()."""
+
+    def test_phase_without_lens(self):
+        with unittest.mock.patch.object(telemetry, "_AVAILABLE", False):
+            phase = telemetry.Phase()
+            phase.open(
+                "nvrx.ft",
+                "nv.nvrx.ftl.cycle",
+                {
+                    "nv.nvrx.ftl.rdzv.round": 3,
+                    "nv.nvrx.ftl.profiling.cycle": 4,
+                },
+            )
+            self.assertIsNone(phase._start)
+            phase.close()
+            handle = telemetry.setup_telemetry("nvrx.ft_launcher")
+            handle.shutdown()
 
     def test_managed_span_yields_and_runs_body(self):
         ran = False
@@ -69,8 +179,52 @@ class TestTelemetryIsInert(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             boom()
 
-    def test_set_span_attributes_without_active_span(self):
-        telemetry.set_span_attributes({"nv.nvrx.cycle.index": 3, "nv.nvrx.ftl.node": "node-0"})
+    def test_trace_fn_does_not_evaluate_attributes_when_disabled(self):
+        if not telemetry._AVAILABLE:
+            self.skipTest("requires nemo-lens")
+        attributes = unittest.mock.Mock(side_effect=AssertionError("attributes evaluated"))
+
+        @telemetry.trace_fn("nvrx.ft", "disabled", attrs=attributes)
+        def work(value):
+            return value
+
+        with unittest.mock.patch.object(telemetry, "_is_span_group_enabled", return_value=False):
+            self.assertEqual(work(7), 7)
+        attributes.assert_not_called()
+
+    def test_trace_fn_passes_callback_attributes_to_the_span(self):
+        if not telemetry._AVAILABLE:
+            self.skipTest("requires nemo-lens")
+        attributes = unittest.mock.Mock(return_value={"example.attribute": "value"})
+
+        @telemetry.trace_fn("nvrx.ft", "enabled", attrs=attributes)
+        def work(value, *, scale=1):
+            return value * scale
+
+        with (
+            unittest.mock.patch.object(telemetry, "_is_span_group_enabled", return_value=True),
+            unittest.mock.patch.object(telemetry, "_managed_span") as managed,
+        ):
+            self.assertEqual(work(7, scale=2), 14)
+        attributes.assert_called_once_with(7, scale=2)
+        managed.assert_called_once_with(
+            "nvrx.ft",
+            "enabled",
+            unittest.mock.ANY,
+            **{"example.attribute": "value"},
+        )
+
+    def test_trace_fn_callback_is_inert_without_lens(self):
+        attributes = unittest.mock.Mock(side_effect=AssertionError("attributes evaluated"))
+
+        with unittest.mock.patch.object(telemetry, "_AVAILABLE", False):
+
+            @telemetry.trace_fn("nvrx.ft", "absent", attrs=attributes)
+            def work(value):
+                return value
+
+        self.assertEqual(work(7), 7)
+        attributes.assert_not_called()
 
 
 class TestManualSpan(unittest.TestCase):
@@ -78,35 +232,186 @@ class TestManualSpan(unittest.TestCase):
 
     def test_all_methods_are_safe_before_open(self):
         span = telemetry.ManualSpan()
-        span.set({"nv.nvrx.cycle.index": 0})
+        span.set(
+            {
+                "nv.nvrx.ftl.rdzv.round": 0,
+                "nv.nvrx.ftl.profiling.cycle": 0,
+            }
+        )
         span.close({"nv.nvrx.cycle.outcome": "terminated"})
         span.close()
 
     def test_close_is_idempotent(self):
         span = telemetry.ManualSpan()
-        span.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 0})
+        span.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.rendezvous",
+            {
+                "nv.nvrx.ftl.rdzv.round": 0,
+                "nv.nvrx.ftl.profiling.cycle": 0,
+            },
+        )
         span.close({"nv.nvrx.cycle.outcome": "completed"})
         span.close()
         span.close({"nv.nvrx.cycle.outcome": "terminated"})
 
     def test_reopen_closes_the_previous_span(self):
-        # The restart path relies on this: a cycle is left open so teardown lands
-        # inside it, and the next rendezvous closes it by opening the next cycle.
+        # A stale or standby rendezvous may be followed by another operation.
         span = telemetry.ManualSpan()
-        span.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 0})
+        span.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.rendezvous",
+            {
+                "nv.nvrx.ftl.rdzv.round": 0,
+                "nv.nvrx.ftl.profiling.cycle": 0,
+            },
+        )
         first_stack = span._stack
         span.set({"nv.nvrx.cycle.outcome": "failed"})
-        span.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 1})
+        span.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.rendezvous",
+            {
+                "nv.nvrx.ftl.rdzv.round": 1,
+                "nv.nvrx.ftl.profiling.cycle": 1,
+            },
+        )
         self.assertIsNot(span._stack, first_stack)
         span.close()
         self.assertIsNone(span._stack)
 
     def test_set_tolerates_none_and_empty(self):
         span = telemetry.ManualSpan()
-        span.open("nvrx.ft", "nv.nvrx.ftl.cycle")
+        span.open("nvrx.ft", "nv.nvrx.ftl.rendezvous")
         span.set(None)
         span.set({})
         span.close()
+
+    def test_open_attributes_are_not_inherited_by_default(self):
+        attributes = {
+            "nv.nvrx.ftl.rdzv.round": 3,
+            "nv.nvrx.ftl.profiling.cycle": 4,
+        }
+        span = telemetry.ManualSpan()
+        with (
+            unittest.mock.patch.object(telemetry, "_span_attributes", create=True) as scope,
+            unittest.mock.patch.object(telemetry, "span") as span_context,
+        ):
+            span.open("nvrx.ft", "nv.nvrx.ftl.attribution", attributes)
+            span_context.assert_called_once_with("nvrx.ft", "nv.nvrx.ftl.attribution", attributes)
+            scope.assert_not_called()
+            span.close()
+
+    def test_open_failure_restores_the_short_attribute_scope(self):
+        if not telemetry._AVAILABLE:
+            self.skipTest("requires nemo-lens")
+        scope = unittest.mock.MagicMock()
+        span = telemetry.ManualSpan()
+        with (
+            unittest.mock.patch.object(telemetry, "_is_span_group_enabled", return_value=True),
+            unittest.mock.patch.object(telemetry, "_span_attributes", return_value=scope),
+            unittest.mock.patch.object(telemetry, "span", side_effect=RuntimeError("open failed")),
+            self.assertRaisesRegex(RuntimeError, "open failed"),
+        ):
+            span.open(
+                "nvrx.ft",
+                "nv.nvrx.ftl.rendezvous",
+                {
+                    "nv.nvrx.ftl.rdzv.round": 3,
+                    "nv.nvrx.ftl.profiling.cycle": 4,
+                },
+                inherit_attributes=True,
+            )
+        scope.__exit__.assert_called_once()
+        self.assertIsNone(span._stack)
+        self.assertIsNone(span._span)
+
+
+@unittest.skipUnless(telemetry._AVAILABLE, "requires nemo-lens")
+class TestLensTimedEmission(unittest.TestCase):
+    def setUp(self):
+        self.gate = self.enterContext(
+            unittest.mock.patch.object(telemetry, "_is_span_group_enabled", return_value=True)
+        )
+        self.emit = self.enterContext(unittest.mock.patch.object(telemetry, "_emit_span"))
+        self.tracer = self.enterContext(unittest.mock.patch.object(telemetry, "_get_tracer"))
+
+    def test_interval_forwards_group_and_parent_and_returns_context_or_none(self):
+        from opentelemetry import trace
+
+        parent = trace.SpanContext(1, 2, False)
+        for supplied_parent in (None, parent):
+            with self.subTest(parent=supplied_parent):
+                result = telemetry.backdated_span(
+                    "nvrx.ft", "interval", 1, 2, parent=supplied_parent
+                )
+                self.assertIs(result, self.emit.return_value.get_span_context.return_value)
+                args, kwargs = self.emit.call_args
+                self.assertEqual(args, (self.tracer.return_value, "interval", 1, 2))
+                self.assertEqual(kwargs["group"], "nvrx.ft")
+                context = kwargs["context"]
+                self.assertIsNotNone(context)
+                self.assertEqual(
+                    trace.get_current_span(context).get_span_context(),
+                    supplied_parent or trace.INVALID_SPAN_CONTEXT,
+                )
+        self.emit.return_value = None
+        self.assertIsNone(telemetry.backdated_span("nvrx.ft", "interval", 1, 2))
+        self.emit.reset_mock()
+        for start, end in ((None, 2), (1, None), (None, None)):
+            self.assertIsNone(telemetry.backdated_span("nvrx.ft", "missing", start, end))
+        self.emit.assert_not_called()
+
+    def test_mark_reads_clock_once(self):
+        with unittest.mock.patch.object(telemetry.time, "time", return_value=1000) as clock:
+            result = telemetry.mark("nvrx.ft", "instant")
+        clock.assert_called_once_with()
+        self.assertIs(result, self.emit.return_value.get_span_context.return_value)
+        self.emit.assert_called_once_with(
+            self.tracer.return_value,
+            "instant",
+            1000,
+            1000,
+            group="nvrx.ft",
+            context=None,
+            attributes=None,
+        )
+
+    def test_gate_precedes_clock_context_and_attribute_work(self):
+        self.gate.return_value = False
+        with (
+            unittest.mock.patch.object(telemetry.time, "time", side_effect=AssertionError("clock")),
+            unittest.mock.patch.object(
+                telemetry._otel_context, "Context", side_effect=AssertionError("context")
+            ),
+        ):
+            self.assertIsNone(telemetry.mark("nvrx.ft", "disabled"))
+            self.assertIsNone(telemetry.backdated_span("nvrx.ft", "disabled", 1, 2))
+        self.tracer.assert_not_called()
+        self.emit.assert_not_called()
+
+    def test_phase_close_restores_context_when_emission_fails(self):
+        from opentelemetry import trace
+
+        current = trace.get_current_span()
+        self.emit.return_value.get_span_context.return_value = trace.SpanContext(1, 2, False)
+        phase = telemetry.Phase()
+        self.addCleanup(phase.close)
+        phase.open(
+            "nvrx.ft",
+            "cycle",
+            {
+                "nv.nvrx.ftl.rdzv.round": 3,
+                "nv.nvrx.ftl.profiling.cycle": 4,
+            },
+        )
+        phase.set({"nv.nvrx.ftl.membership": "active"})
+        self.emit.side_effect = RuntimeError("emission failed")
+        with self.assertRaisesRegex(RuntimeError, "emission failed"):
+            phase.close()
+        self.assertIs(trace.get_current_span(), current)
+        self.assertIsNone(phase._start)
+        phase.close()
 
 
 class TestMarkAndFlush(unittest.TestCase):
@@ -158,107 +463,64 @@ class TestBackdatedSpan(unittest.TestCase):
         telemetry.backdated_span("job", "pre_startup", 1000.0, None)
         telemetry.backdated_span("job", "pre_startup", None, None)
 
-    def test_non_positive_window_is_dropped(self):
-        # A coarse clock can make a fast window measure as zero-length or inverted.
+    def test_disabled_windows_are_inert(self):
+        # Disabled instrumentation does not validate or emit these windows.
         telemetry.backdated_span("job", "nv.nvrx.ftl.python.imports", 1016.7, 1000.0)
         telemetry.backdated_span("job", "nv.nvrx.ftl.python.imports", 1000.0, 1000.0)
 
 
-@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
-class TestExtendedResourceAttributes(unittest.TestCase):
-    """The agent extends a variable it must never parse, once per cohort.
+class TestResourcePublicationWithoutLens(unittest.TestCase):
+    def test_fresh_process_without_optional_imports(self):
+        import subprocess
+        import sys
 
-    nemo-lens owns the encoding; without it NVRx publishes nothing at all.
-    """
+        code = r"""
+import importlib.abc
+import importlib.util
+import os
+import sys
 
-    def extend(self, inherited, attributes):
-        with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", inherited):
-            return telemetry.extended_resource_attributes(attributes)
-
-    def test_carries_the_inherited_value_through_untouched(self):
-        # Whatever the launching environment set is opaque here, including keys
-        # NVRx has no notion of.
-        inherited = "slurm.job_id=370487,cluster=oci-aga,job.uid=b3f1"
-        result = self.extend(inherited, {"nv.nvrx.cycle.index": 2})
-        self.assertTrue(result.startswith(inherited + ","))
-        self.assertTrue(result.endswith("nv.nvrx.cycle.index=2"))
-
-    def test_works_with_nothing_inherited(self):
-        self.assertEqual(self.extend("", {"nv.nvrx.cycle.index": 0}), "nv.nvrx.cycle.index=0")
-
-    def test_no_attributes_leaves_the_value_alone(self):
-        self.assertEqual(self.extend("cluster=oci-aga", {}), "cluster=oci-aga")
-        self.assertEqual(self.extend("", {}), "")
-
-    def test_values_are_percent_encoded(self):
-        # A value containing a comma or an equals would otherwise be read back as
-        # extra pairs, silently rewriting the resource.
-        result = self.extend("", {"nv.nvrx.ftl.membership": "active,standby=maybe"})
-        self.assertEqual(result, "nv.nvrx.ftl.membership=active%2Cstandby%3Dmaybe")
-
-    def test_extends_the_inherited_value_not_the_last_one(self):
-        # The agent relaunches a cohort every cycle. Extending its own previous
-        # output would append another nv.nvrx.cycle.index each time, without bound.
-        inherited = "cluster=oci-aga"
-        first = self.extend(inherited, {"nv.nvrx.cycle.index": 0})
-        second = self.extend(inherited, {"nv.nvrx.cycle.index": 1})
-        self.assertEqual(first.count("nv.nvrx.cycle.index"), 1)
-        self.assertEqual(second.count("nv.nvrx.cycle.index"), 1)
-        self.assertEqual(second, "cluster=oci-aga,nv.nvrx.cycle.index=1")
-
-
-@unittest.skipUnless(telemetry._AVAILABLE, "nemo-lens is not installed")
-class TestPublishResourceAttributes(unittest.TestCase):
-    """The only channel that reaches a spawned child, so it has to be exact."""
-
-    def setUp(self):
-        self.env = unittest.mock.patch.dict(
-            "os.environ", {"OTEL_RESOURCE_ATTRIBUTES": "job.uid=abc"}, clear=False
-        )
-        self.env.start()
-        self.addCleanup(self.env.stop)
-        self.inherited = unittest.mock.patch.object(
-            telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", "job.uid=abc"
-        )
-        self.inherited.start()
-        self.addCleanup(self.inherited.stop)
-
-    def test_the_child_sees_both_inherited_and_published(self):
-        with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-            published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
-        self.assertIn("job.uid=abc", published)
-        self.assertIn("nv.dl.rank=3", published)
-
-    def test_the_parent_is_restored(self):
-        # Left set, it would describe this process and every later child of it.
-        with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-            pass
-        self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
-
-    def test_restored_even_when_the_spawn_raises(self):
-        with self.assertRaises(RuntimeError):
-            with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-                raise RuntimeError("Process.start() failed")
-        self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "job.uid=abc")
-
-    def test_an_unset_variable_is_removed_again_not_left_empty(self):
-        with unittest.mock.patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("OTEL_RESOURCE_ATTRIBUTES", None)
-            with unittest.mock.patch.object(telemetry, "_INHERITED_RESOURCE_ATTRIBUTES", ""):
-                with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-                    self.assertEqual(os.environ["OTEL_RESOURCE_ATTRIBUTES"], "nv.dl.rank=3")
-                self.assertNotIn("OTEL_RESOURCE_ATTRIBUTES", os.environ)
-
-    def test_successive_publishes_do_not_accumulate(self):
-        # A worker restarts per cycle; building from the last value grows unbounded.
-        for _ in range(3):
-            with telemetry.publish_resource_attributes({"nv.dl.rank": 3}):
-                published = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
-        self.assertEqual(published.count("nv.dl.rank"), 1)
+class BlockOptional(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == sys.argv[2] or fullname.startswith(sys.argv[2] + "."):
+            raise ModuleNotFoundError(fullname)
+sys.meta_path.insert(0, BlockOptional())
+os.environ['OTEL_RESOURCE_ATTRIBUTES'] = 'job.uid=imported'
+spec = importlib.util.spec_from_file_location('isolated_telemetry', sys.argv[1])
+telemetry = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(telemetry)
+assert not telemetry._AVAILABLE
+for original in (None, '', 'job.uid=live,nv.dl.rank=7'):
+    if original is None:
+        os.environ.pop('OTEL_RESOURCE_ATTRIBUTES', None)
+    else:
+        os.environ['OTEL_RESOURCE_ATTRIBUTES'] = original
+    assert telemetry.get_otel_resource_attributes() == {}
+    assert telemetry.compose_attributes({}, defaults={'nv.dl.rank': 3}) == {}
+    assert telemetry.extend_otel_resource_attributes(
+        'job.uid=imported', overrides={'role': 'worker'}
+    ) == 'job.uid=imported'
+    try:
+        with telemetry.publish_otel_resource_attributes({'role': 'worker'}):
+            assert os.environ.get('OTEL_RESOURCE_ATTRIBUTES') == original
+            raise RuntimeError('workload error')
+    except RuntimeError:
+        pass
+    assert os.environ.get('OTEL_RESOURCE_ATTRIBUTES') == original
+"""
+        for blocked in ("nemo.lens", "opentelemetry"):
+            with self.subTest(blocked=blocked):
+                result = subprocess.run(
+                    [sys.executable, "-c", code, telemetry.__file__, blocked],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class TestPhase(unittest.TestCase):
-    """A phase is a mark now and a backdated span later; check the two line up.
+    """A phase is a start anchor and a duration summary; check the two line up.
 
     nemo-lens and the OTel SDK are optional and usually absent here, so the two
     primitives a phase is built from are replaced and the phase's own logic --
@@ -292,14 +554,16 @@ class TestPhase(unittest.TestCase):
     def test_marks_the_start_and_backdates_the_span_to_it(self):
         phase = telemetry.Phase()
         before = time.time()
-        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 2})
+        opening = {
+            "nv.nvrx.ftl.rdzv.round": 2,
+            "nv.nvrx.ftl.profiling.cycle": 3,
+        }
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", opening)
         phase.close({"nv.nvrx.cycle.outcome": "completed"})
         after = time.time()
 
-        self.assertEqual(
-            self.marks, [("nvrx.ft", "nv.nvrx.ftl.cycle_start", {"nv.nvrx.cycle.index": 2})]
-        )
-        (group, name, start, end, attributes, parent) = self.spans[0]
+        self.assertEqual(self.marks, [("nvrx.ft", "nv.nvrx.ftl.cycle_start", opening)])
+        group, name, start, end, attributes, parent = self.spans[0]
         self.assertEqual((group, name), ("nvrx.ft", "nv.nvrx.ftl.cycle"))
         # The span covers the window, rather than being an instant at close.
         self.assertLessEqual(before, start)
@@ -308,18 +572,20 @@ class TestPhase(unittest.TestCase):
         # Same trace as the mark, so the spans that ran inside the phase join it.
         self.assertEqual(parent, "ctx-of-nv.nvrx.ftl.cycle_start")
         # Opening attributes carry through to the span; close adds to them.
-        self.assertEqual(
-            attributes, {"nv.nvrx.cycle.index": 2, "nv.nvrx.cycle.outcome": "completed"}
-        )
+        self.assertEqual(attributes, {**opening, "nv.nvrx.cycle.outcome": "completed"})
 
     def test_open_attributes_go_on_the_mark_and_the_span(self):
         # The mark is the only record while the phase runs, and the span is the only
         # one a consumer filters. Both need the attributes.
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 3})
+        opening = {
+            "nv.nvrx.ftl.rdzv.round": 3,
+            "nv.nvrx.ftl.profiling.cycle": 4,
+        }
+        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", opening)
         phase.close()
-        self.assertEqual(self.marks[0][2], {"nv.nvrx.cycle.index": 3})
-        self.assertEqual(self.spans[0][4], {"nv.nvrx.cycle.index": 3})
+        self.assertEqual(self.marks[0][2], opening)
+        self.assertEqual(self.spans[0][4], opening)
 
     def test_close_attributes_override_opening_ones(self):
         # Lets a required attribute be seeded at open rather than on each close path.
@@ -360,7 +626,14 @@ class TestPhase(unittest.TestCase):
         # building attributes and a mark name for primitives that will drop them.
         with unittest.mock.patch.object(telemetry, "_AVAILABLE", False):
             phase = telemetry.Phase()
-            phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 1})
+            phase.open(
+                "nvrx.ft",
+                "nv.nvrx.ftl.cycle",
+                {
+                    "nv.nvrx.ftl.rdzv.round": 1,
+                    "nv.nvrx.ftl.profiling.cycle": 2,
+                },
+            )
             phase.set({"nv.nvrx.ftl.group.rank": 0})
             phase.close({"nv.nvrx.cycle.outcome": "completed"})
         self.assertEqual(self.marks, [])
@@ -369,8 +642,22 @@ class TestPhase(unittest.TestCase):
     def test_open_closes_the_previous_phase(self):
         # The launcher reuses one handle across cycles and relies on this.
         phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 0})
-        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", {"nv.nvrx.cycle.index": 1})
+        phase.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.cycle",
+            {
+                "nv.nvrx.ftl.rdzv.round": 0,
+                "nv.nvrx.ftl.profiling.cycle": 0,
+            },
+        )
+        phase.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.cycle",
+            {
+                "nv.nvrx.ftl.rdzv.round": 1,
+                "nv.nvrx.ftl.profiling.cycle": 1,
+            },
+        )
         self.assertEqual(len(self.spans), 1, "the first cycle was never emitted")
         self.assertEqual(len(self.marks), 2)
 
@@ -392,6 +679,26 @@ class TestSetupTelemetry(unittest.TestCase):
         self.assertTrue(hasattr(handle, "shutdown"))
         handle.shutdown()
         handle.shutdown()
+
+    def test_uses_the_current_lens_setup_signature(self):
+        original = telemetry._AVAILABLE
+        telemetry._AVAILABLE = True
+        handle = unittest.mock.MagicMock()
+
+        def strict_setup(config, resource_attributes=None):
+            self.assertIsNotNone(config)
+            self.assertEqual(resource_attributes, {"service.instance.id": "nvrx-test0"})
+            return handle
+
+        try:
+            with (
+                unittest.mock.patch.object(telemetry, "_setup_telemetry", strict_setup),
+                unittest.mock.patch.object(telemetry, "_NemoLensConfig", create=True) as config_cls,
+            ):
+                config_cls.from_env.return_value = unittest.mock.MagicMock()
+                self.assertIs(telemetry.setup_telemetry("nvrx.test", "nvrx-test0"), handle)
+        finally:
+            telemetry._AVAILABLE = original
 
     def test_init_failure_does_not_propagate(self):
         original = telemetry._AVAILABLE

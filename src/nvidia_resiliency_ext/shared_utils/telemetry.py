@@ -22,12 +22,16 @@ names are dotted and cannot be Python keywords.
 Design and rationale: docs/design/telemetry/NEMO_LENS.md.
 """
 
+import functools
 import logging
 import os
 import threading
 import time
 from contextlib import ExitStack, contextmanager
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import SpanContext
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +55,7 @@ _PRESETS = {
 _INHERITED_RESOURCE_ATTRIBUTES = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
 
 try:
-    # Underscored names exist only when nemo-lens is installed. trace_fn's alias
-    # is the PEP 484 re-export form, marking a name this module never calls.
+    # Underscored imports exist only when nemo-lens is installed.
     #
     # OpenTelemetry is imported here, not where it is used, so that NVRx depends on
     # it in its own right rather than on nemo-lens continuing to pull it in. A
@@ -63,11 +66,15 @@ try:
     from nemo.lens import get_tracer as _get_tracer
     from nemo.lens import is_span_group_enabled as _is_span_group_enabled
     from nemo.lens import managed_span as _managed_span
-    from nemo.lens import safe_set_span_attributes as _safe_set_span_attributes
     from nemo.lens import setup_telemetry as _setup_telemetry
-    from nemo.lens import trace_fn as trace_fn
-    from nemo.lens.resources import extend_otel_resource_attributes as _extend_resource_attributes
-    from nemo.lens.resources import publish_otel_resource_attributes as _publish_resource_attributes
+    from nemo.lens import span_attributes as _span_attributes
+    from nemo.lens import trace_fn as _trace_fn
+    from nemo.lens.resources.attributes import (
+        extend_otel_resource_attributes,
+        get_otel_resource_attributes,
+        publish_otel_resource_attributes,
+    )
+    from nemo.lens.semconv.encoding import compose_attributes
     from nemo.lens.span_utilities import emit_span as _emit_span
     from nemo.lens.span_utilities import linux_process_create_time as _process_create_time
     from opentelemetry import context as _otel_context
@@ -96,18 +103,27 @@ if _AVAILABLE:
 
 if not _AVAILABLE:
 
+    def get_otel_resource_attributes(*, environ=None):
+        """Return no attributes when nemo-lens is unavailable."""
+        return {}
+
+    def compose_attributes(current, *, defaults=None, overrides=None):
+        """Return an inert map when nemo-lens is unavailable."""
+        return {}
+
+    def extend_otel_resource_attributes(text, *, defaults=None, overrides=None):
+        """Leave a selected carrier unchanged when nemo-lens is unavailable."""
+        return text or ""
+
+    @contextmanager
+    def publish_otel_resource_attributes(attributes, *, environ=None):
+        """Leave the environment unchanged when nemo-lens is unavailable."""
+        yield
+
     @contextmanager
     def _managed_span(group, name, tracer=None, **attributes):
         """No-op stand-in for ``nemo.lens.managed_span``."""
         yield None
-
-    def trace_fn(group, name, tracer=None):
-        """No-op stand-in for ``nemo.lens.trace_fn``."""
-
-        def decorator(func):
-            return func
-
-        return decorator
 
 
 class _NoOpHandle:
@@ -127,7 +143,7 @@ def setup_telemetry(
     ``service_name`` becomes ``service.name``, overriding ``OTEL_SERVICE_NAME``,
     which names the workload rather than these processes. ``instance_id`` becomes
     ``service.instance.id``; omit it when a parent published one through
-    :func:`publish_resource_attributes`. One of the two must supply it -- nemo-lens
+    :func:`publish_otel_resource_attributes`. One of the two must supply it -- nemo-lens
     derives its own from ``nv.dl.rank``, which no NVRx process has a usable value for.
     """
     if not _AVAILABLE:
@@ -176,11 +192,32 @@ class ManualSpan:
         self._stack: Optional[ExitStack] = None
         self._span = None
 
-    def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
-        """Start a span, closing any span this handle already had open."""
+    def open(
+        self,
+        group: str,
+        name: str,
+        attributes: Optional[dict] = None,
+        *,
+        inherit_attributes: bool = False,
+    ) -> None:
+        """Start a span, closing any open span.
+
+        Attributes apply only to this span unless ``inherit_attributes`` is true.
+        """
         self.close()
         self._stack = ExitStack()
-        self._span = self._stack.enter_context(span(group, name, attributes))
+        try:
+            if inherit_attributes and attributes and _AVAILABLE and _is_span_group_enabled(group):
+                # The scope is entered before the span so nested instrumentation
+                # inherits this operation's starting snapshot. ExitStack closes the
+                # span first and restores the previous attribute scope second.
+                self._stack.enter_context(_span_attributes(attributes))
+            self._span = self._stack.enter_context(span(group, name, attributes))
+        except BaseException:
+            self._stack.close()
+            self._stack = None
+            self._span = None
+            raise
 
     def set(self, attributes: Optional[dict] = None) -> None:
         """Set attributes on the open span."""
@@ -196,6 +233,39 @@ class ManualSpan:
             self._stack.close()
             self._stack = None
         self._span = None
+
+
+def get_inherited_resource_attributes() -> str:
+    """Return the Resource carrier captured when this module was imported."""
+    return _INHERITED_RESOURCE_ATTRIBUTES
+
+
+def trace_fn(group, name, tracer=None, attrs=None):
+    """Decorate a function with an optional gated attribute callback.
+
+    ``attrs`` receives the decorated function's arguments. It is evaluated only
+    when the span group is enabled and supplies attributes directly to the new
+    span. Existing callers that omit it retain Lens's ``trace_fn`` behavior.
+    """
+
+    def decorator(func):
+        if not _AVAILABLE:
+            return func
+        if attrs is None:
+            return _trace_fn(group, name, tracer)(func)
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if not _is_span_group_enabled(group):
+                return func(*args, **kwargs)
+            attributes = attrs(*args, **kwargs)
+            active_tracer = tracer if tracer is not None else _get_tracer("nemo.lens")
+            with _managed_span(group, name, active_tracer, **(attributes or {})):
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 def span(group: str, name: str, attributes: Optional[dict] = None):
@@ -214,7 +284,7 @@ def _emit(
     end: float,
     attributes: Optional[dict] = None,
     context=None,
-):
+) -> Optional["SpanContext"]:
     """Emit one span over an explicit window. Returns its ``SpanContext``, or None.
 
     ``context`` of None inherits the ambient span, the way an ordinary span does;
@@ -223,9 +293,15 @@ def _emit(
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return None
     recorded = _emit_span(
-        _get_tracer(__name__), name, start, end, context=context, attributes=attributes or {}
+        _get_tracer(__name__),
+        name,
+        start,
+        end,
+        group=group,
+        context=context,
+        attributes=attributes,
     )
-    return recorded.get_span_context()
+    return recorded.get_span_context() if recorded is not None else None
 
 
 def backdated_span(
@@ -235,14 +311,16 @@ def backdated_span(
     end: Optional[float],
     attributes: Optional[dict] = None,
     parent=None,
-) -> None:
+) -> Optional["SpanContext"]:
     """Record a span for a window that elapsed before there was a tracer.
 
     ``start`` and ``end`` are wall-clock seconds; ``parent`` is usually the
     ``SpanContext`` of the ``mark`` that opened the window, and without one the span
-    roots its own trace. A no-op unless the window is a positive interval.
+    starts a new trace. Lens validates timestamps, checks whether the group is
+    enabled, and ends the span. Zero duration is valid. Return the recorded span's
+    context, or None if no span was recorded.
     """
-    if start is None or end is None or end <= start:
+    if start is None or end is None:
         return
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return
@@ -251,56 +329,20 @@ def backdated_span(
     context = _otel_context.Context()
     if parent is not None:
         context = _otel_trace.set_span_in_context(_otel_trace.NonRecordingSpan(parent), context)
-    _emit(group, name, start, end, attributes, context)
+    return _emit(group, name, start, end, attributes, context)
 
 
-def mark(group: str, name: str, attributes: Optional[dict] = None):
+def mark(group: str, name: str, attributes: Optional[dict] = None) -> Optional["SpanContext"]:
     """Record an instant: a zero-duration span pinning a moment in time.
 
     Returns its ``SpanContext``, or None when the group is off. A mark exports
     immediately, so the context outlives it -- ids, not a handle to anything live.
     Inherits the ambient span, so a mark nests where an ordinary span would.
     """
+    if not _AVAILABLE or not _is_span_group_enabled(group):
+        return None
     now = time.time()
     return _emit(group, name, now, now, attributes)
-
-
-def set_span_attributes(attributes: dict) -> None:
-    """Set attributes on the active span, for inside a ``@trace_fn``. No-op if none."""
-    if not _AVAILABLE:
-        return
-    _safe_set_span_attributes(_otel_trace.get_current_span(), attributes)
-
-
-def extended_resource_attributes(attributes: dict) -> str:
-    """Extend the inherited ``OTEL_RESOURCE_ATTRIBUTES`` with more pairs.
-
-    NVRx never parses the variable -- it is an opaque string to extend. Extending is
-    always from the value inherited at start, never from the last extension, or a
-    relaunched cohort accumulates a key per cycle. ``overwrite`` because an NVRx key
-    already in the inherited value is stale: this process is the authority on it.
-    Returns the inherited value unchanged when nemo-lens is absent: NVRx emits no
-    telemetry then, so it has nothing to say about this process.
-    """
-    if not _AVAILABLE:
-        return _INHERITED_RESOURCE_ATTRIBUTES
-    return _extend_resource_attributes(_INHERITED_RESOURCE_ATTRIBUTES, attributes, overwrite=True)
-
-
-@contextmanager
-def publish_resource_attributes(attributes: dict):
-    """Publish attributes into the environment, for a child spawned inside.
-
-    ``multiprocessing.Process`` has no ``env``, so the environment at ``start()``
-    is the only channel to a spawned child. Wrap that call. nemo-lens restores the
-    previous value on the way out, including on error -- left set, it would describe
-    this process and every later child of it. Values arrive in the child as strings.
-    """
-    if not _AVAILABLE:
-        yield
-        return
-    with _publish_resource_attributes(attributes, overwrite=True):
-        yield
 
 
 def record_process_startup(
@@ -327,13 +369,13 @@ def record_process_startup(
 
 
 class Phase:
-    """A long window, recorded as a start mark now and a backdated span later.
+    """A long window, recorded as a start anchor and a duration summary.
 
     For a window too long to hold a span open across, since a span exports only
-    when it ends. ``open()`` marks ``<name>_start`` and makes it the active context,
-    so spans on this thread nest under the phase; ``close()`` emits ``<name>``
-    backdated to that mark. A phase that never closes still leaves the mark and
-    everything that ran inside it.
+    when it ends. ``open()`` emits ``<name>_start`` as a zero-duration anchor and
+    makes its context active, so spans on this thread nest under the phase.
+    ``close()`` emits ``<name>`` as a duration summary from the saved start time.
+    A phase that never closes still leaves the anchor and its recorded children.
 
     ``open`` attributes go on both records; ``set`` and ``close`` reach only the
     span and override by name.
@@ -351,7 +393,7 @@ class Phase:
         self._attributes: dict = {}
 
     def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
-        """Mark the start of the phase, closing any phase this handle had open."""
+        """Emit the start anchor, closing any phase this handle had open."""
         # Without nemo-lens nothing downstream can record anything, so leave _start
         # unset: that is the flag set() and close() already bail on, which makes the
         # whole handle inert for the cost of one module-global read.
@@ -363,7 +405,12 @@ class Phase:
         # Seeded, not emptied: a consumer filtering spans never sees the mark's
         # attributes, so a key left only there cannot be grouped on.
         self._attributes = dict(attributes or {})
-        self._parent = mark(group, f"{name}_start", attributes)
+        try:
+            self._parent = mark(group, f"{name}_start", attributes)
+        except BaseException:
+            self._group = self._name = self._start = self._parent = None
+            self._attributes = {}
+            raise
         if self._parent is None:  # group off; the phase still spans nothing to nest in
             return
         try:
@@ -375,10 +422,11 @@ class Phase:
             logger.debug("Could not make %s the active context", self._name, exc_info=True)
 
     def set(self, attributes: Optional[dict] = None) -> None:
-        """Record attributes to be emitted on the backdated span at close."""
-        if self._start is None or not attributes:
+        """Update attributes saved for the duration summary."""
+        if self._start is None:
             return
-        self._attributes.update(attributes)
+        if attributes:
+            self._attributes.update(attributes)
 
     def close(self, attributes: Optional[dict] = None) -> None:
         """Emit the backdated span covering the phase. Idempotent."""
@@ -394,13 +442,15 @@ class Phase:
                 # the stale ambient context.
                 logger.debug("Out-of-order close for phase %s", self._name, exc_info=True)
             self._token = None
-        backdated_span(
-            self._group,
-            self._name,
-            self._start,
-            time.time(),
-            self._attributes,
-            parent=self._parent,
-        )
-        self._group = self._name = self._start = self._parent = None
-        self._attributes = {}
+        try:
+            backdated_span(
+                self._group,
+                self._name,
+                self._start,
+                time.time(),
+                self._attributes,
+                parent=self._parent,
+            )
+        finally:
+            self._group = self._name = self._start = self._parent = None
+            self._attributes = {}
