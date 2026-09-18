@@ -140,3 +140,7 @@ class MonitorState:
     path_errors_other: int = 0  # Other validation errors
     # HTTP error counters
     http_rate_limited: int = 0  # 429 Too Many Requests
+    # Log paths already claimed by a job, so sibling array tasks that resolve to
+    # the same application log are not submitted repeatedly.
+    submitted_log_paths: set[str] = field(default_factory=set)
+    duplicate_log_paths: int = 0  # sibling tasks skipped as duplicates

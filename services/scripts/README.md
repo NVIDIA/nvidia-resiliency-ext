@@ -71,6 +71,20 @@ monitor logs its Slack status at startup and counts deliveries under `slack` in
 Under systemd, set these in `nvrx.env` instead — units do not inherit your
 shell environment.
 
+### Application Log Resolution
+
+If SLURM `StdOut` points at a launcher wrapper rather than the training log,
+enable resolution so the monitor submits the real log:
+
+```bash
+export NVRX_SMONSVC_APP_LOG_RESOLUTION=1
+# defaults match <run_dir>/slurm_out/ beside <run_dir>/logs/
+# export NVRX_SMONSVC_APP_LOG_STDOUT_SUBDIR=slurm_out
+# export NVRX_SMONSVC_APP_LOG_SUBDIR=logs
+```
+
+See [smonsvc/README.md](../smonsvc/README.md#application-log-resolution).
+
 **Output files** (in `~/nvrx_logs/` by default):
 - `<timestamp>_attrsvc.log` - Attribution service stdout/stderr
 - `<timestamp>_smonsvc.log` - SLURM monitor stdout/stderr

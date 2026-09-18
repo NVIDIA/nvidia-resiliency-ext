@@ -34,6 +34,41 @@ Environment variables (prefix: `NVRX_SMONSVC_`) or command-line arguments:
 
 CLI arguments override environment variables.
 
+## Application Log Resolution
+
+Some launchers point SLURM `StdOut` at a batch wrapper rather than the training
+log. A common layout:
+
+```
+<run_dir>/slurm_out/slurm-<jobid>_<task>.out     # wrapper: launcher banner, few KB
+<run_dir>/logs/<name>_<jobid>_date_..._cycle<N>.log   # the training log
+```
+
+Attributing the wrapper yields "no failure signature found" regardless of what
+the job did. When enabled, the monitor maps the wrapper back to the newest cycle
+log for the same SLURM job.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NVRX_SMONSVC_APP_LOG_RESOLUTION` | `false` | Enable resolution (`1`/`true`/`yes`/`on`) |
+| `NVRX_SMONSVC_APP_LOG_STDOUT_SUBDIR` | `slurm_out` | Wrapper directory, stripped to find the run directory |
+| `NVRX_SMONSVC_APP_LOG_SUBDIR` | `logs` | Application log directory, relative to the run directory |
+
+**Off by default** — it encodes a site layout convention, and a deployment whose
+`StdOut` already *is* the training log must not have its paths rewritten. When
+the layout does not match or no cycle log exists, the monitor falls back to the
+original `StdOut` path rather than skipping the job.
+
+Application logs embed the **parent** job ID, so every array task of a job
+resolves to the same log. The monitor claims each resolved path once; sibling
+tasks are skipped rather than re-analyzing identical content (which would also
+collide in the attrsvc registry, where a path maps to a single job ID). Both
+counts appear under `log_paths` in `/stats`:
+
+```json
+{"log_paths": {"claimed": 12, "duplicates_skipped": 158}}
+```
+
 ## Slack Notifications
 
 The monitor posts attribution results to Slack. Credentials use unprefixed
@@ -93,7 +128,8 @@ When `PORT` is set, the monitor exposes an HTTP server:
 ## How It Works
 
 1. Polls SLURM for completed/failed jobs in configured partitions
-2. For each terminal job, extracts the output log path
+2. For each terminal job, extracts the output log path (optionally resolving it
+   to the application log, see below)
 3. Submits the log to the Attribution Service via POST /logs
 4. Tracks job state to avoid duplicate submissions
 5. Posts a Slack alert when the recommendation matches the configured actions
@@ -190,6 +226,7 @@ nvrx-smonsvc -v
 | `attrsvc_client.py` | HTTP client for Attribution Service |
 | `status_server.py` | Status server (/stats, /jobs, /healthz) |
 | `slack.py` | Slack notifications for attribution results |
+| `log_resolver.py` | Maps SLURM stdout wrappers to application logs |
 | `models.py` | Data models (JobState, SlurmJob, MonitorState) |
 | `deploy/run_smonsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_smonsvc.sh` | Periodic endpoint snapshot for debugging |

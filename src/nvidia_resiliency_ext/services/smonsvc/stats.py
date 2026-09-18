@@ -78,6 +78,10 @@ def get_stats_dict(
             "http_errors": {
                 "rate_limited": state.http_rate_limited,
             },
+            "log_paths": {
+                "claimed": len(state.submitted_log_paths),
+                "duplicates_skipped": state.duplicate_log_paths,
+            },
         }
         if slack_stats is not None:
             stats["slack"] = slack_stats.as_dict()

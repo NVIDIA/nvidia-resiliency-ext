@@ -13,6 +13,7 @@ from types import FrameType
 
 from .attrsvc_client import AttrsvcClient
 from .job_handlers import fetch_results, submit_log
+from .log_resolver import AppLogResolution, resolve_app_log
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
 from .slack import SlackNotifier
 from .slurm import SlurmClient, expand_slurm_patterns
@@ -55,6 +56,7 @@ class SlurmJobMonitor:
         port: int | None = None,
         host: str = DEFAULT_STATUS_HOST,
         slack_notifier: SlackNotifier | None = None,
+        app_log_resolution: AppLogResolution | None = None,
     ):
         """
         Initialize the SLURM job monitor.
@@ -70,6 +72,8 @@ class SlurmJobMonitor:
             port: Port for HTTP server with stats/health/jobs endpoints (None to disable)
             host: Host/interface for the HTTP status server
             slack_notifier: Notifier for Slack alerts (default: built from environment)
+            app_log_resolution: SLURM-stdout-to-application-log mapping
+                (default: built from environment; disabled unless opted in)
         """
         self.attrsvc_url = attrsvc_url.rstrip("/")
         self.poll_interval = poll_interval
@@ -86,6 +90,9 @@ class SlurmJobMonitor:
         self._shutdown_requested = False
         # Always present; reports itself disabled when Slack is not configured.
         self._slack_notifier = SlackNotifier() if slack_notifier is None else slack_notifier
+        self._app_log_resolution = (
+            AppLogResolution.from_env() if app_log_resolution is None else app_log_resolution
+        )
 
         # Attribution service client
         self._attrsvc_client = AttrsvcClient(
@@ -210,6 +217,7 @@ class SlurmJobMonitor:
             if self.job_pattern:
                 logger.info(f"  Job name pattern: {self.job_pattern.pattern}")
             logger.info(f"  Slack alerts: {self._slack_notifier.describe()}")
+            logger.info(f"  App log resolution: {self._app_log_resolution.describe()}")
 
             self._start_status_server()
             logger.info("=" * 60)
@@ -348,10 +356,25 @@ class SlurmJobMonitor:
             # Check if job needs log submission
             if not tracked_job.log_submitted and not tracked_job.result_fetched:
                 log_path = self._get_log_path(tracked_job)
-                if log_path:
+                if log_path and self._claim_log_path(tracked_job, log_path):
                     jobs_to_submit.append((tracked_job, log_path))
 
         return jobs_to_submit
+
+    def _claim_log_path(self, job: SlurmJob, log_path: str) -> bool:
+        """Claim ``log_path`` for ``job``; False when a sibling task already owns it.
+
+        Array tasks of one job share a single application log. Submitting it once
+        per task would re-analyze identical content and collide in the attrsvc
+        registry, which keys a path to one job ID.
+        """
+        if log_path in self.state.submitted_log_paths:
+            logger.debug(f"[{job.job_id}] Log already claimed by a sibling task: {log_path}")
+            job.log_submitted = True  # settled; nothing to fetch for this task
+            self.state.duplicate_log_paths += 1
+            return False
+        self.state.submitted_log_paths.add(log_path)
+        return True
 
     def _fetch_paths_for_terminal_jobs(self) -> None:
         """Fetch output paths for terminal jobs that don't have them. Must hold _state_lock."""
@@ -468,11 +491,17 @@ class SlurmJobMonitor:
         )
 
     def _get_log_path(self, job: SlurmJob) -> str | None:
-        """Get the log file path for a job from SLURM StdOut."""
-        if job.stdout_path:
-            return self._expand_slurm_patterns(job.stdout_path, job)
-        logger.debug(f"[{job.job_id}] No StdOut path available")
-        return None
+        """Get the log file to analyze, preferring the application log over SLURM StdOut."""
+        if not job.stdout_path:
+            logger.debug(f"[{job.job_id}] No StdOut path available")
+            return None
+
+        stdout_path = self._expand_slurm_patterns(job.stdout_path, job)
+        resolved = resolve_app_log(stdout_path, job.job_id, self._app_log_resolution)
+        if resolved and resolved != stdout_path:
+            logger.debug(f"[{job.job_id}] Resolved application log: {resolved}")
+            return resolved
+        return stdout_path
 
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:
         """Submit a log file to the attribution service."""
