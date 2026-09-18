@@ -52,6 +52,39 @@ The default direct backend accepts `LLM_API_KEY_FILE`, an explicit Restart
 Agent config with its own credential reference, or the default key-file paths
 `~/.llm_api_key` and `~/.config/nvrx/llm_api_key`.
 
+### Slack Alerts
+
+`nvrx-smonsvc` posts attribution results to Slack when a token and channel are
+configured. Export these before `start`/`run` so the monitor inherits them:
+
+```bash
+export SLACK_BOT_TOKEN_FILE=/secure/slack_bot_token
+export SLACK_CHANNEL="#trng-alerts"
+# Actions that page; default is STOP only
+export NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
+```
+
+Requires `slack-sdk` (`pip install 'nvidia-resiliency-ext[attribution]'`). The
+monitor logs its Slack status at startup and counts deliveries under `slack` in
+`/stats`. See [smonsvc/README.md](../smonsvc/README.md#slack-notifications).
+
+Under systemd, set these in `nvrx.env` instead — units do not inherit your
+shell environment.
+
+### Application Log Resolution
+
+If SLURM `StdOut` points at a launcher wrapper rather than the training log,
+enable resolution so the monitor submits the real log:
+
+```bash
+export NVRX_SMONSVC_APP_LOG_RESOLUTION=1
+# defaults match <run_dir>/slurm_out/ beside <run_dir>/logs/
+# export NVRX_SMONSVC_APP_LOG_STDOUT_SUBDIR=slurm_out
+# export NVRX_SMONSVC_APP_LOG_SUBDIR=logs
+```
+
+See [smonsvc/README.md](../smonsvc/README.md#application-log-resolution).
+
 **Output files** (in `~/nvrx_logs/` by default):
 - `<timestamp>_attrsvc.log` - Attribution service stdout/stderr
 - `<timestamp>_smonsvc.log` - SLURM monitor stdout/stderr

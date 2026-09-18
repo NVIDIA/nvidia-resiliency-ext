@@ -34,6 +34,99 @@ Environment variables (prefix: `NVRX_SMONSVC_`) or command-line arguments:
 
 CLI arguments override environment variables.
 
+## Application Log Resolution
+
+Some launchers point SLURM `StdOut` at a batch wrapper rather than the training
+log. A common layout:
+
+```
+<run_dir>/slurm_out/slurm-<jobid>_<task>.out          # wrapper: launcher banner, few KB
+<run_dir>/logs/<name>_<jobid>_date_..._cycle<N>.log   # the training log
+```
+
+Both naming conventions are handled — multi-cycle runs (`..._cycle<N>.log`) and
+single-cycle runs (`....log`). A cycle log outranks a plain one, and metadata
+sidecars (`.env.log`, `.tasks.log`) are never selected. The wrapper may also sit
+directly in the run directory rather than under `slurm_out/`.
+
+Attributing the wrapper yields "no failure signature found" regardless of what
+the job did. When enabled, the monitor maps the wrapper back to the newest cycle
+log for the same SLURM job.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NVRX_SMONSVC_APP_LOG_RESOLUTION` | `false` | Enable resolution (`1`/`true`/`yes`/`on`) |
+| `NVRX_SMONSVC_APP_LOG_STDOUT_SUBDIR` | `slurm_out` | Wrapper directory, stripped to find the run directory |
+| `NVRX_SMONSVC_APP_LOG_SUBDIR` | `logs` | Application log directory, relative to the run directory |
+
+**Off by default** — it encodes a site layout convention, and a deployment whose
+`StdOut` already *is* the training log must not have its paths rewritten. When
+the layout does not match or no cycle log exists, the monitor falls back to the
+original `StdOut` path rather than skipping the job.
+
+Application logs embed the **parent** job ID, so every array task of a job
+resolves to the same log. The monitor claims a log once at submission and again
+before the terminal analysis, skipping siblings at both stages.
+
+Claiming at both stages is necessary. A job appears in `squeue` before it writes
+its application log, so the first poll cannot resolve one yet and each array task
+submits its own wrapper. By the time they go terminal the log exists and they all
+resolve to it — without the second claim that is one terminal analysis and one
+Slack alert per task, for a single log.
+
+Counts appear under `log_paths` in `/stats`:
+
+```json
+{"log_paths": {"claimed": 160, "duplicates_skipped": 74,
+               "analyzed": 12, "duplicate_analyses": 148}}
+```
+
+## Slack Notifications
+
+The monitor posts attribution results to Slack. Credentials use unprefixed
+environment variables (matching the equivalent attrsvc settings):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SLACK_BOT_TOKEN` | `""` | Bot token. If empty, falls back to `SLACK_BOT_TOKEN_FILE`, then `~/.slack_bot_token`, `~/.slack_token`, `~/.config/nvrx/slack_bot_token` |
+| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token |
+| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env` files, quote values starting with `#` |
+| `NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS` | `STOP` | Comma- or space-separated recommendation actions that trigger a message. Valid: `STOP`, `RESTART`, `CONTINUE`, `UNKNOWN`, `TIMEOUT` |
+
+Requires `slack-sdk`:
+
+```bash
+pip install 'nvidia-resiliency-ext[attribution]'
+```
+
+Notifications are **off by default**. They activate only when `slack-sdk` is
+installed *and* both a token and a channel are configured; otherwise the
+monitor logs `Slack alerts: disabled (...)` at startup and runs unchanged.
+
+By default only `STOP` pages, since `RESTART` is the routine outcome and would
+be noisy. To page on more actions:
+
+```bash
+export SLACK_BOT_TOKEN_FILE=/secure/slack_bot_token
+export SLACK_CHANNEL="#trng-alerts"
+export NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
+```
+
+Each message carries the recommendation action and reason, the job ID and name,
+the attributed issues, the terminal-issue explanation, and the log path. The
+job owner is mentioned when their `{user}@nvidia.com` address resolves to a
+Slack account.
+
+Delivery is best effort: a Slack outage is counted and logged, never propagated
+into the monitor's polling loop. Counters are exposed under `slack` in `/stats`:
+
+```json
+{"slack": {"attempts": 12, "sent": 11, "failed": 1, "skipped_action": 143}}
+```
+
+The bot must be invited to the target channel (`/invite @your-bot`) and needs
+the `chat:write` scope, plus `users:read.email` for owner mentions.
+
 ## API Endpoints
 
 When `PORT` is set, the monitor exposes an HTTP server:
@@ -47,9 +140,11 @@ When `PORT` is set, the monitor exposes an HTTP server:
 ## How It Works
 
 1. Polls SLURM for completed/failed jobs in configured partitions
-2. For each terminal job, extracts the output log path
+2. For each terminal job, extracts the output log path (optionally resolving it
+   to the application log, see below)
 3. Submits the log to the Attribution Service via POST /logs
 4. Tracks job state to avoid duplicate submissions
+5. Posts a Slack alert when the recommendation matches the configured actions
 
 ## Architecture
 
@@ -142,6 +237,8 @@ nvrx-smonsvc -v
 | `slurm.py` | SLURM subprocess calls (squeue, scontrol, sacct) with batching and het job support |
 | `attrsvc_client.py` | HTTP client for Attribution Service |
 | `status_server.py` | Status server (/stats, /jobs, /healthz) |
+| `slack.py` | Slack notifications for attribution results |
+| `log_resolver.py` | Maps SLURM stdout wrappers to application logs |
 | `models.py` | Data models (JobState, SlurmJob, MonitorState) |
 | `deploy/run_smonsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_smonsvc.sh` | Periodic endpoint snapshot for debugging |
