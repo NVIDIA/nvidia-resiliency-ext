@@ -1511,26 +1511,17 @@ class LocalElasticAgent(SimpleElasticAgent):
             attrs["nv.nvrx.ftl.infra.rank"] = get_infrastructure_rank(skip_nodename_logic=True)
         except (ValueError, RuntimeError):
             logger.debug("Infrastructure rank unavailable", exc_info=True)
-        settings = self._rdzv_settings()
-        if settings is not None and settings.segment is not None:
+        settings = self._rdzv_handler.settings
+        if settings.segment is not None:
             attrs["nv.nvrx.ftl.segment"] = settings.segment
-            # Parsed only when a segment is configured, and "none" is its placeholder for
-            # "not looked up" rather than a domain.
-            state = getattr(self._rdzv_handler, "_barrier_state", None)
-            domain = getattr(state, "_cached_domain_id", None)
-            if domain not in (None, "none"):
+            domain = self._rdzv_handler.domain_id
+            if domain is not None:
                 attrs["nv.nvrx.ftl.infra.cluster_uuid"] = domain
         return attrs
 
-    def _rdzv_settings(self):
-        """Our handler's settings, or None under a rendezvous backend that is not ours."""
-        return getattr(self._rdzv_handler, "settings", None)
-
     def _launch_budget_attrs(self) -> dict:
         """The node budget the job was launched with, for the worker Resource."""
-        settings = self._rdzv_settings()
-        if settings is None:
-            return {}
+        settings = self._rdzv_handler.settings
         return {
             "nv.dl.launch.nnodes.active": settings.min_nodes,
             "nv.dl.launch.nnodes.spare": settings.max_nodes - settings.min_nodes,

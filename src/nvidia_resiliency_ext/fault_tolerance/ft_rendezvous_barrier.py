@@ -672,6 +672,11 @@ class _RendezvousBarrierState:
             self.store.set(self.shutdown_key, b"")
 
     @property
+    def domain_id(self) -> Optional[str]:
+        """Return the cached domain ID, or None when unavailable."""
+        return None if self._cached_domain_id == "none" else self._cached_domain_id
+
+    @property
     def join_count_key(self) -> str:
         """TCPStore key for the number of participants that have joined this round."""
         return f"{self.prefix}:join_count_{self._round}"
@@ -2638,6 +2643,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
     def settings(self) -> RendezvousSettings:
         """Get the settings of the rendezvous."""
         return self._settings
+
+    @property
+    def domain_id(self) -> Optional[str]:
+        """Return the cached domain ID, or None when unavailable."""
+        return self._barrier_state.domain_id
 
     def get_backend(self) -> str:
         """See base class."""
