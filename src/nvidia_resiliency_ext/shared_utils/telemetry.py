@@ -27,7 +27,7 @@ import logging
 import os
 import threading
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -120,11 +120,6 @@ if not _AVAILABLE:
         """Leave the environment unchanged when nemo-lens is unavailable."""
         yield
 
-    @contextmanager
-    def _managed_span(group, name, tracer=None, **attributes):
-        """No-op stand-in for ``nemo.lens.managed_span``."""
-        yield None
-
 
 class _NoOpHandle:
     """Stand-in for ``nemo.lens.TelemetryHandle`` when telemetry is unavailable."""
@@ -146,6 +141,7 @@ def setup_telemetry(
     :func:`publish_otel_resource_attributes`. One of the two must supply it -- nemo-lens
     derives its own from ``nv.dl.rank``, which no NVRx process has a usable value for.
     """
+    global _AVAILABLE
     if not _AVAILABLE:
         return _NoOpHandle()
     try:
@@ -155,6 +151,8 @@ def setup_telemetry(
         attributes.update(resource_attributes or {})
         return _setup_telemetry(config, resource_attributes=attributes)
     except Exception:
+        # Setup can fail after Lens enables groups; later calls must stay inert.
+        _AVAILABLE = False
         logger.warning("nemo-lens init failed, continuing without telemetry", exc_info=True)
         return _NoOpHandle()
 
@@ -251,11 +249,14 @@ def trace_fn(group, name, tracer=None, attrs=None):
     def decorator(func):
         if not _AVAILABLE:
             return func
-        if attrs is None:
-            return _trace_fn(group, name, tracer)(func)
+        traced_func = _trace_fn(group, name, tracer)(func) if attrs is None else None
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            if not _AVAILABLE:
+                return func(*args, **kwargs)
+            if traced_func is not None:
+                return traced_func(*args, **kwargs)
             if not _is_span_group_enabled(group):
                 return func(*args, **kwargs)
             attributes = attrs(*args, **kwargs)
@@ -274,6 +275,8 @@ def span(group: str, name: str, attributes: Optional[dict] = None):
     Dict adapter over ``managed_span``, which takes keywords: a dotted attribute
     name can never be one. Returns the upstream context manager unwrapped.
     """
+    if not _AVAILABLE:
+        return nullcontext()
     return _managed_span(group, name, **(attributes or {}))
 
 

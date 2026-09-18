@@ -700,6 +700,57 @@ class TestSetupTelemetry(unittest.TestCase):
         finally:
             telemetry._AVAILABLE = original
 
+    @unittest.skipUnless(telemetry._AVAILABLE, "requires nemo-lens")
+    def test_misconfigured_provider_leaves_instrumentation_inert(self):
+        import subprocess
+        import sys
+
+        try:
+            import opentelemetry.sdk.trace  # noqa: F401
+        except ImportError:
+            self.skipTest("requires the OpenTelemetry SDK")
+
+        # A subprocess isolates OTel's process-global, write-once providers.
+        code = r"""
+import os
+import time
+from nvidia_resiliency_ext.shared_utils import telemetry
+
+os.environ.update({
+    "NEMO_LENS_ENABLED": "1",
+    "NEMO_LENS_TRACES_ENABLED": "0",
+    "NEMO_LENS_METRICS_ENABLED": "0",
+    "NEMO_LENS_LOGS_ENABLED": "0",
+    "OTEL_PYTHON_TRACER_PROVIDER": "missing_provider",
+})
+
+@telemetry.trace_fn("nvrx.ft", "work")
+def work():
+    return "completed"
+
+@telemetry.trace_fn("nvrx.ft", "work_with_attrs", attrs=lambda: {"node": "test"})
+def work_with_attrs():
+    return "completed"
+
+handle = telemetry.setup_telemetry("nvrx.test", "test")
+now = time.time()
+telemetry.record_process_startup("nvrx.job", now, now)
+telemetry.mark("nvrx.ft", "fault")
+phase = telemetry.Phase()
+phase.open("nvrx.ft", "cycle")
+with telemetry.span("nvrx.ft", "operation"):
+    assert work() == "completed"
+    assert work_with_attrs() == "completed"
+phase.close()
+telemetry.flush()
+telemetry.shutdown(handle)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nemo-lens init failed", result.stderr)
+
     def test_init_failure_does_not_propagate(self):
         original = telemetry._AVAILABLE
         telemetry._AVAILABLE = True
