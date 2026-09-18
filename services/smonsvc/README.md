@@ -40,9 +40,14 @@ Some launchers point SLURM `StdOut` at a batch wrapper rather than the training
 log. A common layout:
 
 ```
-<run_dir>/slurm_out/slurm-<jobid>_<task>.out     # wrapper: launcher banner, few KB
+<run_dir>/slurm_out/slurm-<jobid>_<task>.out          # wrapper: launcher banner, few KB
 <run_dir>/logs/<name>_<jobid>_date_..._cycle<N>.log   # the training log
 ```
+
+Both naming conventions are handled — multi-cycle runs (`..._cycle<N>.log`) and
+single-cycle runs (`....log`). A cycle log outranks a plain one, and metadata
+sidecars (`.env.log`, `.tasks.log`) are never selected. The wrapper may also sit
+directly in the run directory rather than under `slurm_out/`.
 
 Attributing the wrapper yields "no failure signature found" regardless of what
 the job did. When enabled, the monitor maps the wrapper back to the newest cycle

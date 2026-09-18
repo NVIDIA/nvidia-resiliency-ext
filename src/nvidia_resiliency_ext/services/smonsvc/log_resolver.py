@@ -24,6 +24,11 @@ Environment:
 ``NVRX_SMONSVC_APP_LOG_SUBDIR``
     Directory holding application logs, relative to the run directory
     (default ``logs``).
+
+Two naming conventions are handled: multi-cycle runs write
+``..._<jobid>_date_..._cycle<N>.log`` and single-cycle runs write
+``..._<jobid>_date_....log``. A cycle log always wins over a plain one, and
+metadata sidecars such as ``.env.log`` and ``.tasks.log`` are never selected.
 """
 
 from __future__ import annotations
@@ -46,6 +51,9 @@ DEFAULT_LOG_SUBDIR = "logs"
 
 _TRUE_VALUES = ("1", "true", "yes", "on")
 _CYCLE_RE = re.compile(r"_cycle(\d+)\.log$")
+
+#: Metadata written alongside the training log; never the analysis target.
+SIDECAR_SUFFIXES = (".env.log", ".tasks.log")
 
 
 @dataclass(frozen=True)
@@ -85,8 +93,13 @@ def base_job_id(job_id: str) -> str:
 
 
 def _cycle_number(path: Path) -> int:
+    """Cycle index, or ``-1`` for a single-cycle log that carries no suffix."""
     match = _CYCLE_RE.search(path.name)
     return int(match.group(1)) if match else -1
+
+
+def _is_sidecar(path: Path) -> bool:
+    return path.name.endswith(SIDECAR_SUFFIXES)
 
 
 def resolve_app_log(
@@ -116,11 +129,11 @@ def resolve_app_log(
     if not base:
         return None
 
-    candidates = [p for p in log_dir.glob(f"*_{base}_*_cycle*.log") if p.is_file()]
+    candidates = [p for p in log_dir.glob(f"*_{base}_*.log") if p.is_file() and not _is_sidecar(p)]
     if not candidates:
         return None
 
-    # The highest cycle is the attempt that produced the terminal outcome;
-    # mtime only breaks ties between equally numbered cycles.
+    # The highest cycle is the attempt that produced the terminal outcome, and a
+    # cycle log outranks a plain one. mtime only breaks ties within a rank.
     best = max(candidates, key=lambda p: (_cycle_number(p), p.stat().st_mtime))
     return str(best)

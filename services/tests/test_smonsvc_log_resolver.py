@@ -196,3 +196,47 @@ def test_distinct_logs_are_each_claimed():
     assert _claim(state, "2_0", "/run/logs/a_2_cycle0.log")[0] is True
     assert state.duplicate_log_paths == 0
     assert len(state.submitted_log_paths) == 2
+
+
+# ─── single-cycle layout: no _cycle<N> suffix, plus metadata sidecars ───
+
+
+def _single_cycle_layout(tmp_path, job="788958", name="nemotron4_derisking_super_2p6t_phase2"):
+    """Observed on oci-aga: stdout sits in the run dir, log has no cycle suffix."""
+    run = tmp_path / "phase2_2x_bs"
+    (run / "logs").mkdir(parents=True)
+    stub = run / f"slurm-{job}.out"
+    stub.write_text("<< START PATHS >>\n")
+    stamp = f"{name}_{job}_date_26-09-18_time_15-32-24"
+    main = run / "logs" / f"{stamp}.log"
+    main.write_text("training output\n")
+    (run / "logs" / f"{stamp}.env.log").write_text("env dump\n")
+    (run / "logs" / f"{stamp}.tasks.log").write_text("task list\n")
+    return stub, main
+
+
+def test_resolves_log_without_cycle_suffix(tmp_path):
+    stub, main = _single_cycle_layout(tmp_path)
+    assert resolve_app_log(str(stub), "788958", ON) == str(main)
+
+
+def test_never_selects_env_or_tasks_sidecars(tmp_path):
+    stub, main = _single_cycle_layout(tmp_path)
+    resolved = resolve_app_log(str(stub), "788958", ON)
+    assert not resolved.endswith(".env.log")
+    assert not resolved.endswith(".tasks.log")
+    assert resolved == str(main)
+
+
+def test_cycle_log_outranks_a_plain_log_for_the_same_job(tmp_path):
+    stub, main = _single_cycle_layout(tmp_path, job="900")
+    cycled = main.parent / "run_900_date_x_cycle3.log"
+    cycled.write_text("cycle 3\n")
+    assert resolve_app_log(str(stub), "900", ON) == str(cycled)
+
+
+def test_does_not_pick_another_jobs_log_in_a_shared_dir(tmp_path):
+    stub, main = _single_cycle_layout(tmp_path, job="788958")
+    other = main.parent / "nemotron4_other_788873_date_26-09-18_time_15-20-13.log"
+    other.write_text("different job\n")
+    assert resolve_app_log(str(stub), "788958", ON) == str(main)
