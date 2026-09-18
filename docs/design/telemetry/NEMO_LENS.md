@@ -82,8 +82,8 @@ Values are restricted to OTel's attribute types — string, bool, int, double, o
 | Mechanism             | Shape                                                                                  | Used by                                                    |
 | --------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | `@trace_fn`           | the span _is_ a method; an optional gated callback supplies entry attributes            | `worker_launch`, `teardown`, `completion_sync`             |
-| `with span(...)`      | the span is a block                                                                    | `await_round`, `health_check`, most `ckpt` spans           |
-| `ManualSpan`          | open and close cross block boundaries, bounded duration                                | `rendezvous`, `attribution`                                |
+| `with span(...)`      | the span is a block                                                                    | `await_round`, `health_check`, `attribution`, most `ckpt` spans           |
+| `ManualSpan`          | open and close cross block boundaries, bounded duration                                | `rendezvous`                                |
 | `mark(...)`           | an instant; returns its `SpanContext`                                                  | `cycle_start`, `run_start`, `fault`                        |
 | `backdated_span(...)` | already elapsed, reconstructed from two timestamps; accepts an explicit parent context | `nv.nvrx.ftl.python.startup`, `nv.nvrx.ftl.python.imports` |
 | `Phase`               | a window too long to hold a span open: a start mark now, a backdated span at close     | `cycle`, `run`                                             |
@@ -214,7 +214,7 @@ sequenceDiagram
 | `nv.nvrx.ftl.run`            | `nvrx.ft`  | `launcher.py`              | workers executing, backdated at close                    |
 | `nv.nvrx.ftl.fault`          | `nvrx.ft`  | `launcher.py`              | instant: a failure was detected                          |
 | `nv.nvrx.ftl.teardown`       | `nvrx.ft`  | `launcher.py`              | `_stop_workers`                                          |
-| `nv.nvrx.ftl.attribution`    | `nvrx.ft`  | `health_check.py`          | an attribution lookup (root span)                        |
+| `nv.nvrx.ftl.attribution`    | `nvrx.ft`  | `health_check.py`          | one attribution verdict wait (root span)                        |
 
 Both `nv.nvrx.ftl.python.startup` and `nv.nvrx.ftl.python.imports` are measured within this process — using nemo-lens' `linux_process_create_time()` and `time.time()` stamps — and backdated once telemetry is up.
 

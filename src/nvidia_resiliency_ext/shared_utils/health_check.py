@@ -1837,10 +1837,6 @@ class AttributionService:
         # number that decides whether the precision is good enough to enforce.
         self._stop_verdict_count = 0
         self._get_started_recorded = False
-        # OTel context is per-thread and this is the poll thread, so the span roots
-        # its own trace and correlates by nv.nvrx.ftl.node. Only _poll_once drives it, so
-        # ManualSpan's same-thread ordering holds.
-        self._attribution_span = telemetry.ManualSpan()
         self._lock = threading.Lock()
         self._poll_stop_event = threading.Event()
         self._poll_thread: Optional[threading.Thread] = None
@@ -1909,13 +1905,27 @@ class AttributionService:
             self._poll_thread = None
 
     def _poll_loop(self) -> None:
+        span_attributes = {"nv.nvrx.ftl.node": str(self._poll_node_id)}
         while not self._poll_stop_event.is_set():
-            try:
-                self._poll_once()
-            except Exception as e:
-                logger.warning(
-                    "AttributionService poller iteration failed: %s: %s", type(e).__name__, e
-                )
+            with self._lock:
+                has_pending = bool(self._terminal_pending)
+            if has_pending:
+                with telemetry.span(
+                    "nvrx.ft",
+                    "nv.nvrx.ftl.attribution",
+                    span_attributes,
+                ):
+                    while not self._poll_stop_event.is_set():
+                        try:
+                            if self._poll_once():
+                                break
+                        except Exception as e:
+                            logger.warning(
+                                "AttributionService poller iteration failed: %s: %s",
+                                type(e).__name__,
+                                e,
+                            )
+                        self._poll_stop_event.wait(self._RESULT_POLL_INTERVAL_SECONDS)
             # When enforcing, a verdict ends the job, so there is nothing further to
             # learn. In log-only mode the job keeps running and keeps failing, and the
             # point of the mode is to accumulate a verdict per failed cycle, so the poller
@@ -1924,24 +1934,24 @@ class AttributionService:
                 return
             self._poll_stop_event.wait(self._RESULT_POLL_INTERVAL_SECONDS)
 
-    def _poll_once(self) -> None:
+    def _poll_once(self) -> bool:
+        """Poll once; return True when the request is finished or none is pending."""
         with self._lock:
             log_path = self._terminal_pending
         if not log_path:
-            return
+            return True
 
         self._start_get_profiling(self._poll_node_id)
         result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
         if result is None:
             # Analysis still running, or attrsvc is unreachable. Keep polling; the job
             # keeps running in the meantime.
-            return
+            return False
 
         record_profiling_event(
             ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
             node_id=self._poll_node_id,
         )
-        self._attribution_span.close()
 
         with self._lock:
             if result:
@@ -1955,7 +1965,7 @@ class AttributionService:
                     )
                     # Leave the pending path in place: the job is ending, and keeping it
                     # records which log produced the verdict.
-                    return
+                    return True
                 logger.error(
                     "Attribution recommends stopping the job (analyzed log: %s), but the "
                     "recommendation is NOT being enforced "
@@ -1972,13 +1982,14 @@ class AttributionService:
                 if self._terminal_pending == log_path:
                     self._terminal_pending = None
                     self._get_started_recorded = False
-                return
+                return True
             # Authoritative "keep going" for this log; stop polling it. A later failing
             # cycle installs a new pending path.
             if self._terminal_pending == log_path:
                 self._terminal_pending = None
                 self._get_started_recorded = False
         logger.info("Attribution recommends continuing (analyzed log: %s)", log_path)
+        return True
 
     def _start_get_profiling(self, node_id: Optional[Any]) -> None:
         with self._lock:
@@ -1988,11 +1999,6 @@ class AttributionService:
         record_profiling_event(
             ProfilingEvent.ATTRIBUTION_GET_STARTED,
             node_id=node_id,
-        )
-        self._attribution_span.open(
-            "nvrx.ft",
-            "nv.nvrx.ftl.attribution",
-            {"nv.nvrx.ftl.node": str(node_id)},
         )
 
     def _submit_log(self, log_path: str) -> None:
