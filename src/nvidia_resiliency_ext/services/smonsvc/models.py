@@ -144,3 +144,8 @@ class MonitorState:
     # the same application log are not submitted repeatedly.
     submitted_log_paths: set[str] = field(default_factory=set)
     duplicate_log_paths: int = 0  # sibling tasks skipped as duplicates
+    # Log paths already analyzed. Resolution can only succeed once the
+    # application log exists, so sibling tasks that submitted their own
+    # wrapper early still converge on one log by the time they go terminal.
+    analyzed_log_paths: set[str] = field(default_factory=set)
+    duplicate_analyses: int = 0  # terminal fetches skipped as duplicates

@@ -81,6 +81,8 @@ def get_stats_dict(
             "log_paths": {
                 "claimed": len(state.submitted_log_paths),
                 "duplicates_skipped": state.duplicate_log_paths,
+                "analyzed": len(state.analyzed_log_paths),
+                "duplicate_analyses": state.duplicate_analyses,
             },
         }
         if slack_stats is not None:

@@ -297,7 +297,7 @@ class SlurmJobMonitor:
                     and tracked_job.get_attempts < self.MAX_GET_ATTEMPTS
                 ):
                     log_path = self._get_log_path(tracked_job)
-                    if log_path:
+                    if log_path and self._claim_analysis_path(tracked_job, log_path):
                         tracked_job.get_attempts += 1
                         jobs_to_fetch.append((tracked_job, log_path))
                 elif tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
@@ -376,6 +376,23 @@ class SlurmJobMonitor:
         self.state.submitted_log_paths.add(log_path)
         return True
 
+    def _claim_analysis_path(self, job: SlurmJob, log_path: str) -> bool:
+        """Claim ``log_path`` for analysis; False when a sibling task already analyzed it.
+
+        Submit-time claiming is not sufficient. A job appears in squeue before it
+        writes its application log, so the first poll cannot resolve one yet and
+        every array task submits its own wrapper. By the time they go terminal the
+        log exists and they all resolve to it, which would run one terminal
+        analysis and send one alert per task.
+        """
+        if log_path in self.state.analyzed_log_paths:
+            logger.debug(f"[{job.job_id}] Already analyzed by a sibling task: {log_path}")
+            job.result_fetched = True
+            self.state.duplicate_analyses += 1
+            return False
+        self.state.analyzed_log_paths.add(log_path)
+        return True
+
     def _fetch_paths_for_terminal_jobs(self) -> None:
         """Fetch output paths for terminal jobs that don't have them. Must hold _state_lock."""
         terminal_jobs_needing_paths = [
@@ -420,7 +437,7 @@ class SlurmJobMonitor:
                     self._mark_get_exhausted(job_id, tracked_job)
                     continue
                 log_path = self._get_log_path(tracked_job)
-                if log_path:
+                if log_path and self._claim_analysis_path(tracked_job, log_path):
                     tracked_job.get_attempts += 1
                     jobs_to_fetch.append((tracked_job, log_path))
 

@@ -65,13 +65,20 @@ the layout does not match or no cycle log exists, the monitor falls back to the
 original `StdOut` path rather than skipping the job.
 
 Application logs embed the **parent** job ID, so every array task of a job
-resolves to the same log. The monitor claims each resolved path once; sibling
-tasks are skipped rather than re-analyzing identical content (which would also
-collide in the attrsvc registry, where a path maps to a single job ID). Both
-counts appear under `log_paths` in `/stats`:
+resolves to the same log. The monitor claims a log once at submission and again
+before the terminal analysis, skipping siblings at both stages.
+
+Claiming at both stages is necessary. A job appears in `squeue` before it writes
+its application log, so the first poll cannot resolve one yet and each array task
+submits its own wrapper. By the time they go terminal the log exists and they all
+resolve to it — without the second claim that is one terminal analysis and one
+Slack alert per task, for a single log.
+
+Counts appear under `log_paths` in `/stats`:
 
 ```json
-{"log_paths": {"claimed": 12, "duplicates_skipped": 158}}
+{"log_paths": {"claimed": 160, "duplicates_skipped": 74,
+               "analyzed": 12, "duplicate_analyses": 148}}
 ```
 
 ## Slack Notifications

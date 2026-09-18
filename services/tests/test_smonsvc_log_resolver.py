@@ -240,3 +240,67 @@ def test_does_not_pick_another_jobs_log_in_a_shared_dir(tmp_path):
     other = main.parent / "nemotron4_other_788873_date_26-09-18_time_15-20-13.log"
     other.write_text("different job\n")
     assert resolve_app_log(str(stub), "788958", ON) == str(main)
+
+
+# ─── one terminal analysis per log, even when siblings submitted wrappers ───
+
+
+def _claim_analysis(state, job_id, path):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
+
+    job = SimpleNamespace(job_id=job_id, result_fetched=False)
+    granted = SlurmJobMonitor._claim_analysis_path(SimpleNamespace(state=state), job, path)
+    return granted, job
+
+
+def test_first_terminal_task_claims_the_analysis():
+    from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
+
+    state = MonitorState()
+    granted, job = _claim_analysis(state, "3848756_0", "/run/logs/a_3848756_cycle0.log")
+
+    assert granted is True
+    assert job.result_fetched is False
+    assert state.duplicate_analyses == 0
+
+
+def test_siblings_do_not_reanalyze_or_realert():
+    from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
+
+    # Reproduces the observed failure: every array task submitted its own wrapper
+    # before the application log existed, so all were fetch-eligible and each one
+    # ran a terminal analysis and sent an alert for the same log.
+    state = MonitorState()
+    log = "/run/logs/n4_3848756_date_x_cycle0.log"
+    _claim_analysis(state, "3848756_0", log)
+
+    for task in ("3848756_17", "3848756_27", "3848756_31"):
+        granted, job = _claim_analysis(state, task, log)
+        assert granted is False
+        assert job.result_fetched is True  # settled, so cleanup can reap it
+
+    assert state.duplicate_analyses == 3
+    assert len(state.analyzed_log_paths) == 1
+
+
+def test_analysis_claims_are_independent_of_submit_claims():
+    from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
+
+    # A task submits its wrapper, then later resolves to the application log.
+    # Claiming the wrapper must not block analyzing the real log.
+    state = MonitorState()
+    _claim(state, "3848756_5", "/run/slurm_out/slurm-3848756_5.out")
+    granted, _ = _claim_analysis(state, "3848756_5", "/run/logs/n4_3848756_cycle0.log")
+
+    assert granted is True
+
+
+def test_distinct_logs_are_each_analyzed():
+    from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
+
+    state = MonitorState()
+    assert _claim_analysis(state, "1_0", "/run/logs/a_1_cycle0.log")[0] is True
+    assert _claim_analysis(state, "2_0", "/run/logs/a_2_cycle0.log")[0] is True
+    assert state.duplicate_analyses == 0
