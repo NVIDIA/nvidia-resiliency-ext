@@ -292,6 +292,9 @@ def _emit(
     """
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return None
+    if end < start:
+        logger.warning("Skipping telemetry span %s: end %s precedes start %s", name, end, start)
+        return None
     recorded = _emit_span(
         _get_tracer(__name__),
         name,
