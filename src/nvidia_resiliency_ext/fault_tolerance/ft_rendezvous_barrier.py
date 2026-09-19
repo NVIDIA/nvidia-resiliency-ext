@@ -2093,7 +2093,9 @@ class _RendezvousBarrierState:
                         {
                             "nv.nvrx.cycle.outcome": "standby",
                             "nv.nvrx.ftl.membership": (
-                                "late_joiner" if rank == GroupRankStatus.UNASSIGNED.value else "standby"
+                                "late_joiner"
+                                if rank == GroupRankStatus.UNASSIGNED.value
+                                else "standby"
                             ),
                         }
                     )

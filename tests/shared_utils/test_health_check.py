@@ -1156,7 +1156,15 @@ class TestAttributionService(unittest.TestCase):
 
         self.assertEqual(
             events,
-            ["open", "/tmp/first.log", "/tmp/first.log", "close", "open", "/tmp/second.log", "close"],
+            [
+                "open",
+                "/tmp/first.log",
+                "/tmp/first.log",
+                "close",
+                "open",
+                "/tmp/second.log",
+                "close",
+            ],
         )
 
     def test_poller_thread_latches_stop_and_exits(self):
