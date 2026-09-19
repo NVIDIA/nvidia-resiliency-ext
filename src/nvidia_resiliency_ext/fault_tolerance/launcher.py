@@ -12,6 +12,12 @@
 # - Changed shutdown logic
 # - security fix for watchdog_file_path
 
+import time
+
+# Stamped around this module's import block. Nothing else may be imported above this
+# line, or its cost is measured as interpreter startup rather than as an import.
+__imports_started__ = time.time()  # isort: split
+
 import asyncio
 
 # fmt: off
@@ -29,7 +35,6 @@ import subprocess  # nosec B404
 import sys
 import tempfile
 import threading
-import time
 import uuid
 import warnings
 from argparse import REMAINDER, ArgumentParser
@@ -100,6 +105,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+    get_infrastructure_rank,
     get_log_aggregator_shard_index,
     get_processes_by_pgids,
     is_slurm_job_array,
@@ -108,11 +114,18 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
+from nvidia_resiliency_ext.shared_utils import telemetry
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
-from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
+from nvidia_resiliency_ext.shared_utils.profiling import (
+    ProfilingEvent,
+    get_profiling_cycle,
+    record_profiling_event,
+)
+
+__imports_finished__ = time.time()
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -125,6 +138,7 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
+CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -451,7 +465,24 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
 
+        self._cycle_phase = telemetry.Phase()
+        self._run_phase = telemetry.Phase()
+
     DEFAULT_ROLE = "default"  # FIXME
+
+    def open_telemetry_cycle(self, attributes: dict) -> None:
+        self._cycle_phase.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.cycle",
+            {
+                **attributes,
+                "nv.nvrx.ftl.node": self._node_id,
+                "nv.nvrx.ftl.membership": "unjoined",
+            },
+        )
+
+    def close_telemetry_cycle(self, attributes: Optional[dict] = None) -> None:
+        self._cycle_phase.close(attributes)
 
     # ============================================================================
     # Global Restart/Cycle Tracking for Job Array Deployments
@@ -539,6 +570,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._remaining_restarts = (
             self._worker_group.spec.max_restarts - self._get_global_cycle_number()
         )
+
+        self._tel_handle = telemetry.setup_telemetry(
+            "nvrx.ft_launcher",
+            f"nvrx-agent-{self._node_id}",
+            {"nv.nvrx.ftl.node": self._node_id},
+        )
+        telemetry.record_process_startup(
+            "nvrx.job", __imports_started__, __imports_finished__, {"nv.nvrx.ftl.node": self._node_id}
+        )
         start_time = time.monotonic()
         shutdown_called: bool = False
         try:
@@ -575,10 +615,18 @@ class LocalElasticAgent(SimpleElasticAgent):
             shutdown_called = True
             raise
         finally:
-            if not shutdown_called:
-                self._shutdown()
-            # record the execution time in case there were any exceptions during run.
-            self._total_execution_time = int(time.monotonic() - start_time)
+            try:
+                if not shutdown_called:
+                    self._shutdown()
+            finally:
+                try:
+                    self._run_phase.close()
+                finally:
+                    try:
+                        self._cycle_phase.close()
+                    finally:
+                        self._total_execution_time = int(time.monotonic() - start_time)
+                        telemetry.shutdown(self._tel_handle)
 
     def _open_rendezvous_for_restart(self):
         """Open rendezvous for restart when using barrier-based rendezvous.
@@ -675,6 +723,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                     self._exit_barrier_timeout,
                 )
+                self._run_phase.close()
+                self._cycle_phase.close({CYCLE_OUTCOME: "completed"})
                 self._exit_barrier()
                 return run_result
 
@@ -696,8 +746,10 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
+                self._run_phase.close()
                 rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
                 self._stop_workers(self._worker_group)
+                self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                 self._worker_group.state = WorkerState.FAILED
                 raise NoRestartRequested(
                     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
@@ -711,6 +763,34 @@ class LocalElasticAgent(SimpleElasticAgent):
                     node_id=self._rdzv_handler._this_node,
                     rank=self._worker_group.group_rank,
                 )
+
+                # Teardown only starts after the restart decision, so without this
+                # the detect-to-decide gap is unmeasured.
+                failures = len(run_result.failures or {})
+                self._run_phase.close()
+                telemetry.mark(
+                    "nvrx.ft",
+                    "nv.nvrx.ftl.fault",
+                    {
+                        "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+                        "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+                        "nv.nvrx.ftl.cycle.failures": failures,
+                        "nv.nvrx.ftl.node": self._node_id,
+                        "nv.nvrx.ftl.group.rank": self._worker_group.group_rank,
+                        "nv.nvrx.ftl.group.world_size": self._worker_group.group_world_size,
+                        "nv.nvrx.ftl.membership": "active",
+                    },
+                )
+                # Set now; the span stays open until the next rendezvous so teardown
+                # lands inside the cycle that failed.
+                self._cycle_phase.set(
+                    {
+                        CYCLE_OUTCOME: "failed",
+                        "nv.nvrx.ftl.cycle.state": state.name,
+                        "nv.nvrx.ftl.cycle.failures": failures,
+                    }
+                )
+                telemetry.flush()  # this node may be killed moments from here
 
                 log_msg = (
                     f"[%s] Worker group {state.name}. "
@@ -726,6 +806,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
+                self._cycle_phase.close()
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED, failures=run_result.failures)
             elif state == WorkerState.HEALTHY:
@@ -745,7 +826,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                             role,
                             no_restart,
                         )
+                        self._run_phase.close()
                         self._stop_workers(self._worker_group)
+                        self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                         self._worker_group.state = WorkerState.FAILED
                         raise NoRestartRequested(no_restart)
 
@@ -757,6 +840,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                         rank=group_rank,
                     )
 
+                    self._run_phase.close()
+                    self._cycle_phase.set({CYCLE_OUTCOME: "peer_restart"})
+
                     log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
                     # The node that triggered the failure already opened the rendezvous.
                     should_restart = self._handle_restart_decision(
@@ -765,6 +851,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     if not should_restart:
                         self._stop_workers(self._worker_group)
+                        self._cycle_phase.close()
                         self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
             else:
@@ -993,6 +1080,18 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
+    @telemetry.trace_fn(
+        "nvrx.ft",
+        "nv.nvrx.ftl.teardown",
+        attrs=lambda self, worker_group, *args, **kwargs: {
+            "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+            "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            "nv.nvrx.ftl.node": self._node_id,
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+        },
+    )
     def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
@@ -1064,18 +1163,42 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
+    @telemetry.trace_fn(
+        "nvrx.ft",
+        "nv.nvrx.ftl.worker_launch",
+        attrs=lambda self, worker_group: {
+            "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+            "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            "nv.nvrx.ftl.node": self._node_id,
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+        },
+    )
     def _start_workers(self, worker_group: WorkerGroup) -> Dict[int, Any]:
         spec = worker_group.spec
         store = worker_group.store
         assert store is not None
 
-        # Get the current cycle number from the rendezvous handler
-        # At this point, rendezvous has completed and we're about to start workers.
-        # The cycle number is used for profiling and environment variable setting.
+        # The rendezvous round is operational state. Worker launch must not depend
+        # on telemetry state being available or initialized.
         restart_count = self._get_global_cycle_number()
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
+
+        worker_resource_attrs = {
+            "nv.nvrx.cycle.index": restart_count,
+            "nv.nvrx.ftl.membership": "active",
+            **self._infra_placement_attrs(),
+            **self._launch_budget_attrs(),
+        }
+        cohort_env = {
+            "OTEL_RESOURCE_ATTRIBUTES": telemetry.extend_otel_resource_attributes(
+                telemetry.get_inherited_resource_attributes(),
+                overrides=worker_resource_attrs,
+            )
+        }
 
         # Record worker start start event
         record_profiling_event(
@@ -1132,6 +1255,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
                 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
             }
+            worker_env.update(cohort_env)
             if current_cycle_info_path is not None:
                 worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
@@ -1380,6 +1504,66 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _infra_placement_attrs(self) -> dict:
+        """Where this node sits in the fabric. A key is absent when its value is not known."""
+        attrs = {}
+        try:
+            attrs["nv.nvrx.ftl.infra.rank"] = get_infrastructure_rank(skip_nodename_logic=True)
+        except (ValueError, RuntimeError):
+            logger.debug("Infrastructure rank unavailable", exc_info=True)
+        settings = self._rdzv_handler.settings
+        if settings.segment is not None:
+            attrs["nv.nvrx.ftl.segment"] = settings.segment
+            domain = self._rdzv_handler.domain_id
+            if domain is not None:
+                attrs["nv.nvrx.ftl.infra.cluster_uuid"] = domain
+        return attrs
+
+    def _launch_budget_attrs(self) -> dict:
+        """The node budget the job was launched with, for the worker Resource."""
+        settings = self._rdzv_handler.settings
+        return {
+            "nv.dl.launch.nnodes.active": settings.min_nodes,
+            "nv.dl.launch.nnodes.spare": settings.max_nodes - settings.min_nodes,
+        }
+
+    def _joined_cycle_attrs(self, worker_group: WorkerGroup) -> dict:
+        """Telemetry attributes describing the round this node just joined.
+
+        Every value describes this node's own place in the round. The round's
+        rosters are deliberately not among them: each node recording every other
+        node's address costs bytes quadratic in job size, on every cycle span of
+        every node, to say something each node already reports about itself.
+        Global attempt membership is reconstructed from these per-node records,
+        their counter snapshots, timestamps, and parent relationships.
+        """
+        spec = worker_group.spec
+        attrs = {
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+            "nv.nvrx.ftl.max_restarts": spec.max_restarts,
+            "nv.nvrx.ftl.remaining_restarts": self._remaining_restarts,
+        }
+        attrs["nv.nvrx.ftl.rdzv.run_id"] = spec.rdzv_handler.get_run_id()
+        attrs.update(self._infra_placement_attrs())
+        return attrs
+
+    def _initialize_workers(self, worker_group: WorkerGroup) -> None:
+        """Override to open the run phase once the workers are actually running."""
+        super()._initialize_workers(worker_group)
+        self._run_phase.open(
+            "nvrx.ft",
+            "nv.nvrx.ftl.run",
+            {
+                "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+                "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+                "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
+
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
         spec = worker_group.spec
@@ -1389,9 +1573,20 @@ class LocalElasticAgent(SimpleElasticAgent):
         # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
-        # Call the parent class _rendezvous method
-        super()._rendezvous(worker_group)
-
+        try:
+            # Call the parent class _rendezvous method
+            super()._rendezvous(worker_group)
+        except UnhealthyNodeException:
+            # The node failed the health check.
+            self._cycle_phase.close({CYCLE_OUTCOME: "excluded"})
+            raise
+        except (RendezvousClosedError, RendezvousGracefulExitError):
+            # job ended while it waited
+            self._cycle_phase.close(
+                {CYCLE_OUTCOME: "standby", "nv.nvrx.ftl.membership": "standby"}
+            )
+            raise
+        self._cycle_phase.set(self._joined_cycle_attrs(worker_group))
 
 # Source
 # https://github.com/pytorch/pytorch/blob/release/2.3/torch/distributed/launcher/api.py
