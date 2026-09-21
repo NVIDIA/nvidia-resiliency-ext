@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +12,7 @@ from nvidia_resiliency_ext.services.smonsvc.slack import (
     DEFAULT_NOTIFY_ACTIONS,
     SlackConfig,
     SlackNotifier,
-    build_slack_record,
+    format_notification,
     latest_result_item,
     parse_notify_actions,
 )
@@ -141,22 +140,24 @@ def test_latest_result_item_returns_none_without_items():
     assert latest_result_item(_parsed(items=[])) is None
 
 
-def test_build_slack_record_uses_canonical_dataflow_keys():
-    record = build_slack_record(_job(), _parsed())
+def test_logsage_result_keeps_its_issue_wording():
+    text = format_notification(_job(), _parsed())
 
-    assert record["s_job_id"] == "123 (nemotron_pretrain)"
-    assert record["s_user"] == "alice"
-    assert record["s_log_path"] == "/lustre/logs/job.log"
-    assert record["s_recommendation_action"] == "STOP"
-    assert record["s_recommendation_source"] == "log_analyzer"
-    assert record["s_primary_issues"] == ["hardware"]
-    assert record["s_auto_resume_explanation"] == "checkpoint corrupted"
-    assert json.loads(record["s_attribution_result_json"])["secondary_issues"] == ["nccl"]
+    assert "Primary issues: [hardware]" in text
+    assert "Secondary issues: [nccl]" in text
+    assert "checkpoint corrupted" in text
 
 
-def test_build_slack_record_without_job_name_uses_bare_job_id():
-    record = build_slack_record(_job(name=""), _parsed())
-    assert record["s_job_id"] == "123"
+def test_notification_carries_job_label_and_log_path():
+    text = format_notification(_job(), _parsed())
+
+    assert "`123 (nemotron_pretrain)`" in text
+    assert "/lustre/logs/job.log" in text
+
+
+def test_notification_without_job_name_uses_bare_job_id():
+    text = format_notification(_job(name=""), _parsed())
+    assert "`123`" in text
 
 
 def test_notify_posts_message_with_action_reason_and_details(monkeypatch):
@@ -344,6 +345,14 @@ def _restart_agent_payload():
                 {"failure_class": "observed_exception", "signature": "RuntimeError:"},
                 {"failure_class": "observed_exception", "signature": "RuntimeError:"},
             ],
+            "l1_assessment": {
+                "root_cause_assessment": {
+                    "status": "supported_but_unconfirmed",
+                    "summary": "Rank 3 exhausted device memory during the optimizer step.",
+                    "plausible_causes": ["Activation memory grew after the batch-size change."],
+                    "missing_evidence": ["No allocator snapshot around the failing step."],
+                }
+            },
             "schema_version": "restart_agent_response.v1",
         },
         "status": "completed",
@@ -356,15 +365,15 @@ def _restart_agent_payload():
     }
 
 
-def test_restart_agent_fields_extracts_failures_and_justification():
+def test_restart_agent_fields_prefer_the_narrative_root_cause():
     parsed = parse_attrsvc_response(_restart_agent_payload(), log_path="/x.log")
     fields = slack_mod.attribution_fields(parsed)
 
-    assert fields.primary_issues == ["cuda_oom: CUDA out of memory"]
-    # Duplicate secondary failures collapse to one label.
-    assert fields.secondary_issues == ["observed_exception: RuntimeError"]
+    # The narrative summary is the headline; the typed record becomes evidence.
+    assert fields.headline.startswith("Rank 3 exhausted device memory")
+    assert "cuda_oom" in fields.evidence
+    assert "line 28693" in fields.evidence
     assert "Line 28693" in fields.explanation
-    assert "concrete_confirmation_retry_exhausted" in fields.explanation
 
 
 def test_restart_agent_fields_ignores_other_payload_shapes():
@@ -372,15 +381,14 @@ def test_restart_agent_fields_ignores_other_payload_shapes():
     assert slack_mod.restart_agent_fields(None) is None
 
 
-def test_build_slack_record_populates_body_from_restart_agent_payload():
-    parsed = parse_attrsvc_response(_restart_agent_payload(), log_path="/x.log")
-    record = build_slack_record(_job(), parsed)
+def test_restart_agent_falls_back_to_typed_record_without_a_narrative():
+    # Deterministic-only results carry no l1_assessment.
+    payload = _restart_agent_payload()
+    payload["result"].pop("l1_assessment")
+    fields = slack_mod.attribution_fields(parse_attrsvc_response(payload, log_path="/x.log"))
 
-    assert record["s_primary_issues"] == ["cuda_oom: CUDA out of memory"]
-    assert "Line 28693" in record["s_auto_resume_explanation"]
-    assert json.loads(record["s_attribution_result_json"])["secondary_issues"] == [
-        "observed_exception: RuntimeError"
-    ]
+    assert fields.headline == "cuda_oom: CUDA out of memory"
+    assert fields.show_alternatives is False
 
 
 def test_restart_agent_message_has_no_placeholder_text(monkeypatch):
@@ -392,15 +400,15 @@ def test_restart_agent_message_has_no_placeholder_text(monkeypatch):
     text = client.messages[0]["text"]
     assert "No attribution available" not in text
     assert "No explanation available" not in text
-    assert "cuda_oom: CUDA out of memory" in text
+    assert "Rank 3 exhausted device memory during the optimizer step." in text
 
 
 def test_logsage_item_still_takes_precedence():
-    parsed = _parsed()
-    fields = slack_mod.attribution_fields(parsed)
+    fields = slack_mod.attribution_fields(_parsed())
 
-    assert fields.primary_issues == ["hardware"]
+    assert "Primary issues: [hardware]" in fields.headline
     assert fields.explanation == "checkpoint corrupted"
+    assert fields.evidence == ""  # no typed record on the legacy path
 
 
 def test_notification_does_not_repeat_reason_as_terminal_issue(monkeypatch):
@@ -424,3 +432,72 @@ def test_notification_keeps_reason_when_it_differs_from_explanation(monkeypatch)
     text = client.messages[0]["text"]
     assert "*Reason:* terminal failure" in text
     assert "checkpoint corrupted" in text
+
+
+# ─── narrative cause, evidence line, and gated hypotheses ───
+
+
+def test_message_leads_with_the_narrative_cause_not_the_typed_label(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    text = client.messages[0]["text"]
+
+    assert "Rank 3 exhausted device memory during the optimizer step." in text
+    # The raw signature is no longer the headline.
+    assert "Primary issues:" not in text
+
+
+def test_message_carries_an_evidence_line(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    text = client.messages[0]["text"]
+
+    assert "*Evidence:*" in text
+    assert "`cuda_oom`" in text
+    assert "line 28693" in text
+    assert "rank 0" in text
+
+
+def test_unconfirmed_results_show_causes_and_missing_evidence(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    text = client.messages[0]["text"]
+
+    assert "*Plausible causes*" in text
+    assert "supported_but_unconfirmed" in text
+    assert "Activation memory grew after the batch-size change." in text
+    assert "*Missing evidence:*" in text
+    assert "No allocator snapshot around the failing step." in text
+
+
+def test_confirmed_results_omit_causes_and_missing_evidence(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    payload = _restart_agent_payload()
+    payload["result"]["l1_assessment"]["root_cause_assessment"][
+        "status"
+    ] = "established_by_current_log"
+
+    log_attribution_result(_job(), "/x.log", payload, slack_notifier=notifier)
+    text = client.messages[0]["text"]
+
+    # The log established the cause; alternatives would be noise.
+    assert "*Plausible causes*" not in text
+    assert "*Missing evidence:*" not in text
+    assert "Rank 3 exhausted device memory" in text
+
+
+def test_evidence_line_omits_absent_location_fields():
+    fields = slack_mod.restart_agent_fields(
+        {
+            "schema_version": "restart_agent_response.v1",
+            "primary_failure": {"failure_class": "cuda_oom", "causal_role": "unknown"},
+        }
+    )
+    assert fields.evidence == "`cuda_oom`"  # no line/rank/phase, and 'unknown' role dropped

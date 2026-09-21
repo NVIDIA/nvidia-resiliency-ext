@@ -27,7 +27,6 @@ disabled and the monitor behaves exactly as before.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -36,7 +35,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
 from nvidia_resiliency_ext.attribution.orchestration.client_response import AttrSvcResult
 from nvidia_resiliency_ext.attribution.orchestration.posting_markdown import (
-    format_posting_markdown_body,
+    format_attribution_markdown,
 )
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     RECOMMENDATION_ACTIONS,
@@ -160,13 +159,26 @@ def latest_result_item(result: AttrSvcResult) -> Optional[RawAnalysisResultItem]
 _RESTART_AGENT_SCHEMA_PREFIX = "restart_agent_response."
 
 
+#: Only this status means the log itself established the cause; the others leave
+#: the agent's alternatives worth showing.
+CONFIRMED_STATUS = "established_by_current_log"
+
+
 @dataclass(frozen=True)
 class AttributionFields:
     """Display fields shared by both backends' result shapes."""
 
-    primary_issues: list[str]
-    secondary_issues: list[str]
-    explanation: str
+    headline: str = ""
+    explanation: str = ""
+    evidence: str = ""
+    status: str = ""
+    plausible_causes: tuple[str, ...] = ()
+    missing_evidence: tuple[str, ...] = ()
+
+    @property
+    def show_alternatives(self) -> bool:
+        """Whether the agent's hypotheses add information beyond the headline."""
+        return bool(self.status) and self.status != CONFIRMED_STATUS
 
 
 def _failure_label(failure: Any) -> str:
@@ -180,12 +192,55 @@ def _failure_label(failure: Any) -> str:
     return failure_class or signature
 
 
+def _string_list(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    return tuple(str(v).strip() for v in value if str(v).strip())
+
+
+def _evidence_line(failure: Any) -> str:
+    """Locate the failure: class, line, rank, phase, and its role in the cascade.
+
+    This is what makes an alert actionable - it says where to look in the log and
+    whether that line initiated the failure or merely followed one.
+    """
+    if not isinstance(failure, Mapping):
+        return ""
+    failure_class = str(failure.get("failure_class") or "").strip()
+    if not failure_class:
+        return ""
+
+    where = []
+    if failure.get("line") is not None:
+        where.append(f"line {failure['line']}")
+    for key, label in (("rank", "rank"), ("node", "node"), ("gpu", "gpu")):
+        if failure.get(key) is not None:
+            where.append(f"{label} {failure[key]}")
+    if failure.get("phase"):
+        where.append(f"phase {failure['phase']}")
+
+    qualifiers = [
+        str(failure[key]).strip()
+        for key in ("fault_outcome", "causal_role")
+        if str(failure.get(key) or "").strip() and str(failure.get(key)).strip() != "unknown"
+    ]
+
+    text = f"`{failure_class}`"
+    if where:
+        text += " at " + ", ".join(where)
+    if qualifiers:
+        text += f" ({', '.join(qualifiers)})"
+    return text
+
+
 def restart_agent_fields(payload: Any) -> Optional[AttributionFields]:
     """Extract display fields from a ``restart_agent_response.v1`` payload.
 
-    Restart Agent results carry no LogSage item list, so the primary/secondary
-    failure records and the justification stand in for it. Returns ``None`` for
-    any other payload shape.
+    The headline is the model's narrative root cause rather than the typed
+    failure record: ``failure_class`` plus a raw log snippet says what matched,
+    not what went wrong. The typed record is kept as the evidence line, which is
+    where its line/rank/phase actually help. Returns ``None`` for any other
+    payload shape.
     """
     if not isinstance(payload, Mapping):
         return None
@@ -193,14 +248,17 @@ def restart_agent_fields(payload: Any) -> Optional[AttributionFields]:
     if not schema.startswith(_RESTART_AGENT_SCHEMA_PREFIX):
         return None
 
-    primary = _failure_label(payload.get("primary_failure"))
-    secondary: list[str] = []
-    raw_secondary = payload.get("secondary_failures")
-    if isinstance(raw_secondary, Sequence) and not isinstance(raw_secondary, (str, bytes)):
-        for failure in raw_secondary:
-            label = _failure_label(failure)
-            if label and label not in secondary:
-                secondary.append(label)
+    primary = payload.get("primary_failure")
+    assessment = payload.get("l1_assessment")
+    root_cause = {}
+    if isinstance(assessment, Mapping):
+        candidate = assessment.get("root_cause_assessment")
+        if isinstance(candidate, Mapping):
+            root_cause = candidate
+
+    # Fall back to the typed record when the model produced no narrative, which
+    # happens on deterministic-only results.
+    headline = str(root_cause.get("summary") or "").strip() or _failure_label(primary)
 
     explanation = str(payload.get("justification") or "").strip()
     basis = str(payload.get("decision_basis") or "").strip()
@@ -209,65 +267,75 @@ def restart_agent_fields(payload: Any) -> Optional[AttributionFields]:
         explanation = f"{explanation} (decision basis: {basis})" if explanation else basis
 
     return AttributionFields(
-        primary_issues=[primary] if primary else [],
-        secondary_issues=secondary,
+        headline=headline,
         explanation=explanation,
+        evidence=_evidence_line(primary),
+        status=str(root_cause.get("status") or "").strip(),
+        plausible_causes=_string_list(root_cause.get("plausible_causes")),
+        missing_evidence=_string_list(root_cause.get("missing_evidence")),
     )
+
+
+def _format_issues(primary: Sequence[str], secondary: Sequence[str]) -> str:
+    """LogSage's issue wording, kept so legacy alerts read as they always did."""
+    return f"Primary issues: [{', '.join(primary)}], Secondary issues: [{', '.join(secondary)}]"
 
 
 def attribution_fields(result: AttrSvcResult) -> Optional[AttributionFields]:
     """Display fields for either backend, preferring a LogSage item when present."""
     item = latest_result_item(result)
     if item is not None:
+        # LogSage wrote its issue lists as prose; keep that wording verbatim.
+        issues = _format_issues(item.primary_issues, item.secondary_issues)
         return AttributionFields(
-            primary_issues=list(item.primary_issues),
-            secondary_issues=list(item.secondary_issues),
+            headline=issues,
             explanation=item.auto_resume_explanation,
         )
     return restart_agent_fields(result.result)
 
 
-def build_slack_record(job: "SlurmJob", result: AttrSvcResult) -> dict:
-    """Build the posting record consumed by :func:`format_posting_markdown_body`.
-
-    Uses the canonical ``s_``-prefixed dataflow keys so the message body matches
-    the one produced by the attribution posting pipeline.
-    """
+def format_notification(job: "SlurmJob", result: AttrSvcResult) -> str:
+    """Render the alert: decision, narrative cause, policy rationale, evidence."""
     job_name = getattr(job, "name", "")
     job_label = f"{job.job_id} ({job_name})" if job_name else str(job.job_id)
 
-    record: dict[str, Any] = {
-        "s_job_id": job_label,
-        "s_user": getattr(job, "user", "") or "",
-        "s_log_path": result.log_path or "",
-        "s_recommendation_action": result.recommendation.action,
-        "s_recommendation_source": result.recommendation.source,
-    }
-    fields = attribution_fields(result)
-    if fields is not None:
-        record["s_primary_issues"] = fields.primary_issues
-        record["s_auto_resume_explanation"] = fields.explanation
-        record["s_attribution_result_json"] = json.dumps(
-            {
-                "primary_issues": fields.primary_issues,
-                "secondary_issues": fields.secondary_issues,
-            }
-        )
-    return record
-
-
-def format_notification(record: dict, result: AttrSvcResult) -> str:
-    """Prefix the shared attribution body with the monitor's decision header."""
     header = f"*NVRx attribution:* `{result.recommendation.action}`"
     if result.recommendation.source:
         header += f" _(source: {result.recommendation.source})_"
+
+    fields = attribution_fields(result) or AttributionFields()
+
     # A Restart Agent justification is both the recommendation reason and the
-    # body's terminal-issue text; print it once rather than twice.
+    # terminal-issue text; print it once rather than twice. Concatenating the two
+    # is wrong when they differ, so surface the reason as its own line instead.
     reason = result.recommendation.reason.strip()
-    explanation = str(record.get("s_auto_resume_explanation", "")).strip()
-    if reason and reason not in explanation:
+    if reason and reason not in fields.explanation:
         header += f"\n*Reason:* {reason}"
-    return f"{header}\n{format_posting_markdown_body(record)}"
+    explanation = fields.explanation or reason
+
+    body = format_attribution_markdown(
+        job_id=job_label,
+        attribution_text=fields.headline,
+        auto_resume_explanation=explanation,
+        log_path=result.log_path or "",
+    )
+
+    extras = []
+    if fields.evidence:
+        extras.append(f"*Evidence:* {fields.evidence}")
+    if fields.show_alternatives:
+        if fields.plausible_causes:
+            causes = "\n".join(f"  • {c}" for c in fields.plausible_causes)
+            extras.append(f"*Plausible causes* _({fields.status})_:\n{causes}")
+        if fields.missing_evidence:
+            missing = "\n".join(f"  • {m}" for m in fields.missing_evidence)
+            extras.append(f"*Missing evidence:*\n{missing}")
+
+    user = getattr(job, "user", "") or ""
+    text = f"{header}\n{body}"
+    if extras:
+        text += "\n" + "\n".join(extras)
+    return text
 
 
 class SlackNotifier:
@@ -314,10 +382,9 @@ class SlackNotifier:
             self.stats.skipped_action += 1
             return False
 
-        record = build_slack_record(job, result)
-        text = format_notification(record, result)
+        text = format_notification(job, result)
 
-        user = record.get("s_user", "")
+        user = getattr(job, "user", "") or ""
         if user:
             slack_user_id = get_slack_user_id(user, self.config.token)
             if slack_user_id:

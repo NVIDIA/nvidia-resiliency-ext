@@ -112,10 +112,30 @@ export SLACK_CHANNEL="#trng-alerts"
 export NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
 ```
 
-Each message carries the recommendation action and reason, the job ID and name,
-the attributed issues, the terminal-issue explanation, and the log path. The
-job owner is mentioned when their `{user}@nvidia.com` address resolves to a
-Slack account.
+Each message carries the recommendation action and source, the job ID and name,
+and the log path. The job owner is mentioned when their `{user}@nvidia.com`
+address resolves to a Slack account.
+
+**Failed due to** is the model's narrative root cause
+(`l1_assessment.root_cause_assessment.summary`), not the typed failure record —
+`failure_class` plus a raw log snippet says what *matched*, not what went wrong.
+The typed record becomes the **Evidence** line, where its location fields earn
+their place:
+
+```
+*Evidence:* `observed_failure` at line 35652, rank 0, phase steady_mid (terminal, initiating)
+```
+
+`causal_role` matters there: it distinguishes the line that *initiated* the
+failure from one that merely followed it.
+
+**Plausible causes** and **Missing evidence** appear only when the assessment
+status is not `established_by_current_log` — that is, when the agent explains
+the mechanism but cannot prove the trigger. On a confirmed result they would be
+noise, so they are omitted.
+
+Deterministic-only results carry no narrative, so **Failed due to** falls back to
+`failure_class: signature`. LogSage results keep their original issue wording.
 
 Delivery is best effort: a Slack outage is counted and logged, never propagated
 into the monitor's polling loop. Counters are exposed under `slack` in `/stats`:
