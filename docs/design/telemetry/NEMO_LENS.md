@@ -14,7 +14,7 @@ Optional [nemo-lens](https://github.com/nvidia-nemo/lens) instrumentation covers
 
 `shared_utils/telemetry.py` owns the Lens imports. Instrumented code calls this adapter without checking whether Lens is installed.
 
-`span` and `trace_fn` cover blocks and functions. `ManualSpan` covers rendezvous across calls and passes its entry attributes to nested health checks. `Phase` emits a zero-duration `<name>_start` anchor at opening and a backdated `<name>` summary at closing. The anchor supplies the parent context; the summary is its child. Opening attributes go on both records; later updates affect only the summary. `ManualSpan` and `Phase` must open and close on the same thread, in reverse nesting order.
+`span` and `trace_fn` cover blocks and functions. `Phase` emits a zero-duration `<name>_start` anchor at opening and a backdated `<name>` summary at closing. The anchor supplies the parent context; the summary is its child. Opening attributes go on both records; later updates affect only the summary. `Phase` must open and close on the same thread, in reverse nesting order.
 
 Groups are registered at import so trainer instrumentation can use a provider initialized by the framework.
 
@@ -60,7 +60,7 @@ Persistent checkpoint workers inherit the trainer's current Resource environment
 
 ### Lifecycle
 
-Before each round wait, finish the previous rendezvous and cycle, then emit `cycle_start`. The cycle and `await_round` retain the counter values observed before the wait. Rendezvous and later operations take fresh snapshots:
+Before each round wait, finish the previous cycle, then emit `cycle_start`. The cycle and `await_round` retain the counter values observed before the wait. Rendezvous and later operations take fresh snapshots:
 
 - `nv.nvrx.ftl.rdzv.round`: observed rendezvous round.
 - `nv.nvrx.ftl.profiling.cycle`: observed profiling counter.
@@ -79,7 +79,6 @@ sequenceDiagram
     participant R as Rendezvous
 
     L->>R: next_rendezvous()
-    R->>R: close previous rendezvous
     R->>L: close previous cycle, emit cycle_start
     R->>R: await_round
     R->>R: rendezvous, including health_check

@@ -16,7 +16,7 @@
 """Telemetry names NVRx shares with the framework that drives it.
 """
 
-#: Identifies one async checkpoint save. NVRx assigns it and returns it from
-#: schedule/finalize; the framework stamps what it received on its active span.
-#: The three spans cannot share a trace, so this relates them, not parentage.
+#: Queue-assigned index correlating schedule, request and finalize spans.
+#: Returned by schedule_async_request for frameworks to record on their own spans.
+#: Indices are local to a queue; ambient context determines trace boundaries.
 CKPT_CALL_IDX = "nv.nvrx.ckpt.call_idx"

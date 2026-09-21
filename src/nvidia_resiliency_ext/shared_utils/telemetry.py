@@ -15,9 +15,8 @@
 
 """Optional nemo-lens OTel instrumentation. The only file in NVRx that imports it.
 
-Every export is a no-op when nemo-lens is absent or its span group is off, so
-callers need no guards. Attributes are dicts everywhere because NVRx attribute
-names are dotted and cannot be Python keywords.
+Span instrumentation is inert when nemo-lens is unavailable or its span group
+is off, so callers need no guards.
 
 Design and rationale: docs/design/telemetry/NEMO_LENS.md.
 """
@@ -30,7 +29,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
-from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any, Optional, ParamSpec, TypeVar
 
 if TYPE_CHECKING:
@@ -202,62 +201,6 @@ def flush(timeout_ms: int = 1500) -> None:
         provider.force_flush(timeout_millis=timeout_ms)
 
 
-class ManualSpan:
-    """A span opened in one call and closed in another. No-op while nothing is open.
-
-    ORDERING CONTRACT, from ``contextvars``: open() and close() must run on the same
-    thread, and anything opened after this one must close before it does. Violating
-    either does not raise -- it silently restores a stale context, parenting later
-    spans to a span that has ended.
-    """
-
-    def __init__(self) -> None:
-        self._stack: Optional[ExitStack] = None
-        self._span: Optional[Span] = None
-
-    def open(
-        self,
-        group: str,
-        name: str,
-        attributes: Optional[dict[str, Any]] = None,
-        *,
-        inherit_attributes: bool = False,
-    ) -> None:
-        """Start a span, closing any open span.
-
-        Attributes apply only to this span unless ``inherit_attributes`` is true.
-        """
-        self.close()
-        self._stack = ExitStack()
-        try:
-            if inherit_attributes and attributes and _AVAILABLE and _is_span_group_enabled(group):
-                # The scope is entered before the span so nested instrumentation
-                # inherits this operation's starting snapshot. ExitStack closes the
-                # span first and restores the previous attribute scope second.
-                self._stack.enter_context(_span_attributes(attributes))
-            self._span = self._stack.enter_context(span(group, name, attributes))
-        except BaseException:
-            self._stack.close()
-            self._stack = None
-            self._span = None
-            raise
-
-    def set(self, attributes: Optional[dict[str, Any]] = None) -> None:
-        """Set attributes on the open span."""
-        if self._span is None or not attributes:
-            return
-        for key, value in attributes.items():
-            self._span.set_attribute(key, value)
-
-    def close(self, attributes: Optional[dict[str, Any]] = None) -> None:
-        """Set any final attributes and end the span. Idempotent."""
-        self.set(attributes)
-        if self._stack is not None:
-            self._stack.close()
-            self._stack = None
-        self._span = None
-
-
 def get_inherited_resource_attributes() -> str:
     """Return the Resource carrier captured when this module was imported."""
     return _INHERITED_RESOURCE_ATTRIBUTES
@@ -301,17 +244,27 @@ def trace_fn(
     return decorator
 
 
+@contextmanager
 def span(
-    group: str, name: str, attributes: Optional[dict[str, Any]] = None
-) -> AbstractContextManager[Optional[Span]]:
-    """A span around a block, yielding it (or None when the group is off).
+    group: str,
+    name: str,
+    attributes: Optional[dict[str, Any]] = None,
+    *,
+    inherit_attributes: bool = False,
+) -> Iterator[Optional[Span]]:
+    """A lexical span, yielding it or None when telemetry or the group is off.
 
-    Dict adapter over ``managed_span``, which takes keywords: a dotted attribute
-    name can never be one. Returns the upstream context manager unwrapped.
+    With ``inherit_attributes=True``, entry attributes also apply to nested spans
+    until this block exits.
     """
-    if not _AVAILABLE:
-        return nullcontext()
-    return _managed_span(group, name, **(attributes or {}))
+    if not _AVAILABLE or not _is_span_group_enabled(group):
+        yield None
+        return
+    attribute_scope = (
+        _span_attributes(attributes) if inherit_attributes and attributes else nullcontext()
+    )
+    with attribute_scope, _managed_span(group, name, **(attributes or {})) as active:
+        yield active
 
 
 def _emit(
@@ -377,8 +330,9 @@ def mark(
 ) -> Optional[SpanContext]:
     """Record an instant: a zero-duration span pinning a moment in time.
 
-    Returns its ``SpanContext``, or None when the group is off. A mark exports
-    immediately, so the context outlives it -- ids, not a handle to anything live.
+    Returns its ``SpanContext``, or None when the group is off. A mark ends
+    immediately; export may be buffered. Its context contains IDs and does not
+    keep a span open.
     Inherits the ambient span, so a mark nests where an ordinary span would.
     """
     if not _AVAILABLE or not _is_span_group_enabled(group):

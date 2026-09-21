@@ -31,6 +31,7 @@ import signal
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import timedelta
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
@@ -2665,9 +2666,27 @@ class GroupRankAssignmentTest(TestCase):
 def test_retry_cycle_outcomes_with_and_without_agent(rank, outcome, with_agent):
     state = _RendezvousBarrierState(HashStore(), "retry_telemetry", False)
     state._round = 3
+    events = []
     if with_agent:
         state._agent = MagicMock()
-    state._rdzv_span = MagicMock()
+        state._agent.close_telemetry_cycle.side_effect = lambda attrs=None: events.append(
+            ("cycle_close", attrs)
+        )
+
+    @contextmanager
+    def open_span(group, name, attributes, *, inherit_attributes=False):
+        if name != "nv.nvrx.ftl.rendezvous":
+            yield None
+            return
+        assert inherit_attributes
+        try:
+            yield MagicMock()
+        except BaseException as error:
+            events.append(("rendezvous_exit", type(error)))
+            raise
+        else:
+            events.append(("rendezvous_exit", None))
+
     error = _StaleRendezvousRoundError(6, 3, "rank") if rank is None else None
     with (
         patch.object(
@@ -2676,11 +2695,14 @@ def test_retry_cycle_outcomes_with_and_without_agent(rank, outcome, with_agent):
         patch.object(state, "_wait_for_round_done", return_value=(rank, 5)),
         patch.object(state, "_round_fenced_compare_set", side_effect=error),
         patch.object(ft_rendezvous_barrier_module, "get_infrastructure_rank", return_value=0),
+        patch.object(ft_rendezvous_barrier_module, "span", side_effect=open_span),
         pytest.raises(RendezvousGracefulExitError),
     ):
         state.perform_rendezvous(_NodeDescGenerator().generate(), 1, 1)
+    # A stale round is an ordinary retry, not an error escaping the span.
+    assert events.count(("rendezvous_exit", None)) == 1
     if with_agent:
-        state._agent.close_telemetry_cycle.assert_any_call(outcome)
+        assert events.index(("rendezvous_exit", None)) < events.index(("cycle_close", outcome))
 
 
 class ErrorCaseTest(BaseRendezvousTest):
@@ -2717,7 +2739,6 @@ class ErrorCaseTest(BaseRendezvousTest):
         state._agent = object.__new__(LocalElasticAgent)
         state._agent._node_id = "node"
         state._agent._cycle_phase = MagicMock()
-        state._rdzv_span = MagicMock()
         boundaries = []
         rounds = iter(((3, 4), (4, 6)))
         profiling_cycle = 0
@@ -2740,18 +2761,16 @@ class ErrorCaseTest(BaseRendezvousTest):
                 )
             )
 
-        def open_span(group, name, attributes):
-            snapshot("await_round", attributes)
-            return MagicMock()
-
-        def open_rendezvous(group, name, attributes, *, inherit_attributes):
-            self.assertTrue(inherit_attributes)
-            snapshot("rendezvous", attributes)
+        @contextmanager
+        def open_span(group, name, attributes, *, inherit_attributes=False):
+            label = name.rsplit(".", 1)[-1]
+            self.assertEqual(inherit_attributes, label == "rendezvous")
+            snapshot(label, attributes)
+            yield MagicMock()
 
         state._agent._cycle_phase.open.side_effect = lambda group, name, attrs: snapshot(
             "cycle", attrs
         )
-        state._rdzv_span.open.side_effect = open_rendezvous
         with (
             patch.object(state, "_wait_for_rendezvous_open", side_effect=wait),
             patch.object(state, "_wait_for_round_done", return_value=(4, 5)),

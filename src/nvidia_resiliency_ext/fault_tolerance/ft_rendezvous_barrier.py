@@ -67,7 +67,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
-from ..shared_utils.telemetry import ManualSpan, span
+from ..shared_utils.telemetry import span
 from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -622,8 +622,6 @@ class _RendezvousBarrierState:
         self.replacement_group_size = replacement_group_size
         self.stale_check_interval = stale_check_interval
         self._rendezvous_start_time = None
-        # One span per rendezvous round; a standby node opens a new one each round.
-        self._rdzv_span = ManualSpan()
         self._last_stale_check_time = 0.0  # Track last stale round check time for rate limiting
 
         # Track rendezvous round number. Each round corresponds to one rendezvous barrier
@@ -1901,57 +1899,56 @@ class _RendezvousBarrierState:
         Returns:
             Tuple of (group_rank, total_participants) where group_rank < min_nodes.
         """
-        try:
-            while True:
-                # Reset per-round mutable state at the top of each attempt.
-                # Reset _last_stale_check_time so _sync_from_per_round_state() fires
-                # immediately at Step 0 instead of waiting up to stale_check_interval.
-                self._last_stale_check_time = 0.0
+        cycle_attributes = None
+        while True:
+            # Reset per-round mutable state at the top of each attempt.
+            # Reset _last_stale_check_time so _sync_from_per_round_state() fires
+            # immediately at Step 0 instead of waiting up to stale_check_interval.
+            self._last_stale_check_time = 0.0
 
-                # Step 0: Wait until the current round is open.
-                # Hot spares and late-arriving nodes wait here indefinitely until a failure
-                # opens the next round. Also checks for permanent shutdown.
-                # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
-                #
-                # Finish the previous operation and grouping before starting the
-                # incoming grouping. The round may change while the wait is active.
-                self._rdzv_span.close()
-                if self._agent is not None:
-                    self._agent.close_telemetry_cycle()
-                await_attributes = {
-                    "nv.nvrx.ftl.rdzv.round": self._round,
-                    "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
-                }
-                if self._agent is not None:
-                    self._agent.open_telemetry_cycle(await_attributes)
-                record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
-                try:
-                    with span("nvrx.ft", "nv.nvrx.ftl.await_round", await_attributes):
-                        self._wait_for_rendezvous_open(node_desc)
-                finally:
-                    record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
+            # Step 0: Wait until the current round is open.
+            # Hot spares and late-arriving nodes wait here indefinitely until a failure
+            # opens the next round. Also checks for permanent shutdown.
+            # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
+            #
+            # Close the previous cycle after its rendezvous scope has exited.
+            # The round may change while the next wait is active.
+            if self._agent is not None:
+                self._agent.close_telemetry_cycle(cycle_attributes)
+            cycle_attributes = None
+            await_attributes = {
+                "nv.nvrx.ftl.rdzv.round": self._round,
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            }
+            if self._agent is not None:
+                self._agent.open_telemetry_cycle(await_attributes)
+            record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
+            try:
+                with span("nvrx.ft", "nv.nvrx.ftl.await_round", await_attributes):
+                    self._wait_for_rendezvous_open(node_desc)
+            finally:
+                record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
 
-                # Record start time for timeout monitoring.
-                # Start timing AFTER Step 0 completes, since nodes may wait indefinitely at Step 0.
-                self._rendezvous_start_time = time.monotonic()
+            # Record start time for timeout monitoring.
+            # Start timing AFTER Step 0 completes, since nodes may wait indefinitely at Step 0.
+            self._rendezvous_start_time = time.monotonic()
 
-                # Record rendezvous start event — start profiling AFTER waiting for round to open.
-                # This ensures hot spares waiting at Step 0 don't skew the rendezvous measurement.
-                rendezvous_start_event_id = record_profiling_event(
-                    ProfilingEvent.RENDEZVOUS_STARTED,
-                    node_id=node_desc,
-                )
-                rendezvous_attributes = {
-                    "nv.nvrx.ftl.rdzv.round": self._round,
-                    "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
-                }
-                self._rdzv_span.open(
-                    "nvrx.ft",
-                    "nv.nvrx.ftl.rendezvous",
-                    rendezvous_attributes,
-                    inherit_attributes=True,
-                )
-
+            # Record rendezvous start event — start profiling AFTER waiting for round to open.
+            # This ensures hot spares waiting at Step 0 don't skew the rendezvous measurement.
+            rendezvous_start_event_id = record_profiling_event(
+                ProfilingEvent.RENDEZVOUS_STARTED,
+                node_id=node_desc,
+            )
+            rendezvous_attributes = {
+                "nv.nvrx.ftl.rdzv.round": self._round,
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            }
+            with span(
+                "nvrx.ft",
+                "nv.nvrx.ftl.rendezvous",
+                rendezvous_attributes,
+                inherit_attributes=True,
+            ) as rdzv_span:
                 if pre_join_hook is not None:
                     try:
                         pre_join_hook()
@@ -2047,9 +2044,7 @@ class _RendezvousBarrierState:
                         f"[{node_desc}] Detected newer rendezvous round {e.observed_round} "
                         f"while joining round {e.attempted_round}; retrying"
                     )
-                    self._rdzv_span.close()
-                    if self._agent is not None:
-                        self._agent.close_telemetry_cycle({"nv.nvrx.cycle.outcome": "peer_restart"})
+                    cycle_attributes = {"nv.nvrx.cycle.outcome": "peer_restart"}
                     continue
 
                 log.debug(f"[slot={self._slot}] [Step 1] Joined round {self._round}")
@@ -2067,9 +2062,10 @@ class _RendezvousBarrierState:
 
                 if rank != GroupRankStatus.UNASSIGNED.value and rank < min_nodes:
                     # Active rank: return to launcher to start training workers.
-                    self._rdzv_span.close(
-                        {"nv.nvrx.ftl.group.rank": rank, "nv.nvrx.ftl.membership": "active"}
-                    )
+                    if rdzv_span is not None:
+                        rdzv_span.set_attributes(
+                            {"nv.nvrx.ftl.group.rank": rank, "nv.nvrx.ftl.membership": "active"}
+                        )
                     return rank, total_participants
 
                 # rank == UNASSIGNED: late comer that joined after the store host's snapshot.
@@ -2080,29 +2076,21 @@ class _RendezvousBarrierState:
                         f"[{node_desc}] Late joiner detected for round {self._round} "
                         f"(rank=UNASSIGNED); retrying in round {self._round + 1}"
                     )
-                    self._rdzv_span.set({"nv.nvrx.ftl.membership": "late_joiner"})
+                    membership = "late_joiner"
                 else:
                     log.info(
                         f"[{node_desc}] Standby (rank={rank}) for round {self._round}; "
                         f"waiting for round {self._round + 1} to open"
                     )
-                    self._rdzv_span.set({"nv.nvrx.ftl.membership": "standby"})
-                self._rdzv_span.close()
-                if self._agent is not None:
-                    self._agent.close_telemetry_cycle(
-                        {
-                            "nv.nvrx.cycle.outcome": "standby",
-                            "nv.nvrx.ftl.membership": (
-                                "late_joiner"
-                                if rank == GroupRankStatus.UNASSIGNED.value
-                                else "standby"
-                            ),
-                        }
-                    )
+                    membership = "standby"
+                if rdzv_span is not None:
+                    rdzv_span.set_attribute("nv.nvrx.ftl.membership", membership)
+                cycle_attributes = {
+                    "nv.nvrx.cycle.outcome": "standby",
+                    "nv.nvrx.ftl.membership": membership,
+                }
                 # Loop back to Step 0; _sync_from_per_round_state() will advance _round
                 # from N to N+1 when it sees round_done_N=1 (closed).
-        finally:
-            self._rdzv_span.close()
 
     def _present_slot_keys(self, keys: List[str]) -> List[str]:
         """Return the subset of ``keys`` that currently exist in the store.

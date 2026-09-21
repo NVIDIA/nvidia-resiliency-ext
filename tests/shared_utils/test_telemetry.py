@@ -66,16 +66,11 @@ class TestLifecycleSnapshots(unittest.TestCase):
         phase.open("nvrx.ft", "cycle", cycle_attributes)
         with telemetry.span("nvrx.ft", "await_round", cycle_attributes):
             pass
-        rendezvous = telemetry.ManualSpan()
-        rendezvous.open(
-            "nvrx.ft",
-            "rendezvous",
-            rendezvous_attributes,
-            inherit_attributes=True,
-        )
-        with telemetry.span("nvrx.ft", "health_check"):
-            pass
-        rendezvous.close()
+        with telemetry.span(
+            "nvrx.ft", "rendezvous", rendezvous_attributes, inherit_attributes=True
+        ):
+            with telemetry.span("nvrx.ft", "health_check"):
+                pass
         phase.close({"nv.nvrx.cycle.outcome": "completed"})
         self.provider.force_flush()
 
@@ -129,6 +124,29 @@ class TestLifecycleSnapshots(unittest.TestCase):
         self.assertEqual(dict(restarted["rendezvous"].attributes), rendezvous_snapshot)
         self.assertEqual(dict(restarted["health_check"].attributes), rendezvous_snapshot)
 
+    def test_inherited_attributes_restore_after_body_failure(self):
+        from opentelemetry import trace
+
+        previous = trace.get_current_span()
+        error = RuntimeError("operation failed")
+        with self.assertRaises(RuntimeError) as caught:
+            with telemetry.span(
+                "nvrx.ft", "operation", {"entry": "value"}, inherit_attributes=True
+            ):
+                with telemetry.span("nvrx.ft", "child"):
+                    pass
+                raise error
+        self.assertIs(caught.exception, error)
+        self.assertIs(trace.get_current_span(), previous)
+        with telemetry.span("nvrx.ft", "sibling", {"own": "value"}):
+            with telemetry.span("nvrx.ft", "sibling_child"):
+                pass
+        self.provider.force_flush()
+        spans = {span.name: span for span in self.exporter.get_finished_spans()}
+        self.assertEqual(dict(spans["child"].attributes), {"entry": "value"})
+        self.assertEqual(dict(spans["sibling"].attributes), {"own": "value"})
+        self.assertEqual(dict(spans["sibling_child"].attributes), {})
+
 
 class TestTelemetryIsInert(unittest.TestCase):
     """Instrumentation must be a no-op before/without setup_telemetry()."""
@@ -138,7 +156,9 @@ class TestTelemetryIsInert(unittest.TestCase):
             self.assertIsNone(active)
         error = ValueError("from the instrumented body")
         with self.assertRaises(ValueError) as caught:
-            with telemetry.span("nvrx.ft", "nv.nvrx.ftl.cycle"):
+            with telemetry.span(
+                "nvrx.ft", "nv.nvrx.ftl.cycle", {"entry": "value"}, inherit_attributes=True
+            ):
                 raise error
         self.assertIs(caught.exception, error)
 
@@ -200,85 +220,6 @@ class TestTelemetryIsInert(unittest.TestCase):
 
         self.assertEqual(work(7), 7)
         attributes.assert_not_called()
-
-
-class TestManualSpan(unittest.TestCase):
-    def test_reopen_and_repeated_close_end_each_span_once(self):
-        events = []
-
-        class RecordingSpan:
-            def __init__(self, group, name, attributes=None):
-                self.name = name
-                self.attributes = dict(attributes or {})
-
-            def __enter__(self):
-                events.append(("enter", self.name))
-                return self
-
-            def __exit__(self, *exc):
-                events.append(("exit", self.name, dict(self.attributes)))
-
-            def set_attribute(self, key, value):
-                self.attributes[key] = value
-
-        span = telemetry.ManualSpan()
-        with unittest.mock.patch.object(telemetry, "span", RecordingSpan):
-            span.set({"outcome": "unused"})
-            span.close()
-            span.open("nvrx.ft", "first", {"round": 0})
-            span.set({"outcome": "failed"})
-            span.open("nvrx.ft", "second", {"round": 1})
-            span.set(None)
-            span.set({})
-            span.close({"outcome": "completed"})
-            span.close({"outcome": "unused"})
-        self.assertEqual(
-            events,
-            [
-                ("enter", "first"),
-                ("exit", "first", {"round": 0, "outcome": "failed"}),
-                ("enter", "second"),
-                ("exit", "second", {"round": 1, "outcome": "completed"}),
-            ],
-        )
-
-    def test_open_attributes_are_not_inherited_by_default(self):
-        attributes = {
-            "nv.nvrx.ftl.rdzv.round": 3,
-            "nv.nvrx.ftl.profiling.cycle": 4,
-        }
-        span = telemetry.ManualSpan()
-        with (
-            unittest.mock.patch.object(telemetry, "_span_attributes", create=True) as scope,
-            unittest.mock.patch.object(telemetry, "span") as span_context,
-        ):
-            span.open("nvrx.ft", "nv.nvrx.ftl.attribution", attributes)
-            span_context.assert_called_once_with("nvrx.ft", "nv.nvrx.ftl.attribution", attributes)
-            scope.assert_not_called()
-            span.close()
-
-    @unittest.skipUnless(telemetry._AVAILABLE, "requires nemo-lens")
-    def test_open_failure_restores_the_short_attribute_scope(self):
-        scope = unittest.mock.MagicMock()
-        span = telemetry.ManualSpan()
-        with (
-            unittest.mock.patch.object(telemetry, "_is_span_group_enabled", return_value=True),
-            unittest.mock.patch.object(telemetry, "_span_attributes", return_value=scope),
-            unittest.mock.patch.object(telemetry, "span", side_effect=RuntimeError("open failed")),
-            self.assertRaisesRegex(RuntimeError, "open failed"),
-        ):
-            span.open(
-                "nvrx.ft",
-                "nv.nvrx.ftl.rendezvous",
-                {
-                    "nv.nvrx.ftl.rdzv.round": 3,
-                    "nv.nvrx.ftl.profiling.cycle": 4,
-                },
-                inherit_attributes=True,
-            )
-        scope.__exit__.assert_called_once()
-        self.assertIsNone(span._stack)
-        self.assertIsNone(span._span)
 
 
 @pytest.mark.skipif(not telemetry._AVAILABLE, reason="requires nemo-lens")
@@ -489,12 +430,14 @@ class TestPhase(unittest.TestCase):
         for target, replacement in (
             ("mark", fake_mark),
             ("backdated_span", fake_backdated),
+            ("_otel_context", unittest.mock.MagicMock()),
+            ("_otel_trace", unittest.mock.MagicMock()),
             # Stands in for nemo-lens being importable, alongside the two primitives
             # it would have supplied. Without it open() takes its unavailable-so-inert
             # path and none of the logic below is reachable.
             ("_AVAILABLE", True),
         ):
-            patcher = unittest.mock.patch.object(telemetry, target, replacement)
+            patcher = unittest.mock.patch.object(telemetry, target, replacement, create=True)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -505,7 +448,8 @@ class TestPhase(unittest.TestCase):
             "nv.nvrx.ftl.profiling.cycle": 3,
             "nv.nvrx.ftl.membership": "unjoined",
         }
-        with unittest.mock.patch.object(telemetry.time, "time", side_effect=(100.0, 200.0)):
+        with unittest.mock.patch.object(telemetry, "time") as clock:
+            clock.time.side_effect = (100.0, 200.0)
             phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", dict(opening))
             phase.set({"nv.nvrx.ftl.group.rank": 3})
             phase.set({"nv.nvrx.ftl.membership": "active"})
