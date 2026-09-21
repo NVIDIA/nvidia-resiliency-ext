@@ -129,6 +129,22 @@ their place:
 `causal_role` matters there: it distinguishes the line that *initiated* the
 failure from one that merely followed it.
 
+**Why \<ACTION\>** is the decision audit trail — the L4 rule that fired (and the
+base rule it overrode, when a policy context applies), the retry budget, the L1
+category with its own STOP/RESTART verdict, and the retry outlook:
+
+```
+*Why RESTART:*
+  • rule `general_retry` — budget 2, not exhausted
+  • category 13 _NCCL remote process exited / network error_ → RESTART (confidence 72)
+  • retry outlook: may_recover (supported_but_unconfirmed, confidence 67)
+```
+
+The category is the load-bearing signal: when it is right the decision is
+almost always right. `failure_domain` and `retry_outlook` are the model's
+abstract policy claims and are materially less accurate than the category pick,
+so they carry their confidence and are dropped entirely when `unknown`.
+
 **Plausible causes** and **Missing evidence** appear only when the assessment
 status is not `established_by_current_log` — that is, when the agent explains
 the mechanism but cannot prove the trigger. On a confirmed result they would be

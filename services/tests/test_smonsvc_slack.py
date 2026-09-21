@@ -501,3 +501,99 @@ def test_evidence_line_omits_absent_location_fields():
         }
     )
     assert fields.evidence == "`cuda_oom`"  # no line/rank/phase, and 'unknown' role dropped
+
+
+# ─── decision rationale: why L4 chose this action ───
+
+
+def _policy_payload(**policy):
+    base = {
+        "base_rule": "general_retry",
+        "applied_policy_context": None,
+        "retry_budget_exhausted": False,
+        "effective_policy": {"rule": "general_retry", "allowed_retries": 2},
+        "failure_domain": "unknown",
+        "failure_domain_confidence": 1,
+        "retry_outlook_without_workload_change": "may_recover",
+        "retry_outlook_status": "supported_but_unconfirmed",
+        "retry_outlook_confidence": 67,
+    }
+    base.update(policy)
+    return {
+        "schema_version": "restart_agent_response.v1",
+        "retry_policy": base,
+        "l1_assessment": {"category_selection": {"category_id": 13, "category_confidence": 72}},
+    }
+
+
+def test_rationale_reports_rule_budget_and_category():
+    r = slack_mod.decision_rationale(_policy_payload())
+    lines = r.as_lines()
+
+    assert "rule `general_retry`" in lines[0]
+    assert "budget 2, not exhausted" in lines[0]
+    assert "category 13" in lines[1]
+    assert "NCCL remote process exited" in lines[1]
+    assert "→ RESTART" in lines[1]
+    assert "confidence 72" in lines[1]
+
+
+def test_rationale_drops_unknown_claims():
+    # failure_domain=unknown with confidence 1 is noise, not information.
+    lines = " ".join(slack_mod.decision_rationale(_policy_payload()).as_lines())
+    assert "failure domain" not in lines
+    assert "retry outlook: may_recover" in lines
+
+
+def test_rationale_names_the_policy_context_that_overrode_the_base_rule():
+    payload = _policy_payload(
+        applied_policy_context={"policy_context_id": "l1_category_confirmed_stop"},
+        effective_policy={"rule": "workload_unrecoverable", "allowed_retries": 0},
+        retry_budget_exhausted=True,
+    )
+    first = slack_mod.decision_rationale(payload).as_lines()[0]
+
+    assert "`l1_category_confirmed_stop`" in first
+    assert "overrides `general_retry`" in first
+    assert "budget 0, exhausted" in first
+
+
+def test_rationale_handles_a_bare_string_policy_context():
+    payload = _policy_payload(applied_policy_context="cuda_oom_no_retry")
+    assert "`cuda_oom_no_retry`" in slack_mod.decision_rationale(payload).as_lines()[0]
+
+
+def test_rationale_without_category_still_reports_the_rule():
+    payload = _policy_payload()
+    payload.pop("l1_assessment")  # deterministic-only result
+    lines = slack_mod.decision_rationale(payload).as_lines()
+
+    assert any("general_retry" in line for line in lines)
+    assert not any("category" in line for line in lines)
+
+
+def test_rationale_is_empty_for_non_restart_agent_payloads():
+    assert slack_mod.decision_rationale({"module": "log_analyzer"}).empty is True
+    assert slack_mod.decision_rationale(None).empty is True
+
+
+def test_message_includes_the_why_section(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    payload = _restart_agent_payload()
+    payload["result"]["retry_policy"] = _policy_payload()["retry_policy"]
+
+    log_attribution_result(_job(), "/x.log", payload, slack_notifier=notifier)
+    text = client.messages[0]["text"]
+
+    assert "*Why STOP:*" in text
+    assert "rule `general_retry`" in text
+
+
+def test_message_omits_the_why_section_without_policy_data(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    notifier.notify(_job(), _parsed())  # LogSage result, no retry_policy
+
+    assert "*Why " not in client.messages[0]["text"]

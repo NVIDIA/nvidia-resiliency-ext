@@ -37,6 +37,7 @@ from nvidia_resiliency_ext.attribution.orchestration.client_response import Attr
 from nvidia_resiliency_ext.attribution.orchestration.posting_markdown import (
     format_attribution_markdown,
 )
+from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     RECOMMENDATION_ACTIONS,
     RECOMMENDATION_STOP,
@@ -233,6 +234,136 @@ def _evidence_line(failure: Any) -> str:
     return text
 
 
+#: Values that carry no information and are better omitted than rendered.
+_EMPTY_CLAIMS = ("", "unknown", "none")
+
+
+@dataclass(frozen=True)
+class DecisionRationale:
+    """Why L4 landed on this action, in the order a reader should weigh it."""
+
+    rule: str = ""
+    base_rule: str = ""
+    allowed_retries: Optional[int] = None
+    budget_exhausted: bool = False
+    category_id: Optional[int] = None
+    category_name: str = ""
+    category_decision: str = ""
+    category_confidence: Optional[int] = None
+    retry_outlook: str = ""
+    retry_outlook_status: str = ""
+    retry_outlook_confidence: Optional[int] = None
+    failure_domain: str = ""
+    failure_domain_confidence: Optional[int] = None
+
+    @property
+    def empty(self) -> bool:
+        return not (self.rule or self.category_id or self.retry_outlook)
+
+    def as_lines(self) -> list[str]:
+        """Bullet lines, most decision-relevant first, omitting empty claims."""
+        lines = []
+        if self.rule:
+            rule = f"rule `{self.rule}`"
+            # A policy context outranks the base rule; name what it displaced.
+            if self.base_rule and self.base_rule != self.rule:
+                rule += f" (overrides `{self.base_rule}`)"
+            if self.allowed_retries is not None:
+                rule += f" — budget {self.allowed_retries}"
+                rule += ", exhausted" if self.budget_exhausted else ", not exhausted"
+            lines.append(rule)
+        if self.category_id:
+            cat = f"category {self.category_id}"
+            if self.category_name:
+                cat += f" _{self.category_name}_"
+            if self.category_decision:
+                cat += f" → {self.category_decision}"
+            if self.category_confidence is not None:
+                cat += f" (confidence {self.category_confidence})"
+            lines.append(cat)
+        if self.retry_outlook:
+            outlook = f"retry outlook: {self.retry_outlook}"
+            qual = [q for q in (self.retry_outlook_status,) if q and q not in _EMPTY_CLAIMS]
+            if self.retry_outlook_confidence is not None:
+                qual.append(f"confidence {self.retry_outlook_confidence}")
+            if qual:
+                outlook += f" ({', '.join(qual)})"
+            lines.append(outlook)
+        if self.failure_domain:
+            domain = f"failure domain: {self.failure_domain}"
+            if self.failure_domain_confidence is not None:
+                domain += f" (confidence {self.failure_domain_confidence})"
+            lines.append(domain)
+        return lines
+
+
+def _claim(value: Any) -> str:
+    text = str(value or "").strip()
+    return "" if text.lower() in _EMPTY_CLAIMS else text
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def decision_rationale(payload: Any) -> DecisionRationale:
+    """Extract the decision audit trail from a ``restart_agent_response.v1`` payload.
+
+    ``failure_domain`` and ``retry_outlook`` are the model's abstract policy
+    claims and are materially less accurate than the category pick, so they are
+    reported with their confidence and dropped when unknown.
+    """
+    if not isinstance(payload, Mapping):
+        return DecisionRationale()
+    policy = payload.get("retry_policy")
+    policy = policy if isinstance(policy, Mapping) else {}
+
+    effective = policy.get("effective_policy")
+    effective = effective if isinstance(effective, Mapping) else {}
+    context = policy.get("applied_policy_context")
+    context_id = ""
+    if isinstance(context, Mapping):
+        context_id = _claim(context.get("policy_context_id"))
+    elif isinstance(context, str):
+        context_id = _claim(context)
+
+    base_rule = _claim(policy.get("base_rule"))
+    rule = context_id or _claim(effective.get("rule")) or base_rule
+
+    category_id, category_name, category_decision = None, "", ""
+    confidence = None
+    assessment = payload.get("l1_assessment")
+    if isinstance(assessment, Mapping):
+        selection = assessment.get("category_selection")
+        if isinstance(selection, Mapping):
+            category_id = _int_or_none(selection.get("category_id")) or None
+            confidence = _int_or_none(selection.get("category_confidence"))
+            if category_id:
+                definition = category_by_id(category_id)
+                if definition is not None:
+                    category_name = definition.name
+                    category_decision = definition.decision
+
+    return DecisionRationale(
+        rule=rule,
+        base_rule=base_rule,
+        allowed_retries=_int_or_none(effective.get("allowed_retries")),
+        budget_exhausted=bool(policy.get("retry_budget_exhausted")),
+        category_id=category_id,
+        category_name=category_name,
+        category_decision=category_decision,
+        category_confidence=confidence,
+        retry_outlook=_claim(policy.get("retry_outlook_without_workload_change")),
+        retry_outlook_status=_claim(policy.get("retry_outlook_status")),
+        retry_outlook_confidence=_int_or_none(policy.get("retry_outlook_confidence")),
+        failure_domain=_claim(policy.get("failure_domain")),
+        failure_domain_confidence=_int_or_none(policy.get("failure_domain_confidence")),
+    )
+
+
 def restart_agent_fields(payload: Any) -> Optional[AttributionFields]:
     """Extract display fields from a ``restart_agent_response.v1`` payload.
 
@@ -321,6 +452,10 @@ def format_notification(job: "SlurmJob", result: AttrSvcResult) -> str:
     )
 
     extras = []
+    rationale = decision_rationale(result.result)
+    if not rationale.empty:
+        bullets = "\n".join(f"  • {line}" for line in rationale.as_lines())
+        extras.append(f"*Why {result.recommendation.action}:*\n{bullets}")
     if fields.evidence:
         extras.append(f"*Evidence:* {fields.evidence}")
     if fields.show_alternatives:
