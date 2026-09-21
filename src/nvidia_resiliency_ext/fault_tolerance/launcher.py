@@ -41,7 +41,7 @@ from argparse import REMAINDER, ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from string import Template
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union, cast
 
 import torch
 from torch.distributed.argparse_util import check_env, env
@@ -124,6 +124,11 @@ from nvidia_resiliency_ext.shared_utils.profiling import (
     get_profiling_cycle,
     record_profiling_event,
 )
+
+if TYPE_CHECKING:
+    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
+        FtRendezvousBarrierHandler,
+    )
 
 __imports_finished__ = time.time()
 
@@ -428,7 +433,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
         self._pcontext: Optional[PContext] = None
-        self._rdzv_handler = spec.rdzv_handler
+        # c10d is registered to the FT handler; WorkerSpec exposes only the base type.
+        self._rdzv_handler = cast("FtRendezvousBarrierHandler", spec.rdzv_handler)
         self._log_line_prefix_template = log_line_prefix_template
         self._worker_watchdog: Optional[timer.FileTimerServer] = None
         self._logs_specs = logs_specs
@@ -470,7 +476,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
     DEFAULT_ROLE = "default"  # FIXME
 
-    def open_telemetry_cycle(self, attributes: dict) -> None:
+    def open_telemetry_cycle(self, attributes: dict[str, Any]) -> None:
         self._cycle_phase.open(
             "nvrx.ft",
             "nv.nvrx.ftl.cycle",
@@ -481,7 +487,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             },
         )
 
-    def close_telemetry_cycle(self, attributes: Optional[dict] = None) -> None:
+    def close_telemetry_cycle(self, attributes: Optional[dict[str, Any]] = None) -> None:
         self._cycle_phase.close(attributes)
 
     # ============================================================================
@@ -1504,9 +1510,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
-    def _infra_placement_attrs(self) -> dict:
+    def _infra_placement_attrs(self) -> dict[str, Union[str, int]]:
         """Where this node sits in the fabric. A key is absent when its value is not known."""
-        attrs = {}
+        attrs: dict[str, Union[str, int]] = {}
         try:
             attrs["nv.nvrx.ftl.infra.rank"] = get_infrastructure_rank(skip_nodename_logic=True)
         except (ValueError, RuntimeError):
@@ -1519,7 +1525,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 attrs["nv.nvrx.ftl.infra.cluster_uuid"] = domain
         return attrs
 
-    def _launch_budget_attrs(self) -> dict:
+    def _launch_budget_attrs(self) -> dict[str, int]:
         """The node budget the job was launched with, for the worker Resource."""
         settings = self._rdzv_handler.settings
         return {
@@ -1527,7 +1533,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             "nv.dl.launch.nnodes.spare": settings.max_nodes - settings.min_nodes,
         }
 
-    def _joined_cycle_attrs(self, worker_group: WorkerGroup) -> dict:
+    def _joined_cycle_attrs(
+        self, worker_group: WorkerGroup
+    ) -> dict[str, Union[str, int, None]]:
         """Telemetry attributes describing the round this node just joined.
 
         Every value describes this node's own place in the round. The round's
@@ -1538,7 +1546,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         their counter snapshots, timestamps, and parent relationships.
         """
         spec = worker_group.spec
-        attrs = {
+        attrs: dict[str, Union[str, int, None]] = {
             "nv.nvrx.ftl.group.rank": worker_group.group_rank,
             "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
             "nv.nvrx.ftl.membership": "active",

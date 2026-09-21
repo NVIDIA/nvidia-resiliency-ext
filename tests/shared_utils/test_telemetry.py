@@ -374,7 +374,6 @@ class TestLensTimedEmission:
         with pytest.raises(RuntimeError, match="emission failed"):
             phase.close()
         assert trace.get_current_span() is current
-        assert phase._start is None
         phase.close()
 
 

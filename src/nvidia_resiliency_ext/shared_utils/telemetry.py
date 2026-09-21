@@ -22,16 +22,27 @@ names are dotted and cannot be Python keywords.
 Design and rationale: docs/design/telemetry/NEMO_LENS.md.
 """
 
+from __future__ import annotations
+
 import functools
 import logging
 import os
 import threading
 import time
-from contextlib import ExitStack, contextmanager, nullcontext
-from typing import TYPE_CHECKING, Optional
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from typing import TYPE_CHECKING, Any, Optional, ParamSpec, TypeVar
 
 if TYPE_CHECKING:
-    from opentelemetry.trace import SpanContext
+    from contextvars import Token
+
+    from nemo.lens import TelemetryHandle
+    from nemo.lens.resources.attributes import ResourceAttributes, ResourceAttributeValue
+    from opentelemetry.context import Context
+    from opentelemetry.trace import Span, SpanContext, Tracer
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 logger = logging.getLogger(__name__)
 
@@ -103,20 +114,34 @@ if _AVAILABLE:
 
 if not _AVAILABLE:
 
-    def get_otel_resource_attributes(*, environ=None):
+    def get_otel_resource_attributes(
+        *, environ: Optional[Mapping[str, str]] = None
+    ) -> dict[str, str]:
         """Return no attributes when nemo-lens is unavailable."""
         return {}
 
-    def compose_attributes(current, *, defaults=None, overrides=None):
+    def compose_attributes(
+        current: ResourceAttributes,
+        *,
+        defaults: Optional[ResourceAttributes] = None,
+        overrides: Optional[ResourceAttributes] = None,
+    ) -> dict[str, Optional[ResourceAttributeValue]]:
         """Return an inert map when nemo-lens is unavailable."""
         return {}
 
-    def extend_otel_resource_attributes(text, *, defaults=None, overrides=None):
+    def extend_otel_resource_attributes(
+        text: Optional[str],
+        *,
+        defaults: Optional[ResourceAttributes] = None,
+        overrides: Optional[ResourceAttributes] = None,
+    ) -> str:
         """Leave a selected carrier unchanged when nemo-lens is unavailable."""
         return text or ""
 
     @contextmanager
-    def publish_otel_resource_attributes(attributes, *, environ=None):
+    def publish_otel_resource_attributes(
+        attributes: ResourceAttributes, *, environ: Optional[MutableMapping[str, str]] = None
+    ) -> Iterator[None]:
         """Leave the environment unchanged when nemo-lens is unavailable."""
         yield
 
@@ -131,8 +156,8 @@ class _NoOpHandle:
 def setup_telemetry(
     service_name: str,
     instance_id: Optional[str] = None,
-    resource_attributes: Optional[dict] = None,
-):
+    resource_attributes: Optional[dict[str, Any]] = None,
+) -> TelemetryHandle | _NoOpHandle:
     """Initialize nemo-lens. Call once, at process start, only in a process NVRx owns.
 
     ``service_name`` becomes ``service.name``, overriding ``OTEL_SERVICE_NAME``,
@@ -157,7 +182,7 @@ def setup_telemetry(
         return _NoOpHandle()
 
 
-def shutdown(handle, timeout_s: float = 2.0) -> None:
+def shutdown(handle: TelemetryHandle | _NoOpHandle, timeout_s: float = 2.0) -> None:
     """Flush and shut down, bounded.
 
     ``TelemetryHandle.shutdown()`` can block for the exporter's whole retry budget
@@ -188,13 +213,13 @@ class ManualSpan:
 
     def __init__(self) -> None:
         self._stack: Optional[ExitStack] = None
-        self._span = None
+        self._span: Optional[Span] = None
 
     def open(
         self,
         group: str,
         name: str,
-        attributes: Optional[dict] = None,
+        attributes: Optional[dict[str, Any]] = None,
         *,
         inherit_attributes: bool = False,
     ) -> None:
@@ -217,14 +242,14 @@ class ManualSpan:
             self._span = None
             raise
 
-    def set(self, attributes: Optional[dict] = None) -> None:
+    def set(self, attributes: Optional[dict[str, Any]] = None) -> None:
         """Set attributes on the open span."""
         if self._span is None or not attributes:
             return
         for key, value in attributes.items():
             self._span.set_attribute(key, value)
 
-    def close(self, attributes: Optional[dict] = None) -> None:
+    def close(self, attributes: Optional[dict[str, Any]] = None) -> None:
         """Set any final attributes and end the span. Idempotent."""
         self.set(attributes)
         if self._stack is not None:
@@ -238,7 +263,12 @@ def get_inherited_resource_attributes() -> str:
     return _INHERITED_RESOURCE_ATTRIBUTES
 
 
-def trace_fn(group, name, tracer=None, attrs=None):
+def trace_fn(
+    group: str,
+    name: str,
+    tracer: Optional[Tracer] = None,
+    attrs: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
+) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
     """Decorate a function with an optional gated attribute callback.
 
     ``attrs`` receives the decorated function's arguments. It is evaluated only
@@ -246,16 +276,18 @@ def trace_fn(group, name, tracer=None, attrs=None):
     span. Existing callers that omit it retain Lens's ``trace_fn`` behavior.
     """
 
-    def decorator(func):
+    def decorator(func: Callable[_P, _R]) -> Callable[_P, _R]:
         if not _AVAILABLE:
             return func
-        traced_func = _trace_fn(group, name, tracer)(func) if attrs is None else None
+        traced_func: Callable[_P, _R] = (
+            _trace_fn(group, name, tracer)(func) if attrs is None else func
+        )
 
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
             if not _AVAILABLE:
                 return func(*args, **kwargs)
-            if traced_func is not None:
+            if attrs is None:
                 return traced_func(*args, **kwargs)
             if not _is_span_group_enabled(group):
                 return func(*args, **kwargs)
@@ -269,7 +301,9 @@ def trace_fn(group, name, tracer=None, attrs=None):
     return decorator
 
 
-def span(group: str, name: str, attributes: Optional[dict] = None):
+def span(
+    group: str, name: str, attributes: Optional[dict[str, Any]] = None
+) -> AbstractContextManager[Optional[Span]]:
     """A span around a block, yielding it (or None when the group is off).
 
     Dict adapter over ``managed_span``, which takes keywords: a dotted attribute
@@ -285,9 +319,9 @@ def _emit(
     name: str,
     start: float,
     end: float,
-    attributes: Optional[dict] = None,
-    context=None,
-) -> Optional["SpanContext"]:
+    attributes: Optional[dict[str, Any]] = None,
+    context: Optional[Context] = None,
+) -> Optional[SpanContext]:
     """Emit one span over an explicit window. Returns its ``SpanContext``, or None.
 
     ``context`` of None inherits the ambient span, the way an ordinary span does;
@@ -315,9 +349,9 @@ def backdated_span(
     name: str,
     start: Optional[float],
     end: Optional[float],
-    attributes: Optional[dict] = None,
-    parent=None,
-) -> Optional["SpanContext"]:
+    attributes: Optional[dict[str, Any]] = None,
+    parent: Optional[SpanContext] = None,
+) -> Optional[SpanContext]:
     """Record a span for a window that elapsed before there was a tracer.
 
     ``start`` and ``end`` are wall-clock seconds; ``parent`` is usually the
@@ -327,9 +361,9 @@ def backdated_span(
     context, or None if no span was recorded.
     """
     if start is None or end is None:
-        return
+        return None
     if not _AVAILABLE or not _is_span_group_enabled(group):
-        return
+        return None
     # Empty, not the ambient context: this window closed before the call, so the
     # span that happens to be open now is not its parent.
     context = _otel_context.Context()
@@ -338,7 +372,9 @@ def backdated_span(
     return _emit(group, name, start, end, attributes, context)
 
 
-def mark(group: str, name: str, attributes: Optional[dict] = None) -> Optional["SpanContext"]:
+def mark(
+    group: str, name: str, attributes: Optional[dict[str, Any]] = None
+) -> Optional[SpanContext]:
     """Record an instant: a zero-duration span pinning a moment in time.
 
     Returns its ``SpanContext``, or None when the group is off. A mark exports
@@ -355,7 +391,7 @@ def record_process_startup(
     group: str,
     imports_started: float,
     imports_finished: float,
-    attributes: Optional[dict] = None,
+    attributes: Optional[dict[str, Any]] = None,
 ) -> None:
     """Record how long this process took to become able to run.
 
@@ -391,30 +427,27 @@ class Phase:
     """
 
     def __init__(self) -> None:
-        self._group: Optional[str] = None
-        self._name: Optional[str] = None
-        self._start: Optional[float] = None
-        self._parent = None
-        self._token = None
-        self._attributes: dict = {}
+        self._window: Optional[tuple[str, str, float]] = None
+        self._parent: Optional[SpanContext] = None
+        self._token: Optional[Token[Context]] = None
+        self._attributes: dict[str, Any] = {}
 
-    def open(self, group: str, name: str, attributes: Optional[dict] = None) -> None:
+    def open(self, group: str, name: str, attributes: Optional[dict[str, Any]] = None) -> None:
         """Emit the start anchor, closing any phase this handle had open."""
-        # Without nemo-lens nothing downstream can record anything, so leave _start
+        # Without nemo-lens nothing downstream can record anything, so leave _window
         # unset: that is the flag set() and close() already bail on, which makes the
         # whole handle inert for the cost of one module-global read.
         if not _AVAILABLE:
             return
         self.close()
-        self._group, self._name = group, name
-        self._start = time.time()
+        self._window = (group, name, time.time())
         # Seeded, not emptied: a consumer filtering spans never sees the mark's
         # attributes, so a key left only there cannot be grouped on.
         self._attributes = dict(attributes or {})
         try:
             self._parent = mark(group, f"{name}_start", attributes)
         except BaseException:
-            self._group = self._name = self._start = self._parent = None
+            self._window = self._parent = None
             self._attributes = {}
             raise
         if self._parent is None:  # group off; the phase still spans nothing to nest in
@@ -425,20 +458,21 @@ class Phase:
             )
         except Exception:
             # Losing the ambient context costs nesting, not spans.
-            logger.debug("Could not make %s the active context", self._name, exc_info=True)
+            logger.debug("Could not make %s the active context", name, exc_info=True)
 
-    def set(self, attributes: Optional[dict] = None) -> None:
+    def set(self, attributes: Optional[dict[str, Any]] = None) -> None:
         """Update attributes saved for the duration summary."""
-        if self._start is None:
+        if self._window is None:
             return
         if attributes:
             self._attributes.update(attributes)
 
-    def close(self, attributes: Optional[dict] = None) -> None:
+    def close(self, attributes: Optional[dict[str, Any]] = None) -> None:
         """Emit the backdated span covering the phase. Idempotent."""
         self.set(attributes)
-        if self._start is None:
+        if self._window is None:
             return
+        group, name, start = self._window
         if self._token is not None:
             try:
                 _otel_context.detach(self._token)
@@ -446,17 +480,17 @@ class Phase:
                 # A phase opened after this one outlived it, so the token is not the
                 # top of the stack. The span is still correct; the next open() fixes
                 # the stale ambient context.
-                logger.debug("Out-of-order close for phase %s", self._name, exc_info=True)
+                logger.debug("Out-of-order close for phase %s", name, exc_info=True)
             self._token = None
         try:
             backdated_span(
-                self._group,
-                self._name,
-                self._start,
+                group,
+                name,
+                start,
                 time.time(),
                 self._attributes,
                 parent=self._parent,
             )
         finally:
-            self._group = self._name = self._start = self._parent = None
+            self._window = self._parent = None
             self._attributes = {}
