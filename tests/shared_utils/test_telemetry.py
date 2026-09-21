@@ -23,7 +23,7 @@ telemetry setup failures. They run with or without nemo-lens installed.
 import threading
 import time
 import unittest
-import unittest.mock
+from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
 
@@ -46,19 +46,15 @@ class TestLifecycleSnapshots(unittest.TestCase):
         self.addCleanup(set_enabled_span_groups, enabled_span_groups())
         set_enabled_span_groups(frozenset({"nvrx.ft"}))
         self.exporter = InMemorySpanExporter()
-        with unittest.mock.patch("opentelemetry.trace.set_tracer_provider") as install:
+        with patch("opentelemetry.trace.set_tracer_provider") as install:
             build_providers(
                 NemoLensConfig(enabled=True, metrics_enabled=False),
                 span_exporter=self.exporter,
             )
         self.provider = install.call_args.args[0]
         self.addCleanup(self.provider.shutdown)
-        self.enterContext(
-            unittest.mock.patch.object(telemetry, "_get_tracer", self.provider.get_tracer)
-        )
-        self.enterContext(
-            unittest.mock.patch("opentelemetry.trace.get_tracer", self.provider.get_tracer)
-        )
+        self.enterContext(patch.object(telemetry, "_get_tracer", self.provider.get_tracer))
+        self.enterContext(patch("opentelemetry.trace.get_tracer", self.provider.get_tracer))
 
     def _record_group(self, cycle_attributes, rendezvous_attributes):
         phase = telemetry.Phase()
@@ -178,41 +174,41 @@ class TestTelemetryIsInert(unittest.TestCase):
 
     @unittest.skipUnless(telemetry._AVAILABLE, "requires nemo-lens")
     def test_trace_fn_does_not_evaluate_attributes_when_disabled(self):
-        attributes = unittest.mock.Mock(side_effect=AssertionError("attributes evaluated"))
+        attributes = Mock(side_effect=AssertionError("attributes evaluated"))
 
         @telemetry.trace_fn("nvrx.ft", "disabled", attrs=attributes)
         def work(value):
             return value
 
-        with unittest.mock.patch.object(telemetry, "_is_span_group_enabled", return_value=False):
+        with patch.object(telemetry, "_is_span_group_enabled", return_value=False):
             self.assertEqual(work(7), 7)
         attributes.assert_not_called()
 
     @unittest.skipUnless(telemetry._AVAILABLE, "requires nemo-lens")
     def test_trace_fn_passes_callback_attributes_to_the_span(self):
-        attributes = unittest.mock.Mock(return_value={"example.attribute": "value"})
+        attributes = Mock(return_value={"example.attribute": "value"})
 
         @telemetry.trace_fn("nvrx.ft", "enabled", attrs=attributes)
         def work(value, *, scale=1):
             return value * scale
 
         with (
-            unittest.mock.patch.object(telemetry, "_is_span_group_enabled", return_value=True),
-            unittest.mock.patch.object(telemetry, "_managed_span") as managed,
+            patch.object(telemetry, "_is_span_group_enabled", return_value=True),
+            patch.object(telemetry, "_managed_span") as managed,
         ):
             self.assertEqual(work(7, scale=2), 14)
         attributes.assert_called_once_with(7, scale=2)
         managed.assert_called_once_with(
             "nvrx.ft",
             "enabled",
-            unittest.mock.ANY,
+            ANY,
             **{"example.attribute": "value"},
         )
 
     def test_trace_fn_callback_is_inert_without_lens(self):
-        attributes = unittest.mock.Mock(side_effect=AssertionError("attributes evaluated"))
+        attributes = Mock(side_effect=AssertionError("attributes evaluated"))
 
-        with unittest.mock.patch.object(telemetry, "_AVAILABLE", False):
+        with patch.object(telemetry, "_AVAILABLE", False):
 
             @telemetry.trace_fn("nvrx.ft", "absent", attrs=attributes)
             def work(value):
@@ -227,11 +223,9 @@ class TestLensTimedEmission:
     @pytest.fixture(autouse=True)
     def _mock_emission(self):
         with (
-            unittest.mock.patch.object(
-                telemetry, "_is_span_group_enabled", return_value=True
-            ) as self.gate,
-            unittest.mock.patch.object(telemetry, "_emit_span") as self.emit,
-            unittest.mock.patch.object(telemetry, "_get_tracer") as self.tracer,
+            patch.object(telemetry, "_is_span_group_enabled", return_value=True) as self.gate,
+            patch.object(telemetry, "_emit_span") as self.emit,
+            patch.object(telemetry, "_get_tracer") as self.tracer,
         ):
             yield
 
@@ -268,7 +262,7 @@ class TestLensTimedEmission:
         self.emit.assert_not_called()
 
     def test_mark_reads_clock_once(self):
-        with unittest.mock.patch.object(telemetry.time, "time", return_value=1000) as clock:
+        with patch.object(telemetry.time, "time", return_value=1000) as clock:
             result = telemetry.mark("nvrx.ft", "instant")
         clock.assert_called_once_with()
         assert result is self.emit.return_value.get_span_context.return_value
@@ -285,10 +279,8 @@ class TestLensTimedEmission:
     def test_gate_precedes_clock_context_and_attribute_work(self):
         self.gate.return_value = False
         with (
-            unittest.mock.patch.object(telemetry.time, "time", side_effect=AssertionError("clock")),
-            unittest.mock.patch.object(
-                telemetry._otel_context, "Context", side_effect=AssertionError("context")
-            ),
+            patch.object(telemetry.time, "time", side_effect=AssertionError("clock")),
+            patch.object(telemetry._otel_context, "Context", side_effect=AssertionError("context")),
         ):
             assert telemetry.mark("nvrx.ft", "disabled") is None
             assert telemetry.backdated_span("nvrx.ft", "disabled", 1, 2) is None
@@ -302,15 +294,8 @@ class TestLensTimedEmission:
         self.emit.return_value.get_span_context.return_value = trace.SpanContext(1, 2, False)
         phase = telemetry.Phase()
         request.addfinalizer(phase.close)
-        phase.open(
-            "nvrx.ft",
-            "cycle",
-            {
-                "nv.nvrx.ftl.rdzv.round": 3,
-                "nv.nvrx.ftl.profiling.cycle": 4,
-            },
-        )
-        phase.set({"nv.nvrx.ftl.membership": "active"})
+        phase.open("nvrx.ft", "cycle", {"entry": 3})
+        phase.set({"updated": 4})
         self.emit.side_effect = RuntimeError("emission failed")
         with pytest.raises(RuntimeError, match="emission failed"):
             phase.close()
@@ -408,13 +393,7 @@ assert os.environ.get('OTEL_RESOURCE_ATTRIBUTES') == original
 
 
 class TestPhase(unittest.TestCase):
-    """A phase is a start anchor and a duration summary; check the two line up.
-
-    nemo-lens and the OTel SDK are optional and usually absent here, so the two
-    primitives a phase is built from are replaced and the phase's own logic --
-    span naming, the backdated window, where attributes land -- is what is under
-    test.
-    """
+    """Phase bookkeeping with mocked emission and context."""
 
     def setUp(self):
         self.marks = []
@@ -430,30 +409,30 @@ class TestPhase(unittest.TestCase):
         for target, replacement in (
             ("mark", fake_mark),
             ("backdated_span", fake_backdated),
-            ("_otel_context", unittest.mock.MagicMock()),
-            ("_otel_trace", unittest.mock.MagicMock()),
-            # Stands in for nemo-lens being importable, alongside the two primitives
-            # it would have supplied. Without it open() takes its unavailable-so-inert
-            # path and none of the logic below is reachable.
+            ("_otel_context", MagicMock()),
+            ("_otel_trace", MagicMock()),
+            # Exercise Phase bookkeeping even without Lens.
             ("_AVAILABLE", True),
         ):
-            patcher = unittest.mock.patch.object(telemetry, target, replacement, create=True)
+            patcher = patch.object(telemetry, target, replacement, create=True)
             patcher.start()
             self.addCleanup(patcher.stop)
 
     def test_phase_preserves_its_window_and_merges_final_attributes(self):
         phase = telemetry.Phase()
+        phase.close({"unused": True})
         opening = {
             "nv.nvrx.ftl.rdzv.round": 2,
             "nv.nvrx.ftl.profiling.cycle": 3,
             "nv.nvrx.ftl.membership": "unjoined",
         }
-        with unittest.mock.patch.object(telemetry, "time") as clock:
+        with patch.object(telemetry, "time") as clock:
             clock.time.side_effect = (100.0, 200.0)
             phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", dict(opening))
             phase.set({"nv.nvrx.ftl.group.rank": 3})
             phase.set({"nv.nvrx.ftl.membership": "active"})
             phase.close({"nv.nvrx.ftl.membership": "standby", "nv.nvrx.cycle.outcome": "completed"})
+            phase.close({"unused": True})
 
         self.assertEqual(self.marks, [("nvrx.ft", "nv.nvrx.ftl.cycle_start", opening)])
         self.assertEqual(len(self.spans), 1)
@@ -471,65 +450,27 @@ class TestPhase(unittest.TestCase):
             },
         )
 
-    def test_close_is_idempotent(self):
-        phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
-        phase.close()
-        phase.close({"nv.nvrx.cycle.outcome": "completed"})
-        self.assertEqual(len(self.spans), 1)
-
-    def test_close_without_open_is_a_no_op(self):
-        telemetry.Phase().close({"nv.nvrx.cycle.outcome": "completed"})
-        self.assertEqual(self.spans, [])
-
     def test_is_inert_without_nemo_lens(self):
-        # Nothing downstream can record, so open() does no work at all rather than
-        # building attributes and a mark name for primitives that will drop them.
-        with unittest.mock.patch.object(telemetry, "_AVAILABLE", False):
+        with patch.object(telemetry, "_AVAILABLE", False):
             phase = telemetry.Phase()
-            phase.open(
-                "nvrx.ft",
-                "nv.nvrx.ftl.cycle",
-                {
-                    "nv.nvrx.ftl.rdzv.round": 1,
-                    "nv.nvrx.ftl.profiling.cycle": 2,
-                },
-            )
-            phase.set({"nv.nvrx.ftl.group.rank": 0})
-            phase.close({"nv.nvrx.cycle.outcome": "completed"})
+            phase.open("nvrx.ft", "cycle", {"entry": 1})
+            phase.set({"updated": 2})
+            phase.close({"final": 3})
         self.assertEqual(self.marks, [])
         self.assertEqual(self.spans, [])
 
-    def test_open_closes_the_previous_phase(self):
-        # The launcher reuses one handle across cycles and relies on this.
+    def test_reopen_and_explicit_close_reset_attributes(self):
         phase = telemetry.Phase()
         self.addCleanup(phase.close)
-        phase.open(
-            "nvrx.ft",
-            "nv.nvrx.ftl.cycle",
-            {
-                "nv.nvrx.ftl.rdzv.round": 0,
-                "nv.nvrx.ftl.profiling.cycle": 0,
-            },
-        )
-        phase.open(
-            "nvrx.ft",
-            "nv.nvrx.ftl.cycle",
-            {
-                "nv.nvrx.ftl.rdzv.round": 1,
-                "nv.nvrx.ftl.profiling.cycle": 1,
-            },
-        )
+        phase.open("nvrx.ft", "cycle", {"entry": 1})
+        phase.open("nvrx.ft", "cycle")
         self.assertEqual(len(self.spans), 1, "the first cycle was never emitted")
         self.assertEqual(len(self.marks), 2)
-
-    def test_attributes_do_not_leak_between_phases(self):
-        phase = telemetry.Phase()
-        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
-        phase.close({"nv.nvrx.cycle.outcome": "failed"})
-        phase.open("nvrx.ft", "nv.nvrx.ftl.cycle")
+        phase.close({"final": 2})
+        self.assertEqual(self.spans[1][4], {"final": 2})
+        phase.open("nvrx.ft", "cycle")
         phase.close()
-        self.assertEqual(self.spans[1][4], {})
+        self.assertEqual(self.spans[2][4], {})
 
 
 class TestSetupTelemetry(unittest.TestCase):
@@ -543,14 +484,12 @@ class TestSetupTelemetry(unittest.TestCase):
         handle.shutdown()
 
     def test_setup_forwards_service_and_resource_attributes(self):
-        handle = unittest.mock.Mock()
+        handle = Mock()
         attributes = {"nv.nvrx.ftl.node": "node0"}
         with (
-            unittest.mock.patch.object(telemetry, "_AVAILABLE", True),
-            unittest.mock.patch.object(telemetry, "_NemoLensConfig", create=True) as config_cls,
-            unittest.mock.patch.object(
-                telemetry, "_setup_telemetry", return_value=handle, create=True
-            ) as setup,
+            patch.object(telemetry, "_AVAILABLE", True),
+            patch.object(telemetry, "_NemoLensConfig", create=True) as config_cls,
+            patch.object(telemetry, "_setup_telemetry", return_value=handle, create=True) as setup,
         ):
             self.assertIs(telemetry.setup_telemetry("nvrx.test", "nvrx-test0", attributes), handle)
         self.assertEqual(config_cls.from_env.return_value.service_name, "nvrx.test")
@@ -608,9 +547,9 @@ telemetry.shutdown(handle)
 
     def test_init_failure_does_not_propagate(self):
         with (
-            unittest.mock.patch.object(telemetry, "_AVAILABLE", True),
-            unittest.mock.patch.object(telemetry, "_NemoLensConfig", create=True),
-            unittest.mock.patch.object(
+            patch.object(telemetry, "_AVAILABLE", True),
+            patch.object(telemetry, "_NemoLensConfig", create=True),
+            patch.object(
                 telemetry, "_setup_telemetry", side_effect=RuntimeError("boom"), create=True
             ),
             self.assertLogs(telemetry.logger, level="WARNING"),

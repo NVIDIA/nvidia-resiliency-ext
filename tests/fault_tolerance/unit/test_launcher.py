@@ -30,6 +30,7 @@ from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
 from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext import fault_tolerance
+from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
@@ -1961,8 +1962,6 @@ class TestLauncherAllowedRoots:
 class TestCycleTelemetry:
     @pytest.mark.parametrize("failure", ["shutdown", "phase_close"])
     def test_cleanup_continues_after_shutdown_or_phase_close_failure(self, failure):
-        from nvidia_resiliency_ext.fault_tolerance import launcher
-
         agent = MagicMock()
         agent._node_id = "node"
         agent._worker_group.spec.max_restarts = 5
@@ -1986,8 +1985,6 @@ class TestCycleTelemetry:
         ]
 
     def test_run_phase_receives_rendezvous_and_profiling_counters(self):
-        from nvidia_resiliency_ext.fault_tolerance import launcher
-
         agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
         agent._run_phase = MagicMock()
         worker_group = MagicMock(group_rank=1, group_world_size=2)
@@ -2029,8 +2026,6 @@ class TestCycleTelemetry:
         ],
     )
     def test_rendezvous_failure_closes_the_cycle_opened_for_the_wait(self, error, outcome):
-        from nvidia_resiliency_ext.fault_tolerance import launcher
-
         agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
         agent._cycle_phase = MagicMock()
         worker_group = MagicMock()
@@ -2061,8 +2056,6 @@ class TestCycleTelemetry:
     def test_worker_environment_uses_generic_carrier_and_current_round(self, round_number):
         from nemo.lens.resources.attributes import parse_otel_resource_attributes
 
-        from nvidia_resiliency_ext.fault_tolerance import launcher
-
         agent, group = self._make_worker_agent()
         agent._get_global_cycle_number.return_value = round_number
         with (
@@ -2090,8 +2083,6 @@ class TestCycleTelemetry:
             assert env["TORCHELASTIC_RESTART_COUNT"] == str(round_number)
 
     def test_worker_restart_values_do_not_depend_on_telemetry(self):
-        from nvidia_resiliency_ext.fault_tolerance import launcher
-
         agent, group = self._make_worker_agent()
         agent._get_global_cycle_number.return_value = 4
         with (

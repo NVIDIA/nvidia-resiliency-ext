@@ -13,12 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Optional nemo-lens OTel instrumentation. The only file in NVRx that imports it.
+"""Optional Lens instrumentation; all Lens imports stay in this module.
 
-Span instrumentation is inert when nemo-lens is unavailable or its span group
-is off, so callers need no guards.
-
-Design and rationale: docs/design/telemetry/NEMO_LENS.md.
+Span calls are inert without Lens or when their group is disabled.
 """
 
 from __future__ import annotations
@@ -45,9 +42,7 @@ _R = TypeVar("_R")
 
 logger = logging.getLogger(__name__)
 
-#: Span groups NVRx emits, and the presets selecting them. nvrx.ckpt is one span
-#: per checkpoint request per side; nvrx.ckpt.phases breaks each into its stages
-#: and is opt-in, being per-stage cardinality.
+#: NVRx span groups and presets; checkpoint phases are opt-in.
 _NAMESPACE = "nvrx"
 _JOB = "nvrx.job"
 _FT = "nvrx.ft"
@@ -60,17 +55,11 @@ _PRESETS = {
     "profiling": _GROUPS,
 }
 
-# Captured before anything can extend it. Extensions build from this, never from
-# the last extension, or a relaunched cohort accumulates a key per restart.
+# Capture the initial worker Resource carrier before telemetry setup.
 _INHERITED_RESOURCE_ATTRIBUTES = os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "")
 
 try:
-    # Underscored imports exist only when nemo-lens is installed.
-    #
-    # OpenTelemetry is imported here, not where it is used, so that NVRx depends on
-    # it in its own right rather than on nemo-lens continuing to pull it in. A
-    # failure here lands in the same place as a missing nemo-lens: _AVAILABLE goes
-    # false and every entry point below no-ops.
+    # Optional dependencies share one import-failure boundary.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanRegistry as _SpanRegistry
     from nemo.lens import get_tracer as _get_tracer
@@ -103,8 +92,7 @@ except Exception:
 
 if _AVAILABLE:
     try:
-        # At import, not in setup_telemetry: the trainer emits NVRx checkpoint
-        # spans and never calls setup_telemetry, so its groups would be dark.
+        # Register here so trainers can use a framework-owned provider.
         _SpanRegistry.register(_NAMESPACE, _GROUPS, _PRESETS)
     except Exception:
         # A name collision costs these groups, not all telemetry.
@@ -112,11 +100,11 @@ if _AVAILABLE:
 
 
 if not _AVAILABLE:
+    # Resource helpers leave the environment unchanged without Lens.
 
     def get_otel_resource_attributes(
         *, environ: Optional[Mapping[str, str]] = None
     ) -> dict[str, str]:
-        """Return no attributes when nemo-lens is unavailable."""
         return {}
 
     def compose_attributes(
@@ -125,7 +113,6 @@ if not _AVAILABLE:
         defaults: Optional[ResourceAttributes] = None,
         overrides: Optional[ResourceAttributes] = None,
     ) -> dict[str, Optional[ResourceAttributeValue]]:
-        """Return an inert map when nemo-lens is unavailable."""
         return {}
 
     def extend_otel_resource_attributes(
@@ -134,14 +121,12 @@ if not _AVAILABLE:
         defaults: Optional[ResourceAttributes] = None,
         overrides: Optional[ResourceAttributes] = None,
     ) -> str:
-        """Leave a selected carrier unchanged when nemo-lens is unavailable."""
         return text or ""
 
     @contextmanager
     def publish_otel_resource_attributes(
         attributes: ResourceAttributes, *, environ: Optional[MutableMapping[str, str]] = None
     ) -> Iterator[None]:
-        """Leave the environment unchanged when nemo-lens is unavailable."""
         yield
 
 
@@ -157,13 +142,10 @@ def setup_telemetry(
     instance_id: Optional[str] = None,
     resource_attributes: Optional[dict[str, Any]] = None,
 ) -> TelemetryHandle | _NoOpHandle:
-    """Initialize nemo-lens. Call once, at process start, only in a process NVRx owns.
+    """Initialize Lens once in an NVRx-owned process.
 
-    ``service_name`` becomes ``service.name``, overriding ``OTEL_SERVICE_NAME``,
-    which names the workload rather than these processes. ``instance_id`` becomes
-    ``service.instance.id``; omit it when a parent published one through
-    :func:`publish_otel_resource_attributes`. One of the two must supply it -- nemo-lens
-    derives its own from ``nv.dl.rank``, which no NVRx process has a usable value for.
+    ``service_name`` overrides ``OTEL_SERVICE_NAME``. Supply ``instance_id`` here
+    or publish ``service.instance.id`` in the parent before spawning.
     """
     global _AVAILABLE
     if not _AVAILABLE:
@@ -182,11 +164,7 @@ def setup_telemetry(
 
 
 def shutdown(handle: TelemetryHandle | _NoOpHandle, timeout_s: float = 2.0) -> None:
-    """Flush and shut down, bounded.
-
-    ``TelemetryHandle.shutdown()`` can block for the exporter's whole retry budget
-    against a collector that is gone, which outlasts a SIGTERM grace period.
-    """
+    """Bound shutdown waiting; exporter retries can outlast the termination grace period."""
     worker = threading.Thread(target=handle.shutdown, daemon=True)
     worker.start()
     worker.join(timeout_s)
@@ -212,11 +190,9 @@ def trace_fn(
     tracer: Optional[Tracer] = None,
     attrs: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
 ) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
-    """Decorate a function with an optional gated attribute callback.
+    """Decorate with a span, evaluating ``attrs(*args, **kwargs)`` only when enabled.
 
-    ``attrs`` receives the decorated function's arguments. It is evaluated only
-    when the span group is enabled and supplies attributes directly to the new
-    span. Existing callers that omit it retain Lens's ``trace_fn`` behavior.
+    Without ``attrs``, use Lens's ``trace_fn`` behavior.
     """
 
     def decorator(func: Callable[_P, _R]) -> Callable[_P, _R]:
@@ -275,10 +251,9 @@ def _emit(
     attributes: Optional[dict[str, Any]] = None,
     context: Optional[Context] = None,
 ) -> Optional[SpanContext]:
-    """Emit one span over an explicit window. Returns its ``SpanContext``, or None.
+    """Emit a completed interval and return its context, or None if disabled.
 
-    ``context`` of None inherits the ambient span, the way an ordinary span does;
-    an empty ``Context()`` roots a new trace instead.
+    ``context=None`` inherits the active span; an empty Context roots a trace.
     """
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return None
@@ -305,13 +280,10 @@ def backdated_span(
     attributes: Optional[dict[str, Any]] = None,
     parent: Optional[SpanContext] = None,
 ) -> Optional[SpanContext]:
-    """Record a span for a window that elapsed before there was a tracer.
+    """Emit a completed window in wall-clock seconds and return its span context.
 
-    ``start`` and ``end`` are wall-clock seconds; ``parent`` is usually the
-    ``SpanContext`` of the ``mark`` that opened the window, and without one the span
-    starts a new trace. Lens validates timestamps, checks whether the group is
-    enabled, and ends the span. Zero duration is valid. Return the recorded span's
-    context, or None if no span was recorded.
+    Without ``parent``, the span starts a new trace. Missing timestamps or a
+    disabled group produce no span. Zero duration is valid.
     """
     if start is None or end is None:
         return None
@@ -328,12 +300,9 @@ def backdated_span(
 def mark(
     group: str, name: str, attributes: Optional[dict[str, Any]] = None
 ) -> Optional[SpanContext]:
-    """Record an instant: a zero-duration span pinning a moment in time.
+    """Emit a zero-duration span under the active parent and return its context.
 
-    Returns its ``SpanContext``, or None when the group is off. A mark ends
-    immediately; export may be buffered. Its context contains IDs and does not
-    keep a span open.
-    Inherits the ambient span, so a mark nests where an ordinary span would.
+    The span ends immediately; export may be buffered. Returns None if disabled.
     """
     if not _AVAILABLE or not _is_span_group_enabled(group):
         return None
@@ -347,11 +316,7 @@ def record_process_startup(
     imports_finished: float,
     attributes: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Record how long this process took to become able to run.
-
-    Two backdated windows: process creation to the entry module's first statement,
-    and that module's top-level imports. Both root their own trace.
-    """
+    """Emit separate root spans for process startup and timed module imports."""
     created = None
     if _AVAILABLE:
         try:
@@ -365,19 +330,13 @@ def record_process_startup(
 
 
 class Phase:
-    """A long window, recorded as a start anchor and a duration summary.
+    """Emit an ended ``<name>_start`` anchor and a backdated ``<name>`` summary.
 
-    For a window too long to hold a span open across, since a span exports only
-    when it ends. ``open()`` emits ``<name>_start`` as a zero-duration anchor and
-    makes its context active, so spans on this thread nest under the phase.
-    ``close()`` emits ``<name>`` as a duration summary from the saved start time.
-    A phase that never closes still leaves the anchor and its recorded children.
+    The anchor supplies the active context; the summary is its child.
+    Opening attributes go on both records; later updates affect only the summary.
+    An interrupted phase can leave its anchor and children without a summary.
 
-    ``open`` attributes go on both records; ``set`` and ``close`` reach only the
-    span and override by name.
-
-    ORDERING CONTRACT, from ``contextvars``: ``open()`` and ``close()`` must run on
-    the same thread, and anything opened after this one must close before it does.
+    Open and close on the same thread, in reverse nesting order.
     """
 
     def __init__(self) -> None:
@@ -388,15 +347,10 @@ class Phase:
 
     def open(self, group: str, name: str, attributes: Optional[dict[str, Any]] = None) -> None:
         """Emit the start anchor, closing any phase this handle had open."""
-        # Without nemo-lens nothing downstream can record anything, so leave _window
-        # unset: that is the flag set() and close() already bail on, which makes the
-        # whole handle inert for the cost of one module-global read.
         if not _AVAILABLE:
             return
         self.close()
         self._window = (group, name, time.time())
-        # Seeded, not emptied: a consumer filtering spans never sees the mark's
-        # attributes, so a key left only there cannot be grouped on.
         self._attributes = dict(attributes or {})
         try:
             self._parent = mark(group, f"{name}_start", attributes)
@@ -404,7 +358,7 @@ class Phase:
             self._window = self._parent = None
             self._attributes = {}
             raise
-        if self._parent is None:  # group off; the phase still spans nothing to nest in
+        if self._parent is None:  # Group disabled.
             return
         try:
             self._token = _otel_context.attach(
@@ -431,9 +385,7 @@ class Phase:
             try:
                 _otel_context.detach(self._token)
             except Exception:
-                # A phase opened after this one outlived it, so the token is not the
-                # top of the stack. The span is still correct; the next open() fixes
-                # the stale ambient context.
+                # Context restoration failed; still attempt the summary.
                 logger.debug("Out-of-order close for phase %s", name, exc_info=True)
             self._token = None
         try:

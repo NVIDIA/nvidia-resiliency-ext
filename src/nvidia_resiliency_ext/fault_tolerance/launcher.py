@@ -1536,15 +1536,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _joined_cycle_attrs(
         self, worker_group: WorkerGroup
     ) -> dict[str, Union[str, int, None]]:
-        """Telemetry attributes describing the round this node just joined.
-
-        Every value describes this node's own place in the round. The round's
-        rosters are deliberately not among them: each node recording every other
-        node's address costs bytes quadratic in job size, on every cycle span of
-        every node, to say something each node already reports about itself.
-        Global attempt membership is reconstructed from these per-node records,
-        their counter snapshots, timestamps, and parent relationships.
-        """
+        """Describe this node's joined round without duplicating the membership roster."""
         spec = worker_group.spec
         attrs: dict[str, Union[str, int, None]] = {
             "nv.nvrx.ftl.group.rank": worker_group.group_rank,

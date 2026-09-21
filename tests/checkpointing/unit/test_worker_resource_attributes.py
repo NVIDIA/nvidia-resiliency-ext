@@ -18,20 +18,6 @@ def _parse(carrier):
     }
 
 
-def _caller():
-    caller = core.PersistentAsyncCaller.__new__(core.PersistentAsyncCaller)
-    caller.process = None
-    caller.rank = 3
-    caller.queue = mock.sentinel.queue
-    caller.preload_q = mock.sentinel.preload_q
-    caller.comp_q = mock.sentinel.comp_q
-    caller.background_worker_is_daemon = True
-    caller.cpu_priority = 10
-    caller.io_priority = None
-    caller.cpu_shm_mode = False
-    return caller
-
-
 def _start_worker(carrier, start_error=None, observed=None):
     observed = {} if observed is None else observed
 
@@ -46,24 +32,21 @@ def _start_worker(carrier, start_error=None, observed=None):
 
     fake_context = mock.Mock()
     fake_context.Process = FakeProcess
-    caller = _caller()
-    try:
-        with (
-            mock.patch.dict("os.environ", {}, clear=False),
-            mock.patch.object(core.mp, "get_context", return_value=fake_context),
-            mock.patch.object(core.PersistentAsyncCaller, "_worker_restart_callbacks", []),
-        ):
+    with (
+        mock.patch.dict("os.environ", {}, clear=False),
+        mock.patch.object(core.mp, "get_context", return_value=fake_context),
+        mock.patch.object(core.PersistentAsyncCaller, "_worker_restart_callbacks", []),
+    ):
+        caller = core.PersistentAsyncCaller()
+        try:
             if carrier is None:
                 os.environ.pop("OTEL_RESOURCE_ATTRIBUTES", None)
             else:
                 os.environ["OTEL_RESOURCE_ATTRIBUTES"] = carrier
-            try:
-                caller._start_worker(3)
-            finally:
-                observed["restored"] = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
-                observed["restored_present"] = "OTEL_RESOURCE_ATTRIBUTES" in os.environ
-    finally:
-        caller.process = None
+            caller._start_worker(3)
+        finally:
+            observed["restored"] = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
+            caller.process = None
     return observed
 
 
@@ -106,7 +89,6 @@ def test_worker_start_restores_trainer_environment(trainer, fail):
         _start_worker(trainer, observed=observed)
     assert _parse(observed["carrier"])["nv.dl.rank"] == "3"
     assert observed["restored"] == trainer
-    assert observed["restored_present"] == (trainer is not None)
 
 
 @pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")

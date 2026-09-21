@@ -2679,13 +2679,8 @@ def test_retry_cycle_outcomes_with_and_without_agent(rank, outcome, with_agent):
             yield None
             return
         assert inherit_attributes
-        try:
-            yield MagicMock()
-        except BaseException as error:
-            events.append(("rendezvous_exit", type(error)))
-            raise
-        else:
-            events.append(("rendezvous_exit", None))
+        yield MagicMock()
+        events.append(("rendezvous_exit", None))
 
     error = _StaleRendezvousRoundError(6, 3, "rank") if rank is None else None
     with (
