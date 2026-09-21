@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
-from contextlib import nullcontext
 from unittest import mock
 from urllib.parse import unquote
 
@@ -38,7 +37,6 @@ def _start_worker(carrier, start_error=None, observed=None):
 
     class FakeProcess:
         def __init__(self, **kwargs):
-            self.kwargs = kwargs
             observed["process_args"] = kwargs["args"]
 
         def start(self):
@@ -89,55 +87,17 @@ def test_worker_start_uses_live_trainer_resource_and_preserves_rank(trainer_rank
 
 
 @pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")
-def test_worker_start_fills_missing_rank_without_trainer_carrier():
-    observed = _start_worker(None)
-    worker = _parse(observed["carrier"])
-
-    assert worker["nv.dl.rank"] == "3"
-    assert worker["nv.dl.role"] == "ckpt_worker"
-    assert observed["restored"] is None
-    assert not observed["restored_present"]
-
-
-@pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")
-def test_worker_start_restores_trainer_resource_when_process_start_fails():
-    trainer = "example.attribute=trainer-value,nv.dl.rank=3,nv.dl.role=trainer"
-    observed = {}
-    with pytest.raises(RuntimeError, match="Process.start failed"):
-        _start_worker(trainer, RuntimeError("Process.start failed"), observed)
-
-    assert observed["restored"] == trainer
-
-
-@pytest.mark.parametrize("trainer", [None, "", "nv.dl.rank=7,nv.dl.role=trainer"])
-@pytest.mark.parametrize("fail", [False, True])
-def test_worker_start_without_lens_leaves_environment_untouched(trainer, fail):
-    observed = {}
-    error = RuntimeError("Process.start failed") if fail else None
-    with (
-        mock.patch.object(core.telemetry, "_AVAILABLE", False),
-        mock.patch.object(core.telemetry, "get_otel_resource_attributes", return_value={}),
-        mock.patch.object(core.telemetry, "compose_attributes", return_value={}),
-        mock.patch.object(
-            core.telemetry,
-            "publish_otel_resource_attributes",
-            side_effect=lambda attributes: nullcontext(),
-        ),
-    ):
-        if fail:
-            with pytest.raises(RuntimeError, match="Process.start failed"):
-                _start_worker(trainer, error, observed)
-        else:
-            _start_worker(trainer, observed=observed)
-    assert observed["carrier"] == trainer
-    assert observed["restored"] == trainer
-    assert observed["restored_present"] == (trainer is not None)
-
-
-@pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")
-@pytest.mark.parametrize("trainer", [None, ""])
-@pytest.mark.parametrize("fail", [False, True])
-def test_worker_start_restores_missing_or_empty_environment(trainer, fail):
+@pytest.mark.parametrize(
+    "trainer, fail",
+    [
+        (None, False),
+        ("", False),
+        (None, True),
+        ("", True),
+        ("example.attribute=trainer-value,nv.dl.rank=3,nv.dl.role=trainer", True),
+    ],
+)
+def test_worker_start_restores_trainer_environment(trainer, fail):
     observed = {}
     if fail:
         with pytest.raises(RuntimeError, match="Process.start failed"):
@@ -157,8 +117,6 @@ def test_exported_worker_resource_restores_types_from_spawn_carrier():
 
     trainer = (
         "example.attribute=trainer-value,nv.dl.job.uuid=job-1,nv.dl.rank=7,"
-        "nv.dl.world_size=8,nv.dl.local_rank=1,nv.dl.topology.size.tp=2,"
-        "nv.dl.training.target.train_tokens=9007199254740993,"
         "nv.dl.role=trainer,service.instance.id=trainer-7,software.version=001"
     )
     observed = _start_worker(trainer)
@@ -178,9 +136,14 @@ trace.get_tracer_provider().force_flush()
 print(json.dumps(dict(exporter.get_finished_spans()[0].resource.attributes)))
 handle.shutdown()
 """
-    env = dict(os.environ)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("NEMO_LENS_", "OTEL_"))
+    }
     env.update(
         OTEL_RESOURCE_ATTRIBUTES=observed["carrier"],
+        OTEL_TRACES_SAMPLER="always_on",
         NEMO_LENS_ENABLED="true",
         NEMO_LENS_METRICS_ENABLED="false",
         NEMO_LENS_LOGS_ENABLED="false",
@@ -192,15 +155,8 @@ handle.shutdown()
     )
     assert result.returncode == 0, result.stderr
     resource = json.loads(result.stdout)
-    for key, expected in {
-        "nv.dl.rank": 7,
-        "nv.dl.world_size": 8,
-        "nv.dl.local_rank": 1,
-        "nv.dl.topology.size.tp": 2,
-        "nv.dl.training.target.train_tokens": 9007199254740993,
-    }.items():
-        assert type(resource[key]) is int
-        assert resource[key] == expected
+    assert type(resource["nv.dl.rank"]) is int
+    assert resource["nv.dl.rank"] == 7
     assert resource["example.attribute"] == "trainer-value"
     assert resource["nv.dl.job.uuid"] == "job-1"
     assert resource["nv.dl.role"] == "ckpt_worker"

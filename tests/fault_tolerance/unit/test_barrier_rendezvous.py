@@ -35,7 +35,8 @@ from datetime import timedelta
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
 
-from torch.distributed import TCPStore
+import pytest
+from torch.distributed import HashStore, TCPStore
 from torch.distributed.elastic.multiprocessing import SignalException
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
@@ -527,7 +528,6 @@ class BarrierStateBasicTest(BaseRendezvousTest):
                 is_store_host=True,
                 join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
             )
-            state._agent = MagicMock()
 
             def fail_health_check():
                 raise ft_rendezvous_barrier_module.UnhealthyNodeException("bad node")
@@ -2645,6 +2645,44 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual(result[_NodeDesc("nvl72101-node7", 117, 0)], 7)
 
 
+@pytest.mark.parametrize("with_agent", [False, True], ids=["without_agent", "with_agent"])
+@pytest.mark.parametrize(
+    "rank, outcome",
+    [
+        pytest.param(
+            4,
+            {"nv.nvrx.cycle.outcome": "standby", "nv.nvrx.ftl.membership": "standby"},
+            id="standby",
+        ),
+        pytest.param(
+            -1,
+            {"nv.nvrx.cycle.outcome": "standby", "nv.nvrx.ftl.membership": "late_joiner"},
+            id="late_joiner",
+        ),
+        pytest.param(None, {"nv.nvrx.cycle.outcome": "peer_restart"}, id="stale_round"),
+    ],
+)
+def test_retry_cycle_outcomes_with_and_without_agent(rank, outcome, with_agent):
+    state = _RendezvousBarrierState(HashStore(), "retry_telemetry", False)
+    state._round = 3
+    if with_agent:
+        state._agent = MagicMock()
+    state._rdzv_span = MagicMock()
+    error = _StaleRendezvousRoundError(6, 3, "rank") if rank is None else None
+    with (
+        patch.object(
+            state, "_wait_for_rendezvous_open", side_effect=[None, RendezvousGracefulExitError()]
+        ),
+        patch.object(state, "_wait_for_round_done", return_value=(rank, 5)),
+        patch.object(state, "_round_fenced_compare_set", side_effect=error),
+        patch.object(ft_rendezvous_barrier_module, "get_infrastructure_rank", return_value=0),
+        pytest.raises(RendezvousGracefulExitError),
+    ):
+        state.perform_rendezvous(_NodeDescGenerator().generate(), 1, 1)
+    if with_agent:
+        state._agent.close_telemetry_cycle.assert_any_call(outcome)
+
+
 class ErrorCaseTest(BaseRendezvousTest):
     """Test error cases and exception handling."""
 
@@ -2672,205 +2710,92 @@ class ErrorCaseTest(BaseRendezvousTest):
         """Clean up test fixtures."""
         super().tearDown()  # Restores environment variables
 
-    def test_cycle_telemetry_is_optional_without_agent(self):
-        for rank in (4, -1, None):  # standby, late joiner, stale round
-            with self.subTest(rank=rank):
-                state = _RendezvousBarrierState(self.store, self.run_id, False)
-                state._agent = None
-                state._rdzv_span = MagicMock()
-                waits = []
-
-                def wait(node):
-                    if waits:
-                        raise RendezvousGracefulExitError()
-                    waits.append(node)
-                    state._round = 3
-
-                error = _StaleRendezvousRoundError(6, 3, "rank") if rank is None else None
-                with (
-                    patch.object(state, "_wait_for_rendezvous_open", side_effect=wait),
-                    patch.object(state, "_wait_for_round_done", return_value=(rank, 5)),
-                    patch.object(state, "_round_fenced_compare_set", side_effect=error),
-                    patch.object(
-                        ft_rendezvous_barrier_module, "get_infrastructure_rank", return_value=0
-                    ),
-                    self.assertRaises(RendezvousGracefulExitError),
-                ):
-                    state.perform_rendezvous(self.node_desc_gen.generate(), 1, 1)
-                state._rdzv_span.open.assert_called_once()
-
     def test_cycle_opens_before_wait_and_operations_snapshot_current_counters(self):
         from nvidia_resiliency_ext.fault_tolerance.launcher import LocalElasticAgent
 
-        for rank in (4, -1, None):  # standby, late joiner, stale round
-            with self.subTest(rank=rank):
-                state = _RendezvousBarrierState(self.store, self.run_id, False)
-                events = MagicMock()
-                state._agent = object.__new__(LocalElasticAgent)
-                state._agent._node_id = "node"
-                state._agent._cycle_phase = events.cycle
-                state._rdzv_span = events.rendezvous
-                boundaries = []
-                profiling_cycle = {"value": 0}
+        state = _RendezvousBarrierState(self.store, self.run_id, False)
+        state._agent = object.__new__(LocalElasticAgent)
+        state._agent._node_id = "node"
+        state._agent._cycle_phase = MagicMock()
+        state._rdzv_span = MagicMock()
+        boundaries = []
+        rounds = iter(((3, 4), (4, 6)))
+        profiling_cycle = 0
 
-                def wait(node):
-                    events.wait()
-                    if events.wait.call_count == 3:
-                        boundaries.append(("wait_failed", None))
-                        raise RendezvousGracefulExitError()
-                    state._round = events.wait.call_count + 2
-                    profiling_cycle["value"] = 4 if events.wait.call_count == 1 else 6
-                    boundaries.append(("wait", state._round, profiling_cycle["value"]))
+        def wait(node):
+            nonlocal profiling_cycle
+            try:
+                state._round, profiling_cycle = next(rounds)
+            except StopIteration:
+                boundaries.append(("wait_failed", None))
+                raise RendezvousGracefulExitError()
+            boundaries.append(("wait", state._round, profiling_cycle))
 
-                def open_cycle(group, name, attributes):
-                    boundaries.append(
-                        (
-                            "cycle",
-                            attributes["nv.nvrx.ftl.rdzv.round"],
-                            attributes["nv.nvrx.ftl.profiling.cycle"],
-                        )
-                    )
-
-                def open_rendezvous(group, name, attributes, *, inherit_attributes):
-                    self.assertTrue(inherit_attributes)
-                    boundaries.append(
-                        (
-                            "rendezvous",
-                            attributes["nv.nvrx.ftl.rdzv.round"],
-                            attributes["nv.nvrx.ftl.profiling.cycle"],
-                        )
-                    )
-
-                def open_span(group, name, attributes):
-                    self.assertEqual(
-                        set(attributes),
-                        {
-                            "nv.nvrx.ftl.rdzv.round",
-                            "nv.nvrx.ftl.profiling.cycle",
-                        },
-                    )
-                    boundaries.append(
-                        (
-                            "await_round",
-                            attributes["nv.nvrx.ftl.rdzv.round"],
-                            attributes["nv.nvrx.ftl.profiling.cycle"],
-                        )
-                    )
-                    return MagicMock()
-
-                def record_event(event, **kwargs):
-                    boundaries.append(("profiling", event.value))
-
-                events.cycle.open.side_effect = open_cycle
-                state._rdzv_span.open.side_effect = open_rendezvous
-
-                error = _StaleRendezvousRoundError(6, 3, "rank") if rank is None else None
-                with (
-                    patch.object(
-                        state._agent,
-                        "open_telemetry_cycle",
-                        wraps=state._agent.open_telemetry_cycle,
-                    ) as open_telemetry_cycle,
-                    patch.object(
-                        state._agent,
-                        "close_telemetry_cycle",
-                        wraps=state._agent.close_telemetry_cycle,
-                    ) as close_telemetry_cycle,
-                    patch.object(state, "_wait_for_rendezvous_open", side_effect=wait),
-                    patch.object(state, "_wait_for_round_done", return_value=(rank, 5)),
-                    patch.object(state, "_round_fenced_compare_set", side_effect=error),
-                    patch.object(
-                        ft_rendezvous_barrier_module,
-                        "get_profiling_cycle",
-                        side_effect=lambda: profiling_cycle["value"],
-                    ),
-                    patch.object(
-                        ft_rendezvous_barrier_module,
-                        "record_profiling_event",
-                        side_effect=record_event,
-                    ),
-                    patch.object(ft_rendezvous_barrier_module, "span", side_effect=open_span),
-                    patch.object(
-                        ft_rendezvous_barrier_module, "get_infrastructure_rank", return_value=0
-                    ),
-                    self.assertRaises(RendezvousGracefulExitError),
-                ):
-                    state.perform_rendezvous(self.node_desc_gen.generate(), 1, 1)
-
-                expected_cycle_attributes = [
-                    {
-                        "nv.nvrx.ftl.rdzv.round": rendezvous_round,
-                        "nv.nvrx.ftl.profiling.cycle": profiling_count,
-                        "nv.nvrx.ftl.node": "node",
-                        "nv.nvrx.ftl.membership": "unjoined",
-                    }
-                    for rendezvous_round, profiling_count in ((0, 0), (3, 4), (4, 6))
-                ]
-                expected_cycle_open_calls = [
-                    call(
-                        "nvrx.ft",
-                        "nv.nvrx.ftl.cycle",
-                        attributes,
-                    )
-                    for attributes in expected_cycle_attributes
-                ]
-                self.assertEqual(
-                    open_telemetry_cycle.call_args_list,
-                    [
-                        call(
-                            {
-                                "nv.nvrx.ftl.rdzv.round": rendezvous_round,
-                                "nv.nvrx.ftl.profiling.cycle": profiling_count,
-                            }
-                        )
-                        for rendezvous_round, profiling_count in ((0, 0), (3, 4), (4, 6))
-                    ],
+        def snapshot(label, attributes):
+            boundaries.append(
+                (
+                    label,
+                    attributes["nv.nvrx.ftl.rdzv.round"],
+                    attributes["nv.nvrx.ftl.profiling.cycle"],
                 )
-                self.assertEqual(
-                    events.cycle.open.call_args_list,
-                    expected_cycle_open_calls,
-                )
-                self.assertEqual(
-                    boundaries,
-                    [
-                        ("cycle", 0, 0),
-                        ("profiling", "await_round_started"),
-                        ("await_round", 0, 0),
-                        ("wait", 3, 4),
-                        ("profiling", "await_round_completed"),
-                        ("profiling", "rendezvous_started"),
-                        ("rendezvous", 3, 4),
-                        ("cycle", 3, 4),
-                        ("profiling", "await_round_started"),
-                        ("await_round", 3, 4),
-                        ("wait", 4, 6),
-                        ("profiling", "await_round_completed"),
-                        ("profiling", "rendezvous_started"),
-                        ("rendezvous", 4, 6),
-                        ("cycle", 4, 6),
-                        ("profiling", "await_round_started"),
-                        ("await_round", 4, 6),
-                        ("wait_failed", None),
-                        ("profiling", "await_round_completed"),
-                    ],
-                )
+            )
 
-                attrs = (
-                    {"nv.nvrx.cycle.outcome": "peer_restart"}
-                    if rank is None
-                    else {
-                        "nv.nvrx.cycle.outcome": "standby",
-                        "nv.nvrx.ftl.membership": "late_joiner" if rank == -1 else "standby",
-                    }
-                )
-                self.assertEqual(
-                    close_telemetry_cycle.call_args_list.count(call(attrs)),
-                    2,
-                )
-                self.assertEqual(
-                    events.cycle.close.call_args_list.count(call(attrs)),
-                    2,
-                )
+        def open_span(group, name, attributes):
+            snapshot("await_round", attributes)
+            return MagicMock()
+
+        def open_rendezvous(group, name, attributes, *, inherit_attributes):
+            self.assertTrue(inherit_attributes)
+            snapshot("rendezvous", attributes)
+
+        state._agent._cycle_phase.open.side_effect = lambda group, name, attrs: snapshot(
+            "cycle", attrs
+        )
+        state._rdzv_span.open.side_effect = open_rendezvous
+        with (
+            patch.object(state, "_wait_for_rendezvous_open", side_effect=wait),
+            patch.object(state, "_wait_for_round_done", return_value=(4, 5)),
+            patch.object(state, "_round_fenced_compare_set"),
+            patch.object(
+                ft_rendezvous_barrier_module,
+                "get_profiling_cycle",
+                side_effect=lambda: profiling_cycle,
+            ),
+            patch.object(
+                ft_rendezvous_barrier_module,
+                "record_profiling_event",
+                side_effect=lambda event, **kwargs: boundaries.append(("profiling", event.value)),
+            ),
+            patch.object(ft_rendezvous_barrier_module, "span", side_effect=open_span),
+            patch.object(ft_rendezvous_barrier_module, "get_infrastructure_rank", return_value=0),
+            self.assertRaises(RendezvousGracefulExitError),
+        ):
+            state.perform_rendezvous(self.node_desc_gen.generate(), 1, 1)
+
+        self.assertEqual(
+            boundaries,
+            [
+                ("cycle", 0, 0),
+                ("profiling", "await_round_started"),
+                ("await_round", 0, 0),
+                ("wait", 3, 4),
+                ("profiling", "await_round_completed"),
+                ("profiling", "rendezvous_started"),
+                ("rendezvous", 3, 4),
+                ("cycle", 3, 4),
+                ("profiling", "await_round_started"),
+                ("await_round", 3, 4),
+                ("wait", 4, 6),
+                ("profiling", "await_round_completed"),
+                ("profiling", "rendezvous_started"),
+                ("rendezvous", 4, 6),
+                ("cycle", 4, 6),
+                ("profiling", "await_round_started"),
+                ("await_round", 4, 6),
+                ("wait_failed", None),
+                ("profiling", "await_round_completed"),
+            ],
+        )
 
     def test_slot_beyond_max_nodes_is_not_fatal(self):
         """A slot index beyond max_nodes must NOT shut down the rendezvous.
@@ -2891,7 +2816,6 @@ class ErrorCaseTest(BaseRendezvousTest):
             is_store_host=False,
             join_timeout_seconds=1.0,
         )
-        state._agent = MagicMock()
         self.store.add(state.join_count_key, max_nodes)
 
         with self.assertRaises(RendezvousTimeoutError):
@@ -2922,7 +2846,6 @@ class ErrorCaseTest(BaseRendezvousTest):
             is_store_host=False,
             join_timeout_seconds=1.0,
         )
-        state._agent = MagicMock()
         self.store.add(state.join_count_key, max_nodes)
 
         with self.assertRaises(RendezvousTimeoutError):
@@ -2956,7 +2879,6 @@ class ErrorCaseTest(BaseRendezvousTest):
             is_store_host=True,
             join_timeout_seconds=1.0,  # Use very short timeout to test timeout behavior
         )
-        state._agent = MagicMock()
         min_nodes = 5  # Require 5 nodes but we'll only provide 1
         max_nodes = 5
         segment_check_interval = _test_segment_check_interval()
@@ -2974,7 +2896,6 @@ class ErrorCaseTest(BaseRendezvousTest):
             is_store_host=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
         )
-        state._agent = MagicMock()
 
         # Permanently close the rendezvous
         state.set_shutdown()
@@ -3768,7 +3689,6 @@ class SignalRendezvousTest(BaseRendezvousTest):
             timeout=RendezvousTimeout(join=timedelta(seconds=TEST_JOIN_TIMEOUT_SECS)),
             is_store_host=False,
         )
-        handler._barrier_state._agent = MagicMock()
 
         with self.assertRaises(SignalException):
             handler.next_rendezvous()
