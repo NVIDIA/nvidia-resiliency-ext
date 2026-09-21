@@ -321,7 +321,7 @@ NVRX_SMONSVC_LOG_LEVEL=DEBUG
 # Slack alerts (requires slack-sdk; needs both a token and a channel)
 # SLACK_BOT_TOKEN_FILE=${CONFIG_DIR}/slack_bot_token
 # SLACK_CHANNEL="#trng-alerts"
-# NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS=STOP
+# NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS=STOP
 EOF
         if [[ "$USER_MODE" == false ]]; then
             chmod 640 "${CONFIG_DIR}/nvrx.env"

@@ -83,85 +83,9 @@ Counts appear under `log_paths` in `/stats`:
 
 ## Slack Notifications
 
-The monitor posts attribution results to Slack. Credentials use unprefixed
-environment variables (matching the equivalent attrsvc settings):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SLACK_BOT_TOKEN` | `""` | Bot token. If empty, falls back to `SLACK_BOT_TOKEN_FILE`, then `~/.slack_bot_token`, `~/.slack_token`, `~/.config/nvrx/slack_bot_token` |
-| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token |
-| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env` files, quote values starting with `#` |
-| `NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS` | `STOP` | Comma- or space-separated recommendation actions that trigger a message. Valid: `STOP`, `RESTART`, `CONTINUE`, `UNKNOWN`, `TIMEOUT` |
-
-Requires `slack-sdk`:
-
-```bash
-pip install 'nvidia-resiliency-ext[attribution]'
-```
-
-Notifications are **off by default**. They activate only when `slack-sdk` is
-installed *and* both a token and a channel are configured; otherwise the
-monitor logs `Slack alerts: disabled (...)` at startup and runs unchanged.
-
-By default only `STOP` pages, since `RESTART` is the routine outcome and would
-be noisy. To page on more actions:
-
-```bash
-export SLACK_BOT_TOKEN_FILE=/secure/slack_bot_token
-export SLACK_CHANNEL="#trng-alerts"
-export NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
-```
-
-Each message carries the recommendation action and source, the job ID and name,
-and the log path. The job owner is mentioned when their `{user}@nvidia.com`
-address resolves to a Slack account.
-
-**Failed due to** is the model's narrative root cause
-(`l1_assessment.root_cause_assessment.summary`), not the typed failure record —
-`failure_class` plus a raw log snippet says what *matched*, not what went wrong.
-The typed record becomes the **Evidence** line, where its location fields earn
-their place:
-
-```
-*Evidence:* `observed_failure` at line 35652, rank 0, phase steady_mid (terminal, initiating)
-```
-
-`causal_role` matters there: it distinguishes the line that *initiated* the
-failure from one that merely followed it.
-
-**Why \<ACTION\>** is the decision audit trail — the L4 rule that fired (and the
-base rule it overrode, when a policy context applies), the retry budget, the L1
-category with its own STOP/RESTART verdict, and the retry outlook:
-
-```
-*Why RESTART:*
-  • rule `general_retry` — budget 2, not exhausted
-  • category 13 _NCCL remote process exited / network error_ → RESTART (confidence 72)
-  • retry outlook: may_recover (supported_but_unconfirmed, confidence 67)
-```
-
-The category is the load-bearing signal: when it is right the decision is
-almost always right. `failure_domain` and `retry_outlook` are the model's
-abstract policy claims and are materially less accurate than the category pick,
-so they carry their confidence and are dropped entirely when `unknown`.
-
-**Plausible causes** and **Missing evidence** appear only when the assessment
-status is not `established_by_current_log` — that is, when the agent explains
-the mechanism but cannot prove the trigger. On a confirmed result they would be
-noise, so they are omitted.
-
-Deterministic-only results carry no narrative, so **Failed due to** falls back to
-`failure_class: signature`. LogSage results keep their original issue wording.
-
-Delivery is best effort: a Slack outage is counted and logged, never propagated
-into the monitor's polling loop. Counters are exposed under `slack` in `/stats`:
-
-```json
-{"slack": {"attempts": 12, "sent": 11, "failed": 1, "skipped_action": 143}}
-```
-
-The bot must be invited to the target channel (`/invite @your-bot`) and needs
-the `chat:write` scope, plus `users:read.email` for owner mentions.
+Alerting lives in **nvrx-attrsvc**, not here, so that inline NVRx deployments —
+which have no monitor — are covered by the same implementation. See
+[attrsvc/README.md](../attrsvc/README.md#slack-notifications).
 
 ## API Endpoints
 
@@ -180,7 +104,6 @@ When `PORT` is set, the monitor exposes an HTTP server:
    to the application log, see below)
 3. Submits the log to the Attribution Service via POST /logs
 4. Tracks job state to avoid duplicate submissions
-5. Posts a Slack alert when the recommendation matches the configured actions
 
 ## Architecture
 
@@ -273,7 +196,6 @@ nvrx-smonsvc -v
 | `slurm.py` | SLURM subprocess calls (squeue, scontrol, sacct) with batching and het job support |
 | `attrsvc_client.py` | HTTP client for Attribution Service |
 | `status_server.py` | Status server (/stats, /jobs, /healthz) |
-| `slack.py` | Slack notifications for attribution results |
 | `log_resolver.py` | Maps SLURM stdout wrappers to application logs |
 | `models.py` | Data models (JobState, SlurmJob, MonitorState) |
 | `deploy/run_smonsvc.sh` | Run service with logging (background) |

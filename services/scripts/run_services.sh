@@ -26,9 +26,9 @@
 #   NVRX_SMONSVC_PORT         - Monitor service port (default: 8100)
 #   NVRX_ATTRSVC_CLUSTER_NAME - Cluster name for dataflow (auto-detected from SLURM)
 #   SNAPSHOT_INTERVAL         - Snapshot interval in seconds (default: 600)
-#   SLACK_BOT_TOKEN_FILE      - Slack bot token file; enables smonsvc Slack alerts
+#   SLACK_BOT_TOKEN_FILE      - Slack bot token file; enables attrsvc Slack alerts
 #   SLACK_CHANNEL             - Slack channel for alerts (e.g. #trng-alerts)
-#   NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS - Actions that page (default: STOP)
+#   NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS - Actions that page (default: STOP)
 #
 # Example:
 #   export NVRX_ATTRSVC_ALLOWED_ROOT=/lustre/logs

@@ -1,28 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Slack notifications for attribution results observed by the monitor.
+"""Slack notifications for completed attribution analyses.
 
-The monitor already parses a normalized :class:`AttrSvcResult` for every
-terminal job it fetches. This module turns the results worth paging on into a
-Slack message, reusing the shared attribution markdown body so a notification
-looks the same regardless of which analysis path produced it.
+Notifying here rather than in a client covers both deployment shapes with one
+implementation: as a service (``nvrx-smonsvc`` + ``nvrx-attrsvc``) and inline
+(NVRx + ``nvrx-attrsvc``), which has no monitor to hook. Both submit through the
+same ``POST /logs`` and both carry the job identity, so the alert is identical.
 
-Credentials use unprefixed environment variables, matching the equivalent
-attrsvc settings:
+It also makes one analysis produce exactly one alert regardless of how many
+clients fetch the result — in service mode every array task of a job fetches the
+same completed analysis.
+
+Credentials use unprefixed environment variables, matching the existing attrsvc
+settings:
 
 ``SLACK_BOT_TOKEN`` / ``SLACK_BOT_TOKEN_FILE``
     Bot token, resolved by
     :func:`~nvidia_resiliency_ext.attribution.api_keys.load_slack_bot_token`.
 ``SLACK_CHANNEL``
     Target channel ID or name, e.g. ``#trng-alerts``.
-``NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS``
+``NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS``
     Comma- or space-separated recommendation actions that trigger a message.
     Defaults to ``STOP`` so only terminal failures page.
 
 Requires ``slack-sdk`` (``pip install 'nvidia-resiliency-ext[attribution]'``).
 Without it, or without a token and channel, the notifier reports itself
-disabled and the monitor behaves exactly as before.
+disabled and attribution behaves exactly as before.
 """
 
 from __future__ import annotations
@@ -30,14 +34,13 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
 from nvidia_resiliency_ext.attribution.orchestration.client_response import AttrSvcResult
 from nvidia_resiliency_ext.attribution.orchestration.posting_markdown import (
     format_attribution_markdown,
 )
-from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     RECOMMENDATION_ACTIONS,
     RECOMMENDATION_STOP,
@@ -50,16 +53,14 @@ from nvidia_resiliency_ext.attribution.postprocessing.slack import (
     WebClient,
     get_slack_user_id,
 )
-
-if TYPE_CHECKING:
-    from .models import SlurmJob
+from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
 
 logger = logging.getLogger(__name__)
 
 #: Only terminal failures page by default; restarts are routine and noisy.
 DEFAULT_NOTIFY_ACTIONS = (RECOMMENDATION_STOP,)
 
-NOTIFY_ACTIONS_ENV = "NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS"
+NOTIFY_ACTIONS_ENV = "NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS"
 CHANNEL_ENV = "SLACK_CHANNEL"
 
 # Key of the attribution result list inside the inner backend result payload.
@@ -105,6 +106,20 @@ class SlackConfig:
         return cls(
             token=load_slack_bot_token(),
             channel=(os.environ.get(CHANNEL_ENV) or "").strip(),
+            notify_actions=parse_notify_actions(os.environ.get(NOTIFY_ACTIONS_ENV)),
+        )
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> "SlackConfig":
+        """Build from attrsvc ``Settings``, falling back to the key-file lookup.
+
+        ``SLACK_BOT_TOKEN`` and ``SLACK_CHANNEL`` are existing attrsvc settings;
+        an empty token defers to ``SLACK_BOT_TOKEN_FILE`` and the default paths.
+        """
+        token = str(getattr(settings, "SLACK_BOT_TOKEN", "") or "").strip()
+        return cls(
+            token=token or load_slack_bot_token(),
+            channel=str(getattr(settings, "SLACK_CHANNEL", "") or "").strip(),
             notify_actions=parse_notify_actions(os.environ.get(NOTIFY_ACTIONS_ENV)),
         )
 
@@ -425,10 +440,42 @@ def attribution_fields(result: AttrSvcResult) -> Optional[AttributionFields]:
     return restart_agent_fields(result.result)
 
 
-def format_notification(job: "SlurmJob", result: AttrSvcResult) -> str:
+@dataclass(frozen=True)
+class AnalysisIdentity:
+    """Who the analysis belongs to, as supplied on ``POST /logs``."""
+
+    job_id: str = ""
+    user: str = ""
+    run_name: str = ""
+
+    @property
+    def label(self) -> str:
+        job_id = self.job_id or "unknown"
+        return f"{job_id} ({self.run_name})" if self.run_name else job_id
+
+
+def run_name_from_log_path(log_path: str, job_id: str = "") -> str:
+    """Recover the run name from an application log filename.
+
+    Logs are named ``<run>_<jobid>_date_...``, so the run name is the prefix
+    before the job ID. attrsvc never sees the SLURM job name, and this keeps the
+    alert self-describing in both deployment modes. Returns ``""`` when the
+    filename does not follow that convention.
+    """
+    if not log_path:
+        return ""
+    stem = os.path.basename(log_path)
+    base = str(job_id).split("_", 1)[0].split("+", 1)[0].strip()
+    if not base:
+        return ""
+    marker = f"_{base}_"
+    index = stem.find(marker)
+    return stem[:index] if index > 0 else ""
+
+
+def format_notification(identity: AnalysisIdentity, result: AttrSvcResult) -> str:
     """Render the alert: decision, narrative cause, policy rationale, evidence."""
-    job_name = getattr(job, "name", "")
-    job_label = f"{job.job_id} ({job_name})" if job_name else str(job.job_id)
+    job_label = identity.label
 
     header = f"*NVRx attribution:* `{result.recommendation.action}`"
     if result.recommendation.source:
@@ -466,7 +513,6 @@ def format_notification(job: "SlurmJob", result: AttrSvcResult) -> str:
             missing = "\n".join(f"  • {m}" for m in fields.missing_evidence)
             extras.append(f"*Missing evidence:*\n{missing}")
 
-    user = getattr(job, "user", "") or ""
     text = f"{header}\n{body}"
     if extras:
         text += "\n" + "\n".join(extras)
@@ -506,7 +552,7 @@ class SlackNotifier:
         """Whether a recommendation action is in the configured notify set."""
         return normalize_recommendation_action(action) in self.config.notify_actions
 
-    def notify(self, job: "SlurmJob", result: AttrSvcResult) -> bool:
+    def notify(self, identity: AnalysisIdentity, result: AttrSvcResult) -> bool:
         """Send a notification for ``result`` if it is configured to page.
 
         Returns ``True`` only when a message was delivered.
@@ -517,25 +563,25 @@ class SlackNotifier:
             self.stats.skipped_action += 1
             return False
 
-        text = format_notification(job, result)
+        text = format_notification(identity, result)
 
-        user = getattr(job, "user", "") or ""
+        user = identity.user
         if user:
             slack_user_id = get_slack_user_id(user, self.config.token)
             if slack_user_id:
                 text += f"\n<@{slack_user_id}>"
             else:
-                logger.warning(f"[{job.job_id}] Slack user not found for {user}")
+                logger.warning(f"[{identity.job_id}] Slack user not found for {user}")
 
         self.stats.attempts += 1
         try:
             self._web_client().chat_postMessage(channel=self.config.channel, text=text)
         except SlackApiError as e:
             self.stats.failed += 1
-            logger.error(f"[{job.job_id}] Slack notification failed: {e}")
+            logger.error(f"[{identity.job_id}] Slack notification failed: {e}")
             return False
         self.stats.sent += 1
-        logger.info(f"[{job.job_id}] Slack notification sent to {self.config.channel}")
+        logger.info(f"[{identity.job_id}] Slack notification sent to {self.config.channel}")
         return True
 
     def _web_client(self) -> Any:

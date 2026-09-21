@@ -9,29 +9,26 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from .attrsvc_client import AttrsvcClient
     from .models import MonitorState
-    from .slack import SlackStats
 
 
 def get_stats_dict(
     state: "MonitorState",
     lock: threading.Lock,
-    slack_stats: "SlackStats | None" = None,
 ) -> dict:
     """
     Build stats dictionary for HTTP endpoint.
 
     "jobs" is a snapshot of the current in-memory job set. All other sections
-    (job_totals, slurm, path_errors, http_errors, slack) are cumulative since
-    process start.
+    (job_totals, slurm, path_errors, http_errors, log_paths) are cumulative
+    since process start.
 
     Args:
         state: MonitorState with job and counter data
         lock: Lock for thread-safe state access
-        slack_stats: Slack notification counters; omitted from the result when None
 
     Returns:
         Stats dictionary with jobs, job_totals, slurm, path_errors, http_errors
-        and, when available, slack
+        and log_paths
     """
     with lock:
         jobs = state.jobs
@@ -85,8 +82,6 @@ def get_stats_dict(
                 "duplicate_analyses": state.duplicate_analyses,
             },
         }
-        if slack_stats is not None:
-            stats["slack"] = slack_stats.as_dict()
         return stats
 
 

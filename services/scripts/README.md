@@ -54,19 +54,19 @@ Agent config with its own credential reference, or the default key-file paths
 
 ### Slack Alerts
 
-`nvrx-smonsvc` posts attribution results to Slack when a token and channel are
-configured. Export these before `start`/`run` so the monitor inherits them:
+`nvrx-attrsvc` posts attribution results to Slack when a token and channel are
+configured. This covers both deployment modes. Export these before `start`/`run`:
 
 ```bash
 export SLACK_BOT_TOKEN_FILE=/secure/slack_bot_token
 export SLACK_CHANNEL="#trng-alerts"
 # Actions that page; default is STOP only
-export NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
+export NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
 ```
 
 Requires `slack-sdk` (`pip install 'nvidia-resiliency-ext[attribution]'`). The
-monitor logs its Slack status at startup and counts deliveries under `slack` in
-`/stats`. See [smonsvc/README.md](../smonsvc/README.md#slack-notifications).
+service logs its Slack status at startup. See
+[attrsvc/README.md](../attrsvc/README.md#slack-notifications).
 
 Under systemd, set these in `nvrx.env` instead — units do not inherit your
 shell environment.

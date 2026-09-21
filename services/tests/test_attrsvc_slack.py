@@ -1,25 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from nvidia_resiliency_ext.attribution.orchestration.client_response import parse_attrsvc_response
-from nvidia_resiliency_ext.services.smonsvc import slack as slack_mod
-from nvidia_resiliency_ext.services.smonsvc.job_handlers import log_attribution_result
-from nvidia_resiliency_ext.services.smonsvc.slack import (
+from nvidia_resiliency_ext.services.attrsvc import slack as slack_mod
+from nvidia_resiliency_ext.services.attrsvc.slack import (
     DEFAULT_NOTIFY_ACTIONS,
+    AnalysisIdentity,
     SlackConfig,
     SlackNotifier,
     format_notification,
     latest_result_item,
     parse_notify_actions,
+    run_name_from_log_path,
 )
 
 
 def _job(job_id="123", name="nemotron_pretrain", user="alice"):
-    return SimpleNamespace(job_id=job_id, name=name, user=user)
+    return AnalysisIdentity(job_id=job_id, run_name=name, user=user)
 
 
 def _item(primary_issues, explanation="checkpoint corrupted"):
@@ -93,7 +95,7 @@ def test_parse_notify_actions_drops_unknown_entries_instead_of_normalizing():
 def test_config_from_env_reads_token_channel_and_actions(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-from-env")
     monkeypatch.setenv("SLACK_CHANNEL", " #trng-alerts ")
-    monkeypatch.setenv("NVRX_SMONSVC_SLACK_NOTIFY_ACTIONS", "STOP,RESTART")
+    monkeypatch.setenv("NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS", "STOP,RESTART")
 
     config = SlackConfig.from_env()
 
@@ -156,7 +158,7 @@ def test_notification_carries_job_label_and_log_path():
 
 
 def test_notification_without_job_name_uses_bare_job_id():
-    text = format_notification(_job(name=""), _parsed())
+    text = format_notification(_job(name=''), _parsed())
     assert "`123`" in text
 
 
@@ -233,49 +235,6 @@ def test_stats_as_dict_exposes_all_counters(monkeypatch):
 # ─── integration with the result handler ───
 
 
-def test_log_attribution_result_notifies_slack(monkeypatch, capsys):
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-
-    log_attribution_result(_job(), "/lustre/logs/job.log", _response(), slack_notifier=notifier)
-
-    assert "Recommendation: STOP" in capsys.readouterr().out
-    assert len(client.messages) == 1
-
-
-def test_log_attribution_result_without_notifier_is_unchanged(capsys):
-    log_attribution_result(_job(), "/lustre/logs/job.log", _response())
-
-    assert "Recommendation: STOP" in capsys.readouterr().out
-
-
-def test_log_attribution_result_survives_notifier_errors(monkeypatch, capsys):
-    class _Exploding:
-        def notify(self, job, parsed):
-            raise RuntimeError("slack is down")
-
-    log_attribution_result(_job(), "/lustre/logs/job.log", _response(), slack_notifier=_Exploding())
-
-    # The summary is still printed: alerting is best effort and must not break
-    # the monitor's result-processing loop.
-    assert "Recommendation: STOP" in capsys.readouterr().out
-
-
-def test_log_attribution_result_notifies_on_timeout_when_configured(monkeypatch, capsys):
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client, notify_actions=frozenset({"TIMEOUT"}))
-
-    log_attribution_result(
-        _job(),
-        "/lustre/logs/job.log",
-        _response(action="TIMEOUT", items=[]),
-        slack_notifier=notifier,
-    )
-
-    assert "Attribution timeout" in capsys.readouterr().out
-    assert len(client.messages) == 1
-
-
 # ─── restart-agent responses carry no "module" key ───
 
 
@@ -297,33 +256,14 @@ def _restart_agent_response(action="STOP"):
     }
 
 
-def test_log_attribution_result_accepts_restart_agent_response(capsys):
-    # The legacy guard required inner["module"], which no Restart Agent result
-    # sets, so every direct-backend result was dropped before being reported.
-    log_attribution_result(_job(), "/lustre/logs/job.log", _restart_agent_response())
-
-    output = capsys.readouterr().out
-    assert "Recommendation: STOP" in output
-    assert "unrecognized" not in output
-
-
 def test_restart_agent_response_reaches_slack(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
 
-    log_attribution_result(
-        _job(), "/lustre/logs/job.log", _restart_agent_response(), slack_notifier=notifier
-    )
+    notifier.notify(_job(), parse_attrsvc_response(_restart_agent_response(), log_path='/x.log'))
 
     assert len(client.messages) == 1
     assert "*NVRx attribution:* `STOP`" in client.messages[0]["text"]
-
-
-def test_log_attribution_result_still_rejects_unusable_responses(capsys, caplog):
-    log_attribution_result(_job(), "/lustre/logs/job.log", {"result": {}})
-
-    assert capsys.readouterr().out == ""
-    assert "empty or unrecognized" in caplog.text
 
 
 # ─── restart-agent payloads have no LogSage item list ───
@@ -395,7 +335,7 @@ def test_restart_agent_message_has_no_placeholder_text(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
 
-    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
 
     text = client.messages[0]["text"]
     assert "No attribution available" not in text
@@ -415,7 +355,7 @@ def test_notification_does_not_repeat_reason_as_terminal_issue(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
 
-    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
 
     # The Restart Agent justification is both the reason and the terminal issue.
     text = client.messages[0]["text"]
@@ -441,7 +381,7 @@ def test_message_leads_with_the_narrative_cause_not_the_typed_label(monkeypatch)
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
 
-    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
     text = client.messages[0]["text"]
 
     assert "Rank 3 exhausted device memory during the optimizer step." in text
@@ -453,7 +393,7 @@ def test_message_carries_an_evidence_line(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
 
-    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
     text = client.messages[0]["text"]
 
     assert "*Evidence:*" in text
@@ -466,7 +406,7 @@ def test_unconfirmed_results_show_causes_and_missing_evidence(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
 
-    log_attribution_result(_job(), "/x.log", _restart_agent_payload(), slack_notifier=notifier)
+    notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
     text = client.messages[0]["text"]
 
     assert "*Plausible causes*" in text
@@ -484,7 +424,7 @@ def test_confirmed_results_omit_causes_and_missing_evidence(monkeypatch):
         "status"
     ] = "established_by_current_log"
 
-    log_attribution_result(_job(), "/x.log", payload, slack_notifier=notifier)
+    notifier.notify(_job(), parse_attrsvc_response(payload, log_path='/x.log'))
     text = client.messages[0]["text"]
 
     # The log established the cause; alternatives would be noise.
@@ -583,7 +523,7 @@ def test_message_includes_the_why_section(monkeypatch):
     payload = _restart_agent_payload()
     payload["result"]["retry_policy"] = _policy_payload()["retry_policy"]
 
-    log_attribution_result(_job(), "/x.log", payload, slack_notifier=notifier)
+    notifier.notify(_job(), parse_attrsvc_response(payload, log_path='/x.log'))
     text = client.messages[0]["text"]
 
     assert "*Why STOP:*" in text
@@ -597,3 +537,145 @@ def test_message_omits_the_why_section_without_policy_data(monkeypatch):
     notifier.notify(_job(), _parsed())  # LogSage result, no retry_policy
 
     assert "*Why " not in client.messages[0]["text"]
+
+
+# ─── identity recovered from the analysis, not from a SLURM job ───
+
+
+@pytest.mark.parametrize(
+    "path,job_id,expected",
+    [
+        (
+            "/x/logs/nemotron4_derisking_nano_21t_phase1_3901259_date_26-09-21_time_10-45-42_cycle0.log",
+            "3901259_26",
+            "nemotron4_derisking_nano_21t_phase1",
+        ),
+        # The parent job ID is what the filename embeds, so array tasks agree.
+        ("/x/logs/run_777_date_x.log", "777_3", "run"),
+        ("/x/logs/run_777_date_x.log", "777+1", "run"),
+    ],
+)
+def test_run_name_recovered_from_log_filename(path, job_id, expected):
+    assert run_name_from_log_path(path, job_id) == expected
+
+
+@pytest.mark.parametrize(
+    "path,job_id",
+    [
+        ("/x/slurm_out/slurm-813606.out", "813606"),  # wrapper, no run prefix
+        ("/x/logs/anything.log", ""),  # no job id to anchor on
+        ("", "777"),
+    ],
+)
+def test_run_name_returns_empty_when_unrecoverable(path, job_id):
+    assert run_name_from_log_path(path, job_id) == ""
+
+
+def test_identity_label_falls_back_to_bare_job_id():
+    assert AnalysisIdentity(job_id="777").label == "777"
+    assert AnalysisIdentity(job_id="777", run_name="my_run").label == "777 (my_run)"
+    assert AnalysisIdentity().label == "unknown"
+
+
+def test_config_from_settings_uses_attrsvc_settings(monkeypatch):
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS", raising=False)
+    settings = SimpleNamespace(SLACK_BOT_TOKEN="xoxb-from-settings", SLACK_CHANNEL=" C123 ")
+
+    config = SlackConfig.from_settings(settings)
+
+    assert config.token == "xoxb-from-settings"
+    assert config.channel == "C123"
+    assert config.configured is True
+
+
+def test_config_from_settings_defers_to_the_key_file_when_token_is_empty(monkeypatch):
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-from-env")
+    settings = SimpleNamespace(SLACK_BOT_TOKEN="", SLACK_CHANNEL="C123")
+
+    assert SlackConfig.from_settings(settings).token == "xoxb-from-env"
+
+
+# ─── the backend notifies, so both deployment modes are covered ───
+
+
+def test_backend_notifies_on_terminal_completion(monkeypatch):
+    """Both smonsvc and inline NVRx reach Slack through this one call site."""
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
+        RestartAgentServiceBackend,
+    )
+
+    sent = []
+
+    class _Recorder:
+        enabled = True
+
+        def notify(self, identity, result):
+            sent.append((identity, result))
+            return True
+
+    entry = SimpleNamespace(
+        job_id="3901259_26",
+        user="dnarayanan",
+        log_path="/x/logs/nemotron4_derisking_nano_21t_phase1_3901259_date_x_cycle0.log",
+    )
+    public = SimpleNamespace(
+        result={"schema_version": "restart_agent_response.v1", "decision": "STOP"},
+        status="completed",
+        recommendation={"action": "STOP", "reason": "terminal", "source": "deterministic"},
+    )
+    backend = SimpleNamespace(
+        _slack_notifier=_Recorder(),
+        _lock=threading.RLock(),
+        _entries={"k": entry},
+        _public_result=lambda e: public,
+    )
+
+    RestartAgentServiceBackend._notify_slack(backend, "k")
+
+    assert len(sent) == 1
+    identity, result = sent[0]
+    assert identity.job_id == "3901259_26"
+    assert identity.user == "dnarayanan"
+    # attrsvc never sees the SLURM job name; it is recovered from the log path.
+    assert identity.run_name == "nemotron4_derisking_nano_21t_phase1"
+    assert result.recommendation.action == "STOP"
+
+
+def test_backend_notification_failure_does_not_break_analysis():
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
+        RestartAgentServiceBackend,
+    )
+
+    class _Exploding:
+        enabled = True
+
+        def notify(self, identity, result):
+            raise RuntimeError("slack is down")
+
+    backend = SimpleNamespace(
+        _slack_notifier=_Exploding(),
+        _lock=threading.RLock(),
+        _entries={"k": SimpleNamespace(job_id="1", user="u", log_path="/x.log")},
+        _public_result=lambda e: SimpleNamespace(result={}, status="completed", recommendation={}),
+    )
+
+    # Must return rather than propagate into the analysis path.
+    RestartAgentServiceBackend._notify_slack(backend, "k")
+
+
+def test_backend_skips_notification_when_slack_is_disabled():
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
+        RestartAgentServiceBackend,
+    )
+
+    called = []
+    backend = SimpleNamespace(
+        _slack_notifier=SimpleNamespace(enabled=False, notify=lambda *a: called.append(a)),
+        _lock=threading.RLock(),
+        _entries={},
+        _public_result=lambda e: None,
+    )
+
+    RestartAgentServiceBackend._notify_slack(backend, "k")
+    assert called == []

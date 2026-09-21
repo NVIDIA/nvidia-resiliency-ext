@@ -17,14 +17,12 @@ from nvidia_resiliency_ext.attribution import (
     JobMode,
     parse_attrsvc_response,
 )
-from nvidia_resiliency_ext.attribution.orchestration.client_response import AttrSvcResult
 from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TERMINAL
 from nvidia_resiliency_ext.attribution.orchestration.types import RECOMMENDATION_TIMEOUT
 
 if TYPE_CHECKING:
     from .attrsvc_client import AttrsvcClient
     from .models import MonitorState, SlurmJob
-    from .slack import SlackNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +111,6 @@ def fetch_results(
     log_path: str,
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
-    slack_notifier: "SlackNotifier | None" = None,
 ) -> None:
     """
     Fetch attribution results for a completed job.
@@ -123,7 +120,6 @@ def fetch_results(
         log_path: Path to the log file
         state: MonitorState to update counters
         attrsvc_client: Client for attrsvc HTTP requests
-        slack_notifier: Optional notifier for Slack alerts (None disables them)
     """
 
     if not getattr(job, "terminal_signaled", False):
@@ -153,7 +149,7 @@ def fetch_results(
             job.result_fetched = True
             state.results_fetched += 1
             return
-        log_attribution_result(job, log_path, result, slack_notifier=slack_notifier)
+        log_attribution_result(job, log_path, result)
         job.result_fetched = True
         state.results_fetched += 1
 
@@ -171,20 +167,17 @@ def fetch_results(
     )
 
 
-def log_attribution_result(
-    job: "SlurmJob",
-    log_path: str,
-    response: dict,
-    slack_notifier: "SlackNotifier | None" = None,
-) -> None:
+def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> None:
     """
-    Log a summary of the attribution result to stdout and optionally alert Slack.
+    Log a summary of the attribution result to stdout.
+
+    Slack alerting lives in attrsvc so that inline NVRx deployments, which have
+    no monitor, are covered by the same implementation.
 
     Args:
         job: The SLURM job
         log_path: Path to the log file
         response: Attribution result response dict (may be single-file or splitlog mode)
-        slack_notifier: Optional notifier for Slack alerts (None disables them)
     """
     try:
         logger.debug(f"[{job.job_id}] Raw response: {response}")
@@ -211,25 +204,5 @@ def log_attribution_result(
 
         print(parsed.format_summary(prefix=f"[{job.job_id}] "), flush=True)
 
-        notify_slack(slack_notifier, job, parsed)
-
     except Exception as e:
         logger.warning(f"[{job.job_id}] Could not parse attribution result: {e}")
-
-
-def notify_slack(
-    slack_notifier: "SlackNotifier | None",
-    job: "SlurmJob",
-    parsed: AttrSvcResult,
-) -> None:
-    """Send a Slack alert for a parsed result, never propagating notifier errors.
-
-    Alerting is best effort: a Slack outage must not stop the monitor from
-    marking results fetched and moving on to the next job.
-    """
-    if slack_notifier is None:
-        return
-    try:
-        slack_notifier.notify(job, parsed)
-    except Exception as e:
-        logger.warning(f"[{job.job_id}] Slack notification failed: {e}")
