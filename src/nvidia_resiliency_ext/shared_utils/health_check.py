@@ -41,6 +41,7 @@ from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ANALYSIS_INTENT_PROGRESSIVE,
     ANALYSIS_INTENT_TERMINAL,
 )
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env, job_user_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
@@ -1904,13 +1905,27 @@ class AttributionService:
             self._poll_thread = None
 
     def _poll_loop(self) -> None:
+        span_attributes = {"nv.nvrx.ftl.node": str(self._poll_node_id)}
         while not self._poll_stop_event.is_set():
-            try:
-                self._poll_once()
-            except Exception as e:
-                logger.warning(
-                    "AttributionService poller iteration failed: %s: %s", type(e).__name__, e
-                )
+            with self._lock:
+                has_pending = bool(self._terminal_pending)
+            if has_pending:
+                with telemetry.span(
+                    semconv.SPAN_GROUP_FT,
+                    "nv.nvrx.ftl.attribution",
+                    span_attributes,
+                ):
+                    while not self._poll_stop_event.is_set():
+                        try:
+                            if self._poll_once():
+                                break
+                        except Exception as e:
+                            logger.warning(
+                                "AttributionService poller iteration failed: %s: %s",
+                                type(e).__name__,
+                                e,
+                            )
+                        self._poll_stop_event.wait(self._RESULT_POLL_INTERVAL_SECONDS)
             # When enforcing, a verdict ends the job, so there is nothing further to
             # learn. In log-only mode the job keeps running and keeps failing, and the
             # point of the mode is to accumulate a verdict per failed cycle, so the poller
@@ -1919,18 +1934,19 @@ class AttributionService:
                 return
             self._poll_stop_event.wait(self._RESULT_POLL_INTERVAL_SECONDS)
 
-    def _poll_once(self) -> None:
+    def _poll_once(self) -> bool:
+        """Poll once; return True when the request is finished or none is pending."""
         with self._lock:
             log_path = self._terminal_pending
         if not log_path:
-            return
+            return True
 
         self._start_get_profiling(self._poll_node_id)
         result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
         if result is None:
             # Analysis still running, or attrsvc is unreachable. Keep polling; the job
             # keeps running in the meantime.
-            return
+            return False
 
         record_profiling_event(
             ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
@@ -1949,7 +1965,7 @@ class AttributionService:
                     )
                     # Leave the pending path in place: the job is ending, and keeping it
                     # records which log produced the verdict.
-                    return
+                    return True
                 logger.error(
                     "Attribution recommends stopping the job (analyzed log: %s), but the "
                     "recommendation is NOT being enforced "
@@ -1966,13 +1982,14 @@ class AttributionService:
                 if self._terminal_pending == log_path:
                     self._terminal_pending = None
                     self._get_started_recorded = False
-                return
+                return True
             # Authoritative "keep going" for this log; stop polling it. A later failing
             # cycle installs a new pending path.
             if self._terminal_pending == log_path:
                 self._terminal_pending = None
                 self._get_started_recorded = False
         logger.info("Attribution recommends continuing (analyzed log: %s)", log_path)
+        return True
 
     def _start_get_profiling(self, node_id: Optional[Any]) -> None:
         with self._lock:

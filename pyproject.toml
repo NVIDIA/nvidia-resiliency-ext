@@ -49,6 +49,8 @@ numpy = ">=1.26"
 nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
 httpx = ">=0.24.0"
+nemo-lens = { version = ">=0.3.0", extras = ["sdk"], optional = true }
+opentelemetry-api = { version = ">=1.20.0", optional = true }
 fastapi = ">=0.100.0"
 uvicorn = { version = ">=0.20.0", extras = ["standard"] }
 pydantic = ">=2.0.0"
@@ -69,6 +71,7 @@ attribution = [
     "slack-bolt",
     "slack-sdk",
 ]
+otel = ["nemo-lens", "opentelemetry-api"]
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
@@ -138,6 +141,9 @@ ignore = ["F841"]
 [tool.ruff.lint.per-file-ignores]
 # avoid "unused import" warnings for __init__.py files
 "__init__.py" = ["F401"]
+
+[tool.mypy]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 markers = []

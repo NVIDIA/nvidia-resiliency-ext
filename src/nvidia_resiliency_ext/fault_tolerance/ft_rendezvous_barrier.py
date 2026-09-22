@@ -51,6 +51,7 @@ except ImportError:
     RendezvousInfo = None
     RendezvousStoreInfo = None
 
+from nvidia_resiliency_ext.shared_utils import semconv
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..inprocess.utils import format_rank_set_verbose
@@ -67,6 +68,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
+from ..shared_utils.telemetry import span
 from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
@@ -667,6 +669,11 @@ class _RendezvousBarrierState:
             # Empty value is the open-state sentinel. Consumers must check the value,
             # not just key existence, to decide whether rendezvous is shut down.
             self.store.set(self.shutdown_key, b"")
+
+    @property
+    def domain_id(self) -> Optional[str]:
+        """Return the cached domain ID, or None when unavailable."""
+        return None if self._cached_domain_id == "none" else self._cached_domain_id
 
     @property
     def join_count_key(self) -> str:
@@ -1893,6 +1900,7 @@ class _RendezvousBarrierState:
         Returns:
             Tuple of (group_rank, total_participants) where group_rank < min_nodes.
         """
+        cycle_attributes = None
         while True:
             # Reset per-round mutable state at the top of each attempt.
             # Reset _last_stale_check_time so _sync_from_per_round_state() fires
@@ -1903,7 +1911,24 @@ class _RendezvousBarrierState:
             # Hot spares and late-arriving nodes wait here indefinitely until a failure
             # opens the next round. Also checks for permanent shutdown.
             # Note: _wait_for_rendezvous_open() raises RendezvousGracefulExitError on shutdown.
-            self._wait_for_rendezvous_open(node_desc)
+            #
+            # Close the previous cycle after its rendezvous scope has exited.
+            # The round may change while the next wait is active.
+            if self._agent is not None:
+                self._agent.close_telemetry_cycle(cycle_attributes)
+            cycle_attributes = None
+            await_attributes = {
+                "nv.nvrx.ftl.rdzv.round": self._round,
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            }
+            if self._agent is not None:
+                self._agent.open_telemetry_cycle(await_attributes)
+            record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
+            try:
+                with span(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.await_round", await_attributes):
+                    self._wait_for_rendezvous_open(node_desc)
+            finally:
+                record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
 
             # Record start time for timeout monitoring.
             # Start timing AFTER Step 0 completes, since nodes may wait indefinitely at Step 0.
@@ -1915,136 +1940,156 @@ class _RendezvousBarrierState:
                 ProfilingEvent.RENDEZVOUS_STARTED,
                 node_id=node_desc,
             )
+            rendezvous_attributes = {
+                "nv.nvrx.ftl.rdzv.round": self._round,
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            }
+            with span(
+                semconv.SPAN_GROUP_FT,
+                "nv.nvrx.ftl.rendezvous",
+                rendezvous_attributes,
+                inherit_attributes=True,
+            ) as rdzv_span:
+                if pre_join_hook is not None:
+                    try:
+                        pre_join_hook()
+                    except UnhealthyNodeException:
+                        try:
+                            self._maybe_mark_current_replacement_group_unhealthy()
+                        except Exception as e:
+                            log.warning("Failed to mark current replacement group unhealthy: %s", e)
+                        raise
 
-            if pre_join_hook is not None:
+                # Step 1: Join the rendezvous and get a unique slot identifier.
+                # join_count_key is per-round, so each round starts counting from 1.
+                self._slot = self.store.add(self.join_count_key, 1)
+
+                # NOTE: a slot index beyond max_nodes is intentionally NOT treated as an
+                # error here (an earlier version shut the rendezvous down on slot >
+                # max_nodes, which tore down the whole job). It is benign and expected: in
+                # SLURM job-array deployments, surviving nodes of a failed task can briefly
+                # co-join the round before SLURM terminates them, inflating join_count and
+                # pushing legitimate nodes past max_nodes. The slot index is only a
+                # join-sequence artifact: it does NOT decide active vs standby. The store
+                # host selects the active set from the present participants via the
+                # replacement_group/segment logic and writes the resulting rank to each
+                # node's actual slot, so a node at a slot > max_nodes may still be chosen
+                # active this round (or be standby) -- that is determined by its assigned
+                # rank, not its slot. Genuine misconfiguration (multiple ft_launchers per
+                # node) is caught at launch time by _validate_slurm_single_launcher_per_node()
+                # and, defensively, by the duplicate-addr check in the store host's close path.
+
+                # Determine infrastructure rank
+                infra_rank = get_infrastructure_rank()
+                replacement_group_id = self._current_replacement_group_id()
+
+                # Determine domain ID (with caching to avoid re-parsing on every rendezvous)
+                if self._cached_domain_id is None:
+                    if self.segment is not None:
+                        # Segment is configured - domain_id is required, always use ClusterUUID
+                        try:
+                            self._cached_domain_id = _parse_domain_id_from_nvidia_smi()
+                        except Exception as e:
+                            raise RuntimeError(
+                                f"Domain ID is required when --ft-segment is specified, but failed to parse: {e}"
+                            )
+                    else:
+                        # Segment not configured - domain_id not needed
+                        self._cached_domain_id = "none"
+
+                domain_id = self._cached_domain_id
+
+                slot_key = f"{self.prefix}:slot_{self._slot}"
+                rank_key = f"{self.prefix}:slot_{self._slot}_rank"
+
+                # SLOT WRITE PROTOCOL — key reuse safety
+                #
+                # slot_key and rank_key are reused across rounds (normally bounded by
+                # max_nodes) to avoid TCPStore keyspace bloat.  A round with surplus
+                # joiners may briefly create slots beyond max_nodes; these are transient
+                # and become stale once the surplus nodes leave and join_count resets next
+                # round (TCPStore never deletes keys, so a slot_N beyond max_nodes persists
+                # but is filtered out by expected_round_id on later rounds).  Each value
+                # embeds the round that wrote it, so participant-published writes use
+                # per-key CAS:
+                #
+                #   old_value, old_round = get(key)
+                #   if old_round > this_round: go back to Step 0
+                #   compare_set(key, old_value, new_value_for_this_round)
+                #
+                # This makes the freshness check and write atomic on the reused key.  A slow
+                # writer from round N can refresh older values, but it cannot overwrite
+                # state that has already been published for round N+1.
                 try:
-                    pre_join_hook()
-                except UnhealthyNodeException:
-                    try:
-                        self._maybe_mark_current_replacement_group_unhealthy()
-                    except Exception as e:
-                        log.warning("Failed to mark current replacement group unhealthy: %s", e)
-                    raise
-
-            # Step 1: Join the rendezvous and get a unique slot identifier.
-            # join_count_key is per-round, so each round starts counting from 1.
-            self._slot = self.store.add(self.join_count_key, 1)
-
-            # NOTE: a slot index beyond max_nodes is intentionally NOT treated as an
-            # error here (an earlier version shut the rendezvous down on slot >
-            # max_nodes, which tore down the whole job). It is benign and expected: in
-            # SLURM job-array deployments, surviving nodes of a failed task can briefly
-            # co-join the round before SLURM terminates them, inflating join_count and
-            # pushing legitimate nodes past max_nodes. The slot index is only a
-            # join-sequence artifact: it does NOT decide active vs standby. The store
-            # host selects the active set from the present participants via the
-            # replacement_group/segment logic and writes the resulting rank to each
-            # node's actual slot, so a node at a slot > max_nodes may still be chosen
-            # active this round (or be standby) -- that is determined by its assigned
-            # rank, not its slot. Genuine misconfiguration (multiple ft_launchers per
-            # node) is caught at launch time by _validate_slurm_single_launcher_per_node()
-            # and, defensively, by the duplicate-addr check in the store host's close path.
-
-            # Determine infrastructure rank
-            infra_rank = get_infrastructure_rank()
-            replacement_group_id = self._current_replacement_group_id()
-
-            # Determine domain ID (with caching to avoid re-parsing on every rendezvous)
-            if self._cached_domain_id is None:
-                if self.segment is not None:
-                    # Segment is configured - domain_id is required, always use ClusterUUID
-                    try:
-                        self._cached_domain_id = _parse_domain_id_from_nvidia_smi()
-                    except Exception as e:
-                        raise RuntimeError(
-                            f"Domain ID is required when --ft-segment is specified, but failed to parse: {e}"
-                        )
-                else:
-                    # Segment not configured - domain_id not needed
-                    self._cached_domain_id = "none"
-
-            domain_id = self._cached_domain_id
-
-            slot_key = f"{self.prefix}:slot_{self._slot}"
-            rank_key = f"{self.prefix}:slot_{self._slot}_rank"
-
-            # SLOT WRITE PROTOCOL — key reuse safety
-            #
-            # slot_key and rank_key are reused across rounds (normally bounded by
-            # max_nodes) to avoid TCPStore keyspace bloat.  A round with surplus
-            # joiners may briefly create slots beyond max_nodes; these are transient
-            # and become stale once the surplus nodes leave and join_count resets next
-            # round (TCPStore never deletes keys, so a slot_N beyond max_nodes persists
-            # but is filtered out by expected_round_id on later rounds).  Each value
-            # embeds the round that wrote it, so participant-published writes use
-            # per-key CAS:
-            #
-            #   old_value, old_round = get(key)
-            #   if old_round > this_round: go back to Step 0
-            #   compare_set(key, old_value, new_value_for_this_round)
-            #
-            # This makes the freshness check and write atomic on the reused key.  A slow
-            # writer from round N can refresh older values, but it cannot overwrite
-            # state that has already been published for round N+1.
-            try:
-                self._round_fenced_compare_set(
-                    rank_key,
-                    self._pack_rank_value(
-                        GroupRankStatus.UNASSIGNED.value,
-                        0,
+                    self._round_fenced_compare_set(
+                        rank_key,
+                        self._pack_rank_value(
+                            GroupRankStatus.UNASSIGNED.value,
+                            0,
+                            self._round,
+                        ),
+                    )
+                    participant_data = self._pack_participant_value(
+                        node_desc,
+                        infra_rank,
+                        domain_id,
                         self._round,
-                    ),
-                )
-                participant_data = self._pack_participant_value(
-                    node_desc,
-                    infra_rank,
-                    domain_id,
-                    self._round,
-                    replacement_group_id,
-                )
-                self._round_fenced_compare_set(
-                    slot_key,
-                    participant_data,
-                )
-            except _StaleRendezvousRoundError as e:
-                log.info(
-                    f"[{node_desc}] Detected newer rendezvous round {e.observed_round} "
-                    f"while joining round {e.attempted_round}; retrying"
-                )
-                continue
+                        replacement_group_id,
+                    )
+                    self._round_fenced_compare_set(
+                        slot_key,
+                        participant_data,
+                    )
+                except _StaleRendezvousRoundError as e:
+                    log.info(
+                        f"[{node_desc}] Detected newer rendezvous round {e.observed_round} "
+                        f"while joining round {e.attempted_round}; retrying"
+                    )
+                    cycle_attributes = {"nv.nvrx.cycle.outcome": "peer_restart"}
+                    continue
 
-            log.debug(f"[slot={self._slot}] [Step 1] Joined round {self._round}")
+                log.debug(f"[slot={self._slot}] [Step 1] Joined round {self._round}")
 
-            # Step 2 (store host only): Poll until the segment constraint is satisfied,
-            # assign group ranks to all participants, then set round_done_key=1.
-            # Non-hosts skip this step entirely and proceed directly to Step 3.
-            if self.is_store_host:
-                self._host_close_round(node_desc, min_nodes, max_nodes, segment_check_interval)
+                # Step 2 (store host only): Poll until the segment constraint is satisfied,
+                # assign group ranks to all participants, then set round_done_key=1.
+                # Non-hosts skip this step entirely and proceed directly to Step 3.
+                if self.is_store_host:
+                    self._host_close_round(node_desc, min_nodes, max_nodes, segment_check_interval)
 
-            # Step 3 (all participants): Wait for round_done_key=1, then read rank.
-            # The store host set round_done_key=1 only AFTER writing all rank keys, so
-            # any participant that sees round_done=1 can immediately read its rank.
-            rank, total_participants = self._wait_for_round_done(node_desc, rank_key)
+                # Step 3 (all participants): Wait for round_done_key=1, then read rank.
+                # The store host set round_done_key=1 only AFTER writing all rank keys, so
+                # any participant that sees round_done=1 can immediately read its rank.
+                rank, total_participants = self._wait_for_round_done(node_desc, rank_key)
 
-            if rank != GroupRankStatus.UNASSIGNED.value and rank < min_nodes:
-                # Active rank: return to launcher to start training workers.
-                return rank, total_participants
+                if rank != GroupRankStatus.UNASSIGNED.value and rank < min_nodes:
+                    # Active rank: return to launcher to start training workers.
+                    rdzv_span.set_attributes(
+                        {"nv.nvrx.ftl.group.rank": rank, "nv.nvrx.ftl.membership": "active"}
+                    )
+                    return rank, total_participants
 
-            # rank == UNASSIGNED: late comer that joined after the store host's snapshot.
-            # rank >= min_nodes: standby node — too many nodes for this round.
-            # Both cases: advance to next round and wait at Step 0 for it to open.
-            if rank == GroupRankStatus.UNASSIGNED.value:
-                log.info(
-                    f"[{node_desc}] Late joiner detected for round {self._round} "
-                    f"(rank=UNASSIGNED); retrying in round {self._round + 1}"
-                )
-            else:
-                log.info(
-                    f"[{node_desc}] Standby (rank={rank}) for round {self._round}; "
-                    f"waiting for round {self._round + 1} to open"
-                )
-            # Loop back to Step 0; _sync_from_per_round_state() will advance _round
-            # from N to N+1 when it sees round_done_N=1 (closed).
+                # rank == UNASSIGNED: late comer that joined after the store host's snapshot.
+                # rank >= min_nodes: standby node — too many nodes for this round.
+                # Both cases: advance to next round and wait at Step 0 for it to open.
+                if rank == GroupRankStatus.UNASSIGNED.value:
+                    log.info(
+                        f"[{node_desc}] Late joiner detected for round {self._round} "
+                        f"(rank=UNASSIGNED); retrying in round {self._round + 1}"
+                    )
+                    membership = "late_joiner"
+                else:
+                    log.info(
+                        f"[{node_desc}] Standby (rank={rank}) for round {self._round}; "
+                        f"waiting for round {self._round + 1} to open"
+                    )
+                    membership = "standby"
+                rdzv_span.set_attribute("nv.nvrx.ftl.membership", membership)
+                cycle_attributes = {
+                    "nv.nvrx.cycle.outcome": "standby",
+                    "nv.nvrx.ftl.membership": membership,
+                }
+                # Loop back to Step 0; _sync_from_per_round_state() will advance _round
+                # from N to N+1 when it sees round_done_N=1 (closed).
 
     def _present_slot_keys(self, keys: List[str]) -> List[str]:
         """Return the subset of ``keys`` that currently exist in the store.
@@ -2588,6 +2633,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """Get the settings of the rendezvous."""
         return self._settings
 
+    @property
+    def domain_id(self) -> Optional[str]:
+        """Return the cached domain ID, or None when unavailable."""
+        return self._barrier_state.domain_id
+
     def get_backend(self) -> str:
         """See base class."""
         return self._backend_name
@@ -2719,7 +2769,11 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
             try:
-                self.ensure_node_is_healthy()
+                with span(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.health_check"):
+                    self.ensure_node_is_healthy()
+            except UnhealthyNodeException:
+                record_profiling_event(ProfilingEvent.NODE_EXCLUDED, node_id=self._this_node)
+                raise
             finally:
                 health_check_elapsed = time.monotonic() - health_check_start
                 record_profiling_event(
@@ -2731,7 +2785,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
                 )
             self.handle_control_requests_from_rank()
 
-        # Perform complete rendezvous process
         group_rank, total_participants = self._barrier_state.perform_rendezvous(
             self._this_node,
             self._settings.min_nodes,
