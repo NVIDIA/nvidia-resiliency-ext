@@ -128,7 +128,9 @@ class TestLifecycleSnapshots(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             with telemetry.span(
                 "nvrx.ft", "operation", {"entry": "value"}, inherit_attributes=True
-            ):
+            ) as active:
+                active.set_attribute("updated", 42)
+                active.set_attributes({"final": True})
                 with telemetry.span("nvrx.ft", "child"):
                     pass
                 raise error
@@ -139,6 +141,9 @@ class TestLifecycleSnapshots(unittest.TestCase):
                 pass
         self.provider.force_flush()
         spans = {span.name: span for span in self.exporter.get_finished_spans()}
+        self.assertEqual(
+            dict(spans["operation"].attributes), {"entry": "value", "updated": 42, "final": True}
+        )
         self.assertEqual(dict(spans["child"].attributes), {"entry": "value"})
         self.assertEqual(dict(spans["sibling"].attributes), {"own": "value"})
         self.assertEqual(dict(spans["sibling_child"].attributes), {})
@@ -149,7 +154,8 @@ class TestTelemetryIsInert(unittest.TestCase):
 
     def test_span_runs_body_and_preserves_its_exception(self):
         with telemetry.span("nvrx.ft", "nv.nvrx.ftl.cycle") as active:
-            self.assertIsNone(active)
+            active.set_attribute("membership", "active")
+            active.set_attributes({"rank": 0})
         error = ValueError("from the instrumented body")
         with self.assertRaises(ValueError) as caught:
             with telemetry.span(

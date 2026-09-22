@@ -216,6 +216,17 @@ def trace_fn(
     return decorator
 
 
+class _NoOpSpan:
+    def set_attribute(self, key: str, value: Any) -> None:
+        pass
+
+    def set_attributes(self, attributes: Mapping[str, Any]) -> None:
+        pass
+
+
+_NO_OP_SPAN = _NoOpSpan()
+
+
 @contextmanager
 def span(
     group: str,
@@ -223,20 +234,20 @@ def span(
     attributes: dict[str, Any] | None = None,
     *,
     inherit_attributes: bool = False,
-) -> Iterator[Span | None]:
-    """A lexical span, yielding it or None when telemetry or the group is off.
+) -> Iterator[Span | _NoOpSpan]:
+    """A lexical span; disabled spans accept attribute updates as no-ops.
 
     With ``inherit_attributes=True``, entry attributes also apply to nested spans
     until this block exits.
     """
     if not _AVAILABLE or not _is_span_group_enabled(group):
-        yield None
+        yield _NO_OP_SPAN
         return
     attribute_scope = (
         _span_attributes(attributes) if inherit_attributes and attributes else nullcontext()
     )
     with attribute_scope, _managed_span(group, name, **(attributes or {})) as active:
-        yield active
+        yield active if active is not None else _NO_OP_SPAN
 
 
 def _emit(

@@ -2062,10 +2062,9 @@ class _RendezvousBarrierState:
 
                 if rank != GroupRankStatus.UNASSIGNED.value and rank < min_nodes:
                     # Active rank: return to launcher to start training workers.
-                    if rdzv_span is not None:
-                        rdzv_span.set_attributes(
-                            {"nv.nvrx.ftl.group.rank": rank, "nv.nvrx.ftl.membership": "active"}
-                        )
+                    rdzv_span.set_attributes(
+                        {"nv.nvrx.ftl.group.rank": rank, "nv.nvrx.ftl.membership": "active"}
+                    )
                     return rank, total_participants
 
                 # rank == UNASSIGNED: late comer that joined after the store host's snapshot.
@@ -2083,8 +2082,7 @@ class _RendezvousBarrierState:
                         f"waiting for round {self._round + 1} to open"
                     )
                     membership = "standby"
-                if rdzv_span is not None:
-                    rdzv_span.set_attribute("nv.nvrx.ftl.membership", membership)
+                rdzv_span.set_attribute("nv.nvrx.ftl.membership", membership)
                 cycle_attributes = {
                     "nv.nvrx.cycle.outcome": "standby",
                     "nv.nvrx.ftl.membership": membership,
