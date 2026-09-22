@@ -172,7 +172,7 @@
     {
       "id": 29,
       "name": "Triton cubin / TorchInductor software toolchain error",
-      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels (idx 1311/1418/1420) + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup (idx 1417); clean Python exceptions, multi-node, deterministic in-container.",
+      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup; clean Python exceptions, multi-node, deterministic in-container.",
       "decision": "STOP"
     },
     {
@@ -185,7 +185,7 @@
       "id": 31,
       "name": "CPU OOM / Linux OOM killer",
       "description": "Host memory exhausted (oom_kill). Old STOP rested on a same-job/config recurrence presumption, not on in-log evidence.",
-      "decision": "RESTART"
+      "decision": "STOP"
     },
     {
       "id": 32,
@@ -208,7 +208,7 @@
     {
       "id": 35,
       "name": "Node-local native SIGBUS (Triton/TE native kernel)",
-      "description": "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT .so dlopen/mmap at kernel load (idx 1006; driver.py compile_module_from_src -> create_module; zero iterations); (b) mid-training in the TE/Triton MoE permutation forward (idx 534; permutation.py; one node's 4 ranks after ckpt 27600 while thousands of peers keep running). Node-local hardware/memory fault.",
+      "description": "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT .so dlopen/mmap at kernel load (driver.py compile_module_from_src -> create_module; zero iterations); (b) mid-training in the TE/Triton MoE permutation forward (permutation.py; one node's 4 ranks after ckpt 27600 while thousands of peers keep running). Node-local hardware/memory fault.",
       "decision": "RESTART"
     },
     {
