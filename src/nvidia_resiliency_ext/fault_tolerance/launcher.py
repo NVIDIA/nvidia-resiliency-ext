@@ -114,7 +114,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
-from nvidia_resiliency_ext.shared_utils import telemetry
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
@@ -478,7 +478,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
     def open_telemetry_cycle(self, attributes: dict[str, Any]) -> None:
         self._cycle_phase.open(
-            "nvrx.ft",
+            semconv.SPAN_GROUP_FT,
             "nv.nvrx.ftl.cycle",
             {
                 **attributes,
@@ -583,7 +583,10 @@ class LocalElasticAgent(SimpleElasticAgent):
             {"nv.nvrx.ftl.node": self._node_id},
         )
         telemetry.record_process_startup(
-            "nvrx.job", __imports_started__, __imports_finished__, {"nv.nvrx.ftl.node": self._node_id}
+            semconv.SPAN_GROUP_STARTUP,
+            __imports_started__,
+            __imports_finished__,
+            {"nv.nvrx.ftl.node": self._node_id},
         )
         start_time = time.monotonic()
         shutdown_called: bool = False
@@ -775,7 +778,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 failures = len(run_result.failures or {})
                 self._run_phase.close()
                 telemetry.mark(
-                    "nvrx.ft",
+                    semconv.SPAN_GROUP_FT,
                     "nv.nvrx.ftl.fault",
                     {
                         "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
@@ -1087,7 +1090,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
     @telemetry.trace_fn(
-        "nvrx.ft",
+        semconv.SPAN_GROUP_FT,
         "nv.nvrx.ftl.teardown",
         attrs=lambda self, worker_group, *args, **kwargs: {
             "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
@@ -1170,7 +1173,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
     @telemetry.trace_fn(
-        "nvrx.ft",
+        semconv.SPAN_GROUP_FT,
         "nv.nvrx.ftl.worker_launch",
         attrs=lambda self, worker_group: {
             "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
@@ -1553,7 +1556,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         """Override to open the run phase once the workers are actually running."""
         super()._initialize_workers(worker_group)
         self._run_phase.open(
-            "nvrx.ft",
+            semconv.SPAN_GROUP_FT,
             "nv.nvrx.ftl.run",
             {
                 "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),

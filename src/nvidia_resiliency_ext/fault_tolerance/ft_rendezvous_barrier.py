@@ -51,6 +51,7 @@ except ImportError:
     RendezvousInfo = None
     RendezvousStoreInfo = None
 
+from nvidia_resiliency_ext.shared_utils import semconv
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..inprocess.utils import format_rank_set_verbose
@@ -1924,7 +1925,7 @@ class _RendezvousBarrierState:
                 self._agent.open_telemetry_cycle(await_attributes)
             record_profiling_event(ProfilingEvent.AWAIT_ROUND_STARTED, node_id=node_desc)
             try:
-                with span("nvrx.ft", "nv.nvrx.ftl.await_round", await_attributes):
+                with span(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.await_round", await_attributes):
                     self._wait_for_rendezvous_open(node_desc)
             finally:
                 record_profiling_event(ProfilingEvent.AWAIT_ROUND_COMPLETED, node_id=node_desc)
@@ -1944,7 +1945,7 @@ class _RendezvousBarrierState:
                 "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
             }
             with span(
-                "nvrx.ft",
+                semconv.SPAN_GROUP_FT,
                 "nv.nvrx.ftl.rendezvous",
                 rendezvous_attributes,
                 inherit_attributes=True,
@@ -2768,7 +2769,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         def pre_join_hook() -> None:
             health_check_start = time.monotonic()
             try:
-                with span("nvrx.ft", "nv.nvrx.ftl.health_check"):
+                with span(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.health_check"):
                     self.ensure_node_is_healthy()
             except UnhealthyNodeException:
                 record_profiling_event(ProfilingEvent.NODE_EXCLUDED, node_id=self._this_node)

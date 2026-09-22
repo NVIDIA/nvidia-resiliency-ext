@@ -41,7 +41,7 @@ from nvidia_resiliency_ext.attribution.orchestration.progressive import (
     ANALYSIS_INTENT_PROGRESSIVE,
     ANALYSIS_INTENT_TERMINAL,
 )
-from nvidia_resiliency_ext.shared_utils import telemetry
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env, job_user_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
@@ -1911,7 +1911,7 @@ class AttributionService:
                 has_pending = bool(self._terminal_pending)
             if has_pending:
                 with telemetry.span(
-                    "nvrx.ft",
+                    semconv.SPAN_GROUP_FT,
                     "nv.nvrx.ftl.attribution",
                     span_attributes,
                 ):

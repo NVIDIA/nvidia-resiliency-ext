@@ -27,7 +27,7 @@ from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
 
-from nvidia_resiliency_ext.shared_utils import telemetry
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 try:
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -44,7 +44,7 @@ class TestLifecycleSnapshots(unittest.TestCase):
         from nemo.lens.state import enabled_span_groups, set_enabled_span_groups
 
         self.addCleanup(set_enabled_span_groups, enabled_span_groups())
-        set_enabled_span_groups(frozenset({"nvrx.ft"}))
+        set_enabled_span_groups(frozenset({semconv.SPAN_GROUP_FT}))
         self.exporter = InMemorySpanExporter()
         with patch("opentelemetry.trace.set_tracer_provider") as install:
             build_providers(
@@ -59,13 +59,13 @@ class TestLifecycleSnapshots(unittest.TestCase):
     def _record_group(self, cycle_attributes, rendezvous_attributes):
         phase = telemetry.Phase()
         self.addCleanup(phase.close)
-        phase.open("nvrx.ft", "cycle", cycle_attributes)
-        with telemetry.span("nvrx.ft", "await_round", cycle_attributes):
+        phase.open(semconv.SPAN_GROUP_FT, "cycle", cycle_attributes)
+        with telemetry.span(semconv.SPAN_GROUP_FT, "await_round", cycle_attributes):
             pass
         with telemetry.span(
-            "nvrx.ft", "rendezvous", rendezvous_attributes, inherit_attributes=True
+            semconv.SPAN_GROUP_FT, "rendezvous", rendezvous_attributes, inherit_attributes=True
         ):
-            with telemetry.span("nvrx.ft", "health_check"):
+            with telemetry.span(semconv.SPAN_GROUP_FT, "health_check"):
                 pass
         phase.close({"nv.nvrx.cycle.outcome": "completed"})
         self.provider.force_flush()
@@ -127,17 +127,17 @@ class TestLifecycleSnapshots(unittest.TestCase):
         error = RuntimeError("operation failed")
         with self.assertRaises(RuntimeError) as caught:
             with telemetry.span(
-                "nvrx.ft", "operation", {"entry": "value"}, inherit_attributes=True
+                semconv.SPAN_GROUP_FT, "operation", {"entry": "value"}, inherit_attributes=True
             ) as active:
                 active.set_attribute("updated", 42)
                 active.set_attributes({"final": True})
-                with telemetry.span("nvrx.ft", "child"):
+                with telemetry.span(semconv.SPAN_GROUP_FT, "child"):
                     pass
                 raise error
         self.assertIs(caught.exception, error)
         self.assertIs(trace.get_current_span(), previous)
-        with telemetry.span("nvrx.ft", "sibling", {"own": "value"}):
-            with telemetry.span("nvrx.ft", "sibling_child"):
+        with telemetry.span(semconv.SPAN_GROUP_FT, "sibling", {"own": "value"}):
+            with telemetry.span(semconv.SPAN_GROUP_FT, "sibling_child"):
                 pass
         self.provider.force_flush()
         spans = {span.name: span for span in self.exporter.get_finished_spans()}
@@ -153,19 +153,22 @@ class TestTelemetryIsInert(unittest.TestCase):
     """Instrumentation must be a no-op before/without setup_telemetry()."""
 
     def test_span_runs_body_and_preserves_its_exception(self):
-        with telemetry.span("nvrx.ft", "nv.nvrx.ftl.cycle") as active:
+        with telemetry.span(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.cycle") as active:
             active.set_attribute("membership", "active")
             active.set_attributes({"rank": 0})
         error = ValueError("from the instrumented body")
         with self.assertRaises(ValueError) as caught:
             with telemetry.span(
-                "nvrx.ft", "nv.nvrx.ftl.cycle", {"entry": "value"}, inherit_attributes=True
+                semconv.SPAN_GROUP_FT,
+                "nv.nvrx.ftl.cycle",
+                {"entry": "value"},
+                inherit_attributes=True,
             ):
                 raise error
         self.assertIs(caught.exception, error)
 
     def test_trace_fn_preserves_arguments_results_and_exceptions(self):
-        @telemetry.trace_fn("nvrx.ft", "nv.nvrx.ftl.worker_launch")
+        @telemetry.trace_fn(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.worker_launch")
         def start(a, b=2, *, error=None):
             if error is not None:
                 raise error
@@ -182,7 +185,7 @@ class TestTelemetryIsInert(unittest.TestCase):
     def test_trace_fn_does_not_evaluate_attributes_when_disabled(self):
         attributes = Mock(side_effect=AssertionError("attributes evaluated"))
 
-        @telemetry.trace_fn("nvrx.ft", "disabled", attrs=attributes)
+        @telemetry.trace_fn(semconv.SPAN_GROUP_FT, "disabled", attrs=attributes)
         def work(value):
             return value
 
@@ -194,7 +197,7 @@ class TestTelemetryIsInert(unittest.TestCase):
     def test_trace_fn_passes_callback_attributes_to_the_span(self):
         attributes = Mock(return_value={"example.attribute": "value"})
 
-        @telemetry.trace_fn("nvrx.ft", "enabled", attrs=attributes)
+        @telemetry.trace_fn(semconv.SPAN_GROUP_FT, "enabled", attrs=attributes)
         def work(value, *, scale=1):
             return value * scale
 
@@ -205,7 +208,7 @@ class TestTelemetryIsInert(unittest.TestCase):
             self.assertEqual(work(7, scale=2), 14)
         attributes.assert_called_once_with(7, scale=2)
         managed.assert_called_once_with(
-            "nvrx.ft",
+            semconv.SPAN_GROUP_FT,
             "enabled",
             ANY,
             **{"example.attribute": "value"},
@@ -216,7 +219,7 @@ class TestTelemetryIsInert(unittest.TestCase):
 
         with patch.object(telemetry, "_AVAILABLE", False):
 
-            @telemetry.trace_fn("nvrx.ft", "absent", attrs=attributes)
+            @telemetry.trace_fn(semconv.SPAN_GROUP_FT, "absent", attrs=attributes)
             def work(value):
                 return value
 
@@ -240,11 +243,11 @@ class TestLensTimedEmission:
         from opentelemetry import trace
 
         parent = trace.SpanContext(1, 2, False) if has_parent else None
-        result = telemetry.backdated_span("nvrx.ft", "interval", 1, 2, parent=parent)
+        result = telemetry.backdated_span(semconv.SPAN_GROUP_FT, "interval", 1, 2, parent=parent)
         assert result is self.emit.return_value.get_span_context.return_value
         args, kwargs = self.emit.call_args
         assert args == (self.tracer.return_value, "interval", 1, 2)
-        assert kwargs["group"] == "nvrx.ft"
+        assert kwargs["group"] == semconv.SPAN_GROUP_FT
         context = kwargs["context"]
         assert context is not None
         assert trace.get_current_span(context).get_span_context() == (
@@ -253,7 +256,7 @@ class TestLensTimedEmission:
 
     def test_interval_returns_none_when_lens_does_not_record(self):
         self.emit.return_value = None
-        assert telemetry.backdated_span("nvrx.ft", "interval", 1, 2) is None
+        assert telemetry.backdated_span(semconv.SPAN_GROUP_FT, "interval", 1, 2) is None
 
     @pytest.mark.parametrize(
         ("start", "end"),
@@ -264,12 +267,12 @@ class TestLensTimedEmission:
         ],
     )
     def test_missing_timestamps_do_not_emit(self, start, end):
-        assert telemetry.backdated_span("nvrx.ft", "missing", start, end) is None
+        assert telemetry.backdated_span(semconv.SPAN_GROUP_FT, "missing", start, end) is None
         self.emit.assert_not_called()
 
     def test_mark_reads_clock_once(self):
         with patch.object(telemetry.time, "time", return_value=1000) as clock:
-            result = telemetry.mark("nvrx.ft", "instant")
+            result = telemetry.mark(semconv.SPAN_GROUP_FT, "instant")
         clock.assert_called_once_with()
         assert result is self.emit.return_value.get_span_context.return_value
         self.emit.assert_called_once_with(
@@ -277,7 +280,7 @@ class TestLensTimedEmission:
             "instant",
             1000,
             1000,
-            group="nvrx.ft",
+            group=semconv.SPAN_GROUP_FT,
             context=None,
             attributes=None,
         )
@@ -288,8 +291,8 @@ class TestLensTimedEmission:
             patch.object(telemetry.time, "time", side_effect=AssertionError("clock")),
             patch.object(telemetry._otel_context, "Context", side_effect=AssertionError("context")),
         ):
-            assert telemetry.mark("nvrx.ft", "disabled") is None
-            assert telemetry.backdated_span("nvrx.ft", "disabled", 1, 2) is None
+            assert telemetry.mark(semconv.SPAN_GROUP_FT, "disabled") is None
+            assert telemetry.backdated_span(semconv.SPAN_GROUP_FT, "disabled", 1, 2) is None
         self.tracer.assert_not_called()
         self.emit.assert_not_called()
 
@@ -300,7 +303,7 @@ class TestLensTimedEmission:
         self.emit.return_value.get_span_context.return_value = trace.SpanContext(1, 2, False)
         phase = telemetry.Phase()
         request.addfinalizer(phase.close)
-        phase.open("nvrx.ft", "cycle", {"entry": 3})
+        phase.open(semconv.SPAN_GROUP_FT, "cycle", {"entry": 3})
         phase.set({"updated": 4})
         self.emit.side_effect = RuntimeError("emission failed")
         with pytest.raises(RuntimeError, match="emission failed"):
@@ -434,16 +437,16 @@ class TestPhase(unittest.TestCase):
         }
         with patch.object(telemetry, "time") as clock:
             clock.time.side_effect = (100.0, 200.0)
-            phase.open("nvrx.ft", "nv.nvrx.ftl.cycle", dict(opening))
+            phase.open(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.cycle", dict(opening))
             phase.set({"nv.nvrx.ftl.group.rank": 3})
             phase.set({"nv.nvrx.ftl.membership": "active"})
             phase.close({"nv.nvrx.ftl.membership": "standby", "nv.nvrx.cycle.outcome": "completed"})
             phase.close({"unused": True})
 
-        self.assertEqual(self.marks, [("nvrx.ft", "nv.nvrx.ftl.cycle_start", opening)])
+        self.assertEqual(self.marks, [(semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.cycle_start", opening)])
         self.assertEqual(len(self.spans), 1)
         group, name, start, end, attributes, parent = self.spans[0]
-        self.assertEqual((group, name), ("nvrx.ft", "nv.nvrx.ftl.cycle"))
+        self.assertEqual((group, name), (semconv.SPAN_GROUP_FT, "nv.nvrx.ftl.cycle"))
         self.assertEqual((start, end), (100.0, 200.0))
         self.assertEqual(parent, "ctx-of-nv.nvrx.ftl.cycle_start")
         self.assertEqual(
@@ -459,7 +462,7 @@ class TestPhase(unittest.TestCase):
     def test_is_inert_without_nemo_lens(self):
         with patch.object(telemetry, "_AVAILABLE", False):
             phase = telemetry.Phase()
-            phase.open("nvrx.ft", "cycle", {"entry": 1})
+            phase.open(semconv.SPAN_GROUP_FT, "cycle", {"entry": 1})
             phase.set({"updated": 2})
             phase.close({"final": 3})
         self.assertEqual(self.marks, [])
@@ -468,13 +471,13 @@ class TestPhase(unittest.TestCase):
     def test_reopen_and_explicit_close_reset_attributes(self):
         phase = telemetry.Phase()
         self.addCleanup(phase.close)
-        phase.open("nvrx.ft", "cycle", {"entry": 1})
-        phase.open("nvrx.ft", "cycle")
+        phase.open(semconv.SPAN_GROUP_FT, "cycle", {"entry": 1})
+        phase.open(semconv.SPAN_GROUP_FT, "cycle")
         self.assertEqual(len(self.spans), 1, "the first cycle was never emitted")
         self.assertEqual(len(self.marks), 2)
         phase.close({"final": 2})
         self.assertEqual(self.spans[1][4], {"final": 2})
-        phase.open("nvrx.ft", "cycle")
+        phase.open(semconv.SPAN_GROUP_FT, "cycle")
         phase.close()
         self.assertEqual(self.spans[2][4], {})
 
@@ -514,7 +517,7 @@ class TestSetupTelemetry(unittest.TestCase):
         code = r"""
 import os
 import time
-from nvidia_resiliency_ext.shared_utils import telemetry
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 os.environ.update({
     "NEMO_LENS_ENABLED": "1",
@@ -524,21 +527,21 @@ os.environ.update({
     "OTEL_PYTHON_TRACER_PROVIDER": "missing_provider",
 })
 
-@telemetry.trace_fn("nvrx.ft", "work")
+@telemetry.trace_fn(semconv.SPAN_GROUP_FT, "work")
 def work():
     return "completed"
 
-@telemetry.trace_fn("nvrx.ft", "work_with_attrs", attrs=lambda: {"node": "test"})
+@telemetry.trace_fn(semconv.SPAN_GROUP_FT, "work_with_attrs", attrs=lambda: {"node": "test"})
 def work_with_attrs():
     return "completed"
 
 handle = telemetry.setup_telemetry("nvrx.test", "test")
 now = time.time()
-telemetry.record_process_startup("nvrx.job", now, now)
-telemetry.mark("nvrx.ft", "fault")
+telemetry.record_process_startup(semconv.SPAN_GROUP_STARTUP, now, now)
+telemetry.mark(semconv.SPAN_GROUP_FT, "fault")
 phase = telemetry.Phase()
-phase.open("nvrx.ft", "cycle")
-with telemetry.span("nvrx.ft", "operation"):
+phase.open(semconv.SPAN_GROUP_FT, "cycle")
+with telemetry.span(semconv.SPAN_GROUP_FT, "operation"):
     assert work() == "completed"
     assert work_with_attrs() == "completed"
 phase.close()
@@ -567,22 +570,35 @@ telemetry.shutdown(handle)
 
 @pytest.mark.skipif(not telemetry._AVAILABLE, reason="requires nemo-lens")
 class TestSpanGroupRegistration:
-    @pytest.mark.parametrize("group", ["nvrx.job", "nvrx.ft", "nvrx.ckpt", "nvrx.ckpt.phases"])
-    def test_import_registers_group(self, group):
+    @pytest.mark.parametrize(
+        ("group", "name"),
+        [
+            (semconv.SPAN_GROUP_STARTUP, "nv.nvrx.ftl.python"),
+            (semconv.SPAN_GROUP_FT, "nv.nvrx.ftl"),
+            (semconv.SPAN_GROUP_CKPT, "nv.nvrx.ckpt"),
+            (semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save"),
+        ],
+    )
+    def test_import_registers_group(self, group, name):
         from nemo.lens import SpanRegistry
 
-        assert SpanRegistry.resolve(group) == (frozenset({group}), frozenset())
+        assert group == name
+        assert SpanRegistry.resolve(group) == (frozenset({name}), frozenset())
 
     @pytest.mark.parametrize(
         ("preset", "expected"),
         [
-            pytest.param("default", {"nvrx.job", "nvrx.ft", "nvrx.ckpt"}, id="default"),
             pytest.param(
-                "per_step", {"nvrx.job", "nvrx.ft", "nvrx.ckpt", "nvrx.ckpt.phases"}, id="per-step"
+                "default", {"nv.nvrx.ftl.python", "nv.nvrx.ftl", "nv.nvrx.ckpt"}, id="default"
+            ),
+            pytest.param(
+                "per_step",
+                {"nv.nvrx.ftl.python", "nv.nvrx.ftl", "nv.nvrx.ckpt", "nv.nvrx.ckpt.save"},
+                id="per-step",
             ),
             pytest.param(
                 "profiling",
-                {"nvrx.job", "nvrx.ft", "nvrx.ckpt", "nvrx.ckpt.phases"},
+                {"nv.nvrx.ftl.python", "nv.nvrx.ftl", "nv.nvrx.ckpt", "nv.nvrx.ckpt.save"},
                 id="profiling",
             ),
         ],
@@ -591,5 +607,8 @@ class TestSpanGroupRegistration:
         from nemo.lens import SpanRegistry
 
         enabled, pending = SpanRegistry.resolve(preset)
-        assert enabled & {"nvrx.job", "nvrx.ft", "nvrx.ckpt", "nvrx.ckpt.phases"} == expected
+        assert (
+            enabled & {"nv.nvrx.ftl.python", "nv.nvrx.ftl", "nv.nvrx.ckpt", "nv.nvrx.ckpt.save"}
+            == expected
+        )
         assert pending == frozenset()

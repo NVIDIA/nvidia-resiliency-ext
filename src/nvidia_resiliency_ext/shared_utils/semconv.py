@@ -16,7 +16,17 @@
 """Telemetry names NVRx shares with the framework that drives it.
 """
 
-#: Queue-assigned index correlating schedule, request and finalize spans.
-#: Returned by schedule_async_request for frameworks to record on their own spans.
-#: Indices are local to a queue; ambient context determines trace boundaries.
+SPAN_GROUP_STARTUP = "nv.nvrx.ftl.python"
+"""Process startup and import spans."""
+
+SPAN_GROUP_FT = "nv.nvrx.ftl"
+"""Fault-tolerance operation spans."""
+
+SPAN_GROUP_CKPT = "nv.nvrx.ckpt"
+"""Checkpoint scheduling, worker request, and finalization spans."""
+
+SPAN_GROUP_CKPT_PHASES = "nv.nvrx.ckpt.save"
+"""Checkpoint stage and completion synchronization spans."""
+
 CKPT_CALL_IDX = "nv.nvrx.ckpt.call_idx"
+"""Attribute key for the queue-local index shared by schedule, request, and finalize spans."""

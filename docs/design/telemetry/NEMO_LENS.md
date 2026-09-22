@@ -18,12 +18,16 @@ Optional [nemo-lens](https://github.com/nvidia-nemo/lens) instrumentation covers
 
 Groups are registered at import so trainer instrumentation can use a provider initialized by the framework.
 
-| Group              | Contents                                                |
-| ------------------ | ------------------------------------------------------- |
-| `nvrx.job`         | Process startup                                         |
-| `nvrx.ft`          | Fault-tolerance operations                              |
-| `nvrx.ckpt`        | Checkpoint scheduling, worker requests and finalization |
-| `nvrx.ckpt.phases` | Checkpoint stages and completion synchronization        |
+Public selectors in `shared_utils/semconv.py`:
+
+| Constant                 | Group                | Contents                                                |
+| ------------------------ | -------------------- | ------------------------------------------------------- |
+| `SPAN_GROUP_STARTUP`     | `nv.nvrx.ftl.python` | Process startup and imports                             |
+| `SPAN_GROUP_FT`          | `nv.nvrx.ftl`        | Fault-tolerance operations                              |
+| `SPAN_GROUP_CKPT`        | `nv.nvrx.ckpt`       | Checkpoint scheduling, worker requests and finalization |
+| `SPAN_GROUP_CKPT_PHASES` | `nv.nvrx.ckpt.save`  | Checkpoint stages and completion synchronization        |
+
+Groups match exactly: selecting `nv.nvrx.ckpt` does not enable `nv.nvrx.ckpt.save`.
 
 The `default` preset selects the first three groups. `per_step` and `profiling` select all four. Lens combines each library's registrations for the selected preset.
 
@@ -102,21 +106,21 @@ Attribution spans run on the poller's daemon thread, without the launcher's pare
 
 Names below have the prefix `nv.nvrx.ftl.`.
 
-| Suffix           | Group      | Covers                                                    |
-| ---------------- | ---------- | --------------------------------------------------------- |
-| `python.startup` | `nvrx.job` | Process creation to the launcher's import-start timestamp |
-| `python.imports` | `nvrx.job` | The launcher's timed import block                         |
-| `cycle_start`    | `nvrx.ft`  | Instant: cycle opened                                     |
-| `cycle`          | `nvrx.ft`  | Cycle duration, emitted at close                          |
-| `await_round`    | `nvrx.ft`  | Waiting for a round to open                               |
-| `rendezvous`     | `nvrx.ft`  | Joining an open round                                     |
-| `health_check`   | `nvrx.ft`  | Pre-join node health checks                               |
-| `worker_launch`  | `nvrx.ft`  | `_start_workers`                                          |
-| `run_start`      | `nvrx.ft`  | Instant: worker initialization completed                  |
-| `run`            | `nvrx.ft`  | Run duration, emitted at close                            |
-| `fault`          | `nvrx.ft`  | Instant: local worker failure detected                    |
-| `teardown`       | `nvrx.ft`  | `_stop_workers`                                           |
-| `attribution`    | `nvrx.ft`  | Pending-request polling                                   |
+| Suffix           | Group                | Covers                                                    |
+| ---------------- | -------------------- | --------------------------------------------------------- |
+| `python.startup` | `SPAN_GROUP_STARTUP` | Process creation to the launcher's import-start timestamp |
+| `python.imports` | `SPAN_GROUP_STARTUP` | The launcher's timed import block                         |
+| `cycle_start`    | `SPAN_GROUP_FT`      | Instant: cycle opened                                     |
+| `cycle`          | `SPAN_GROUP_FT`      | Cycle duration, emitted at close                          |
+| `await_round`    | `SPAN_GROUP_FT`      | Waiting for a round to open                               |
+| `rendezvous`     | `SPAN_GROUP_FT`      | Joining an open round                                     |
+| `health_check`   | `SPAN_GROUP_FT`      | Pre-join node health checks                               |
+| `worker_launch`  | `SPAN_GROUP_FT`      | `_start_workers`                                          |
+| `run_start`      | `SPAN_GROUP_FT`      | Instant: worker initialization completed                  |
+| `run`            | `SPAN_GROUP_FT`      | Run duration, emitted at close                            |
+| `fault`          | `SPAN_GROUP_FT`      | Instant: local worker failure detected                    |
+| `teardown`       | `SPAN_GROUP_FT`      | `_stop_workers`                                           |
+| `attribution`    | `SPAN_GROUP_FT`      | Pending-request polling                                   |
 
 The fault mark records detection before the restart decision and teardown. The cycle summary carries `nv.nvrx.ftl.cycle.state` and `nv.nvrx.ftl.cycle.failures` on local failure; the fault mark also carries the failure count.
 
@@ -143,17 +147,17 @@ With the persistent caller, `FileSystemWriterAsync` stages CPU/GPU tensors in sh
 
 Names below have the prefix `nv.nvrx.ckpt.save.`.
 
-| Suffix            | Group              | Process               | Covers                                                                       |
-| ----------------- | ------------------ | --------------------- | ---------------------------------------------------------------------------- |
-| `schedule`        | `nvrx.ckpt`        | Trainer               | `schedule_async_call`, including worker startup and preload wait when needed |
-| `stage_wait`      | `nvrx.ckpt.phases` | Trainer               | Waiting for persistent-worker preload                                        |
-| `shm_drain`       | `nvrx.ckpt.phases` | Trainer, CPU-shm mode | Draining writes before reusing shared buffers                                |
-| `stage`           | `nvrx.ckpt.phases` | Trainer, CPU-shm mode | Shared-buffer allocation and tensor copying                                  |
-| `request`         | `nvrx.ckpt`        | Persistent worker     | Processing a dequeued request                                                |
-| `preload`         | `nvrx.ckpt.phases` | Persistent worker     | Preload callback, including device-to-host copies in GPU-IPC mode            |
-| `write`           | `nvrx.ckpt.phases` | Persistent worker     | Async write callback                                                         |
-| `completion_sync` | `nvrx.ckpt.phases` | Trainer               | Distributed completion check                                                 |
-| `finalize`        | `nvrx.ckpt`        | Trainer               | Finalize callbacks and optional rank synchronization                         |
+| Suffix            | Group                    | Process               | Covers                                                                       |
+| ----------------- | ------------------------ | --------------------- | ---------------------------------------------------------------------------- |
+| `schedule`        | `SPAN_GROUP_CKPT`        | Trainer               | `schedule_async_call`, including worker startup and preload wait when needed |
+| `stage_wait`      | `SPAN_GROUP_CKPT_PHASES` | Trainer               | Waiting for persistent-worker preload                                        |
+| `shm_drain`       | `SPAN_GROUP_CKPT_PHASES` | Trainer, CPU-shm mode | Draining writes before reusing shared buffers                                |
+| `stage`           | `SPAN_GROUP_CKPT_PHASES` | Trainer, CPU-shm mode | Shared-buffer allocation and tensor copying                                  |
+| `request`         | `SPAN_GROUP_CKPT`        | Persistent worker     | Processing a dequeued request                                                |
+| `preload`         | `SPAN_GROUP_CKPT_PHASES` | Persistent worker     | Preload callback, including device-to-host copies in GPU-IPC mode            |
+| `write`           | `SPAN_GROUP_CKPT_PHASES` | Persistent worker     | Async write callback                                                         |
+| `completion_sync` | `SPAN_GROUP_CKPT_PHASES` | Trainer               | Distributed completion check                                                 |
+| `finalize`        | `SPAN_GROUP_CKPT`        | Trainer               | Finalize callbacks and optional rank synchronization                         |
 
 The schedule, request and finalize spans carry the same queue-assigned `nv.nvrx.ckpt.call_idx`. Stage spans retain their parent relationships but do not automatically inherit this attribute. Ambient context determines trace boundaries.
 

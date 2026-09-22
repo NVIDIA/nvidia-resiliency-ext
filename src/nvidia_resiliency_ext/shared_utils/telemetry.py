@@ -30,6 +30,8 @@ from contextlib import contextmanager, nullcontext
 from contextvars import Token
 from typing import Any, ParamSpec, TypeVar
 
+from nvidia_resiliency_ext.shared_utils import semconv
+
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
@@ -37,14 +39,19 @@ logger = logging.getLogger(__name__)
 
 #: NVRx span groups and presets; checkpoint phases are opt-in.
 _NAMESPACE = "nvrx"
-_JOB = "nvrx.job"
-_FT = "nvrx.ft"
-_CKPT = "nvrx.ckpt"
-_CKPT_PHASES = "nvrx.ckpt.phases"
-_GROUPS = frozenset([_JOB, _FT, _CKPT, _CKPT_PHASES])
+_GROUPS = frozenset(
+    [
+        semconv.SPAN_GROUP_STARTUP,
+        semconv.SPAN_GROUP_FT,
+        semconv.SPAN_GROUP_CKPT,
+        semconv.SPAN_GROUP_CKPT_PHASES,
+    ]
+)
 _PRESETS = {
-    "default": frozenset([_JOB, _FT, _CKPT]),
-    "per_step": frozenset([_JOB, _FT, _CKPT, _CKPT_PHASES]),
+    "default": frozenset(
+        [semconv.SPAN_GROUP_STARTUP, semconv.SPAN_GROUP_FT, semconv.SPAN_GROUP_CKPT]
+    ),
+    "per_step": _GROUPS,
     "profiling": _GROUPS,
 }
 

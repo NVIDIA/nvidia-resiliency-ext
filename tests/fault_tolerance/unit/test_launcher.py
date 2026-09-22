@@ -38,7 +38,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
 )
-from nvidia_resiliency_ext.shared_utils import telemetry
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
 
 WORLD_SIZE = 4
@@ -582,7 +582,7 @@ class TestLauncherRunBehavior(unittest.TestCase):
         self.assertEqual(result.state, WorkerState.FAILED)
         self.assertEqual(result.failures, failures)
         mark.assert_called_once_with(
-            "nvrx.ft",
+            semconv.SPAN_GROUP_FT,
             "nv.nvrx.ftl.fault",
             {
                 "nv.nvrx.ftl.rdzv.round": 3,
@@ -1996,7 +1996,7 @@ class TestCycleTelemetry:
             launcher.LocalElasticAgent._initialize_workers(agent, worker_group)
 
         agent._run_phase.open.assert_called_once_with(
-            "nvrx.ft",
+            semconv.SPAN_GROUP_FT,
             "nv.nvrx.ftl.run",
             {
                 "nv.nvrx.ftl.rdzv.round": 3,

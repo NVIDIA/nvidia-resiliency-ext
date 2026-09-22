@@ -57,7 +57,7 @@ try:
 except ImportError:
     HAVE_PSUTIL = False
 
-from nvidia_resiliency_ext.shared_utils import telemetry
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
 from .core import PersistentAsyncCaller
@@ -364,10 +364,12 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # the worker for checkpoint N may still be reading these buffers
                     # while we are about to overwrite them with checkpoint N+1 values.
                     if FileSystemWriterAsync._shm_drain_callback is not None:
-                        with telemetry.span("nvrx.ckpt.phases", "nv.nvrx.ckpt.save.shm_drain"):
+                        with telemetry.span(
+                            semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.shm_drain"
+                        ):
                             FileSystemWriterAsync._shm_drain_callback()
                     _, shm_tensors = FileSystemWriterAsync._shm_tensor_cache[key]
-                    with telemetry.span("nvrx.ckpt.phases", "nv.nvrx.ckpt.save.stage"):
+                    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
                         pending_cuda_copies = 0
                         for shm_t, source_t in zip(shm_tensors, cacheable_data):
                             shm_t.copy_(source_t, non_blocking=True)
@@ -388,7 +390,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # values in. Allocations are cached only when structure caching is enabled.
                     shm_tensors = []
                     total_bytes = 0
-                    with telemetry.span("nvrx.ckpt.phases", "nv.nvrx.ckpt.save.stage"):
+                    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
                         pending_cuda_copies = 0
                         for tensor in cacheable_data:
                             contiguous_tensor = tensor.contiguous()
