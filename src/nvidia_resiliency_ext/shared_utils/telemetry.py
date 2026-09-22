@@ -27,15 +27,8 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager, nullcontext
-from typing import TYPE_CHECKING, Any, Optional, ParamSpec, TypeVar
-
-if TYPE_CHECKING:
-    from contextvars import Token
-
-    from nemo.lens import TelemetryHandle
-    from nemo.lens.resources.attributes import ResourceAttributes, ResourceAttributeValue
-    from opentelemetry.context import Context
-    from opentelemetry.trace import Span, SpanContext, Tracer
+from contextvars import Token
+from typing import Any, ParamSpec, TypeVar
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -62,6 +55,7 @@ try:
     # Optional dependencies share one import-failure boundary.
     from nemo.lens import NemoLensConfig as _NemoLensConfig
     from nemo.lens import SpanRegistry as _SpanRegistry
+    from nemo.lens import TelemetryHandle
     from nemo.lens import get_tracer as _get_tracer
     from nemo.lens import is_span_group_enabled as _is_span_group_enabled
     from nemo.lens import managed_span as _managed_span
@@ -69,6 +63,8 @@ try:
     from nemo.lens import span_attributes as _span_attributes
     from nemo.lens import trace_fn as _trace_fn
     from nemo.lens.resources.attributes import (
+        ResourceAttributes,
+        ResourceAttributeValue,
         extend_otel_resource_attributes,
         get_otel_resource_attributes,
         publish_otel_resource_attributes,
@@ -78,6 +74,8 @@ try:
     from nemo.lens.span_utilities import linux_process_create_time as _process_create_time
     from opentelemetry import context as _otel_context
     from opentelemetry import trace as _otel_trace
+    from opentelemetry.context import Context
+    from opentelemetry.trace import Span, SpanContext, Tracer
 
     _AVAILABLE = True
 
@@ -102,30 +100,28 @@ if _AVAILABLE:
 if not _AVAILABLE:
     # Resource helpers leave the environment unchanged without Lens.
 
-    def get_otel_resource_attributes(
-        *, environ: Optional[Mapping[str, str]] = None
-    ) -> dict[str, str]:
+    def get_otel_resource_attributes(*, environ: Mapping[str, str] | None = None) -> dict[str, str]:
         return {}
 
     def compose_attributes(
         current: ResourceAttributes,
         *,
-        defaults: Optional[ResourceAttributes] = None,
-        overrides: Optional[ResourceAttributes] = None,
-    ) -> dict[str, Optional[ResourceAttributeValue]]:
+        defaults: ResourceAttributes | None = None,
+        overrides: ResourceAttributes | None = None,
+    ) -> dict[str, ResourceAttributeValue | None]:
         return {}
 
     def extend_otel_resource_attributes(
-        text: Optional[str],
+        text: str | None,
         *,
-        defaults: Optional[ResourceAttributes] = None,
-        overrides: Optional[ResourceAttributes] = None,
+        defaults: ResourceAttributes | None = None,
+        overrides: ResourceAttributes | None = None,
     ) -> str:
         return text or ""
 
     @contextmanager
     def publish_otel_resource_attributes(
-        attributes: ResourceAttributes, *, environ: Optional[MutableMapping[str, str]] = None
+        attributes: ResourceAttributes, *, environ: MutableMapping[str, str] | None = None
     ) -> Iterator[None]:
         yield
 
@@ -139,8 +135,8 @@ class _NoOpHandle:
 
 def setup_telemetry(
     service_name: str,
-    instance_id: Optional[str] = None,
-    resource_attributes: Optional[dict[str, Any]] = None,
+    instance_id: str | None = None,
+    resource_attributes: dict[str, Any] | None = None,
 ) -> TelemetryHandle | _NoOpHandle:
     """Initialize Lens once in an NVRx-owned process.
 
@@ -187,8 +183,8 @@ def get_inherited_resource_attributes() -> str:
 def trace_fn(
     group: str,
     name: str,
-    tracer: Optional[Tracer] = None,
-    attrs: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
+    tracer: Tracer | None = None,
+    attrs: Callable[..., dict[str, Any] | None] | None = None,
 ) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
     """Decorate with a span, evaluating ``attrs(*args, **kwargs)`` only when enabled.
 
@@ -224,10 +220,10 @@ def trace_fn(
 def span(
     group: str,
     name: str,
-    attributes: Optional[dict[str, Any]] = None,
+    attributes: dict[str, Any] | None = None,
     *,
     inherit_attributes: bool = False,
-) -> Iterator[Optional[Span]]:
+) -> Iterator[Span | None]:
     """A lexical span, yielding it or None when telemetry or the group is off.
 
     With ``inherit_attributes=True``, entry attributes also apply to nested spans
@@ -248,9 +244,9 @@ def _emit(
     name: str,
     start: float,
     end: float,
-    attributes: Optional[dict[str, Any]] = None,
-    context: Optional[Context] = None,
-) -> Optional[SpanContext]:
+    attributes: dict[str, Any] | None = None,
+    context: Context | None = None,
+) -> SpanContext | None:
     """Emit a completed interval and return its context, or None if disabled.
 
     ``context=None`` inherits the active span; an empty Context roots a trace.
@@ -275,11 +271,11 @@ def _emit(
 def backdated_span(
     group: str,
     name: str,
-    start: Optional[float],
-    end: Optional[float],
-    attributes: Optional[dict[str, Any]] = None,
-    parent: Optional[SpanContext] = None,
-) -> Optional[SpanContext]:
+    start: float | None,
+    end: float | None,
+    attributes: dict[str, Any] | None = None,
+    parent: SpanContext | None = None,
+) -> SpanContext | None:
     """Emit a completed window in wall-clock seconds and return its span context.
 
     Without ``parent``, the span starts a new trace. Missing timestamps or a
@@ -297,9 +293,7 @@ def backdated_span(
     return _emit(group, name, start, end, attributes, context)
 
 
-def mark(
-    group: str, name: str, attributes: Optional[dict[str, Any]] = None
-) -> Optional[SpanContext]:
+def mark(group: str, name: str, attributes: dict[str, Any] | None = None) -> SpanContext | None:
     """Emit a zero-duration span under the active parent and return its context.
 
     The span ends immediately; export may be buffered. Returns None if disabled.
@@ -314,7 +308,7 @@ def record_process_startup(
     group: str,
     imports_started: float,
     imports_finished: float,
-    attributes: Optional[dict[str, Any]] = None,
+    attributes: dict[str, Any] | None = None,
 ) -> None:
     """Emit separate root spans for process startup and timed module imports."""
     created = None
@@ -340,12 +334,12 @@ class Phase:
     """
 
     def __init__(self) -> None:
-        self._window: Optional[tuple[str, str, float]] = None
-        self._parent: Optional[SpanContext] = None
-        self._token: Optional[Token[Context]] = None
+        self._window: tuple[str, str, float] | None = None
+        self._parent: SpanContext | None = None
+        self._token: Token[Context] | None = None
         self._attributes: dict[str, Any] = {}
 
-    def open(self, group: str, name: str, attributes: Optional[dict[str, Any]] = None) -> None:
+    def open(self, group: str, name: str, attributes: dict[str, Any] | None = None) -> None:
         """Emit the start anchor, closing any phase this handle had open."""
         if not _AVAILABLE:
             return
@@ -368,14 +362,14 @@ class Phase:
             # Losing the ambient context costs nesting, not spans.
             logger.debug("Could not make %s the active context", name, exc_info=True)
 
-    def set(self, attributes: Optional[dict[str, Any]] = None) -> None:
+    def set(self, attributes: dict[str, Any] | None = None) -> None:
         """Update attributes saved for the duration summary."""
         if self._window is None:
             return
         if attributes:
             self._attributes.update(attributes)
 
-    def close(self, attributes: Optional[dict[str, Any]] = None) -> None:
+    def close(self, attributes: dict[str, Any] | None = None) -> None:
         """Emit the backdated span covering the phase. Idempotent."""
         self.set(attributes)
         if self._window is None:

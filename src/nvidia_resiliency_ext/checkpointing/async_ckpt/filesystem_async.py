@@ -57,7 +57,8 @@ try:
 except ImportError:
     HAVE_PSUTIL = False
 
-from ...shared_utils import telemetry
+from nvidia_resiliency_ext.shared_utils import telemetry
+
 from ..utils import _disable_gc
 from .core import PersistentAsyncCaller
 

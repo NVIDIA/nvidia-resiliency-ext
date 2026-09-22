@@ -33,7 +33,8 @@ from typing import Callable, ClassVar, Dict, List, NamedTuple, Optional, Tuple
 import torch
 from torch import multiprocessing as mp
 
-from ...shared_utils import semconv, telemetry
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
+
 from ..utils import _disable_gc, debug_time
 
 logger = logging.getLogger(__name__)
