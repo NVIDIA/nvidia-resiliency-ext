@@ -60,9 +60,16 @@ log for the same SLURM job.
 | `NVRX_SMONSVC_APP_LOG_SUBDIR` | `logs` | Application log directory, relative to the run directory |
 
 **Off by default** — it encodes a site layout convention, and a deployment whose
-`StdOut` already *is* the training log must not have its paths rewritten. When
-the layout does not match or no cycle log exists, the monitor falls back to the
-original `StdOut` path rather than skipping the job.
+`StdOut` already *is* the training log must not have its paths rewritten. While
+disabled, the `StdOut` path is submitted unchanged.
+
+When resolution is enabled and finds no application log, the job is **skipped**
+rather than falling back to the wrapper. A job with no application log died
+before training produced output, so the wrapper holds a launcher banner and
+nothing a log analyzer can attribute. One observed array job had 1002 tasks and
+only `.env.log` / `.tasks.log` sidecars: analyzing the wrappers cost 159 model
+calls and produced 159 unattributable results. Skips are counted as
+`no_app_log_skipped` under `log_paths` in `/stats`.
 
 Application logs embed the **parent** job ID, so every array task of a job
 resolves to the same log. The monitor claims a log once at submission and again

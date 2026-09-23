@@ -80,6 +80,7 @@ def get_stats_dict(
                 "duplicates_skipped": state.duplicate_log_paths,
                 "analyzed": len(state.analyzed_log_paths),
                 "duplicate_analyses": state.duplicate_analyses,
+                "no_app_log_skipped": state.jobs_without_app_log,
             },
         }
         return stats

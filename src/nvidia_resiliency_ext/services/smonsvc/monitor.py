@@ -350,7 +350,9 @@ class SlurmJobMonitor:
             # Check if job needs log submission
             if not tracked_job.log_submitted and not tracked_job.result_fetched:
                 log_path = self._get_log_path(tracked_job)
-                if log_path and self._claim_log_path(tracked_job, log_path):
+                if log_path is None and tracked_job.app_log_missing:
+                    tracked_job.log_submitted = True  # settled; nothing to analyze
+                elif log_path and self._claim_log_path(tracked_job, log_path):
                     jobs_to_submit.append((tracked_job, log_path))
 
         return jobs_to_submit
@@ -508,11 +510,23 @@ class SlurmJobMonitor:
             return None
 
         stdout_path = self._expand_slurm_patterns(job.stdout_path, job)
+        if not self._app_log_resolution.enabled:
+            return stdout_path
+
         resolved = resolve_app_log(stdout_path, job.job_id, self._app_log_resolution)
-        if resolved and resolved != stdout_path:
-            logger.debug(f"[{job.job_id}] Resolved application log: {resolved}")
+        if resolved:
+            if resolved != stdout_path:
+                logger.debug(f"[{job.job_id}] Resolved application log: {resolved}")
             return resolved
-        return stdout_path
+
+        # No application log means the job died before training wrote one. What
+        # remains is the SLURM wrapper, which holds a launcher banner and no
+        # training output, so there is nothing for a log analyzer to attribute.
+        if not job.app_log_missing:
+            job.app_log_missing = True
+            self.state.jobs_without_app_log += 1
+            logger.debug(f"[{job.job_id}] No application log; skipping {stdout_path}")
+        return None
 
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:
         """Submit a log file to the attribution service."""

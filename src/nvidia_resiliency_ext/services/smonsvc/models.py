@@ -87,6 +87,7 @@ class SlurmJob:
     result_fetched: bool = False
     terminal_signaled: bool = False  # True after POST analysis_intent=terminal is attempted
     path_fetch_attempted: bool = False  # True after attempting to fetch stdout path
+    app_log_missing: bool = False  # True once the job is known to have written no app log
     last_state: JobState | None = None
     get_attempts: int = 0  # Number of GET attempts (for giving up after max retries)
 
@@ -99,6 +100,7 @@ SLURM_JOB_TRACKING_FIELDS = (
     "result_fetched",
     "terminal_signaled",
     "path_fetch_attempted",
+    "app_log_missing",
     "get_attempts",
 )
 
@@ -149,3 +151,4 @@ class MonitorState:
     # wrapper early still converge on one log by the time they go terminal.
     analyzed_log_paths: set[str] = field(default_factory=set)
     duplicate_analyses: int = 0  # terminal fetches skipped as duplicates
+    jobs_without_app_log: int = 0  # jobs skipped for writing no application log

@@ -304,3 +304,106 @@ def test_distinct_logs_are_each_analyzed():
     assert _claim_analysis(state, "1_0", "/run/logs/a_1_cycle0.log")[0] is True
     assert _claim_analysis(state, "2_0", "/run/logs/a_2_cycle0.log")[0] is True
     assert state.duplicate_analyses == 0
+
+
+# ─── a job that wrote no application log has nothing to analyze ───
+
+
+def _monitor(enabled=True):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.services.smonsvc.log_resolver import AppLogResolution
+    from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
+
+    return SimpleNamespace(
+        state=MonitorState(),
+        _app_log_resolution=AppLogResolution(enabled=enabled),
+        _expand_slurm_patterns=lambda path, job: path,
+    )
+
+
+def _get_path(monitor, job):
+    from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
+
+    return SlurmJobMonitor._get_log_path(monitor, job)
+
+
+def _sidecars_only(tmp_path, job="3911280"):
+    """Observed shape: setup wrote env/tasks metadata but training never started."""
+    run = tmp_path / "12544g_forcedlb"
+    (run / "slurm_out").mkdir(parents=True)
+    (run / "logs").mkdir(parents=True)
+    stub = run / "slurm_out" / f"slurm-{job}_100.out"
+    stub.write_text("<< START PATHS >>\n")
+    stamp = f"run_{job}_date_26-09-21_time_17-13-17"
+    (run / "logs" / f"{stamp}.env.log").write_text("env")
+    (run / "logs" / f"{stamp}.tasks.log").write_text("tasks")
+    return stub
+
+
+def test_job_without_application_log_is_skipped(tmp_path):
+    from types import SimpleNamespace
+
+    stub = _sidecars_only(tmp_path)
+    monitor = _monitor()
+    job = SimpleNamespace(job_id="3911280_100", stdout_path=str(stub), app_log_missing=False)
+
+    # The wrapper is a launcher banner; analyzing it attributes nothing.
+    assert _get_path(monitor, job) is None
+    assert job.app_log_missing is True
+    assert monitor.state.jobs_without_app_log == 1
+
+
+def test_missing_application_log_is_counted_once_per_job(tmp_path):
+    from types import SimpleNamespace
+
+    stub = _sidecars_only(tmp_path)
+    monitor = _monitor()
+    job = SimpleNamespace(job_id="3911280_100", stdout_path=str(stub), app_log_missing=False)
+
+    for _ in range(4):  # polled every cycle until cleanup
+        _get_path(monitor, job)
+
+    assert monitor.state.jobs_without_app_log == 1
+
+
+def test_sibling_array_tasks_are_each_skipped_not_analyzed(tmp_path):
+    from types import SimpleNamespace
+
+    # 1002 tasks resolving to 1002 distinct wrappers defeated path-keyed dedup;
+    # skipping removes the analyses entirely rather than deduplicating them.
+    stub_dir = _sidecars_only(tmp_path).parent
+    monitor = _monitor()
+    for task in (0, 100, 500, 1001):
+        stub = stub_dir / f"slurm-3911280_{task}.out"
+        stub.write_text("<< START PATHS >>\n")
+        job = SimpleNamespace(
+            job_id=f"3911280_{task}", stdout_path=str(stub), app_log_missing=False
+        )
+        assert _get_path(monitor, job) is None
+
+    assert monitor.state.jobs_without_app_log == 4
+    assert monitor.state.submitted_log_paths == set()
+
+
+def test_resolution_disabled_still_submits_the_stdout_path(tmp_path):
+    from types import SimpleNamespace
+
+    stub = _sidecars_only(tmp_path)
+    monitor = _monitor(enabled=False)
+    job = SimpleNamespace(job_id="3911280_100", stdout_path=str(stub), app_log_missing=False)
+
+    # Deployments whose StdOut is the training log must be unaffected.
+    assert _get_path(monitor, job) == str(stub)
+    assert monitor.state.jobs_without_app_log == 0
+
+
+def test_job_with_an_application_log_is_still_analyzed(tmp_path):
+    from types import SimpleNamespace
+
+    stub, logs = _nemotron_layout(tmp_path, job="3906471", cycles=(0, 1))
+    monitor = _monitor()
+    job = SimpleNamespace(job_id="3906471_0", stdout_path=str(stub), app_log_missing=False)
+
+    assert _get_path(monitor, job) == str(logs[-1])
+    assert monitor.state.jobs_without_app_log == 0
