@@ -11,6 +11,7 @@ from nvidia_resiliency_ext.attribution import (
     RESP_LOGS_DIR,
     RESP_MODE,
     RESP_MODULE,
+    RESP_RECOMMENDATION,
     RESP_RESULT,
     RESP_SCHED_RESTARTS,
     JobMode,
@@ -170,6 +171,9 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
     """
     Log a summary of the attribution result to stdout.
 
+    Slack alerting lives in attrsvc so that inline NVRx deployments, which have
+    no monitor, are covered by the same implementation.
+
     Args:
         job: The SLURM job
         log_path: Path to the log file
@@ -180,9 +184,14 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
 
         inner = response.get(RESP_RESULT, response)
 
-        if not inner or not inner.get(RESP_MODULE):
+        # Legacy LogSage results identify themselves with a module; Restart Agent
+        # results carry no module and are identified by the recommendation
+        # envelope instead. Requiring a module would drop every direct-backend
+        # result before it is reported or alerted on.
+        has_recommendation = isinstance(response.get(RESP_RECOMMENDATION), dict)
+        if not inner or not (inner.get(RESP_MODULE) or has_recommendation):
             logger.warning(
-                f"[{job.job_id}] Attribution result is empty or missing module: {response}"
+                f"[{job.job_id}] Attribution result is empty or unrecognized: {response}"
             )
             return
 
@@ -192,8 +201,6 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
         if action == RECOMMENDATION_TIMEOUT:
             timeout_reason = parsed.recommendation_reason or "Attribution analysis timed out"
             logger.warning(f"[{job.job_id}] Attribution timeout: {timeout_reason}")
-            print(parsed.format_summary(prefix=f"[{job.job_id}] "), flush=True)
-            return
 
         print(parsed.format_summary(prefix=f"[{job.job_id}] "), flush=True)
 

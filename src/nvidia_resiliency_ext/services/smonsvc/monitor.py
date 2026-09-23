@@ -13,6 +13,7 @@ from types import FrameType
 
 from .attrsvc_client import AttrsvcClient
 from .job_handlers import fetch_results, submit_log
+from .log_resolver import AppLogResolution, resolve_app_log
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
 from .slurm import SlurmClient, expand_slurm_patterns
 from .stats import format_stats_summary, get_health_status, get_jobs_list, get_stats_dict
@@ -53,6 +54,7 @@ class SlurmJobMonitor:
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         port: int | None = None,
         host: str = DEFAULT_STATUS_HOST,
+        app_log_resolution: AppLogResolution | None = None,
     ):
         """
         Initialize the SLURM job monitor.
@@ -67,6 +69,8 @@ class SlurmJobMonitor:
             timeout: HTTP request timeout in seconds
             port: Port for HTTP server with stats/health/jobs endpoints (None to disable)
             host: Host/interface for the HTTP status server
+            app_log_resolution: SLURM-stdout-to-application-log mapping
+                (default: built from environment; disabled unless opted in)
         """
         self.attrsvc_url = attrsvc_url.rstrip("/")
         self.poll_interval = poll_interval
@@ -81,6 +85,9 @@ class SlurmJobMonitor:
         self.timeout = timeout
         self.state = MonitorState()
         self._shutdown_requested = False
+        self._app_log_resolution = (
+            AppLogResolution.from_env() if app_log_resolution is None else app_log_resolution
+        )
 
         # Attribution service client
         self._attrsvc_client = AttrsvcClient(
@@ -204,6 +211,7 @@ class SlurmJobMonitor:
             logger.info(f"  Partitions: {', '.join(self.partitions)}")
             if self.job_pattern:
                 logger.info(f"  Job name pattern: {self.job_pattern.pattern}")
+            logger.info(f"  App log resolution: {self._app_log_resolution.describe()}")
 
             self._start_status_server()
             logger.info("=" * 60)
@@ -283,7 +291,7 @@ class SlurmJobMonitor:
                     and tracked_job.get_attempts < self.MAX_GET_ATTEMPTS
                 ):
                     log_path = self._get_log_path(tracked_job)
-                    if log_path:
+                    if log_path and self._claim_analysis_path(tracked_job, log_path):
                         tracked_job.get_attempts += 1
                         jobs_to_fetch.append((tracked_job, log_path))
                 elif tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
@@ -342,10 +350,44 @@ class SlurmJobMonitor:
             # Check if job needs log submission
             if not tracked_job.log_submitted and not tracked_job.result_fetched:
                 log_path = self._get_log_path(tracked_job)
-                if log_path:
+                if log_path is None and tracked_job.app_log_missing:
+                    tracked_job.log_submitted = True  # settled; nothing to analyze
+                elif log_path and self._claim_log_path(tracked_job, log_path):
                     jobs_to_submit.append((tracked_job, log_path))
 
         return jobs_to_submit
+
+    def _claim_log_path(self, job: SlurmJob, log_path: str) -> bool:
+        """Claim ``log_path`` for ``job``; False when a sibling task already owns it.
+
+        Array tasks of one job share a single application log. Submitting it once
+        per task would re-analyze identical content and collide in the attrsvc
+        registry, which keys a path to one job ID.
+        """
+        if log_path in self.state.submitted_log_paths:
+            logger.debug(f"[{job.job_id}] Log already claimed by a sibling task: {log_path}")
+            job.log_submitted = True  # settled; nothing to fetch for this task
+            self.state.duplicate_log_paths += 1
+            return False
+        self.state.submitted_log_paths.add(log_path)
+        return True
+
+    def _claim_analysis_path(self, job: SlurmJob, log_path: str) -> bool:
+        """Claim ``log_path`` for analysis; False when a sibling task already analyzed it.
+
+        Submit-time claiming is not sufficient. A job appears in squeue before it
+        writes its application log, so the first poll cannot resolve one yet and
+        every array task submits its own wrapper. By the time they go terminal the
+        log exists and they all resolve to it, which would run one terminal
+        analysis and send one alert per task.
+        """
+        if log_path in self.state.analyzed_log_paths:
+            logger.debug(f"[{job.job_id}] Already analyzed by a sibling task: {log_path}")
+            job.result_fetched = True
+            self.state.duplicate_analyses += 1
+            return False
+        self.state.analyzed_log_paths.add(log_path)
+        return True
 
     def _fetch_paths_for_terminal_jobs(self) -> None:
         """Fetch output paths for terminal jobs that don't have them. Must hold _state_lock."""
@@ -391,7 +433,7 @@ class SlurmJobMonitor:
                     self._mark_get_exhausted(job_id, tracked_job)
                     continue
                 log_path = self._get_log_path(tracked_job)
-                if log_path:
+                if log_path and self._claim_analysis_path(tracked_job, log_path):
                     tracked_job.get_attempts += 1
                     jobs_to_fetch.append((tracked_job, log_path))
 
@@ -462,10 +504,28 @@ class SlurmJobMonitor:
         )
 
     def _get_log_path(self, job: SlurmJob) -> str | None:
-        """Get the log file path for a job from SLURM StdOut."""
-        if job.stdout_path:
-            return self._expand_slurm_patterns(job.stdout_path, job)
-        logger.debug(f"[{job.job_id}] No StdOut path available")
+        """Get the log file to analyze, preferring the application log over SLURM StdOut."""
+        if not job.stdout_path:
+            logger.debug(f"[{job.job_id}] No StdOut path available")
+            return None
+
+        stdout_path = self._expand_slurm_patterns(job.stdout_path, job)
+        if not self._app_log_resolution.enabled:
+            return stdout_path
+
+        resolved = resolve_app_log(stdout_path, job.job_id, self._app_log_resolution)
+        if resolved:
+            if resolved != stdout_path:
+                logger.debug(f"[{job.job_id}] Resolved application log: {resolved}")
+            return resolved
+
+        # No application log means the job died before training wrote one. What
+        # remains is the SLURM wrapper, which holds a launcher banner and no
+        # training output, so there is nothing for a log analyzer to attribute.
+        if not job.app_log_missing:
+            job.app_log_missing = True
+            self.state.jobs_without_app_log += 1
+            logger.debug(f"[{job.job_id}] No application log; skipping {stdout_path}")
         return None
 
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:

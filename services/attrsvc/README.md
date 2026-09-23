@@ -76,16 +76,48 @@ Restart Agent backend.
 Restart Agent config may name another key-file environment variable through its
 `credential_ref`.
 
-**Slack Notifications** (optional; no `NVRX_ATTRSVC_` prefix):
+### Slack Notifications
 
-These settings are retained for the controller/manual path. The current
-`nvrx-attrsvc` direct backend does not send Slack notifications.
+attrsvc posts completed terminal analyses to Slack. Alerting lives here, rather
+than in a client, so both deployment shapes are covered by one implementation:
+
+| Mode | Submits logs | Slack |
+|------|--------------|-------|
+| As a service | `nvrx-smonsvc` + `nvrx-attrsvc` | ✅ |
+| Inline | NVRx + `nvrx-attrsvc` (no monitor) | ✅ |
+
+Both submit through the same `POST /logs` and both carry `user` and `job_id`, so
+the alert is identical. One analysis produces exactly one message no matter how
+many clients fetch the result.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SLACK_BOT_TOKEN` | `""` | Bot token (empty = controller path tries file fallbacks below) |
-| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token (checked before `~/.slack_bot_token` / `~/.slack_token`) |
-| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env`, quote values that start with `#`: `SLACK_CHANNEL="#trng-alerts"` |
+| `SLACK_BOT_TOKEN` | `""` | Bot token. If empty, falls back to `SLACK_BOT_TOKEN_FILE`, then `~/.slack_bot_token`, `~/.slack_token`, `~/.config/nvrx/slack_bot_token` |
+| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token |
+| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env` files, quote values starting with `#` |
+| `NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS` | `STOP` | Comma- or space-separated actions that trigger a message. Valid: `STOP`, `RESTART`, `CONTINUE`, `UNKNOWN`, `TIMEOUT` |
+| `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN` | `""` | Domain used to turn a job owner into an address for an `@` mention, e.g. `example.com`. Unset means no mention is attempted |
+
+`slack-sdk` ships as a regular dependency, so no extra is needed.
+
+Notifications are **off by default**, activating only when both a token and a
+channel are configured; otherwise attrsvc logs `Slack alerts: disabled (...)` at
+startup and behaves unchanged. Delivery is best
+effort — a Slack outage is logged, never propagated into the analysis path.
+
+Each message carries the recommendation and its source, the job ID, the narrative
+root cause, the L4 decision trail (rule, category, retry outlook), an evidence
+line locating the failure, and — when the cause is unconfirmed — the plausible
+causes and missing evidence.
+
+The job owner is named in every message. Turning that owner into an `@` mention
+additionally requires `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN`, since a SLURM account
+name is not an email address and the domain is site-specific. Without it the
+alert is sent unmentioned; a failed lookup never blocks delivery.
+
+attrsvc never sees the SLURM job name, so the run name is recovered from the
+application log filename (`<run>_<jobid>_date_...`) to keep alerts
+self-describing in both modes.
 
 **Processed Files Ledger** (optional cache persistence):
 
@@ -287,6 +319,7 @@ asyncio.run(main())
 | `config.py` | `Settings` (pydantic), `setup()` loads settings and configures logging |
 | `restart_agent_config.py` | Resolves attrsvc settings into `RestartAgentConfig` |
 | `restart_agent_backend.py` | Direct progressive/terminal HTTP lifecycle over `RestartAgentRuntime` |
+| `slack.py` | Slack alerts for completed terminal analyses |
 | `deploy/run_attrsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |
@@ -307,5 +340,6 @@ asyncio.run(main())
 - **`setup()`** in `config.py` loads settings and configures logging only.
 - **`AttributionHttpAdapter`** translates `Settings` into `RestartAgentConfig`
   for the direct Restart Agent backend.
-- Dataflow and Slack postprocessing remain on the controller/manual path;
-  the direct backend does not invoke them.
+- Dataflow postprocessing remains on the controller/manual path; the direct
+  backend does not invoke it. Slack alerting is implemented in `slack.py` and
+  fires from the direct backend on terminal completion.

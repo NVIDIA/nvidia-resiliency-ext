@@ -21,7 +21,13 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     InflightResult,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode
+from nvidia_resiliency_ext.attribution.orchestration.client_response import parse_attrsvc_response
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    RESP_RECOMMENDATION,
+    RESP_RESULT,
+    RESP_STATUS,
+    ErrorCode,
+)
 from nvidia_resiliency_ext.attribution.orchestration.log_path_metadata import (
     CYCLE_NUM_PATTERN,
     extract_job_metadata,
@@ -54,6 +60,7 @@ from nvidia_resiliency_ext.attribution.restart_agent import (
 )
 
 from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperationalLogger
+from .slack import AnalysisIdentity, SlackNotifier, run_name_from_log_path
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +191,7 @@ class RestartAgentServiceBackend:
         executor: ThreadPoolExecutor | None = None,
         precompute_executor: ThreadPoolExecutor | None = None,
         accumulator_factory: Callable[[str], ProgressiveL0Accumulator] = (ProgressiveL0Accumulator),
+        slack_notifier: SlackNotifier | None = None,
     ) -> None:
         self._allowed_root = os.path.realpath(allowed_root)
         self._runtime = runtime
@@ -192,6 +200,8 @@ class RestartAgentServiceBackend:
         self._convergence = convergence
         self._progressive = progressive
         self._accumulator_factory = accumulator_factory
+        # Always present; reports itself disabled when Slack is not configured.
+        self._slack_notifier = SlackNotifier() if slack_notifier is None else slack_notifier
         self._max_completed_results = progressive.max_completed_results
         self._lock = RLock()
         self._entries: dict[Hashable, _AttemptExecution] = {}
@@ -788,6 +798,7 @@ class RestartAgentServiceBackend:
                 terminal_total_s=completed_total_s,
                 route_count=completed_route_count,
             )
+            self._notify_slack(key)
         except Exception as exc:
             with self._lock:
                 self._execution_errors += 1
@@ -809,6 +820,42 @@ class RestartAgentServiceBackend:
                 "restart_agent.analysis.failed",
                 log_context,
                 error_classification=type(exc).__name__,
+            )
+
+    def _notify_slack(self, key: Hashable) -> None:
+        """Alert on a completed terminal analysis, never failing the analysis.
+
+        Runs off the public result so the message matches exactly what a client
+        would read back from ``GET /logs``.
+        """
+        if not self._slack_notifier.enabled:
+            return
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return
+            job_id = entry.job_id or ""
+            user = entry.user or ""
+            log_path = entry.log_path
+        try:
+            public = self._public_result(entry)
+            parsed = parse_attrsvc_response(
+                {
+                    RESP_RESULT: public.result,
+                    RESP_STATUS: public.status,
+                    RESP_RECOMMENDATION: public.recommendation,
+                },
+                log_path=log_path,
+            )
+            identity = AnalysisIdentity(
+                job_id=job_id,
+                user=user,
+                run_name=run_name_from_log_path(log_path, job_id),
+            )
+            self._slack_notifier.notify(identity, parsed)
+        except Exception as exc:  # alerting is best effort
+            logger.warning(
+                "Slack notification failed for %s: %s: %s", log_path, type(exc).__name__, exc
             )
 
     def _public_result(self, entry: _AttemptExecution) -> LogAnalysisCycleResult:
