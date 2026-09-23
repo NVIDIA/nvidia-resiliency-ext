@@ -28,9 +28,9 @@ settings:
     e.g. ``example.com``. Unset means no mention is attempted; the owner is
     still named in the message.
 
-Requires ``slack-sdk`` (``pip install 'nvidia-resiliency-ext[attribution]'``).
-Without it, or without a token and channel, the notifier reports itself
-disabled and attribution behaves exactly as before.
+``slack-sdk`` is a regular dependency. Without a token and channel the notifier
+reports itself disabled and attribution behaves exactly as before; the import is
+still guarded so a stripped install degrades rather than fails.
 """
 
 from __future__ import annotations

@@ -98,19 +98,11 @@ many clients fetch the result.
 | `NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS` | `STOP` | Comma- or space-separated actions that trigger a message. Valid: `STOP`, `RESTART`, `CONTINUE`, `UNKNOWN`, `TIMEOUT` |
 | `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN` | `""` | Domain used to turn a job owner into an address for an `@` mention, e.g. `example.com`. Unset means no mention is attempted |
 
-Requires `slack-sdk`:
+`slack-sdk` ships as a regular dependency, so no extra is needed.
 
-```bash
-pip install 'nvidia-resiliency-ext[slack]'
-```
-
-The `slack` extra is `slack-sdk` only. The broader `attribution` extra also
-works but pulls in `mcp`, which is a common source of dependency conflicts
-downstream.
-
-Notifications are **off by default**, activating only when `slack-sdk` is
-installed *and* both a token and channel are configured; otherwise attrsvc logs
-`Slack alerts: disabled (...)` at startup and behaves unchanged. Delivery is best
+Notifications are **off by default**, activating only when both a token and a
+channel are configured; otherwise attrsvc logs `Slack alerts: disabled (...)` at
+startup and behaves unchanged. Delivery is best
 effort — a Slack outage is logged, never propagated into the analysis path.
 
 Each message carries the recommendation and its source, the job ID, the narrative
