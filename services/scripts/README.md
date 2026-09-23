@@ -64,7 +64,7 @@ export SLACK_CHANNEL="#trng-alerts"
 export NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS="STOP,TIMEOUT"
 ```
 
-Requires `slack-sdk` (`pip install 'nvidia-resiliency-ext[attribution]'`). The
+Requires `slack-sdk` (`pip install 'nvidia-resiliency-ext[slack]'`). The
 service logs its Slack status at startup. See
 [attrsvc/README.md](../attrsvc/README.md#slack-notifications).
 

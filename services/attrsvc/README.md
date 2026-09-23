@@ -96,12 +96,17 @@ many clients fetch the result.
 | `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token |
 | `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env` files, quote values starting with `#` |
 | `NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS` | `STOP` | Comma- or space-separated actions that trigger a message. Valid: `STOP`, `RESTART`, `CONTINUE`, `UNKNOWN`, `TIMEOUT` |
+| `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN` | `""` | Domain used to turn a job owner into an address for an `@` mention, e.g. `example.com`. Unset means no mention is attempted |
 
 Requires `slack-sdk`:
 
 ```bash
-pip install 'nvidia-resiliency-ext[attribution]'
+pip install 'nvidia-resiliency-ext[slack]'
 ```
+
+The `slack` extra is `slack-sdk` only. The broader `attribution` extra also
+works but pulls in `mcp`, which is a common source of dependency conflicts
+downstream.
 
 Notifications are **off by default**, activating only when `slack-sdk` is
 installed *and* both a token and channel are configured; otherwise attrsvc logs
@@ -111,8 +116,12 @@ effort — a Slack outage is logged, never propagated into the analysis path.
 Each message carries the recommendation and its source, the job ID, the narrative
 root cause, the L4 decision trail (rule, category, retry outlook), an evidence
 line locating the failure, and — when the cause is unconfirmed — the plausible
-causes and missing evidence. The job owner is mentioned when their
-`{user}@nvidia.com` address resolves to a Slack account.
+causes and missing evidence.
+
+The job owner is named in every message. Turning that owner into an `@` mention
+additionally requires `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN`, since a SLURM account
+name is not an email address and the domain is site-specific. Without it the
+alert is sent unmentioned; a failed lookup never blocks delivery.
 
 attrsvc never sees the SLURM job name, so the run name is recovered from the
 application log filename (`<run>_<jobid>_date_...`) to keep alerts

@@ -65,7 +65,6 @@ class _StubClient:
 def _notifier(monkeypatch, client=None, **config_kwargs):
     """Build an enabled notifier backed by a stub Slack client."""
     monkeypatch.setattr(slack_mod, "HAS_SLACK", True)
-    monkeypatch.setattr(slack_mod, "get_slack_user_id", lambda user, token: None)
     config = SlackConfig(token="xoxb-test", channel="#trng-alerts", **config_kwargs)
     notifier = SlackNotifier(config)
     notifier._client = client if client is not None else _StubClient()
@@ -178,14 +177,56 @@ def test_notify_posts_message_with_action_reason_and_details(monkeypatch):
     assert "checkpoint corrupted" in message["text"]
 
 
-def test_notify_mentions_the_job_owner_when_resolvable(monkeypatch):
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-    monkeypatch.setattr(slack_mod, "get_slack_user_id", lambda user, token: "U123")
+class _LookupClient(_StubClient):
+    """Stub that also answers the email lookup used for @ mentions."""
+
+    def __init__(self, user_id="U123", email_error=None):
+        super().__init__()
+        self._user_id = user_id
+        self._email_error = email_error
+        self.looked_up = []
+
+    def users_lookupByEmail(self, email):
+        self.looked_up.append(email)
+        if self._email_error is not None:
+            raise self._email_error
+        return {"user": {"id": self._user_id}} if self._user_id else {}
+
+
+def test_notify_mentions_the_job_owner_when_a_domain_is_configured(monkeypatch):
+    client = _LookupClient()
+    notifier = _notifier(monkeypatch, client=client, email_domain="example.com")
 
     notifier.notify(_job(), _parsed())
 
+    assert client.looked_up == ["alice@example.com"]
     assert client.messages[0]["text"].endswith("<@U123>")
+
+
+def test_no_mention_is_attempted_without_a_configured_domain(monkeypatch):
+    # This library runs outside NVIDIA; an owner name is not an email address.
+    client = _LookupClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    notifier.notify(_job(), _parsed())
+
+    assert client.looked_up == []
+    assert "<@" not in client.messages[0]["text"]
+    assert len(client.messages) == 1
+
+
+def test_failed_user_lookup_still_sends_the_alert(monkeypatch):
+    monkeypatch.setattr(slack_mod, "SlackApiError", RuntimeError)
+    client = _LookupClient(email_error=RuntimeError("users_not_found"))
+    notifier = _notifier(monkeypatch, client=client, email_domain="example.com")
+
+    assert notifier.notify(_job(), _parsed()) is True
+    assert "<@" not in client.messages[0]["text"]
+
+
+def test_email_domain_strips_a_leading_at(monkeypatch):
+    monkeypatch.setenv("NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN", "@example.com")
+    assert SlackConfig.from_env().email_domain == "example.com"
 
 
 # ─── notify gating and failure handling ───

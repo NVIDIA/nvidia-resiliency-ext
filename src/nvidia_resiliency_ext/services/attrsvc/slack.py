@@ -23,6 +23,10 @@ settings:
 ``NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS``
     Comma- or space-separated recommendation actions that trigger a message.
     Defaults to ``STOP`` so only terminal failures page.
+``NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN``
+    Domain used to turn a job owner into an email address for an ``@`` mention,
+    e.g. ``example.com``. Unset means no mention is attempted; the owner is
+    still named in the message.
 
 Requires ``slack-sdk`` (``pip install 'nvidia-resiliency-ext[attribution]'``).
 Without it, or without a token and channel, the notifier reports itself
@@ -51,7 +55,6 @@ from nvidia_resiliency_ext.attribution.postprocessing.slack import (
     HAS_SLACK,
     SlackApiError,
     WebClient,
-    get_slack_user_id,
 )
 from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
 
@@ -61,6 +64,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_NOTIFY_ACTIONS = (RECOMMENDATION_STOP,)
 
 NOTIFY_ACTIONS_ENV = "NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS"
+EMAIL_DOMAIN_ENV = "NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN"
 CHANNEL_ENV = "SLACK_CHANNEL"
 
 # Key of the attribution result list inside the inner backend result payload.
@@ -94,6 +98,8 @@ class SlackConfig:
     notify_actions: frozenset[str] = field(
         default_factory=lambda: frozenset(DEFAULT_NOTIFY_ACTIONS)
     )
+    #: Empty means do not guess an address for the job owner.
+    email_domain: str = ""
 
     @property
     def configured(self) -> bool:
@@ -107,6 +113,7 @@ class SlackConfig:
             token=load_slack_bot_token(),
             channel=(os.environ.get(CHANNEL_ENV) or "").strip(),
             notify_actions=parse_notify_actions(os.environ.get(NOTIFY_ACTIONS_ENV)),
+            email_domain=(os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
         )
 
     @classmethod
@@ -121,6 +128,7 @@ class SlackConfig:
             token=token or load_slack_bot_token(),
             channel=str(getattr(settings, "SLACK_CHANNEL", "") or "").strip(),
             notify_actions=parse_notify_actions(os.environ.get(NOTIFY_ACTIONS_ENV)),
+            email_domain=(os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
         )
 
 
@@ -548,6 +556,24 @@ class SlackNotifier:
         actions = ", ".join(sorted(self.config.notify_actions))
         return f"enabled (channel: {self.config.channel}, actions: {actions})"
 
+    def _mention(self, user: str) -> str:
+        """Resolve ``user`` to an ``@`` mention, or "" when that is not possible.
+
+        A job owner is a local account name, not an address. Turning one into an
+        email needs a site-specific domain, so no mention is attempted unless one
+        is configured — this library runs outside NVIDIA too.
+        """
+        if not user or not self.config.email_domain:
+            return ""
+        email = f"{user}@{self.config.email_domain}"
+        try:
+            result = self._web_client().users_lookupByEmail(email=email)
+        except SlackApiError as e:
+            logger.debug("Slack user lookup failed for %s: %s", email, e)
+            return ""
+        user_id = (result.get("user") or {}).get("id") if hasattr(result, "get") else None
+        return f"\n<@{user_id}>" if user_id else ""
+
     def should_notify(self, action: str) -> bool:
         """Whether a recommendation action is in the configured notify set."""
         return normalize_recommendation_action(action) in self.config.notify_actions
@@ -565,13 +591,7 @@ class SlackNotifier:
 
         text = format_notification(identity, result)
 
-        user = identity.user
-        if user:
-            slack_user_id = get_slack_user_id(user, self.config.token)
-            if slack_user_id:
-                text += f"\n<@{slack_user_id}>"
-            else:
-                logger.warning(f"[{identity.job_id}] Slack user not found for {user}")
+        text += self._mention(identity.user)
 
         self.stats.attempts += 1
         try:

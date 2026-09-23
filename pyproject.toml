@@ -69,6 +69,11 @@ attribution = [
     "slack-bolt",
     "slack-sdk",
 ]
+# Slack alerting alone. Kept separate from `attribution` so enabling alerts does
+# not pull in mcp, which is a common source of dependency conflicts downstream.
+slack = [
+    "slack-sdk",
+]
 
 [tool.poetry.scripts]
 ft_launcher = "nvidia_resiliency_ext.fault_tolerance.launcher:main"
