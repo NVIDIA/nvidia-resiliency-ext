@@ -17,11 +17,15 @@
 
 from unittest.mock import Mock
 
+import pytest
 import torch
 from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
+    FileSystemWriterAsync,
+    _synchronize_current_cuda_stream,
+)
 
 
 def _tensor_write_items(count):
@@ -70,7 +74,9 @@ class TestFileSystemWriterPrepareSnapshot:
     def test_cpu_shm_snapshots_and_reuses_cpu_tensor_storage(self, tmp_path, monkeypatch):
         """CPU tensors use the reusable snapshot cache in CPU shared-memory mode."""
         cuda_synchronize = Mock()
+        cuda_event = Mock()
         monkeypatch.setattr(torch.cuda, "synchronize", cuda_synchronize)
+        monkeypatch.setattr(torch.cuda, "Event", cuda_event)
         drain = Mock()
         FileSystemWriterAsync.cleanup_tensor_caches()
         FileSystemWriterAsync.register_shm_drain_callback(drain)
@@ -108,6 +114,60 @@ class TestFileSystemWriterPrepareSnapshot:
             assert torch.equal(reused_snapshot, torch.tensor(2.0))
             drain.assert_called_once_with()
             cuda_synchronize.assert_not_called()
+            cuda_event.assert_not_called()
         finally:
             FileSystemWriterAsync.register_shm_drain_callback(None)
             FileSystemWriterAsync.cleanup_tensor_caches()
+
+    def test_cuda_copy_wait_uses_current_stream_event(self, monkeypatch):
+        """The copy barrier must not synchronize unrelated CUDA streams."""
+        cuda_synchronize = Mock()
+        current_stream = Mock()
+        event = Mock()
+        monkeypatch.setattr(torch.cuda, "synchronize", cuda_synchronize)
+        monkeypatch.setattr(torch.cuda, "current_stream", Mock(return_value=current_stream))
+        monkeypatch.setattr(torch.cuda, "Event", Mock(return_value=event))
+
+        _synchronize_current_cuda_stream()
+
+        event.record.assert_called_once_with(current_stream)
+        event.synchronize.assert_called_once_with()
+        cuda_synchronize.assert_not_called()
+
+    @staticmethod
+    def _tensor_layout(layout, device):
+        base = torch.arange(64, dtype=torch.float32, device=device).reshape(8, 8)
+        if layout == "contiguous":
+            return base
+        if layout == "transpose":
+            return base.t()
+        if layout == "strided_offset":
+            return base[1:7:2, 1:8:2]
+        raise ValueError(f"Unknown layout: {layout}")
+
+    @torch.no_grad()
+    @pytest.mark.parametrize("layout", ["contiguous", "transpose", "strided_offset"])
+    @pytest.mark.parametrize(
+        "device",
+        [
+            "cpu",
+            pytest.param(
+                "cuda",
+                marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required"),
+            ),
+        ],
+    )
+    def test_cpu_shm_direct_copy_supports_tensor_layouts(self, layout, device, tmp_path):
+        source = self._tensor_layout(layout, device)
+
+        writer = self._prepare_writer(
+            tmp_path,
+            [source],
+            use_cpu_shm_for_gpu_tensors=True,
+        )
+
+        _, snapshots = writer.cached_tensor_data
+        (snapshot,) = snapshots
+        assert snapshot.is_contiguous()
+        assert snapshot.untyped_storage().is_shared()
+        assert torch.equal(snapshot, source.cpu())
