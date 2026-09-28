@@ -23,7 +23,8 @@ Environment:
     (default ``slurm_out``).
 ``NVRX_SMONSVC_APP_LOG_SUBDIR``
     Directory holding application logs, relative to the run directory
-    (default ``logs``).
+    (default ``logs``). Searched beside the wrapper and one level below it,
+    since some launchers write ``StdOut`` above the run directory.
 
 Two naming conventions are handled: multi-cycle runs write
 ``..._<jobid>_date_..._cycle<N>.log`` and single-cycle runs write
@@ -102,16 +103,39 @@ def _is_sidecar(path: Path) -> bool:
     return path.name.endswith(SIDECAR_SUFFIXES)
 
 
+def _candidate_log_dirs(run_dir: Path, log_subdir: str) -> list[Path]:
+    """Log directories to search: beside the wrapper, then one level down.
+
+    Some launchers write ``StdOut`` above the run directory, leaving
+    ``<parent>/slurm-<jobid>.out`` next to ``<parent>/<phase>/logs/``. Searching
+    one level of subdirectory covers that without walking the tree. Matches stay
+    anchored on the job ID, so a deeper hit is still unambiguously this job's log.
+    """
+    dirs = []
+    direct = run_dir / log_subdir
+    if direct.is_dir():
+        dirs.append(direct)
+    try:
+        children = sorted(run_dir.iterdir())
+    except OSError:
+        return dirs
+    for child in children:
+        nested = child / log_subdir
+        if nested.is_dir():
+            dirs.append(nested)
+    return dirs
+
+
 def resolve_app_log(
     stdout_path: str,
     job_id: str,
     config: AppLogResolution,
 ) -> Optional[str]:
-    """Return the application log for ``job_id``, or ``None`` to keep ``stdout_path``.
+    """Return the application log for ``job_id``, or ``None`` when there is none.
 
-    Returns ``None`` whenever resolution is disabled, the layout does not match,
-    or no cycle log exists for the job — callers fall back to the original path
-    rather than dropping the job.
+    ``None`` means resolution is disabled, the layout does not match, or the job
+    produced no non-empty log. Callers decide what that means; the monitor skips
+    the job rather than analyzing the wrapper.
     """
     if not config.enabled or not stdout_path:
         return None
@@ -121,15 +145,24 @@ def resolve_app_log(
     # Strip the wrapper directory when present; otherwise treat the wrapper's
     # own directory as the run directory.
     run_dir = parent.parent if parent.name == config.stdout_subdir else parent
-    log_dir = run_dir / config.log_subdir
-    if not log_dir.is_dir():
-        return None
 
     base = base_job_id(job_id)
     if not base:
         return None
 
-    candidates = [p for p in log_dir.glob(f"*_{base}_*.log") if p.is_file() and not _is_sidecar(p)]
+    candidates = []
+    for log_dir in _candidate_log_dirs(run_dir, config.log_subdir):
+        for path in log_dir.glob(f"*_{base}_*.log"):
+            if not path.is_file() or _is_sidecar(path):
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            # A launcher can open a log and die before writing to it. An empty
+            # file is not evidence, so it must not outrank a populated one.
+            if size > 0:
+                candidates.append(path)
     if not candidates:
         return None
 

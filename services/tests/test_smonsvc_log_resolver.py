@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+
 import pytest
 
 from nvidia_resiliency_ext.services.smonsvc.log_resolver import (
@@ -407,3 +409,67 @@ def test_job_with_an_application_log_is_still_analyzed(tmp_path):
 
     assert _get_path(monitor, job) == str(logs[-1])
     assert monitor.state.jobs_without_app_log == 0
+
+
+# ─── wrapper written above the run directory ───
+
+
+def _nested_layout(tmp_path, job="4075258"):
+    """Observed shape: <parent>/slurm-<jobid>.out beside <parent>/phase1/logs/."""
+    parent = tmp_path / "super_3t_data_smoke"
+    logs = parent / "phase1" / "logs"
+    logs.mkdir(parents=True)
+    stub = parent / f"slurm-{job}.out"
+    stub.write_text("launcher banner\n")
+    return stub, logs
+
+
+def test_resolves_when_logs_live_one_level_below_the_wrapper(tmp_path):
+    stub, logs = _nested_layout(tmp_path)
+    log = logs / "nemotron4_derisking_super_3t_data_smoke_4075258_date_26-09-28_time_13-42-39.log"
+    log.write_text("training output\n")
+
+    assert resolve_app_log(str(stub), "4075258", ON) == str(log)
+
+
+def test_empty_log_never_outranks_a_populated_one(tmp_path):
+    stub, logs = _nested_layout(tmp_path)
+    stamp = "nemotron4_derisking_super_3t_data_smoke_4075258_date_26-09-28_time"
+    populated = logs / f"{stamp}_13-42-39.log"
+    populated.write_text("training output\n")
+    # A launcher can open a log and die before writing; make the empty one newer.
+    empty = logs / f"{stamp}_13-38-23.log"
+    empty.write_text("")
+    os.utime(empty, (empty.stat().st_atime + 60, empty.stat().st_mtime + 60))
+
+    assert resolve_app_log(str(stub), "4075258", ON) == str(populated)
+
+
+def test_all_logs_empty_resolves_to_nothing(tmp_path):
+    stub, logs = _nested_layout(tmp_path)
+    (logs / "run_4075258_date_x.log").write_text("")
+
+    assert resolve_app_log(str(stub), "4075258", ON) is None
+
+
+def test_nested_search_does_not_match_another_jobs_log(tmp_path):
+    stub, logs = _nested_layout(tmp_path, job="4075258")
+    (logs / "run_4074334_date_x.log").write_text("a different job")
+
+    assert resolve_app_log(str(stub), "4075258", ON) is None
+
+
+def test_sibling_run_directories_do_not_confuse_resolution(tmp_path):
+    stub, logs = _nested_layout(tmp_path, job="4075258")
+    other = logs.parent.parent / "phase2" / "logs"
+    other.mkdir(parents=True)
+    (other / "run_4075258_date_x_cycle3.log").write_text("same job, later phase")
+    (logs / "run_4075258_date_x.log").write_text("same job, phase1")
+
+    # Both belong to this job ID; the cycle log ranks higher.
+    assert resolve_app_log(str(stub), "4075258", ON).endswith("_cycle3.log")
+
+
+def test_unreadable_run_directory_is_handled(tmp_path):
+    stub = tmp_path / "gone" / "slurm-1.out"
+    assert resolve_app_log(str(stub), "1", ON) is None
