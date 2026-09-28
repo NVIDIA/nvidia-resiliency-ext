@@ -8,6 +8,7 @@ import pytest
 from nvidia_resiliency_ext.services.smonsvc.log_resolver import (
     AppLogResolution,
     base_job_id,
+    declared_log_dir,
     resolve_app_log,
 )
 
@@ -473,3 +474,59 @@ def test_sibling_run_directories_do_not_confuse_resolution(tmp_path):
 def test_unreadable_run_directory_is_handled(tmp_path):
     stub = tmp_path / "gone" / "slurm-1.out"
     assert resolve_app_log(str(stub), "1", ON) is None
+
+
+# ─── the launcher's own LOGS_DIR declaration ───
+
+
+def test_declared_logs_dir_reaches_an_unrelated_sibling(tmp_path):
+    # Observed: submitted from phase1_tp1, logs written to phase1_tp1_test.
+    submit = tmp_path / "ultra_2t" / "phase1_tp1"
+    submit.mkdir(parents=True)
+    elsewhere = tmp_path / "ultra_2t" / "phase1_tp1_test" / "logs"
+    elsewhere.mkdir(parents=True)
+    log = elsewhere / "run_3988470_date_26-09-24_time_14-31-43.log"
+    log.write_text("training output\n")
+
+    stub = submit / "slurm-3988470.out"
+    stub.write_text(f"<< START PATHS >>\nLOGS_DIR={elsewhere}\n<< END PATHS >>\n")
+
+    # No containment relationship exists, so only the declaration can find it.
+    assert resolve_app_log(str(stub), "3988470", ON) == str(log)
+
+
+def test_structural_match_wins_without_reading_the_wrapper(tmp_path):
+    stub, logs = _nemotron_layout(tmp_path, job="777")
+    # A bogus declaration must not be consulted when the layout already resolves.
+    stub.write_text("<< START PATHS >>\nLOGS_DIR=/nonexistent\n<< END PATHS >>\n")
+
+    assert resolve_app_log(str(stub), "777", ON) == str(logs[0])
+
+
+def test_declared_logs_dir_is_ignored_when_it_does_not_exist(tmp_path):
+    submit = tmp_path / "run"
+    submit.mkdir()
+    stub = submit / "slurm-42.out"
+    stub.write_text("LOGS_DIR=/no/such/place\n")
+
+    assert resolve_app_log(str(stub), "42", ON) is None
+
+
+def test_declared_log_dir_parses_the_banner():
+    import pathlib as _p
+
+    assert declared_log_dir(_p.Path("/no/such/file")) is None
+
+
+def test_declared_log_dir_reads_the_value(tmp_path):
+    stub = tmp_path / "slurm-1.out"
+    stub.write_text("IMAGE_PATH=/x\nLOGS_DIR=/some/logs\nOTHER=y\n")
+
+    assert str(declared_log_dir(stub)) == "/some/logs"
+
+
+def test_wrapper_without_a_banner_yields_no_declaration(tmp_path):
+    stub = tmp_path / "slurm-1.out"
+    stub.write_text("just some launcher output\nno paths block here\n")
+
+    assert declared_log_dir(stub) is None

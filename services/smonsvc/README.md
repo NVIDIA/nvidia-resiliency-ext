@@ -45,9 +45,21 @@ log. A common layout:
 ```
 
 Both naming conventions are handled — multi-cycle runs (`..._cycle<N>.log`) and
-single-cycle runs (`....log`). A cycle log outranks a plain one, and metadata
-sidecars (`.env.log`, `.tasks.log`) are never selected. The wrapper may also sit
-directly in the run directory rather than under `slurm_out/`.
+single-cycle runs (`....log`). A cycle log outranks a plain one, metadata
+sidecars (`.env.log`, `.tasks.log`) are never selected, and empty logs never
+outrank populated ones.
+
+Layout varies because SLURM writes `slurm-<jobid>.out` into the **submit
+directory**, while the run script picks its own `LOGS_DIR`. Those are
+independent, so the wrapper may sit beside `logs/`, under `slurm_out/`, or one
+level above the run directory. All three are searched.
+
+When the layout does not resolve, the wrapper's launcher banner is consulted for
+a `LOGS_DIR=` declaration. That is the launcher's own statement rather than an
+inference, and it reaches places structure cannot — a run submitted from one
+directory can write logs to an unrelated sibling. About half the observed
+wrappers emit it; it is read only on fallback, so the common path costs no
+file read.
 
 Attributing the wrapper yields "no failure signature found" regardless of what
 the job did. When enabled, the monitor maps the wrapper back to the newest cycle

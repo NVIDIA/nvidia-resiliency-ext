@@ -51,6 +51,10 @@ DEFAULT_STDOUT_SUBDIR = "slurm_out"
 DEFAULT_LOG_SUBDIR = "logs"
 
 _TRUE_VALUES = ("1", "true", "yes", "on")
+
+#: Launchers that emit a paths banner put it at the very top of the wrapper.
+_LOGS_DIR_KEY = "LOGS_DIR="
+_BANNER_MAX_LINES = 400
 _CYCLE_RE = re.compile(r"_cycle(\d+)\.log$")
 
 #: Metadata written alongside the training log; never the analysis target.
@@ -126,6 +130,44 @@ def _candidate_log_dirs(run_dir: Path, log_subdir: str) -> list[Path]:
     return dirs
 
 
+def declared_log_dir(stdout_path: Path) -> Optional[Path]:
+    """Read ``LOGS_DIR=`` from the wrapper's launcher banner, if it emits one.
+
+    This is the launcher's own declaration, so it is authoritative where the
+    directory layout is only an inference. Roughly half the wrappers observed
+    emit it; the rest print no banner at all.
+    """
+    try:
+        with stdout_path.open("r", errors="ignore") as handle:
+            for _ in range(_BANNER_MAX_LINES):
+                line = handle.readline()
+                if not line:
+                    break
+                if line.startswith(_LOGS_DIR_KEY):
+                    value = line[len(_LOGS_DIR_KEY) :].strip()
+                    return Path(value) if value else None
+    except OSError:
+        return None
+    return None
+
+
+def _logs_for_job(log_dir: Path, base: str) -> list[Path]:
+    """Non-empty, non-sidecar logs in ``log_dir`` belonging to ``base``."""
+    found = []
+    for path in log_dir.glob(f"*_{base}_*.log"):
+        if not path.is_file() or _is_sidecar(path):
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        # A launcher can open a log and die before writing to it. An empty file
+        # is not evidence, so it must not outrank a populated one.
+        if size > 0:
+            found.append(path)
+    return found
+
+
 def resolve_app_log(
     stdout_path: str,
     job_id: str,
@@ -152,17 +194,16 @@ def resolve_app_log(
 
     candidates = []
     for log_dir in _candidate_log_dirs(run_dir, config.log_subdir):
-        for path in log_dir.glob(f"*_{base}_*.log"):
-            if not path.is_file() or _is_sidecar(path):
-                continue
-            try:
-                size = path.stat().st_size
-            except OSError:
-                continue
-            # A launcher can open a log and die before writing to it. An empty
-            # file is not evidence, so it must not outrank a populated one.
-            if size > 0:
-                candidates.append(path)
+        candidates.extend(_logs_for_job(log_dir, base))
+
+    if not candidates:
+        # Layout inference failed. Some launchers declare the directory outright,
+        # which reaches places structure cannot - a run submitted from one
+        # directory can write its logs to an unrelated sibling.
+        declared = declared_log_dir(stub)
+        if declared is not None and declared.is_dir():
+            candidates = _logs_for_job(declared, base)
+
     if not candidates:
         return None
 
