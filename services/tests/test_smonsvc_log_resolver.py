@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import pathlib
 
 import pytest
 
@@ -530,3 +531,22 @@ def test_wrapper_without_a_banner_yields_no_declaration(tmp_path):
     stub.write_text("just some launcher output\nno paths block here\n")
 
     assert declared_log_dir(stub) is None
+
+
+def test_unreadable_sibling_directory_does_not_fail_resolution(tmp_path, monkeypatch):
+    # Shared run trees contain directories this account cannot stat, including
+    # ones created by unexpanded shell variables such as a literal "${HOME}".
+    stub, logs = _nemotron_layout(tmp_path, job="555")
+    blocked = stub.parent.parent / "${HOME}"
+    blocked.mkdir()
+
+    real_is_dir = pathlib.Path.is_dir
+
+    def guarded(self):
+        if "${HOME}" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    monkeypatch.setattr(pathlib.Path, "is_dir", guarded)
+
+    assert resolve_app_log(str(stub), "555", ON) == str(logs[0])

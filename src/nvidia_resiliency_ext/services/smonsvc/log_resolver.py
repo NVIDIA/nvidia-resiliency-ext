@@ -107,6 +107,19 @@ def _is_sidecar(path: Path) -> bool:
     return path.name.endswith(SIDECAR_SUFFIXES)
 
 
+def _is_dir(path: Path) -> bool:
+    """``is_dir`` that treats an unreadable path as "not a directory".
+
+    Shared run trees contain directories this account cannot stat, including
+    ones created by unexpanded shell variables. Resolution must step over them
+    rather than fail the poll.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _candidate_log_dirs(run_dir: Path, log_subdir: str) -> list[Path]:
     """Log directories to search: beside the wrapper, then one level down.
 
@@ -117,7 +130,7 @@ def _candidate_log_dirs(run_dir: Path, log_subdir: str) -> list[Path]:
     """
     dirs = []
     direct = run_dir / log_subdir
-    if direct.is_dir():
+    if _is_dir(direct):
         dirs.append(direct)
     try:
         children = sorted(run_dir.iterdir())
@@ -125,7 +138,7 @@ def _candidate_log_dirs(run_dir: Path, log_subdir: str) -> list[Path]:
         return dirs
     for child in children:
         nested = child / log_subdir
-        if nested.is_dir():
+        if _is_dir(nested):
             dirs.append(nested)
     return dirs
 
@@ -201,7 +214,7 @@ def resolve_app_log(
         # which reaches places structure cannot - a run submitted from one
         # directory can write its logs to an unrelated sibling.
         declared = declared_log_dir(stub)
-        if declared is not None and declared.is_dir():
+        if declared is not None and _is_dir(declared):
             candidates = _logs_for_job(declared, base)
 
     if not candidates:
