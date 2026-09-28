@@ -62,6 +62,14 @@ If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The ``--ft-restart-policy`` parameter is deprecated; only ``any-failed`` is supported: all workers
 are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.
 
+Rendezvous implementation
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Barrier rendezvous is the only supported fault-tolerance rendezvous implementation. The
+``--ft-rdzv-impl`` option may be omitted because it defaults to ``barrier``. Existing launch
+scripts may continue to pass ``--ft-rdzv-impl barrier`` for compatibility, but the removed
+``legacy`` value is rejected.
+
 Node health check service
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -179,6 +187,7 @@ By default it is disabled. When enabled (via CLI or YAML), it:
 * Discovers distributed mount targets and checks that each mount is reachable.
 
 * ``--ft-enable-dist-storage-healthcheck`` (alias: ``--ft_enable_dist_storage_healthcheck``)
+
   - Accepts a boolean-like value only to enable the mount checks
     (e.g., ``--ft-enable-dist-storage-healthcheck true``).
 

@@ -22,6 +22,7 @@ Features
    :maxdepth: 3
    :caption: Documentation contents:
 
+   release-notes
    fault_tolerance/index
    inprocess/index
    checkpointing/async/index
