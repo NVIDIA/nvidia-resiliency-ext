@@ -263,8 +263,8 @@ def _logs_for_job(log_dir: Path, base: str) -> list[Path]:
 def logs_from_job_name(root: Path, job_name: str, base: str, max_depth: int = 5) -> list:
     """Find logs by reading the run path out of the SLURM job name.
 
-    Job names mirror the run directory with ``/`` flattened to ``_``, so the
-    split points are ambiguous. Trying each split and keeping only directories
+    Job names mirror the run directory with ``/`` flattened to ``_``, so both the
+    split points and the offset at which the name starts matching are ambiguous. Trying each split and keeping only directories
     that exist resolves it with a handful of stat calls. Unlike the submit
     script this is recorded on the job itself, so it stays correct for a job
     whose script has since been edited.
@@ -290,10 +290,12 @@ def logs_from_job_name(root: Path, job_name: str, base: str, max_depth: int = 5)
             if _is_dir(nxt):
                 walk(nxt, remaining[take:], depth + 1)
 
-    # Job names carry a product prefix the path does not; try with and without.
-    for start in (0, 1):
-        if start < len(tokens):
-            walk(root, tokens[start:], 0)
+    # The search root already consumes some leading path components, and the name
+    # carries product tokens the path never had, so the matching suffix starts at
+    # an unknown offset. Each offset that does not correspond to a real directory
+    # terminates immediately, so trying all of them stays cheap.
+    for start in range(len(tokens)):
+        walk(root, tokens[start:], 0)
     return found
 
 

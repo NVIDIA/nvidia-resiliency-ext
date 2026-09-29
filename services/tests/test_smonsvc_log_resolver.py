@@ -748,3 +748,20 @@ def test_job_name_is_used_when_script_resolution_fails(tmp_path):
         search_root=str(root),
     )
     assert resolved == str(log)
+
+
+def test_job_name_matches_at_an_offset_below_the_search_root(tmp_path):
+    # Real shape: the search root is already <...>/ultra_smoke/half, so the name's
+    # matching suffix begins five tokens in. Trimmed names hid this.
+    root = tmp_path / "ultra_smoke" / "half"
+    submit = root / "llm_adam_forcedlb"
+    submit.mkdir(parents=True)
+    logs = root / "llm_adam_forcedlb_mock" / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "run_3776237_date_x_cycle0.log"
+    log.write_text("training\n")
+
+    hits = logs_from_job_name(
+        root, "nemotron4_derisking_ultra_smoke_half_llm_adam_forcedlb_mock", "3776237"
+    )
+    assert [str(h) for h in hits] == [str(log)]
