@@ -80,8 +80,21 @@ rather than falling back to the wrapper. A job with no application log died
 before training produced output, so the wrapper holds a launcher banner and
 nothing a log analyzer can attribute. One observed array job had 1002 tasks and
 only `.env.log` / `.tasks.log` sidecars: analyzing the wrappers cost 159 model
-calls and produced 159 unattributable results. Skips are counted as
-`no_app_log_skipped` under `log_paths` in `/stats`.
+calls and produced 159 unattributable results. Each skip is logged once per job at INFO with the job ID, job name and the
+`StdOut` path it gave up on, and counted as `no_app_log_skipped` under
+`log_paths` in `/stats`:
+
+```
+[3911280_100] No application log found; skipping analysis (job_name=..., stdout=.../slurm-3911280_100.out)
+```
+
+The line matters because a skip and a resolution bug look identical from the
+outside — every layout gap found so far surfaced as a job that should have
+resolved and did not. Reviewing the skip list is how the next one gets caught:
+
+```bash
+grep "skipping analysis" <logs>/*_smonsvc.log
+```
 
 Application logs embed the **parent** job ID, so every array task of a job
 resolves to the same log. The monitor claims a log once at submission and again

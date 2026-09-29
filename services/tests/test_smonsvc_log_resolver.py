@@ -765,3 +765,31 @@ def test_job_name_matches_at_an_offset_below_the_search_root(tmp_path):
         root, "nemotron4_derisking_ultra_smoke_half_llm_adam_forcedlb_mock", "3776237"
     )
     assert [str(h) for h in hits] == [str(log)]
+
+
+def test_skipped_job_is_reported_at_info_once(tmp_path, caplog):
+    import logging
+    from types import SimpleNamespace
+
+    stub = _sidecars_only(tmp_path)
+    monitor = _monitor()
+    job = SimpleNamespace(
+        job_id="3911280_100",
+        stdout_path=str(stub),
+        app_log_missing=False,
+        name="nemotron4_derisking_run",
+        script="",
+        work_dir="",
+    )
+
+    with caplog.at_level(logging.INFO):
+        for _ in range(3):  # polled repeatedly until cleanup
+            _get_path(monitor, job)
+
+    # A silent skip is indistinguishable from a resolution bug.
+    skips = [r for r in caplog.records if "skipping analysis" in r.message]
+    assert len(skips) == 1
+    assert skips[0].levelno == logging.INFO
+    assert "3911280_100" in skips[0].message
+    assert str(stub) in skips[0].message
+    assert "nemotron4_derisking_run" in skips[0].message

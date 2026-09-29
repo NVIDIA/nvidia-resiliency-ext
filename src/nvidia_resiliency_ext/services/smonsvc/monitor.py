@@ -546,7 +546,13 @@ class SlurmJobMonitor:
         if not job.app_log_missing:
             job.app_log_missing = True
             self.state.jobs_without_app_log += 1
-            logger.debug(f"[{job.job_id}] No application log; skipping {stdout_path}")
+            # Logged at INFO, once per job: a skip is indistinguishable from a
+            # resolution bug without it, and every layout gap found so far
+            # surfaced as a job that should have resolved and did not.
+            logger.info(
+                f"[{job.job_id}] No application log found; skipping analysis "
+                f"(job_name={job.name or '?'}, stdout={stdout_path})"
+            )
         return None
 
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:
