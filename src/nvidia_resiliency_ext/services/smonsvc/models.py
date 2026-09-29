@@ -80,6 +80,9 @@ class SlurmJob:
     state: JobState
     stdout_path: str = ""
     stderr_path: str = ""
+    # Submit directory and script, used to locate the application log.
+    work_dir: str = ""
+    script: str = ""
 
     # Tracking fields (must be preserved on state transition; see copy_tracking_fields)
     log_submitted: bool = False  # POST was attempted (success or client error)

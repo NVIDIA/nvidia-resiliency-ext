@@ -10,7 +10,9 @@ from nvidia_resiliency_ext.services.smonsvc.log_resolver import (
     AppLogResolution,
     base_job_id,
     declared_log_dir,
+    logs_from_job_name,
     resolve_app_log,
+    script_log_dir_pattern,
 )
 
 ON = AppLogResolution(enabled=True)
@@ -318,11 +320,13 @@ def _monitor(enabled=True):
 
     from nvidia_resiliency_ext.services.smonsvc.log_resolver import AppLogResolution
     from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
+    from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
 
     return SimpleNamespace(
         state=MonitorState(),
         _app_log_resolution=AppLogResolution(enabled=enabled),
         _expand_slurm_patterns=lambda path, job: path,
+        _script_path=SlurmJobMonitor._script_path,
     )
 
 
@@ -350,7 +354,14 @@ def test_job_without_application_log_is_skipped(tmp_path):
 
     stub = _sidecars_only(tmp_path)
     monitor = _monitor()
-    job = SimpleNamespace(job_id="3911280_100", stdout_path=str(stub), app_log_missing=False)
+    job = SimpleNamespace(
+        job_id="3911280_100",
+        stdout_path=str(stub),
+        app_log_missing=False,
+        name='',
+        script='',
+        work_dir='',
+    )
 
     # The wrapper is a launcher banner; analyzing it attributes nothing.
     assert _get_path(monitor, job) is None
@@ -363,7 +374,14 @@ def test_missing_application_log_is_counted_once_per_job(tmp_path):
 
     stub = _sidecars_only(tmp_path)
     monitor = _monitor()
-    job = SimpleNamespace(job_id="3911280_100", stdout_path=str(stub), app_log_missing=False)
+    job = SimpleNamespace(
+        job_id="3911280_100",
+        stdout_path=str(stub),
+        app_log_missing=False,
+        name='',
+        script='',
+        work_dir='',
+    )
 
     for _ in range(4):  # polled every cycle until cleanup
         _get_path(monitor, job)
@@ -382,7 +400,12 @@ def test_sibling_array_tasks_are_each_skipped_not_analyzed(tmp_path):
         stub = stub_dir / f"slurm-3911280_{task}.out"
         stub.write_text("<< START PATHS >>\n")
         job = SimpleNamespace(
-            job_id=f"3911280_{task}", stdout_path=str(stub), app_log_missing=False
+            job_id=f"3911280_{task}",
+            stdout_path=str(stub),
+            app_log_missing=False,
+            name='',
+            script='',
+            work_dir='',
         )
         assert _get_path(monitor, job) is None
 
@@ -395,7 +418,14 @@ def test_resolution_disabled_still_submits_the_stdout_path(tmp_path):
 
     stub = _sidecars_only(tmp_path)
     monitor = _monitor(enabled=False)
-    job = SimpleNamespace(job_id="3911280_100", stdout_path=str(stub), app_log_missing=False)
+    job = SimpleNamespace(
+        job_id="3911280_100",
+        stdout_path=str(stub),
+        app_log_missing=False,
+        name='',
+        script='',
+        work_dir='',
+    )
 
     # Deployments whose StdOut is the training log must be unaffected.
     assert _get_path(monitor, job) == str(stub)
@@ -407,7 +437,14 @@ def test_job_with_an_application_log_is_still_analyzed(tmp_path):
 
     stub, logs = _nemotron_layout(tmp_path, job="3906471", cycles=(0, 1))
     monitor = _monitor()
-    job = SimpleNamespace(job_id="3906471_0", stdout_path=str(stub), app_log_missing=False)
+    job = SimpleNamespace(
+        job_id="3906471_0",
+        stdout_path=str(stub),
+        app_log_missing=False,
+        name='',
+        script='',
+        work_dir='',
+    )
 
     assert _get_path(monitor, job) == str(logs[-1])
     assert monitor.state.jobs_without_app_log == 0
@@ -550,3 +587,164 @@ def test_unreadable_sibling_directory_does_not_fail_resolution(tmp_path, monkeyp
     monkeypatch.setattr(pathlib.Path, "is_dir", guarded)
 
     assert resolve_app_log(str(stub), "555", ON) == str(logs[0])
+
+
+# ─── tier: the submit script states where logs go ───
+
+
+def _script(tmp_path, body, name="run.sh"):
+    p = tmp_path / name
+    p.write_text(body)
+    return p
+
+
+def test_script_pattern_resolves_a_fully_static_logs_dir(tmp_path):
+    s = _script(
+        tmp_path,
+        (
+            'ROOT_DIR="/scratch/n4"\n'
+            'NAME="derisking/ultra_smoke/full/llm_adam_forcedlb_mock"\n'
+            'RUN_DIR="${ROOT_DIR}/${NAME}"\n'
+            'LOGS_DIR="${RUN_DIR}/logs"\n'
+        ),
+    )
+    assert (
+        script_log_dir_pattern(s)
+        == "/scratch/n4/derisking/ultra_smoke/full/llm_adam_forcedlb_mock/logs"
+    )
+
+
+def test_script_pattern_wildcards_only_the_unknown_component(tmp_path):
+    # TAG comes from the submitting environment, which SLURM does not record.
+    # Everything above it is still pinned, so the search stays one level wide.
+    s = _script(
+        tmp_path,
+        (
+            'ROOT_DIR="/scratch/n4"\n'
+            'FINAL_DIR="${ROOT_DIR}/derisking/super_3t/phase2"\n'
+            'SMOKE_ROOT="${FINAL_DIR}/smoke_64n"\n'
+            'TAG=${TAG:-aa}\n'
+            'RUN_DIR="${SMOKE_ROOT}/${TAG}"\n'
+            'LOGS_DIR="${RUN_DIR}/logs"\n'
+        ),
+    )
+    assert script_log_dir_pattern(s) == "/scratch/n4/derisking/super_3t/phase2/smoke_64n/*/logs"
+
+
+def test_script_pattern_refuses_command_substitution(tmp_path):
+    s = _script(tmp_path, 'RUN_DIR="$(pwd)/run"\nLOGS_DIR="${RUN_DIR}/logs"\n')
+    # RUN_DIR is unknowable, so the pattern would be rooted at a wildcard.
+    assert script_log_dir_pattern(s) is None
+
+
+def test_script_pattern_without_logs_dir(tmp_path):
+    assert script_log_dir_pattern(_script(tmp_path, 'FOO="bar"\n')) is None
+
+
+def test_script_pattern_survives_a_cycle(tmp_path):
+    s = _script(tmp_path, 'A="${B}"\nB="${A}"\nLOGS_DIR="/x/${A}/logs"\n')
+    assert script_log_dir_pattern(s) == "/x/*/logs"
+
+
+def test_missing_script_yields_no_pattern(tmp_path):
+    assert script_log_dir_pattern(tmp_path / "absent.sh") is None
+
+
+def test_resolution_uses_the_script_when_layout_fails(tmp_path):
+    # Wrapper in one directory, logs written to a sibling the layout cannot reach.
+    submit = tmp_path / "phase1_tp1"
+    submit.mkdir()
+    stub = submit / "slurm-3988470.out"
+    stub.write_text("banner\n")
+    logs = tmp_path / "phase1_tp1_test" / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "run_3988470_date_x.log"
+    log.write_text("training\n")
+
+    s = _script(submit, f'LOGS_DIR="{logs}"\n', name="run_test.sh")
+    assert resolve_app_log(str(stub), "3988470", ON, script=str(s)) == str(log)
+
+
+def test_resolution_uses_a_wildcarded_script_pattern(tmp_path):
+    submit = tmp_path / "phase2"
+    submit.mkdir()
+    stub = submit / "slurm-3982013.out"
+    stub.write_text("banner\n")
+    logs = submit / "smoke_64n" / "cont" / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "run_3982013_date_x.log"
+    log.write_text("training\n")
+
+    s = _script(
+        submit,
+        (
+            f'SMOKE_ROOT="{submit}/smoke_64n"\n'
+            'TAG=${TAG:-aa}\n'
+            'RUN_DIR="${SMOKE_ROOT}/${TAG}"\n'
+            'LOGS_DIR="${RUN_DIR}/logs"\n'
+        ),
+        name="run_smoke.sh",
+    )
+    assert resolve_app_log(str(stub), "3982013", ON, script=str(s)) == str(log)
+
+
+# ─── tier: the job name mirrors the run path ───
+
+
+def test_job_name_recovers_a_sibling_run_directory(tmp_path):
+    root = tmp_path / "derisking"
+    submit = root / "ultra_smoke" / "half" / "llm_adam_forcedlb"
+    submit.mkdir(parents=True)
+    stub = submit / "slurm-3776237_0.out"
+    stub.write_text("banner\n")
+    logs = root / "ultra_smoke" / "half" / "llm_adam_forcedlb_mock" / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "run_3776237_date_x.log"
+    log.write_text("training\n")
+
+    hits = logs_from_job_name(root, "ultra_smoke_half_llm_adam_forcedlb_mock", "3776237")
+    assert [str(h) for h in hits] == [str(log)]
+
+
+def test_job_name_tolerates_a_product_prefix(tmp_path):
+    root = tmp_path / "derisking"
+    logs = root / "nano_21t" / "phase1" / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "run_555_date_x.log"
+    log.write_text("training\n")
+
+    # "nemotron4_derisking_..." carries tokens the path does not.
+    hits = logs_from_job_name(root, "nemotron4_nano_21t_phase1", "555")
+    assert [str(h) for h in hits] == [str(log)]
+
+
+def test_job_name_finds_nothing_for_an_unrelated_name(tmp_path):
+    root = tmp_path / "derisking"
+    (root / "a" / "logs").mkdir(parents=True)
+    assert logs_from_job_name(root, "totally_other_run", "999") == []
+
+
+def test_job_name_is_used_when_script_resolution_fails(tmp_path):
+    # The stale-script case: the script now points somewhere this job never wrote.
+    root = tmp_path / "derisking"
+    submit = root / "half" / "llm_adam_forcedlb"
+    submit.mkdir(parents=True)
+    stub = submit / "slurm-3776237_0.out"
+    stub.write_text("banner\n")
+    logs = root / "half" / "llm_adam_forcedlb_mock" / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "run_3776237_date_x.log"
+    log.write_text("training\n")
+
+    stale = _script(
+        submit, f'LOGS_DIR="{root}/half/llm_adam_forcedlb_mock_gtpoptin/logs"\n', name="run_mock.sh"
+    )
+    resolved = resolve_app_log(
+        str(stub),
+        "3776237",
+        ON,
+        script=str(stale),
+        job_name="half_llm_adam_forcedlb_mock",
+        search_root=str(root),
+    )
+    assert resolved == str(log)

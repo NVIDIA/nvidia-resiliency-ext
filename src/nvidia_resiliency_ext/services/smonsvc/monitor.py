@@ -9,6 +9,7 @@ import re
 import signal
 import threading
 import time
+from pathlib import Path
 from types import FrameType
 
 from .attrsvc_client import AttrsvcClient
@@ -357,6 +358,16 @@ class SlurmJobMonitor:
 
         return jobs_to_submit
 
+    @staticmethod
+    def _script_path(job: SlurmJob) -> str:
+        """Absolute path to the submit script, which SLURM may record relatively."""
+        if not job.script:
+            return ""
+        script = Path(job.script)
+        if not script.is_absolute() and job.work_dir:
+            script = Path(job.work_dir) / script
+        return str(script)
+
     def _claim_log_path(self, job: SlurmJob, log_path: str) -> bool:
         """Claim ``log_path`` for ``job``; False when a sibling task already owns it.
 
@@ -412,12 +423,16 @@ class SlurmJobMonitor:
             if job_id in self.state.jobs:
                 self.state.jobs[job_id].path_fetch_attempted = True
                 if job_id in fetched_paths:
-                    stdout, stderr = fetched_paths[job_id]
-                    if stdout:
+                    info = fetched_paths[job_id]
+                    if info.stdout:
                         if not self.state.jobs[job_id].stdout_path:
                             self.state.with_output_path += 1
-                        self.state.jobs[job_id].stdout_path = stdout
-                        self.state.jobs[job_id].stderr_path = stderr
+                        self.state.jobs[job_id].stdout_path = info.stdout
+                        self.state.jobs[job_id].stderr_path = info.stderr
+                    if info.work_dir:
+                        self.state.jobs[job_id].work_dir = info.work_dir
+                    if info.command:
+                        self.state.jobs[job_id].script = info.command
 
     def _collect_jobs_for_fetch(self) -> list[tuple[SlurmJob, str]]:
         """Collect terminal jobs that need result fetching. Must hold _state_lock."""
@@ -513,7 +528,13 @@ class SlurmJobMonitor:
         if not self._app_log_resolution.enabled:
             return stdout_path
 
-        resolved = resolve_app_log(stdout_path, job.job_id, self._app_log_resolution)
+        resolved = resolve_app_log(
+            stdout_path,
+            job.job_id,
+            self._app_log_resolution,
+            script=self._script_path(job),
+            job_name=job.name,
+        )
         if resolved:
             if resolved != stdout_path:
                 logger.debug(f"[{job.job_id}] Resolved application log: {resolved}")

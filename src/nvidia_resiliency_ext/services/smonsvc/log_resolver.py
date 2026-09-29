@@ -34,6 +34,7 @@ metadata sidecars such as ``.env.log`` and ``.tasks.log`` are never selected.
 
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import re
@@ -55,6 +56,14 @@ _TRUE_VALUES = ("1", "true", "yes", "on")
 #: Launchers that emit a paths banner put it at the very top of the wrapper.
 _LOGS_DIR_KEY = "LOGS_DIR="
 _BANNER_MAX_LINES = 400
+
+#: Shell forms evaluated statically when reading a submit script.
+_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_VAR_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[-=][^}]*)?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+#: Values we refuse to evaluate: command substitution and array literals.
+_DYNAMIC_MARKERS = ("$(", "`", "(")
+_SCRIPT_MAX_LINES = 900
+_LOGS_DIR_VAR = "LOGS_DIR"
 _CYCLE_RE = re.compile(r"_cycle(\d+)\.log$")
 
 #: Metadata written alongside the training log; never the analysis target.
@@ -143,6 +152,76 @@ def _candidate_log_dirs(run_dir: Path, log_subdir: str) -> list[Path]:
     return dirs
 
 
+def _script_assignments(script: Path) -> dict:
+    """Static ``NAME=value`` assignments from a submit script; first one wins."""
+    try:
+        lines = script.read_text(errors="ignore").splitlines()[:_SCRIPT_MAX_LINES]
+    except OSError:
+        return {}
+    env = {}
+    for line in lines:
+        match = _ASSIGNMENT.match(line)
+        if not match:
+            continue
+        name, raw = match.group(1), match.group(2).split(" #")[0].strip()
+        if raw[:1] in ('"', "'") and raw[-1:] == raw[:1] and len(raw) > 1:
+            raw = raw[1:-1]
+        if any(marker in raw for marker in _DYNAMIC_MARKERS):
+            continue
+        env.setdefault(name, raw)
+    return env
+
+
+def script_log_dir_pattern(script: Path) -> Optional[str]:
+    """``LOGS_DIR`` from a submit script, each unknown variable becoming one ``*``.
+
+    Full resolution is not required and demanding it throws away most of the
+    value. A script building ``${SMOKE_ROOT}/${TAG}/logs`` still pins everything
+    above ``TAG``, which turns an unbounded search into a single-level glob.
+    The variables left as wildcards are precisely those supplied by the
+    submitting environment, which SLURM does not record.
+    """
+    env = _script_assignments(script)
+    value = env.get(_LOGS_DIR_VAR)
+    if not value:
+        return None
+
+    def resolve(text: str, seen: frozenset, depth: int = 0) -> str:
+        if depth > 12:
+            return "*"
+
+        def substitute(match) -> str:
+            name = match.group(1) or match.group(2)
+            if name in seen or name not in env:
+                return "*"
+            return resolve(env[name], seen | {name}, depth + 1)
+
+        return _VAR_REF.sub(substitute, text)
+
+    pattern = resolve(value, frozenset())
+    # A relative or wildcard-rooted pattern would glob somewhere unintended.
+    return pattern if pattern.startswith("/") and not pattern.startswith("/*") else None
+
+
+def logs_from_pattern(pattern: str, base: str) -> list:
+    """Logs for ``base`` under a possibly wildcarded directory pattern."""
+    found = []
+    try:
+        matches = glob.glob(f"{pattern}/*_{base}_*.log")
+    except OSError:
+        return found
+    for candidate in matches:
+        path = Path(candidate)
+        if _is_sidecar(path):
+            continue
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                found.append(path)
+        except OSError:
+            continue
+    return found
+
+
 def declared_log_dir(stdout_path: Path) -> Optional[Path]:
     """Read ``LOGS_DIR=`` from the wrapper's launcher banner, if it emits one.
 
@@ -181,16 +260,65 @@ def _logs_for_job(log_dir: Path, base: str) -> list[Path]:
     return found
 
 
+def logs_from_job_name(root: Path, job_name: str, base: str, max_depth: int = 5) -> list:
+    """Find logs by reading the run path out of the SLURM job name.
+
+    Job names mirror the run directory with ``/`` flattened to ``_``, so the
+    split points are ambiguous. Trying each split and keeping only directories
+    that exist resolves it with a handful of stat calls. Unlike the submit
+    script this is recorded on the job itself, so it stays correct for a job
+    whose script has since been edited.
+    """
+    tokens = [t for t in job_name.split("_") if t]
+    if not tokens:
+        return []
+    found: list = []
+    seen: set = set()
+
+    def walk(prefix: Path, remaining: list, depth: int) -> None:
+        if depth > max_depth:
+            return
+        log_dir = prefix / "logs"
+        key = str(log_dir)
+        if key not in seen and _is_dir(log_dir):
+            seen.add(key)
+            found.extend(_logs_for_job(log_dir, base))
+        if not remaining:
+            return
+        for take in range(1, len(remaining) + 1):
+            nxt = prefix / "_".join(remaining[:take])
+            if _is_dir(nxt):
+                walk(nxt, remaining[take:], depth + 1)
+
+    # Job names carry a product prefix the path does not; try with and without.
+    for start in (0, 1):
+        if start < len(tokens):
+            walk(root, tokens[start:], 0)
+    return found
+
+
 def resolve_app_log(
     stdout_path: str,
     job_id: str,
     config: AppLogResolution,
+    *,
+    script: Optional[str] = None,
+    job_name: str = "",
+    search_root: Optional[str] = None,
 ) -> Optional[str]:
     """Return the application log for ``job_id``, or ``None`` when there is none.
 
-    ``None`` means resolution is disabled, the layout does not match, or the job
-    produced no non-empty log. Callers decide what that means; the monitor skips
-    the job rather than analyzing the wrapper.
+    Sources are tried cheapest first, and each is anchored on the parent job ID
+    so a wrong directory yields a miss rather than another job's log:
+
+    1. the directory layout around the wrapper;
+    2. ``LOGS_DIR`` from the submit script, wildcarding what it cannot resolve;
+    3. directories implied by the SLURM job name; and
+    4. a ``LOGS_DIR=`` line in the wrapper's own banner.
+
+    ``None`` means resolution is disabled, or the job produced no non-empty log.
+    Callers decide what that means; the monitor skips the job rather than
+    analyzing the wrapper.
     """
     if not config.enabled or not stdout_path:
         return None
@@ -209,10 +337,20 @@ def resolve_app_log(
     for log_dir in _candidate_log_dirs(run_dir, config.log_subdir):
         candidates.extend(_logs_for_job(log_dir, base))
 
+    if not candidates and script:
+        # The submit script states where logs go, and states it precisely enough
+        # even when part of the path comes from the submitting environment.
+        pattern = script_log_dir_pattern(Path(script))
+        if pattern:
+            candidates = logs_from_pattern(pattern, base)
+
+    if not candidates and job_name:
+        # Recorded on the job, so unaffected by later edits to the script.
+        root = Path(search_root) if search_root else run_dir.parent
+        candidates = logs_from_job_name(root, job_name, base)
+
     if not candidates:
-        # Layout inference failed. Some launchers declare the directory outright,
-        # which reaches places structure cannot - a run submitted from one
-        # directory can write its logs to an unrelated sibling.
+        # Some launchers declare the directory outright in their banner.
         declared = declared_log_dir(stub)
         if declared is not None and _is_dir(declared):
             candidates = _logs_for_job(declared, base)
