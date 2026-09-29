@@ -41,7 +41,7 @@ from argparse import REMAINDER, ArgumentParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from string import Template
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
 import torch
 from torch.distributed.argparse_util import check_env, env
@@ -124,11 +124,6 @@ from nvidia_resiliency_ext.shared_utils.profiling import (
     get_profiling_cycle,
     record_profiling_event,
 )
-
-if TYPE_CHECKING:
-    from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
-        FtRendezvousBarrierHandler,
-    )
 
 __imports_finished__ = time.time()
 
@@ -434,7 +429,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._start_method = start_method
         self._pcontext: Optional[PContext] = None
         # c10d is registered to the FT handler; WorkerSpec exposes only the base type.
-        self._rdzv_handler = cast("FtRendezvousBarrierHandler", spec.rdzv_handler)
+        self._rdzv_handler = spec.rdzv_handler
         self._log_line_prefix_template = log_line_prefix_template
         self._worker_watchdog: Optional[timer.FileTimerServer] = None
         self._logs_specs = logs_specs
