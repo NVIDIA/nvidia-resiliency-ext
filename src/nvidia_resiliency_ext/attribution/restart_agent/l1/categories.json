@@ -154,7 +154,7 @@
     {
       "id": 26,
       "name": "CUDA OOM during checkpoint async-save",
-      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. As with cat 32, an unchanged workload will keep hitting the same allocation ceiling on retry, so product policy calls this a STOP.",
+      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. An unchanged workload will keep hitting the same allocation ceiling on retry, so product policy calls this a STOP.",
       "decision": "STOP"
     },
     {
@@ -172,7 +172,7 @@
     {
       "id": 29,
       "name": "Triton cubin / TorchInductor software toolchain error",
-      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels (idx 1311/1418/1420) + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup (idx 1417); clean Python exceptions, multi-node, deterministic in-container.",
+      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup; clean Python exceptions, multi-node, deterministic in-container.",
       "decision": "STOP"
     },
     {
@@ -184,8 +184,8 @@
     {
       "id": 31,
       "name": "CPU OOM / Linux OOM killer",
-      "description": "Host memory exhausted (oom_kill). Old STOP rested on a same-job/config recurrence presumption, not on in-log evidence.",
-      "decision": "RESTART"
+      "description": "Host memory exhausted: bare 'Killed' on one or more ranks corroborated by a slurmstepd 'Detected N oom_kill events ... Some of the step tasks have been OOM Killed' record (the oom_kill line often appears far below the 'Killed' lines). Host memory exhaustion is deterministic for the same job/config: an unchanged retry is expected to hit the same ceiling unless resources or configuration change, so product policy calls this a STOP.",
+      "decision": "STOP"
     },
     {
       "id": 32,
@@ -208,7 +208,7 @@
     {
       "id": 35,
       "name": "Node-local native SIGBUS (Triton/TE native kernel)",
-      "description": "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT .so dlopen/mmap at kernel load (idx 1006; driver.py compile_module_from_src -> create_module; zero iterations); (b) mid-training in the TE/Triton MoE permutation forward (idx 534; permutation.py; one node's 4 ranks after ckpt 27600 while thousands of peers keep running). Node-local hardware/memory fault.",
+      "description": "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT .so dlopen/mmap at kernel load (driver.py compile_module_from_src -> create_module; zero iterations); (b) mid-training in the TE/Triton MoE permutation forward (permutation.py; one node's 4 ranks after ckpt 27600 while thousands of peers keep running). Node-local hardware/memory fault.",
       "decision": "RESTART"
     },
     {
