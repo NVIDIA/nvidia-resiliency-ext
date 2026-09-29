@@ -41,8 +41,8 @@ from nvidia_resiliency_ext.attribution.restart_agent.models import (
 L1_CATEGORY_CONFIRMED_RESTART = "l1_category_confirmed_restart"
 
 # Cat 21 in our taxonomy is a RESTART-labeled category
-# ("Post-checkpoint progress-log assertion"). Cat 31 CPU OOM is also RESTART.
-# Cat 32 CUDA OOM is STOP. We use these for the tests below.
+# ("Post-checkpoint progress-log assertion"). Cat 32 CUDA OOM is STOP, as is
+# cat 31 CPU OOM / Linux OOM killer. We use cat 21 and cat 32 below.
 RESTART_CATEGORY_ID = 21
 STOP_CATEGORY_ID = 32
 
