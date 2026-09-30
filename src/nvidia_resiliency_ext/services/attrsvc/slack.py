@@ -100,6 +100,8 @@ class SlackConfig:
     )
     #: Empty means do not guess an address for the job owner.
     email_domain: str = ""
+    #: Which cluster produced the analysis; shown so alerts from several are distinguishable.
+    cluster: str = ""
 
     @property
     def configured(self) -> bool:
@@ -128,6 +130,7 @@ class SlackConfig:
             token=token or load_slack_bot_token(),
             channel=str(getattr(settings, "SLACK_CHANNEL", "") or "").strip(),
             notify_actions=parse_notify_actions(os.environ.get(NOTIFY_ACTIONS_ENV)),
+            cluster=str(getattr(settings, "CLUSTER_NAME", "") or "").strip(),
             email_domain=(os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
         )
 
@@ -269,6 +272,7 @@ class DecisionRationale:
     base_rule: str = ""
     allowed_retries: Optional[int] = None
     budget_exhausted: bool = False
+    #: 0 is L1's sanctioned "no listed category matches"; None means it did not run.
     category_id: Optional[int] = None
     category_name: str = ""
     category_decision: str = ""
@@ -281,7 +285,7 @@ class DecisionRationale:
 
     @property
     def empty(self) -> bool:
-        return not (self.rule or self.category_id or self.retry_outlook)
+        return not (self.rule or self.category_id is not None or self.retry_outlook)
 
     def as_lines(self) -> list[str]:
         """Bullet lines, most decision-relevant first, omitting empty claims."""
@@ -295,7 +299,11 @@ class DecisionRationale:
                 rule += f" — budget {self.allowed_retries}"
                 rule += ", exhausted" if self.budget_exhausted else ", not exhausted"
             lines.append(rule)
-        if self.category_id:
+        if self.category_id == 0:
+            # Distinct from an absent selection: the model considered the
+            # taxonomy and reported that none of it applies.
+            lines.append("category: none of the listed categories matched")
+        elif self.category_id:
             cat = f"category {self.category_id}"
             if self.category_name:
                 cat += f" _{self.category_name}_"
@@ -362,7 +370,7 @@ def decision_rationale(payload: Any) -> DecisionRationale:
     if isinstance(assessment, Mapping):
         selection = assessment.get("category_selection")
         if isinstance(selection, Mapping):
-            category_id = _int_or_none(selection.get("category_id")) or None
+            category_id = _int_or_none(selection.get("category_id"))
             confidence = _int_or_none(selection.get("category_confidence"))
             if category_id:
                 definition = category_by_id(category_id)
@@ -481,11 +489,59 @@ def run_name_from_log_path(log_path: str, job_id: str = "") -> str:
     return stem[:index] if index > 0 else ""
 
 
-def format_notification(identity: AnalysisIdentity, result: AttrSvcResult) -> str:
+#: How much of the log to quote around the reported failure line.
+EXCERPT_LINES = 3
+#: Long lines are usually a serialized payload; keep the alert readable.
+EXCERPT_MAX_CHARS = 220
+
+
+def log_excerpt(log_path: str, line_number: Any, count: int = EXCERPT_LINES) -> list:
+    """Return ``count`` lines starting at ``line_number`` (1-based), or ``[]``.
+
+    The decision cites a line number but not the text at it, which is the first
+    thing a reader wants. Streams rather than reads the file: these logs run to
+    tens of megabytes.
+    """
+    start = _int_or_none(line_number)
+    if not log_path or start is None or start < 1:
+        return []
+    picked = []
+    try:
+        with open(log_path, "r", errors="replace") as handle:
+            for number, text in enumerate(handle, start=1):
+                if number < start:
+                    continue
+                if number >= start + count:
+                    break
+                text = text.rstrip("\n")
+                if len(text) > EXCERPT_MAX_CHARS:
+                    text = text[:EXCERPT_MAX_CHARS] + " …"
+                picked.append(f"{number}: {text}")
+    except OSError:
+        return []
+    return picked
+
+
+def primary_failure_line(result: AttrSvcResult) -> Any:
+    """Line number of the primary failure, when the payload reports one."""
+    payload = result.result
+    if not isinstance(payload, Mapping):
+        return None
+    primary = payload.get("primary_failure")
+    return primary.get("line") if isinstance(primary, Mapping) else None
+
+
+def format_notification(
+    identity: AnalysisIdentity,
+    result: AttrSvcResult,
+    cluster: str = "",
+) -> str:
     """Render the alert: decision, narrative cause, policy rationale, evidence."""
     job_label = identity.label
 
     header = f"*NVRx attribution:* `{result.recommendation.action}`"
+    if cluster:
+        header += f" on *{cluster}*"
     if result.recommendation.source:
         header += f" _(source: {result.recommendation.source})_"
 
@@ -513,6 +569,10 @@ def format_notification(identity: AnalysisIdentity, result: AttrSvcResult) -> st
         extras.append(f"*Why {result.recommendation.action}:*\n{bullets}")
     if fields.evidence:
         extras.append(f"*Evidence:* {fields.evidence}")
+    excerpt = log_excerpt(result.log_path or "", primary_failure_line(result))
+    if excerpt:
+        quoted = "\n".join(excerpt)
+        extras.append(f"*Log at the failure:*\n```{quoted}```")
     if fields.show_alternatives:
         if fields.plausible_causes:
             causes = "\n".join(f"  • {c}" for c in fields.plausible_causes)
@@ -589,7 +649,7 @@ class SlackNotifier:
             self.stats.skipped_action += 1
             return False
 
-        text = format_notification(identity, result)
+        text = format_notification(identity, result, self.config.cluster)
 
         text += self._mention(identity.user)
 

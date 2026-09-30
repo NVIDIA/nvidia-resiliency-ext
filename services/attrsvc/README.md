@@ -105,10 +105,20 @@ channel are configured; otherwise attrsvc logs `Slack alerts: disabled (...)` at
 startup and behaves unchanged. Delivery is best
 effort — a Slack outage is logged, never propagated into the analysis path.
 
-Each message carries the recommendation and its source, the job ID, the narrative
-root cause, the L4 decision trail (rule, category, retry outlook), an evidence
-line locating the failure, and — when the cause is unconfirmed — the plausible
-causes and missing evidence.
+Each message carries the recommendation and its source, the cluster
+(`NVRX_ATTRSVC_CLUSTER_NAME`, so alerts from several clusters in one channel are
+distinguishable), the job ID, the narrative root cause, the L4 decision trail
+(rule, category, retry outlook), an evidence line locating the failure, the
+first three log lines at that failure, and — when the cause is unconfirmed —
+the plausible causes and missing evidence.
+
+The decision cites a line number; quoting the lines there saves opening a
+multi-megabyte log to see what it actually says. Overlong lines are truncated,
+and the section is omitted when the log cannot be read.
+
+A category of `0` is L1's sanctioned "no listed category matches" and is
+reported as such. That is a different fact from no category at all, which
+happens on deterministic-only results where L1 never ran.
 
 The job owner is named in every message. Turning that owner into an `@` mention
 additionally requires `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN`, since a SLURM account

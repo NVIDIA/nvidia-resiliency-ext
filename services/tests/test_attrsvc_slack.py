@@ -720,3 +720,122 @@ def test_backend_skips_notification_when_slack_is_disabled():
 
     RestartAgentServiceBackend._notify_slack(backend, "k")
     assert called == []
+
+
+# ─── cluster identity ───
+
+
+def test_message_names_the_cluster(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client, cluster="oci-aga-slurm-1")
+
+    notifier.notify(_job(), _parsed())
+
+    assert "on *oci-aga-slurm-1*" in client.messages[0]["text"]
+
+
+def test_message_omits_the_cluster_when_unset(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    notifier.notify(_job(), _parsed())
+
+    assert " on *" not in client.messages[0]["text"]
+
+
+def test_config_from_settings_reads_the_cluster_name(monkeypatch):
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    settings = SimpleNamespace(
+        SLACK_BOT_TOKEN="xoxb-x", SLACK_CHANNEL="C1", CLUSTER_NAME=" aws-cmh-slurm-1 "
+    )
+    assert SlackConfig.from_settings(settings).cluster == "aws-cmh-slurm-1"
+
+
+# ─── "none of the categories matched" is an answer, not an absence ───
+
+
+def test_category_zero_is_reported_rather_than_dropped():
+    payload = _policy_payload()
+    payload["l1_assessment"]["category_selection"] = {"category_id": 0, "category_confidence": 0}
+    lines = " ".join(slack_mod.decision_rationale(payload).as_lines())
+
+    # L1 considered the taxonomy and said none applies; silence would read as
+    # "the model never categorised", which is a different fact.
+    assert "none of the listed categories matched" in lines
+
+
+def test_absent_category_selection_says_nothing():
+    payload = _policy_payload()
+    payload.pop("l1_assessment")
+    lines = " ".join(slack_mod.decision_rationale(payload).as_lines())
+
+    assert "category" not in lines
+
+
+# ─── the lines at the reported failure ───
+
+
+def _log_with(tmp_path, total=40, marker_line=30, marker="RuntimeError: CUDA error"):
+    p = tmp_path / "run_1_date_x.log"
+    with p.open("w") as fh:
+        for i in range(1, total + 1):
+            fh.write(f"{marker}\n" if i == marker_line else f"ordinary output {i}\n")
+    return p
+
+
+def test_log_excerpt_starts_at_the_reported_line(tmp_path):
+    log = _log_with(tmp_path)
+    lines = slack_mod.log_excerpt(str(log), 30)
+
+    assert len(lines) == 3
+    assert lines[0].startswith("30: RuntimeError: CUDA error")
+    assert lines[1].startswith("31: ")
+    assert lines[2].startswith("32: ")
+
+
+def test_log_excerpt_truncates_a_very_long_line(tmp_path):
+    p = tmp_path / "x.log"
+    p.write_text("A" * 5000 + "\n")
+    line = slack_mod.log_excerpt(str(p), 1)[0]
+
+    assert line.endswith("…")
+    assert len(line) < 300
+
+
+def test_log_excerpt_stops_at_end_of_file(tmp_path):
+    log = _log_with(tmp_path, total=31)
+    assert len(slack_mod.log_excerpt(str(log), 30)) == 2
+
+
+@pytest.mark.parametrize("bad", [None, 0, -5, "abc"])
+def test_log_excerpt_rejects_unusable_line_numbers(tmp_path, bad):
+    assert slack_mod.log_excerpt(str(_log_with(tmp_path)), bad) == []
+
+
+def test_log_excerpt_on_a_missing_file_is_empty():
+    assert slack_mod.log_excerpt("/no/such/file.log", 1) == []
+
+
+def test_message_quotes_the_failure_lines(monkeypatch, tmp_path):
+    log = _log_with(tmp_path)
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    payload = _restart_agent_payload()
+    payload["result"]["primary_failure"]["line"] = 30
+
+    notifier.notify(_job(), parse_attrsvc_response(payload, log_path=str(log)))
+    text = client.messages[0]["text"]
+
+    assert "*Log at the failure:*" in text
+    assert "30: RuntimeError: CUDA error" in text
+
+
+def test_message_omits_the_excerpt_when_the_log_is_unreadable(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    payload = _restart_agent_payload()
+    payload["result"]["primary_failure"]["line"] = 30
+
+    notifier.notify(_job(), parse_attrsvc_response(payload, log_path="/no/such.log"))
+
+    assert "*Log at the failure:*" not in client.messages[0]["text"]
