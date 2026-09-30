@@ -365,6 +365,7 @@ def save_state_dict_async_plan(
     return save_state_dict_ret
 
 
+@telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.verify_global_md_reuse")
 def verify_global_md_reuse(
     loaded_all_plans: List[SavePlan],
     local_plan: SavePlan,
@@ -403,7 +404,8 @@ def verify_global_md_reuse(
                 f" {_compare_dataclasses(local_plan, loaded_all_plans[rank])}"
             )
         all_results = torch.tensor([local_verify_reuse], dtype=torch.int, device="cuda")
-        torch.distributed.all_reduce(all_results, op=torch.distributed.ReduceOp.MIN)
+        with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.validate_md_reuse_all_reduce"):
+            torch.distributed.all_reduce(all_results, op=torch.distributed.ReduceOp.MIN)
         # Check if all reduced results are True
         global_md_verify_reuse = all_results.item() == 1
     else:
