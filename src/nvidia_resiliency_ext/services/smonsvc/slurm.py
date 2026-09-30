@@ -341,7 +341,9 @@ class SlurmClient:
                 if "JobId=" in line:
                     # Save previous job
                     if current_job_id:
-                        result_paths[current_job_id] = (current_stdout, current_stderr)
+                        result_paths[current_job_id] = JobPaths(
+                            current_stdout, current_stderr, current_workdir, current_command
+                        )
 
                     # Extract job ID - handle array jobs
                     job_match = re.search(r"JobId=(\S+)", line)
