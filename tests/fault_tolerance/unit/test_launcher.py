@@ -27,14 +27,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
+from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext import fault_tolerance
+from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
 )
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
 
 WORLD_SIZE = 4
@@ -73,6 +77,8 @@ def _run_launcher(cmd_to_run, timeout):
 
 
 def _save_ft_cfg(cfg, dirpath):
+    # These subprocess scenarios use CPU/Gloo and allocate no GPU memory.
+    cfg.gpu_memory_reclaim_timeout = 0
     cfg_path = os.path.join(dirpath, "_tmp_ft_cfg.yaml")
     cfg.to_yaml_file(cfg_path)
     return cfg_path
@@ -552,6 +558,7 @@ class TestLauncherRunBehavior(unittest.TestCase):
         )
         agent._worker_group.state = WorkerState.HEALTHY
         agent._worker_group.group_rank = 0
+        agent._worker_group.group_world_size = 2
         failure = MagicMock()
         failures = {7: failure}
 
@@ -565,6 +572,8 @@ class TestLauncherRunBehavior(unittest.TestCase):
             patch.object(agent, '_handle_restart_decision', return_value=False),
             patch.object(agent, '_stop_workers'),
             patch.object(launcher, 'record_profiling_event'),
+            patch.object(launcher, 'get_profiling_cycle', return_value=4),
+            patch.object(launcher.telemetry, 'mark') as mark,
             patch.object(launcher, 'put_metric'),
             patch.object(launcher.time, 'sleep'),
         ):
@@ -572,6 +581,19 @@ class TestLauncherRunBehavior(unittest.TestCase):
 
         self.assertEqual(result.state, WorkerState.FAILED)
         self.assertEqual(result.failures, failures)
+        mark.assert_called_once_with(
+            semconv.SPAN_GROUP_FT,
+            "nv.nvrx.ftl.fault",
+            {
+                "nv.nvrx.ftl.rdzv.round": 3,
+                "nv.nvrx.ftl.profiling.cycle": 4,
+                "nv.nvrx.ftl.cycle.failures": 1,
+                "nv.nvrx.ftl.node": agent._node_id,
+                "nv.nvrx.ftl.group.rank": 0,
+                "nv.nvrx.ftl.group.world_size": 2,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
 
 
 class TestHandleRestartDecision(unittest.TestCase):
@@ -1935,3 +1957,144 @@ class TestLauncherAllowedRoots:
         from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
 
         assert _resolve_grpc_log_allowed_roots(self._args()) == []
+
+
+class TestCycleTelemetry:
+    @pytest.mark.parametrize("failure", ["shutdown", "phase_close"])
+    def test_cleanup_continues_after_shutdown_or_phase_close_failure(self, failure):
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._worker_group.spec.max_restarts = 5
+        agent._get_global_cycle_number.return_value = 3
+        events = MagicMock()
+        agent._run_phase = events.run
+        agent._cycle_phase = events.cycle
+        failing_call = agent._shutdown if failure == "shutdown" else events.run.close
+        failing_call.side_effect = RuntimeError("cleanup failed")
+        with (
+            patch.object(telemetry, "setup_telemetry") as setup,
+            patch.object(telemetry, "record_process_startup"),
+            patch.object(telemetry, "shutdown", events.shutdown),
+            pytest.raises(RuntimeError, match="cleanup failed"),
+        ):
+            launcher.LocalElasticAgent.run(agent)
+        assert events.mock_calls == [
+            unittest.mock.call.run.close(),
+            unittest.mock.call.cycle.close(),
+            unittest.mock.call.shutdown(setup.return_value),
+        ]
+
+    def test_run_phase_receives_rendezvous_and_profiling_counters(self):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._run_phase = MagicMock()
+        worker_group = MagicMock(group_rank=1, group_world_size=2)
+        with (
+            patch.object(launcher.SimpleElasticAgent, "_initialize_workers"),
+            patch.object(agent, "_get_global_cycle_number", return_value=3),
+            patch.object(launcher, "get_profiling_cycle", return_value=4),
+        ):
+            launcher.LocalElasticAgent._initialize_workers(agent, worker_group)
+
+        agent._run_phase.open.assert_called_once_with(
+            semconv.SPAN_GROUP_FT,
+            "nv.nvrx.ftl.run",
+            {
+                "nv.nvrx.ftl.rdzv.round": 3,
+                "nv.nvrx.ftl.profiling.cycle": 4,
+                "nv.nvrx.ftl.group.rank": 1,
+                "nv.nvrx.ftl.group.world_size": 2,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
+
+    @pytest.mark.parametrize(
+        ("error", "outcome"),
+        [
+            pytest.param(
+                UnhealthyNodeException("unhealthy"),
+                {"nv.nvrx.cycle.outcome": "excluded"},
+                id="unhealthy",
+            ),
+            pytest.param(
+                RendezvousGracefulExitError("closed"),
+                {
+                    "nv.nvrx.cycle.outcome": "standby",
+                    "nv.nvrx.ftl.membership": "standby",
+                },
+                id="closed",
+            ),
+        ],
+    )
+    def test_rendezvous_failure_closes_the_cycle_opened_for_the_wait(self, error, outcome):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._cycle_phase = MagicMock()
+        worker_group = MagicMock()
+        with (
+            patch.object(launcher.SimpleElasticAgent, "_rendezvous", side_effect=error),
+            pytest.raises(type(error)),
+        ):
+            launcher.LocalElasticAgent._rendezvous(agent, worker_group)
+        agent._cycle_phase.close.assert_called_once_with(outcome)
+
+    def _make_worker_agent(self):
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._infra_placement_attrs.return_value = {}
+        agent._launch_budget_attrs.return_value = {}
+        agent._current_cycle_info_path.return_value = None
+        agent._log_line_prefix_template = None
+        group = agent._worker_group
+        group.spec.rdzv_handler.get_run_id.return_value = "rdzv"
+        group.spec.role = "trainer"
+        group.spec.args = ()
+        group.spec.entrypoint = lambda: None
+        group.workers = [MagicMock(local_rank=0)]
+        return agent, group
+
+    @pytest.mark.skipif(not telemetry._AVAILABLE, reason="requires nemo-lens")
+    @pytest.mark.parametrize("round_number", [0, 3], ids=["initial", "restart"])
+    def test_worker_environment_uses_generic_carrier_and_current_round(self, round_number):
+        from nemo.lens.resources.attributes import parse_otel_resource_attributes
+
+        agent, group = self._make_worker_agent()
+        agent._get_global_cycle_number.return_value = round_number
+        with (
+            patch.object(launcher, "start_processes") as start,
+            patch.object(launcher, "record_profiling_event"),
+            patch.object(
+                telemetry,
+                "_INHERITED_RESOURCE_ATTRIBUTES",
+                "example.attribute=imported",
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "OTEL_RESOURCE_ATTRIBUTES": "example.attribute=live,live.only=true",
+                },
+            ),
+        ):
+            start.return_value.pids.return_value = {}
+            launcher.LocalElasticAgent._start_workers(agent, group)
+            env = start.call_args.kwargs["envs"][0]
+            attrs = parse_otel_resource_attributes(env["OTEL_RESOURCE_ATTRIBUTES"])
+            assert attrs["example.attribute"] == "imported"
+            assert "live.only" not in attrs
+            assert attrs["nv.nvrx.cycle.index"] == str(round_number)
+            assert env["TORCHELASTIC_RESTART_COUNT"] == str(round_number)
+
+    def test_worker_restart_values_do_not_depend_on_telemetry(self):
+        agent, group = self._make_worker_agent()
+        agent._get_global_cycle_number.return_value = 4
+        with (
+            patch.object(launcher, "start_processes") as start,
+            patch.object(launcher, "record_profiling_event"),
+            patch.object(telemetry, "_AVAILABLE", False),
+            patch.object(telemetry, "get_inherited_resource_attributes", return_value=""),
+            patch.object(telemetry, "extend_otel_resource_attributes", return_value=""),
+        ):
+            start.return_value.pids.return_value = {}
+            launcher.LocalElasticAgent._start_workers(agent, group)
+
+        env = start.call_args.kwargs["envs"][0]
+        assert env["TORCHELASTIC_RESTART_COUNT"] == "4"
+        agent._send_cycle_to_rank_monitors.assert_called_once_with(4)

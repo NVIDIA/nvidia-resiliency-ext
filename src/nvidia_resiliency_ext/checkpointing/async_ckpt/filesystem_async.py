@@ -57,6 +57,8 @@ try:
 except ImportError:
     HAVE_PSUTIL = False
 
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
+
 from ..utils import _disable_gc
 from .core import PersistentAsyncCaller
 
@@ -362,19 +364,23 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # the worker for checkpoint N may still be reading these buffers
                     # while we are about to overwrite them with checkpoint N+1 values.
                     if FileSystemWriterAsync._shm_drain_callback is not None:
-                        FileSystemWriterAsync._shm_drain_callback()
+                        with telemetry.span(
+                            semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.shm_drain"
+                        ):
+                            FileSystemWriterAsync._shm_drain_callback()
                     _, shm_tensors = FileSystemWriterAsync._shm_tensor_cache[key]
-                    pending_cuda_copies = 0
-                    for shm_t, source_t in zip(shm_tensors, cacheable_data):
-                        shm_t.copy_(source_t, non_blocking=True)
-                        # Periodically sync to avoid exhausting CUDA's pageable staging
-                        # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
-                        pending_cuda_copies += int(source_t.device.type == "cuda")
-                        if pending_cuda_copies == 8:
+                    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
+                        pending_cuda_copies = 0
+                        for shm_t, source_t in zip(shm_tensors, cacheable_data):
+                            shm_t.copy_(source_t, non_blocking=True)
+                            # Periodically sync to avoid exhausting CUDA's pageable staging
+                            # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
+                            pending_cuda_copies += int(source_t.device.type == "cuda")
+                            if pending_cuda_copies == 8:
+                                torch.cuda.synchronize()
+                                pending_cuda_copies = 0
+                        if pending_cuda_copies:
                             torch.cuda.synchronize()
-                            pending_cuda_copies = 0
-                    if pending_cuda_copies:
-                        torch.cuda.synchronize()
                     logger.debug(
                         f"Copied {len(shm_tensors)} tensors into reused shm allocations "
                         f"(key={key})"
@@ -384,22 +390,23 @@ class FileSystemWriterAsync(FileSystemWriter):
                     # values in. Allocations are cached only when structure caching is enabled.
                     shm_tensors = []
                     total_bytes = 0
-                    pending_cuda_copies = 0
-                    for tensor in cacheable_data:
-                        contiguous_tensor = tensor.contiguous()
-                        shm_t = torch.empty(
-                            contiguous_tensor.shape, dtype=contiguous_tensor.dtype
-                        ).share_memory_()
-                        shm_t.copy_(contiguous_tensor, non_blocking=True)
-                        shm_tensors.append(shm_t)
-                        total_bytes += shm_t.nbytes
-                        # Periodically sync to avoid exhausting CUDA's pageable staging pages
-                        pending_cuda_copies += int(contiguous_tensor.device.type == "cuda")
-                        if pending_cuda_copies == 8:
+                    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
+                        pending_cuda_copies = 0
+                        for tensor in cacheable_data:
+                            contiguous_tensor = tensor.contiguous()
+                            shm_t = torch.empty(
+                                contiguous_tensor.shape, dtype=contiguous_tensor.dtype
+                            ).share_memory_()
+                            shm_t.copy_(contiguous_tensor, non_blocking=True)
+                            shm_tensors.append(shm_t)
+                            total_bytes += shm_t.nbytes
+                            # Periodically sync to avoid exhausting CUDA's pageable staging pages
+                            pending_cuda_copies += int(contiguous_tensor.device.type == "cuda")
+                            if pending_cuda_copies == 8:
+                                torch.cuda.synchronize()
+                                pending_cuda_copies = 0
+                        if pending_cuda_copies:
                             torch.cuda.synchronize()
-                            pending_cuda_copies = 0
-                    if pending_cuda_copies:
-                        torch.cuda.synchronize()
                     if self.use_cached_data_structure:
                         FileSystemWriterAsync._shm_tensor_cache[key] = (
                             cacheable_items,

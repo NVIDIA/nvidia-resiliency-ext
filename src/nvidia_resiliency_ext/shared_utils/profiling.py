@@ -37,6 +37,9 @@ class ProfilingEvent(Enum):
     WORKER_START_COMPLETED = "worker_start_completed"
     ATTRIBUTION_GET_STARTED = "attribution_get_started"
     ATTRIBUTION_GET_COMPLETED = "attribution_get_completed"
+    NODE_EXCLUDED = "node_excluded"  # bailed at the rendezvous health check
+    AWAIT_ROUND_STARTED = "await_round_started"  # entered the Step-0 wait for the round
+    AWAIT_ROUND_COMPLETED = "await_round_completed"  # round opened (or shutdown)
 
 
 class FaultToleranceProfiler:
