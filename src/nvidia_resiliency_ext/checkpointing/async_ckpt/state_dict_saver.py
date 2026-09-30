@@ -343,7 +343,7 @@ def save_state_dict_async_plan(
         local_plan = storage_writer.prepare_decentralized_global_plan(local_plan)
         central_plan = local_plan
     else:
-        with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.reduce_scatter"):
+        with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.reduce_scatter"):
             central_plan = dist_wrapper.reduce_scatter("plan", local_step, global_step)
 
     central_plan = planner.finish_plan(central_plan)
