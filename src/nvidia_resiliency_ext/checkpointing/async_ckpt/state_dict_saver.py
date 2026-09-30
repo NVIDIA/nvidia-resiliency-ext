@@ -330,10 +330,10 @@ def save_state_dict_async_plan(
 
         if not loaded_all_plans or not global_md_verify_reuse:
             logger.debug(f"rank: {rank}, Passed cache non-reusable")
-            with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.plan_gather"):
+            with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.plan_gather"):
                 all_local_plans = dist_wrapper.gather_object(local_plan)
             if dist_wrapper.is_coordinator:
-                with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.global_plan_create"):
+                with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.global_plan_create"):
                     _, global_metadata = planner.create_global_plan(all_local_plans)
                     global_metadata.all_local_plans = all_local_plans
         else:
@@ -433,7 +433,7 @@ def save_state_dict_async_finalize(
 
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
-    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.finalize_gather"):
+    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.finalize_gather"):
         all_results = dist_wrapper.gather_object(write_results)
     gather_end = time()
     logger.debug(
@@ -445,10 +445,11 @@ def save_state_dict_async_finalize(
         node_failures = _get_failure_dict(all_results)
         if len(node_failures) == 0:
             assert global_metadata is not None
-            write_start = time()
-            storage_writer.finish(global_metadata, all_results)
-            write_end = time()
-            logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
+            with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.metadata_write"):
+                write_start = time()
+                storage_writer.finish(global_metadata, all_results)
+                write_end = time()
+                logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
     else:
         node_failures = {}
 
@@ -459,8 +460,9 @@ def save_state_dict_async_finalize(
         dtype=torch.int,
         device=torch.cuda.current_device(),
     )
-    torch.distributed.broadcast(
-        failures_occurred, src=dist_wrapper.coordinator_rank, group=dist_wrapper.group
-    )
+    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.broadcast_failures"):
+        torch.distributed.broadcast(
+            failures_occurred, src=dist_wrapper.coordinator_rank, group=dist_wrapper.group
+        )
     if failures_occurred:
         raise CheckpointException("write", node_failures)
