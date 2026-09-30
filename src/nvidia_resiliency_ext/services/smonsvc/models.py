@@ -88,7 +88,9 @@ class SlurmJob:
     log_submitted: bool = False  # POST was attempted (success or client error)
     post_success: bool = False  # POST succeeded (200) - only fetch results if True
     result_fetched: bool = False
-    terminal_signaled: bool = False  # True after POST analysis_intent=terminal is attempted
+    # Paths already sent with analysis_intent=terminal. A job that restarts in
+    # place has one log per cycle, each needing its own terminal request.
+    terminal_signaled_paths: set[str] = field(default_factory=set)
     path_fetch_attempted: bool = False  # True after attempting to fetch stdout path
     app_log_missing: bool = False  # True once the job is known to have written no app log
     last_state: JobState | None = None
@@ -101,7 +103,7 @@ SLURM_JOB_TRACKING_FIELDS = (
     "log_submitted",
     "post_success",
     "result_fetched",
-    "terminal_signaled",
+    "terminal_signaled_paths",
     "path_fetch_attempted",
     "app_log_missing",
     "get_attempts",

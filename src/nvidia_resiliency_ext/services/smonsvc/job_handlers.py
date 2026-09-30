@@ -122,8 +122,12 @@ def fetch_results(
         attrsvc_client: Client for attrsvc HTTP requests
     """
 
-    if not getattr(job, "terminal_signaled", False):
-        job.terminal_signaled = True
+    signaled = getattr(job, "terminal_signaled_paths", None)
+    if signaled is None:
+        signaled = set()
+        job.terminal_signaled_paths = signaled
+    if log_path not in signaled:
+        signaled.add(log_path)
 
         def on_terminal_success(_response):
             logger.info(f"[{job.job_id}] Terminal analysis requested: {log_path}")

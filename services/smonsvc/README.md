@@ -96,6 +96,17 @@ resolved and did not. Reviewing the skip list is how the next one gets caught:
 grep "skipping analysis" <logs>/*_smonsvc.log
 ```
 
+A job that restarts in place writes one log per cycle, and **every cycle is
+analyzed**, oldest first. Analyzing only the last one discards the earlier
+failures and leaves L3 with no attempt history: its retry-budget rules compare
+an attempt against its predecessors, so on a single submission they can never
+fire. Ascending order is what makes that history meaningful, since L3 asks for
+attempts *before* a given cycle.
+
+Only `_cycle<N>` logs form an ordered series. Two launches that differ solely by
+timestamp are not related by anything the scheduler records, so they stay a
+single submission rather than an invented order.
+
 Application logs embed the **parent** job ID, so every array task of a job
 resolves to the same log. The monitor claims a log once at submission and again
 before the terminal analysis, skipping siblings at both stages.

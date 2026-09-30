@@ -117,7 +117,7 @@ def test_fetch_results_signals_terminal_analysis_before_get():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient()
@@ -127,7 +127,7 @@ def test_fetch_results_signals_terminal_analysis_before_get():
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET"]
     assert attrsvc_client.calls[0]["analysis_intent"] == ANALYSIS_INTENT_TERMINAL
     assert attrsvc_client.calls[0]["user"] == "alice"
-    assert job.terminal_signaled is True
+    assert "/tmp/job.log" in job.terminal_signaled_paths
     assert job.result_fetched is True
     assert state.results_fetched == 1
 
@@ -137,7 +137,7 @@ def test_fetch_results_skips_terminal_signal_once_sent():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=True,
+        terminal_signaled_paths={"/tmp/job.log"},
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient()
@@ -152,7 +152,7 @@ def test_fetch_results_terminal_signal_failure_does_not_count_path_error():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient(post_error="permission denied")
@@ -160,7 +160,7 @@ def test_fetch_results_terminal_signal_failure_does_not_count_path_error():
     fetch_results(job, "/tmp/job.log", state, attrsvc_client)
 
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET"]
-    assert job.terminal_signaled is True
+    assert "/tmp/job.log" in job.terminal_signaled_paths
     assert job.result_fetched is True
     assert state.results_fetched == 1
     assert state.path_errors_permission == 0
@@ -174,7 +174,7 @@ def test_fetch_results_terminal_signal_failure_is_not_retried():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient(post_error="max retries exceeded")

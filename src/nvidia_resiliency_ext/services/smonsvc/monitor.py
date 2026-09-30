@@ -14,7 +14,7 @@ from types import FrameType
 
 from .attrsvc_client import AttrsvcClient
 from .job_handlers import fetch_results, submit_log
-from .log_resolver import AppLogResolution, resolve_app_log
+from .log_resolver import AppLogResolution, resolve_app_logs
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
 from .slurm import SlurmClient, expand_slurm_patterns
 from .stats import format_stats_summary, get_health_status, get_jobs_list, get_stats_dict
@@ -291,10 +291,10 @@ class SlurmJobMonitor:
                     and not tracked_job.result_fetched
                     and tracked_job.get_attempts < self.MAX_GET_ATTEMPTS
                 ):
-                    log_path = self._get_log_path(tracked_job)
-                    if log_path and self._claim_analysis_path(tracked_job, log_path):
-                        tracked_job.get_attempts += 1
-                        jobs_to_fetch.append((tracked_job, log_path))
+                    for log_path in self._get_log_paths(tracked_job):
+                        if self._claim_analysis_path(tracked_job, log_path):
+                            tracked_job.get_attempts += 1
+                            jobs_to_fetch.append((tracked_job, log_path))
                 elif tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
                     self._mark_get_exhausted(job_id, tracked_job)
 
@@ -350,11 +350,12 @@ class SlurmJobMonitor:
 
             # Check if job needs log submission
             if not tracked_job.log_submitted and not tracked_job.result_fetched:
-                log_path = self._get_log_path(tracked_job)
-                if log_path is None and tracked_job.app_log_missing:
+                log_paths = self._get_log_paths(tracked_job)
+                if not log_paths and tracked_job.app_log_missing:
                     tracked_job.log_submitted = True  # settled; nothing to analyze
-                elif log_path and self._claim_log_path(tracked_job, log_path):
-                    jobs_to_submit.append((tracked_job, log_path))
+                for log_path in log_paths:
+                    if self._claim_log_path(tracked_job, log_path):
+                        jobs_to_submit.append((tracked_job, log_path))
 
         return jobs_to_submit
 
@@ -394,8 +395,11 @@ class SlurmJobMonitor:
         """
         if log_path in self.state.analyzed_log_paths:
             logger.debug(f"[{job.job_id}] Already analyzed by a sibling task: {log_path}")
-            job.result_fetched = True
             self.state.duplicate_analyses += 1
+            # Settle the job only when no cycle of it is still outstanding;
+            # a sibling array task claiming one cycle must not retire the rest.
+            if all(p in self.state.analyzed_log_paths for p in self._get_log_paths(job)):
+                job.result_fetched = True
             return False
         self.state.analyzed_log_paths.add(log_path)
         return True
@@ -447,10 +451,10 @@ class SlurmJobMonitor:
                 if tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
                     self._mark_get_exhausted(job_id, tracked_job)
                     continue
-                log_path = self._get_log_path(tracked_job)
-                if log_path and self._claim_analysis_path(tracked_job, log_path):
-                    tracked_job.get_attempts += 1
-                    jobs_to_fetch.append((tracked_job, log_path))
+                for log_path in self._get_log_paths(tracked_job):
+                    if self._claim_analysis_path(tracked_job, log_path):
+                        tracked_job.get_attempts += 1
+                        jobs_to_fetch.append((tracked_job, log_path))
 
         return jobs_to_fetch
 
@@ -519,16 +523,25 @@ class SlurmJobMonitor:
         )
 
     def _get_log_path(self, job: SlurmJob) -> str | None:
-        """Get the log file to analyze, preferring the application log over SLURM StdOut."""
+        """The single log to analyze, or None. Kept for callers wanting one path."""
+        paths = self._get_log_paths(job)
+        return paths[-1] if paths else None
+
+    def _get_log_paths(self, job: SlurmJob) -> list[str]:
+        """Every log to analyze for this job, oldest cycle first.
+
+        Ordering matters: L3 builds attempt history from earlier cycles, so a
+        later cycle only sees its predecessors if they were submitted first.
+        """
         if not job.stdout_path:
             logger.debug(f"[{job.job_id}] No StdOut path available")
-            return None
+            return []
 
         stdout_path = self._expand_slurm_patterns(job.stdout_path, job)
         if not self._app_log_resolution.enabled:
-            return stdout_path
+            return [stdout_path]
 
-        resolved = resolve_app_log(
+        resolved = resolve_app_logs(
             stdout_path,
             job.job_id,
             self._app_log_resolution,
@@ -536,8 +549,8 @@ class SlurmJobMonitor:
             job_name=job.name,
         )
         if resolved:
-            if resolved != stdout_path:
-                logger.debug(f"[{job.job_id}] Resolved application log: {resolved}")
+            if len(resolved) > 1:
+                logger.debug(f"[{job.job_id}] Resolved {len(resolved)} cycle logs")
             return resolved
 
         # No application log means the job died before training wrote one. What
@@ -553,7 +566,7 @@ class SlurmJobMonitor:
                 f"[{job.job_id}] No application log found; skipping analysis "
                 f"(job_name={job.name or '?'}, stdout={stdout_path})"
             )
-        return None
+        return []
 
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:
         """Submit a log file to the attribution service."""

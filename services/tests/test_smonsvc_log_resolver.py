@@ -12,6 +12,7 @@ from nvidia_resiliency_ext.services.smonsvc.log_resolver import (
     declared_log_dir,
     logs_from_job_name,
     resolve_app_log,
+    resolve_app_logs,
     script_log_dir_pattern,
 )
 
@@ -257,7 +258,9 @@ def _claim_analysis(state, job_id, path):
     from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
 
     job = SimpleNamespace(job_id=job_id, result_fetched=False)
-    granted = SlurmJobMonitor._claim_analysis_path(SimpleNamespace(state=state), job, path)
+    # The claim consults the job's full cycle set before settling it.
+    monitor = SimpleNamespace(state=state, _get_log_paths=lambda j: [path])
+    granted = SlurmJobMonitor._claim_analysis_path(monitor, job, path)
     return granted, job
 
 
@@ -322,12 +325,14 @@ def _monitor(enabled=True):
     from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
     from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
 
-    return SimpleNamespace(
+    monitor = SimpleNamespace(
         state=MonitorState(),
         _app_log_resolution=AppLogResolution(enabled=enabled),
         _expand_slurm_patterns=lambda path, job: path,
         _script_path=SlurmJobMonitor._script_path,
     )
+    monitor._get_log_paths = lambda job: SlurmJobMonitor._get_log_paths(monitor, job)
+    return monitor
 
 
 def _get_path(monitor, job):
@@ -793,3 +798,94 @@ def test_skipped_job_is_reported_at_info_once(tmp_path, caplog):
     assert "3911280_100" in skips[0].message
     assert str(stub) in skips[0].message
     assert "nemotron4_derisking_run" in skips[0].message
+
+
+# ─── every cycle, oldest first, so L3 can build history ───
+
+
+def test_all_cycles_are_returned_oldest_first(tmp_path):
+    stub, logs = _nemotron_layout(tmp_path, job="4103814", cycles=(0, 1, 2, 3, 4))
+
+    paths = resolve_app_logs(str(stub), "4103814", ON)
+
+    assert [p.rsplit("_cycle", 1)[1] for p in paths] == [
+        "0.log",
+        "1.log",
+        "2.log",
+        "3.log",
+        "4.log",
+    ]
+
+
+def test_cycle_order_is_numeric(tmp_path):
+    stub, _ = _nemotron_layout(tmp_path, job="777", cycles=(2, 10, 1))
+
+    paths = resolve_app_logs(str(stub), "777", ON)
+
+    assert [p.rsplit("_cycle", 1)[1] for p in paths] == ["1.log", "2.log", "10.log"]
+
+
+def test_single_cycle_returns_one_path(tmp_path):
+    stub, logs = _nemotron_layout(tmp_path, job="555", cycles=(0,))
+    assert resolve_app_logs(str(stub), "555", ON) == [str(logs[0])]
+
+
+def test_logs_without_cycle_numbers_stay_a_single_path(tmp_path):
+    # Two timestamped launches are not an ordered series: nothing defines
+    # "before", so L3 cannot relate them and we must not invent an order.
+    stub, main = _single_cycle_layout(tmp_path, job="933624")
+    other = main.parent / "run_933624_date_26-09-29_time_19-36-00.log"
+    other.write_text("earlier launch\n")
+
+    paths = resolve_app_logs(str(stub), "933624", ON)
+
+    assert len(paths) == 1
+
+
+def test_no_logs_gives_an_empty_list(tmp_path):
+    stub = _sidecars_only(tmp_path)
+    assert resolve_app_logs(str(stub), "3911280", ON) == []
+
+
+def test_monitor_submits_every_cycle_in_order(tmp_path):
+    from types import SimpleNamespace
+
+    stub, logs = _nemotron_layout(tmp_path, job="4103814", cycles=(0, 1, 2))
+    monitor = _monitor()
+    job = SimpleNamespace(
+        job_id="4103814_0",
+        stdout_path=str(stub),
+        app_log_missing=False,
+        name="",
+        script="",
+        work_dir="",
+    )
+
+    paths = monitor._get_log_paths(job)
+
+    assert len(paths) == 3
+    assert paths == sorted(paths, key=lambda p: int(p.rsplit("_cycle", 1)[1].split(".")[0]))
+
+
+def test_claim_settles_the_job_only_when_all_cycles_are_analyzed():
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
+    from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
+
+    state = MonitorState()
+    cycles = ["/l/a_1_cycle0.log", "/l/a_1_cycle1.log"]
+    monitor = SimpleNamespace(state=state, _get_log_paths=lambda j: cycles)
+    job = SimpleNamespace(job_id="1_0", result_fetched=False)
+
+    # First cycle claimed by this job.
+    assert SlurmJobMonitor._claim_analysis_path(monitor, job, cycles[0]) is True
+    # A sibling task re-claiming it must not retire the job: cycle1 is pending.
+    sibling = SimpleNamespace(job_id="1_7", result_fetched=False)
+    assert SlurmJobMonitor._claim_analysis_path(monitor, sibling, cycles[0]) is False
+    assert sibling.result_fetched is False
+
+    # Once every cycle is accounted for, the sibling can settle.
+    SlurmJobMonitor._claim_analysis_path(monitor, job, cycles[1])
+    assert SlurmJobMonitor._claim_analysis_path(monitor, sibling, cycles[1]) is False
+    assert sibling.result_fetched is True

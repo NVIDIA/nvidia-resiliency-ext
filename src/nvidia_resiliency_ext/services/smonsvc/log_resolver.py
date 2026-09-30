@@ -362,5 +362,57 @@ def resolve_app_log(
 
     # The highest cycle is the attempt that produced the terminal outcome, and a
     # cycle log outranks a plain one. mtime only breaks ties within a rank.
-    best = max(candidates, key=lambda p: (_cycle_number(p), p.stat().st_mtime))
+    best = max(candidates, key=_rank_key)
     return str(best)
+
+
+def _rank_key(path: Path):
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return (_cycle_number(path), mtime)
+
+
+def resolve_app_logs(
+    stdout_path: str,
+    job_id: str,
+    config: AppLogResolution,
+    *,
+    script: Optional[str] = None,
+    job_name: str = "",
+    search_root: Optional[str] = None,
+) -> list:
+    """Every application log for ``job_id``, oldest attempt first.
+
+    A job that restarts in place writes one log per cycle. Analyzing only the
+    last one discards the earlier failures and, more importantly, leaves L3 with
+    no attempt history: its retry-budget rules compare an attempt against its
+    predecessors, so they can never fire on a single submission. Ascending order
+    is what makes that history meaningful, since L3 asks for attempts *before* a
+    given cycle.
+
+    Returns ``[]`` when nothing resolves, matching :func:`resolve_app_log`.
+    """
+    best = resolve_app_log(
+        stdout_path,
+        job_id,
+        config,
+        script=script,
+        job_name=job_name,
+        search_root=search_root,
+    )
+    if best is None:
+        return []
+
+    chosen = Path(best)
+    # Siblings of the resolved log in the same directory, for this job only.
+    base = base_job_id(job_id)
+    siblings = _logs_for_job(chosen.parent, base)
+    if not siblings:
+        return [best]
+    # Only cycle logs form an ordered series; anything else stays a single item.
+    cycles = [p for p in siblings if _cycle_number(p) >= 0]
+    if len(cycles) < 2:
+        return [best]
+    return [str(p) for p in sorted(cycles, key=_rank_key)]
