@@ -20,6 +20,7 @@ from logging import getLogger
 from time import time
 from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 import torch
 import torch.distributed as dist
 from torch.distributed.checkpoint import CheckpointException
@@ -329,10 +330,12 @@ def save_state_dict_async_plan(
 
         if not loaded_all_plans or not global_md_verify_reuse:
             logger.debug(f"rank: {rank}, Passed cache non-reusable")
-            all_local_plans = dist_wrapper.gather_object(local_plan)
+            with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.plan_gather"):
+                all_local_plans = dist_wrapper.gather_object(local_plan)
             if dist_wrapper.is_coordinator:
-                _, global_metadata = planner.create_global_plan(all_local_plans)
-                global_metadata.all_local_plans = all_local_plans
+                with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.global_plan_create"):
+                    _, global_metadata = planner.create_global_plan(all_local_plans)
+                    global_metadata.all_local_plans = all_local_plans
         else:
             logger.debug(f"rank: {rank}, Passed cached global metadata, {global_md_verify_reuse}")
             global_metadata = None
@@ -340,7 +343,8 @@ def save_state_dict_async_plan(
         local_plan = storage_writer.prepare_decentralized_global_plan(local_plan)
         central_plan = local_plan
     else:
-        central_plan = dist_wrapper.reduce_scatter("plan", local_step, global_step)
+        with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.reduce_scatter"):
+            central_plan = dist_wrapper.reduce_scatter("plan", local_step, global_step)
 
     central_plan = planner.finish_plan(central_plan)
     end_plan = time()
@@ -429,7 +433,8 @@ def save_state_dict_async_finalize(
 
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
-    all_results = dist_wrapper.gather_object(write_results)
+    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.finalize_gather"):
+        all_results = dist_wrapper.gather_object(write_results)
     gather_end = time()
     logger.debug(
         f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end - gather_start}"
