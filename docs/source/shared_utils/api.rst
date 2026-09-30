@@ -1,7 +1,7 @@
 API Reference
 =============
 
-This section provides detailed API documentation for the NVRx Shared Utilities, focusing on the logging system.
+Public APIs for shared logging utilities and telemetry constants.
 
 .. note::
    For configuration options, environment variables, examples, and usage guides, see :doc:`config_reference`.
@@ -63,6 +63,12 @@ setup_logger
 ~~~~~~~~~~~~
 
 .. autofunction:: nvidia_resiliency_ext.shared_utils.log_manager.setup_logger
+
+Telemetry Constants
+-------------------
+
+.. automodule:: nvidia_resiliency_ext.shared_utils.semconv
+   :members:
 
 Quick Reference
 ---------------

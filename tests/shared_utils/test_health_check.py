@@ -17,6 +17,7 @@
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
 
@@ -1117,6 +1118,54 @@ class TestAttributionService(unittest.TestCase):
         service.start_poller()
 
         self.assertIsNone(service._poll_thread)
+
+    def test_one_span_per_request_across_repeated_polls(self):
+        service = AttributionService(endpoint="http://attr.example:8000/")
+        service._terminal_pending = "/tmp/first.log"
+        results = iter((None, False, False))
+        events = []
+        waits = 0
+
+        @contextmanager
+        def attribution_span(*args, **kwargs):
+            events.append("open")
+            yield
+            events.append("close")
+
+        def get_result(log_path, **kwargs):
+            events.append(log_path)
+            return next(results)
+
+        def advance(timeout):
+            nonlocal waits
+            waits += 1
+            if waits == 2:
+                service._terminal_pending = "/tmp/second.log"
+            if waits >= 3:
+                service._poll_stop_event.set()
+
+        with (
+            patch.object(service, "_get_results", side_effect=get_result),
+            patch.object(service._poll_stop_event, "wait", side_effect=advance),
+            patch(
+                "nvidia_resiliency_ext.shared_utils.health_check.telemetry.span",
+                attribution_span,
+            ),
+        ):
+            service._poll_loop()
+
+        self.assertEqual(
+            events,
+            [
+                "open",
+                "/tmp/first.log",
+                "/tmp/first.log",
+                "close",
+                "open",
+                "/tmp/second.log",
+                "close",
+            ],
+        )
 
     def test_poller_thread_latches_stop_and_exits(self):
         service = AttributionService(endpoint="http://attr.example:8000/", enforce_stop=True)
