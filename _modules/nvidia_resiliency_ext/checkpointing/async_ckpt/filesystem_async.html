@@ -138,6 +138,8 @@
 <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
     <span class="n">HAVE_PSUTIL</span> <span class="o">=</span> <span class="kc">False</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">semconv</span><span class="p">,</span> <span class="n">telemetry</span>
+
 <span class="kn">from</span><span class="w"> </span><span class="nn">..utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_disable_gc</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">PersistentAsyncCaller</span>
 
@@ -453,19 +455,23 @@
                     <span class="c1"># the worker for checkpoint N may still be reading these buffers</span>
                     <span class="c1"># while we are about to overwrite them with checkpoint N+1 values.</span>
                     <span class="k">if</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_drain_callback</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_drain_callback</span><span class="p">()</span>
+                        <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span>
+                            <span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PHASES</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.shm_drain"</span>
+                        <span class="p">):</span>
+                            <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_drain_callback</span><span class="p">()</span>
                     <span class="n">_</span><span class="p">,</span> <span class="n">shm_tensors</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
-                    <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
-                    <span class="k">for</span> <span class="n">shm_t</span><span class="p">,</span> <span class="n">source_t</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">,</span> <span class="n">cacheable_data</span><span class="p">):</span>
-                        <span class="n">shm_t</span><span class="o">.</span><span class="n">copy_</span><span class="p">(</span><span class="n">source_t</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-                        <span class="c1"># Periodically sync to avoid exhausting CUDA's pageable staging</span>
-                        <span class="c1"># pages (shm tensors are not pinned so copy_ is not a pinned DMA).</span>
-                        <span class="n">pending_cuda_copies</span> <span class="o">+=</span> <span class="nb">int</span><span class="p">(</span><span class="n">source_t</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cuda"</span><span class="p">)</span>
-                        <span class="k">if</span> <span class="n">pending_cuda_copies</span> <span class="o">==</span> <span class="mi">8</span><span class="p">:</span>
+                    <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PHASES</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.stage"</span><span class="p">):</span>
+                        <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
+                        <span class="k">for</span> <span class="n">shm_t</span><span class="p">,</span> <span class="n">source_t</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">,</span> <span class="n">cacheable_data</span><span class="p">):</span>
+                            <span class="n">shm_t</span><span class="o">.</span><span class="n">copy_</span><span class="p">(</span><span class="n">source_t</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+                            <span class="c1"># Periodically sync to avoid exhausting CUDA's pageable staging</span>
+                            <span class="c1"># pages (shm tensors are not pinned so copy_ is not a pinned DMA).</span>
+                            <span class="n">pending_cuda_copies</span> <span class="o">+=</span> <span class="nb">int</span><span class="p">(</span><span class="n">source_t</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cuda"</span><span class="p">)</span>
+                            <span class="k">if</span> <span class="n">pending_cuda_copies</span> <span class="o">==</span> <span class="mi">8</span><span class="p">:</span>
+                                <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+                                <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
+                        <span class="k">if</span> <span class="n">pending_cuda_copies</span><span class="p">:</span>
                             <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
-                            <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
-                    <span class="k">if</span> <span class="n">pending_cuda_copies</span><span class="p">:</span>
-                        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
                     <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                         <span class="sa">f</span><span class="s2">"Copied </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">shm_tensors</span><span class="p">)</span><span class="si">}</span><span class="s2"> tensors into reused shm allocations "</span>
                         <span class="sa">f</span><span class="s2">"(key=</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">)"</span>
@@ -475,22 +481,23 @@
                     <span class="c1"># values in. Allocations are cached only when structure caching is enabled.</span>
                     <span class="n">shm_tensors</span> <span class="o">=</span> <span class="p">[]</span>
                     <span class="n">total_bytes</span> <span class="o">=</span> <span class="mi">0</span>
-                    <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
-                    <span class="k">for</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">cacheable_data</span><span class="p">:</span>
-                        <span class="n">contiguous_tensor</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">contiguous</span><span class="p">()</span>
-                        <span class="n">shm_t</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
-                            <span class="n">contiguous_tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">contiguous_tensor</span><span class="o">.</span><span class="n">dtype</span>
-                        <span class="p">)</span><span class="o">.</span><span class="n">share_memory_</span><span class="p">()</span>
-                        <span class="n">shm_t</span><span class="o">.</span><span class="n">copy_</span><span class="p">(</span><span class="n">contiguous_tensor</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-                        <span class="n">shm_tensors</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">shm_t</span><span class="p">)</span>
-                        <span class="n">total_bytes</span> <span class="o">+=</span> <span class="n">shm_t</span><span class="o">.</span><span class="n">nbytes</span>
-                        <span class="c1"># Periodically sync to avoid exhausting CUDA's pageable staging pages</span>
-                        <span class="n">pending_cuda_copies</span> <span class="o">+=</span> <span class="nb">int</span><span class="p">(</span><span class="n">contiguous_tensor</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cuda"</span><span class="p">)</span>
-                        <span class="k">if</span> <span class="n">pending_cuda_copies</span> <span class="o">==</span> <span class="mi">8</span><span class="p">:</span>
+                    <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PHASES</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.stage"</span><span class="p">):</span>
+                        <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
+                        <span class="k">for</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">cacheable_data</span><span class="p">:</span>
+                            <span class="n">contiguous_tensor</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">contiguous</span><span class="p">()</span>
+                            <span class="n">shm_t</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+                                <span class="n">contiguous_tensor</span><span class="o">.</span><span class="n">shape</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">contiguous_tensor</span><span class="o">.</span><span class="n">dtype</span>
+                            <span class="p">)</span><span class="o">.</span><span class="n">share_memory_</span><span class="p">()</span>
+                            <span class="n">shm_t</span><span class="o">.</span><span class="n">copy_</span><span class="p">(</span><span class="n">contiguous_tensor</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+                            <span class="n">shm_tensors</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">shm_t</span><span class="p">)</span>
+                            <span class="n">total_bytes</span> <span class="o">+=</span> <span class="n">shm_t</span><span class="o">.</span><span class="n">nbytes</span>
+                            <span class="c1"># Periodically sync to avoid exhausting CUDA's pageable staging pages</span>
+                            <span class="n">pending_cuda_copies</span> <span class="o">+=</span> <span class="nb">int</span><span class="p">(</span><span class="n">contiguous_tensor</span><span class="o">.</span><span class="n">device</span><span class="o">.</span><span class="n">type</span> <span class="o">==</span> <span class="s2">"cuda"</span><span class="p">)</span>
+                            <span class="k">if</span> <span class="n">pending_cuda_copies</span> <span class="o">==</span> <span class="mi">8</span><span class="p">:</span>
+                                <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
+                                <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
+                        <span class="k">if</span> <span class="n">pending_cuda_copies</span><span class="p">:</span>
                             <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
-                            <span class="n">pending_cuda_copies</span> <span class="o">=</span> <span class="mi">0</span>
-                    <span class="k">if</span> <span class="n">pending_cuda_copies</span><span class="p">:</span>
-                        <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">synchronize</span><span class="p">()</span>
                     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_cached_data_structure</span><span class="p">:</span>
                         <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_shm_tensor_cache</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span>
                             <span class="n">cacheable_items</span><span class="p">,</span>
