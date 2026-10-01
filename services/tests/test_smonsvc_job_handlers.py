@@ -117,7 +117,7 @@ def test_fetch_results_signals_terminal_analysis_before_get():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient()
@@ -127,7 +127,7 @@ def test_fetch_results_signals_terminal_analysis_before_get():
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET"]
     assert attrsvc_client.calls[0]["analysis_intent"] == ANALYSIS_INTENT_TERMINAL
     assert attrsvc_client.calls[0]["user"] == "alice"
-    assert job.terminal_signaled is True
+    assert "/tmp/job.log" in job.terminal_signaled_paths
     assert job.result_fetched is True
     assert state.results_fetched == 1
 
@@ -137,7 +137,7 @@ def test_fetch_results_skips_terminal_signal_once_sent():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=True,
+        terminal_signaled_paths={"/tmp/job.log"},
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient()
@@ -152,7 +152,7 @@ def test_fetch_results_terminal_signal_failure_does_not_count_path_error():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient(post_error="permission denied")
@@ -160,7 +160,7 @@ def test_fetch_results_terminal_signal_failure_does_not_count_path_error():
     fetch_results(job, "/tmp/job.log", state, attrsvc_client)
 
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET"]
-    assert job.terminal_signaled is True
+    assert "/tmp/job.log" in job.terminal_signaled_paths
     assert job.result_fetched is True
     assert state.results_fetched == 1
     assert state.path_errors_permission == 0
@@ -174,7 +174,7 @@ def test_fetch_results_terminal_signal_failure_is_not_retried():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient(post_error="max retries exceeded")
@@ -183,3 +183,41 @@ def test_fetch_results_terminal_signal_failure_is_not_retried():
     fetch_results(job, "/tmp/job.log", state, attrsvc_client)
 
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET", "GET"]
+
+
+# ─── Restart Agent responses carry no "module" key ───
+
+
+def _restart_agent_response(action="STOP"):
+    """Shape produced by the direct Restart Agent backend: no module, no item list."""
+    return {
+        "result": {
+            "decision": action,
+            "decision_basis": "concrete_confirmation_retry_exhausted",
+            "justification": "Line 28693 matched failure class observed_exception.",
+            "schema_version": "restart_agent_response.v1",
+        },
+        "status": "completed",
+        "recommendation": {
+            "action": action,
+            "reason": "Line 28693 matched failure class observed_exception.",
+            "source": "deterministic",
+        },
+    }
+
+
+def test_log_attribution_result_accepts_restart_agent_response(capsys):
+    # The legacy guard required inner["module"], which no Restart Agent result
+    # sets, so every direct-backend result was dropped before being reported.
+    log_attribution_result(_job(), "/lustre/logs/job.log", _restart_agent_response())
+
+    output = capsys.readouterr().out
+    assert "Recommendation: STOP" in output
+    assert "unrecognized" not in output
+
+
+def test_log_attribution_result_still_rejects_unusable_responses(capsys, caplog):
+    log_attribution_result(_job(), "/lustre/logs/job.log", {"result": {}})
+
+    assert capsys.readouterr().out == ""
+    assert "empty or unrecognized" in caplog.text

@@ -40,6 +40,7 @@ from .restart_agent_backend import (
     RestartAgentServiceBackend,
 )
 from .restart_agent_config import restart_agent_config_from_settings
+from .slack import SlackConfig, SlackNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -130,10 +131,13 @@ class AttributionHttpAdapter:
         """
         self.cfg = cfg
         restart_config = restart_agent_config_from_settings(cfg)
+        slack_notifier = SlackNotifier(SlackConfig.from_settings(cfg))
+        logger.info("Slack alerts: %s", slack_notifier.describe())
         self._backend: AttributionServiceBackend = RestartAgentServiceBackend(
             allowed_root=cfg.ALLOWED_ROOT,
             runtime=build_restart_agent_runtime(restart_config),
             config=restart_config,
+            slack_notifier=slack_notifier,
             convergence=LogConvergencePolicy(
                 quiet_seconds=cfg.RESTART_AGENT_LOG_QUIET_SECONDS,
                 max_wait_seconds=cfg.RESTART_AGENT_LOG_MAX_WAIT_SECONDS,
