@@ -546,6 +546,144 @@ def test_rationale_reports_rule_budget_and_category():
     assert "confidence 72" in lines[1]
 
 
+def _ledgers(**overrides):
+    """The four L4 ledgers, defaulting to an unexhausted same-root ceiling."""
+    base = {
+        "exhausted_by": [],
+        "general_root_ceiling": {
+            "ledger_id": "general_root_ceiling",
+            "applicable": True,
+            "allowed_retries": 2,
+            "matching_prior_attempts": 0,
+            "exhausted": False,
+        },
+        "selected_policy_ledger": None,
+        "job_no_progress_guard": {
+            "ledger_id": "job_no_progress_guard",
+            "applicable": True,
+            "allowed_retries": 2,
+            "matching_prior_attempts": 0,
+            "exhausted": False,
+        },
+        "job_unknown_progress_guard": {
+            "ledger_id": "job_unknown_progress_guard",
+            "applicable": True,
+            "allowed_retries": 3,
+            "matching_prior_attempts": 1,
+            "exhausted": False,
+        },
+    }
+    base.update(overrides)
+    return base
+
+
+def test_rationale_names_the_guard_that_exhausted_not_the_rule_budget():
+    # Job 4125659: the same-root ceiling had budget to spare; what stopped the
+    # job was the unverifiable-progress guard, which ignores the root cause.
+    payload = _policy_payload(
+        retry_budget_exhausted=True,
+        **_ledgers(
+            exhausted_by=["job_unknown_progress_guard"],
+            job_unknown_progress_guard={
+                "ledger_id": "job_unknown_progress_guard",
+                "applicable": True,
+                "allowed_retries": 3,
+                "matching_prior_attempts": 4,
+                "exhausted": True,
+            },
+        ),
+    )
+    lines = slack_mod.decision_rationale(payload).as_lines()
+
+    # The rule's own budget did not run out and must not claim it did.
+    assert "budget 2, not exhausted" in lines[0]
+    assert "`job_unknown_progress_guard`" in lines[1]
+    assert "4 attempts with unverifiable progress for this job" in lines[1]
+    assert "budget 3" in lines[1]
+    assert "regardless of root cause" in lines[1]
+
+
+def test_rationale_does_not_repeat_the_rules_own_exhausted_ledger():
+    payload = _policy_payload(
+        retry_budget_exhausted=True,
+        **_ledgers(
+            exhausted_by=["general_root_ceiling"],
+            general_root_ceiling={
+                "ledger_id": "general_root_ceiling",
+                "applicable": True,
+                "allowed_retries": 2,
+                "matching_prior_attempts": 2,
+                "exhausted": True,
+            },
+        ),
+    )
+    lines = slack_mod.decision_rationale(payload).as_lines()
+
+    assert "budget 2, exhausted" in lines[0]
+    assert not any("budget stop" in line for line in lines)
+
+
+def test_rationale_reports_a_guard_alongside_an_exhausted_rule_budget():
+    payload = _policy_payload(
+        retry_budget_exhausted=True,
+        **_ledgers(
+            exhausted_by=["general_root_ceiling", "job_no_progress_guard"],
+            general_root_ceiling={
+                "ledger_id": "general_root_ceiling",
+                "applicable": True,
+                "allowed_retries": 2,
+                "matching_prior_attempts": 2,
+                "exhausted": True,
+            },
+            job_no_progress_guard={
+                "ledger_id": "job_no_progress_guard",
+                "applicable": True,
+                "allowed_retries": 2,
+                "matching_prior_attempts": 3,
+                "exhausted": True,
+            },
+        ),
+    )
+    lines = slack_mod.decision_rationale(payload).as_lines()
+
+    assert "budget 2, exhausted" in lines[0]
+    assert "`job_no_progress_guard`" in lines[1]
+    assert "3 attempts with no progress for this job" in lines[1]
+
+
+def test_rationale_credits_an_applicable_selected_ledger_as_the_rules_own():
+    # With a policy context in force the selected ledger, not the general
+    # ceiling, is the budget the rule line is quoting.
+    payload = _policy_payload(
+        applied_policy_context={"policy_context_id": "l1_category_confirmed_stop"},
+        effective_policy={"rule": "workload_unrecoverable", "allowed_retries": 0},
+        retry_budget_exhausted=True,
+        **_ledgers(
+            exhausted_by=["selected_policy_ledger"],
+            selected_policy_ledger={
+                "ledger_id": "selected_policy_ledger",
+                "applicable": True,
+                "allowed_retries": 0,
+                "matching_prior_attempts": 0,
+                "exhausted": True,
+            },
+        ),
+    )
+    lines = slack_mod.decision_rationale(payload).as_lines()
+
+    assert "budget 0, exhausted" in lines[0]
+    assert not any("budget stop" in line for line in lines)
+
+
+def test_rationale_falls_back_to_the_aggregate_flag_without_ledgers():
+    # Payloads predating exhausted_by still have to render something sane.
+    payload = _policy_payload(retry_budget_exhausted=True)
+    lines = slack_mod.decision_rationale(payload).as_lines()
+
+    assert "budget 2, exhausted" in lines[0]
+    assert not any("budget stop" in line for line in lines)
+
+
 def test_rationale_drops_unknown_claims():
     # failure_domain=unknown with confidence 1 is noise, not information.
     lines = " ".join(slack_mod.decision_rationale(_policy_payload()).as_lines())

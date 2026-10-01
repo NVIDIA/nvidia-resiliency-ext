@@ -261,6 +261,43 @@ def _evidence_line(failure: Any) -> str:
 _EMPTY_CLAIMS = ("", "unknown", "none")
 
 
+#: What each L4 retry ledger actually counts. Without this an exhausted budget
+#: reads as same-root exhaustion even when a job-history guard was what fired.
+_LEDGER_COUNTS = {
+    "general_root_ceiling": "attempts sharing this root cause",
+    "selected_policy_ledger": "attempts matching this rule's scope",
+    "job_no_progress_guard": "attempts with no progress for this job",
+    "job_unknown_progress_guard": "attempts with unverifiable progress for this job",
+}
+#: Guards that fire on job history alone, with no root-cause match required.
+_ROOT_INDEPENDENT_LEDGERS = frozenset({"job_no_progress_guard", "job_unknown_progress_guard"})
+
+_GENERAL_ROOT_CEILING = "general_root_ceiling"
+_SELECTED_POLICY_LEDGER = "selected_policy_ledger"
+
+
+@dataclass(frozen=True)
+class ExhaustedLedger:
+    """A retry budget that ran out, and what it was counting when it did."""
+
+    ledger_id: str
+    attempts: Optional[int] = None
+    allowed_retries: Optional[int] = None
+
+    def as_line(self) -> str:
+        line = f"budget stop: `{self.ledger_id}`"
+        counted = _LEDGER_COUNTS.get(self.ledger_id)
+        if self.attempts is not None and counted:
+            line += f" — {self.attempts} {counted}"
+            if self.allowed_retries is not None:
+                line += f", budget {self.allowed_retries}"
+        elif self.allowed_retries is not None:
+            line += f" — budget {self.allowed_retries}"
+        if self.ledger_id in _ROOT_INDEPENDENT_LEDGERS:
+            line += " (counted regardless of root cause)"
+        return line
+
+
 @dataclass(frozen=True)
 class DecisionRationale:
     """Why L4 landed on this action, in the order a reader should weigh it."""
@@ -268,7 +305,11 @@ class DecisionRationale:
     rule: str = ""
     base_rule: str = ""
     allowed_retries: Optional[int] = None
+    #: Whether the rule's *own* ledger ran out, not whether anything did.
     budget_exhausted: bool = False
+    #: Budgets that ran out other than the rule's own, named so a job-history
+    #: guard is not misread as same-root exhaustion.
+    other_exhausted: tuple[ExhaustedLedger, ...] = ()
     #: 0 is L1's sanctioned "no listed category matches"; None means it did not run.
     category_id: Optional[int] = None
     category_name: str = ""
@@ -296,6 +337,7 @@ class DecisionRationale:
                 rule += f" — budget {self.allowed_retries}"
                 rule += ", exhausted" if self.budget_exhausted else ", not exhausted"
             lines.append(rule)
+        lines.extend(ledger.as_line() for ledger in self.other_exhausted)
         if self.category_id == 0:
             # Distinct from an absent selection: the model considered the
             # taxonomy and reported that none of it applies.
@@ -337,6 +379,43 @@ def _int_or_none(value: Any) -> Optional[int]:
         return None
 
 
+def _exhaustion(policy: Mapping[str, Any]) -> tuple[bool, tuple[ExhaustedLedger, ...]]:
+    """Split L4's exhausted budgets into the rule's own and everything else.
+
+    ``retry_budget_exhausted`` is true when *any* ledger runs out, so reporting
+    it beside the rule's budget claims same-root exhaustion that may not have
+    happened. ``exhausted_by`` names the ledgers that actually fired; fall back
+    to the aggregate flag only for payloads that predate it.
+    """
+    exhausted_by = policy.get("exhausted_by")
+    if not isinstance(exhausted_by, (list, tuple)):
+        return bool(policy.get("retry_budget_exhausted")), ()
+
+    selected = policy.get(_SELECTED_POLICY_LEDGER)
+    rule_ledger_id = (
+        _SELECTED_POLICY_LEDGER
+        if isinstance(selected, Mapping) and selected.get("applicable")
+        else _GENERAL_ROOT_CEILING
+    )
+
+    rule_exhausted = False
+    others = []
+    for ledger_id in (str(entry) for entry in exhausted_by):
+        if ledger_id == rule_ledger_id:
+            rule_exhausted = True
+            continue
+        detail = policy.get(ledger_id)
+        detail = detail if isinstance(detail, Mapping) else {}
+        others.append(
+            ExhaustedLedger(
+                ledger_id=ledger_id,
+                attempts=_int_or_none(detail.get("matching_prior_attempts")),
+                allowed_retries=_int_or_none(detail.get("allowed_retries")),
+            )
+        )
+    return rule_exhausted, tuple(others)
+
+
 def decision_rationale(payload: Any) -> DecisionRationale:
     """Extract the decision audit trail from a ``restart_agent_response.v1`` payload.
 
@@ -360,6 +439,7 @@ def decision_rationale(payload: Any) -> DecisionRationale:
 
     base_rule = _claim(policy.get("base_rule"))
     rule = context_id or _claim(effective.get("rule")) or base_rule
+    rule_exhausted, other_exhausted = _exhaustion(policy)
 
     category_id, category_name, category_decision = None, "", ""
     confidence = None
@@ -379,7 +459,8 @@ def decision_rationale(payload: Any) -> DecisionRationale:
         rule=rule,
         base_rule=base_rule,
         allowed_retries=_int_or_none(effective.get("allowed_retries")),
-        budget_exhausted=bool(policy.get("retry_budget_exhausted")),
+        budget_exhausted=rule_exhausted,
+        other_exhausted=other_exhausted,
         category_id=category_id,
         category_name=category_name,
         category_decision=category_decision,
