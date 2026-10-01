@@ -837,6 +837,7 @@ class RestartAgentServiceBackend:
             job_id = entry.job_id or ""
             user = entry.user or ""
             log_path = entry.log_path
+            cycle_id = entry.cycle_id
         try:
             public = self._public_result(entry)
             parsed = parse_attrsvc_response(
@@ -851,6 +852,7 @@ class RestartAgentServiceBackend:
                 job_id=job_id,
                 user=user,
                 run_name=run_name_from_log_path(log_path, job_id),
+                cycle_id=cycle_id,
             )
             self._slack_notifier.notify(identity, parsed)
         except Exception as exc:  # alerting is best effort

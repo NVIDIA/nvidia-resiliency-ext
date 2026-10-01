@@ -460,11 +460,14 @@ class AnalysisIdentity:
     job_id: str = ""
     user: str = ""
     run_name: str = ""
+    #: Restart attempt within the job. None when the logs carry no cycle numbers.
+    cycle_id: Optional[int] = None
 
     @property
     def label(self) -> str:
         job_id = self.job_id or "unknown"
-        return f"{job_id} ({self.run_name})" if self.run_name else job_id
+        label = f"{job_id} ({self.run_name})" if self.run_name else job_id
+        return f"{label} cycle {self.cycle_id}" if self.cycle_id is not None else label
 
 
 def run_name_from_log_path(log_path: str, job_id: str = "") -> str:

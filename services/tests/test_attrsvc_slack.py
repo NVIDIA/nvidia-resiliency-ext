@@ -686,6 +686,7 @@ def test_backend_notifies_on_terminal_completion(monkeypatch):
         job_id="3901259_26",
         user="dnarayanan",
         log_path="/x/logs/nemotron4_derisking_nano_21t_phase1_3901259_date_x_cycle0.log",
+        cycle_id=0,
     )
     public = SimpleNamespace(
         result={"schema_version": "restart_agent_response.v1", "decision": "STOP"},
@@ -724,7 +725,7 @@ def test_backend_notification_failure_does_not_break_analysis():
     backend = SimpleNamespace(
         _slack_notifier=_Exploding(),
         _lock=threading.RLock(),
-        _entries={"k": SimpleNamespace(job_id="1", user="u", log_path="/x.log")},
+        _entries={"k": SimpleNamespace(job_id="1", user="u", log_path="/x.log", cycle_id=None)},
         _public_result=lambda e: SimpleNamespace(result={}, status="completed", recommendation={}),
     )
 
@@ -959,3 +960,65 @@ def test_no_reply_when_there_is_no_detail(monkeypatch):
 
     assert len(client.summaries) == 1
     assert client.replies == []
+
+
+# ─── cycle number on the job line ───
+
+
+def test_job_line_shows_the_cycle_when_there_is_one():
+    ident = AnalysisIdentity(job_id="4103814_0", run_name="ultra_60t", cycle_id=3)
+    assert ident.label == "4103814_0 (ultra_60t) cycle 3"
+
+
+def test_job_line_omits_the_cycle_when_there_is_none():
+    # Logs without _cycle<N> have no attempt ordering, so there is nothing to show.
+    ident = AnalysisIdentity(job_id="4103814_0", run_name="ultra_60t")
+    assert ident.label == "4103814_0 (ultra_60t)"
+
+
+def test_cycle_zero_is_shown_not_treated_as_absent():
+    assert AnalysisIdentity(job_id="1", cycle_id=0).label == "1 cycle 0"
+
+
+def test_cycle_shows_without_a_run_name():
+    assert AnalysisIdentity(job_id="1", cycle_id=2).label == "1 cycle 2"
+
+
+def test_summary_carries_the_cycle(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    ident = AnalysisIdentity(job_id="4103814_0", user="alice", run_name="ultra_60t", cycle_id=4)
+
+    notifier.notify(ident, _parsed())
+
+    assert "cycle 4" in client.summaries[0]["text"]
+
+
+def test_backend_passes_the_cycle_to_the_alert():
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
+        RestartAgentServiceBackend,
+    )
+
+    sent = []
+    backend = SimpleNamespace(
+        _slack_notifier=SimpleNamespace(enabled=True, notify=lambda i, r: sent.append(i) or True),
+        _lock=threading.RLock(),
+        _entries={
+            "k": SimpleNamespace(
+                job_id="4103814_0",
+                user="u",
+                log_path="/x/logs/run_4103814_date_x_cycle2.log",
+                cycle_id=2,
+            )
+        },
+        _public_result=lambda e: SimpleNamespace(
+            result={},
+            status="completed",
+            recommendation={"action": "STOP", "reason": "", "source": ""},
+        ),
+    )
+
+    RestartAgentServiceBackend._notify_slack(backend, "k")
+
+    assert sent[0].cycle_id == 2
+    assert "cycle 2" in sent[0].label

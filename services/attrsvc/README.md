@@ -111,9 +111,13 @@ the channel keeps one line per job and the detail stays one click away.
 
 ```
 *NVRx attribution:* `RESTART` on *aws-cmh-slurm-1* _(source: l1_enriched:eccn-gpt-5.4)_
-*Job ID:* `4103814_0 (nemotron4_ultra_60t_phase1_v0)`
+*Job ID:* `4103814_0 (nemotron4_ultra_60t_phase1_v0) cycle 3`
 *Log path:* `/scratch/.../logs/..._cycle3.log`
 ```
+
+The job line carries the restart cycle when the logs are numbered
+(`..._cycle<N>.log`); logs without cycle numbers have no attempt ordering, so
+nothing is shown rather than an invented zero.
 
 The owner mention rides on the summary so the ping carries the visible line. A
 failed reply is logged but does not count as a failed notification — the alert
