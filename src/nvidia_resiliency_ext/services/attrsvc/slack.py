@@ -42,9 +42,6 @@ from typing import Any, Mapping, Optional, Sequence
 
 from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
 from nvidia_resiliency_ext.attribution.orchestration.client_response import AttrSvcResult
-from nvidia_resiliency_ext.attribution.orchestration.posting_markdown import (
-    format_attribution_markdown,
-)
 from nvidia_resiliency_ext.attribution.orchestration.types import (
     RECOMMENDATION_ACTIONS,
     RECOMMENDATION_STOP,
@@ -531,60 +528,61 @@ def primary_failure_line(result: AttrSvcResult) -> Any:
     return primary.get("line") if isinstance(primary, Mapping) else None
 
 
-def format_notification(
+def format_summary(
     identity: AnalysisIdentity,
     result: AttrSvcResult,
     cluster: str = "",
 ) -> str:
-    """Render the alert: decision, narrative cause, policy rationale, evidence."""
-    job_label = identity.label
+    """The channel-level line: decision, job, log path.
 
+    Deliberately short. A channel of full attributions is unreadable, so the
+    detail goes to a thread reply and the channel keeps one scannable line per
+    job.
+    """
     header = f"*NVRx attribution:* `{result.recommendation.action}`"
     if cluster:
         header += f" on *{cluster}*"
     if result.recommendation.source:
         header += f" _(source: {result.recommendation.source})_"
+    return f"{header}\n" f"*Job ID:* `{identity.label}`\n" f"*Log path:* `{result.log_path or ''}`"
 
+
+def format_details(identity: AnalysisIdentity, result: AttrSvcResult) -> str:
+    """The thread reply: why this decision, and the evidence behind it."""
     fields = attribution_fields(result) or AttributionFields()
 
     # A Restart Agent justification is both the recommendation reason and the
     # terminal-issue text; print it once rather than twice. Concatenating the two
     # is wrong when they differ, so surface the reason as its own line instead.
     reason = result.recommendation.reason.strip()
-    if reason and reason not in fields.explanation:
-        header += f"\n*Reason:* {reason}"
     explanation = fields.explanation or reason
 
-    body = format_attribution_markdown(
-        job_id=job_label,
-        attribution_text=fields.headline,
-        auto_resume_explanation=explanation,
-        log_path=result.log_path or "",
-    )
+    sections = []
+    if reason and reason not in fields.explanation:
+        sections.append(f"*Reason:* {reason}")
+    if fields.headline:
+        sections.append(f"*Failed due to:*\n```{fields.headline}```")
+    if explanation:
+        sections.append(f"*Terminal issue:*\n```{explanation}```")
 
-    extras = []
     rationale = decision_rationale(result.result)
     if not rationale.empty:
         bullets = "\n".join(f"  • {line}" for line in rationale.as_lines())
-        extras.append(f"*Why {result.recommendation.action}:*\n{bullets}")
+        sections.append(f"*Why {result.recommendation.action}:*\n{bullets}")
     if fields.evidence:
-        extras.append(f"*Evidence:* {fields.evidence}")
+        sections.append(f"*Evidence:* {fields.evidence}")
     excerpt = log_excerpt(result.log_path or "", primary_failure_line(result))
     if excerpt:
         quoted = "\n".join(excerpt)
-        extras.append(f"*Log at the failure:*\n```{quoted}```")
+        sections.append(f"*Log at the failure:*\n```{quoted}```")
     if fields.show_alternatives:
         if fields.plausible_causes:
             causes = "\n".join(f"  • {c}" for c in fields.plausible_causes)
-            extras.append(f"*Plausible causes* _({fields.status})_:\n{causes}")
+            sections.append(f"*Plausible causes* _({fields.status})_:\n{causes}")
         if fields.missing_evidence:
             missing = "\n".join(f"  • {m}" for m in fields.missing_evidence)
-            extras.append(f"*Missing evidence:*\n{missing}")
-
-    text = f"{header}\n{body}"
-    if extras:
-        text += "\n" + "\n".join(extras)
-    return text
+            sections.append(f"*Missing evidence:*\n{missing}")
+    return "\n".join(sections)
 
 
 class SlackNotifier:
@@ -649,19 +647,30 @@ class SlackNotifier:
             self.stats.skipped_action += 1
             return False
 
-        text = format_notification(identity, result, self.config.cluster)
-
-        text += self._mention(identity.user)
+        summary = format_summary(identity, result, self.config.cluster)
+        summary += self._mention(identity.user)
 
         self.stats.attempts += 1
         try:
-            self._web_client().chat_postMessage(channel=self.config.channel, text=text)
+            posted = self._web_client().chat_postMessage(channel=self.config.channel, text=summary)
         except SlackApiError as e:
             self.stats.failed += 1
             logger.error(f"[{identity.job_id}] Slack notification failed: {e}")
             return False
         self.stats.sent += 1
         logger.info(f"[{identity.job_id}] Slack notification sent to {self.config.channel}")
+
+        details = format_details(identity, result)
+        thread_ts = posted.get("ts") if hasattr(posted, "get") else None
+        if details and thread_ts:
+            # The alert is already delivered; a failed thread reply costs detail,
+            # not the notification, so it must not be reported as a failure.
+            try:
+                self._web_client().chat_postMessage(
+                    channel=self.config.channel, thread_ts=thread_ts, text=details
+                )
+            except SlackApiError as e:
+                logger.warning(f"[{identity.job_id}] Slack detail reply failed: {e}")
         return True
 
     def _web_client(self) -> Any:

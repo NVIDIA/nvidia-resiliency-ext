@@ -105,7 +105,21 @@ channel are configured; otherwise attrsvc logs `Slack alerts: disabled (...)` at
 startup and behaves unchanged. Delivery is best
 effort — a Slack outage is logged, never propagated into the analysis path.
 
-Each message carries the recommendation and its source, the cluster
+Each alert is **two messages**: a three-line summary in the channel and the
+analysis as a threaded reply. A channel of full attributions is unscannable, so
+the channel keeps one line per job and the detail stays one click away.
+
+```
+*NVRx attribution:* `RESTART` on *aws-cmh-slurm-1* _(source: l1_enriched:eccn-gpt-5.4)_
+*Job ID:* `4103814_0 (nemotron4_ultra_60t_phase1_v0)`
+*Log path:* `/scratch/.../logs/..._cycle3.log`
+```
+
+The owner mention rides on the summary so the ping carries the visible line. A
+failed reply is logged but does not count as a failed notification — the alert
+is already delivered and only the detail is lost.
+
+The threaded reply carries the recommendation and its source, the cluster
 (`NVRX_ATTRSVC_CLUSTER_NAME`, so alerts from several clusters in one channel are
 distinguishable), the job ID, the narrative root cause, the L4 decision trail
 (rule, category, retry outlook), an evidence line locating the failure, the

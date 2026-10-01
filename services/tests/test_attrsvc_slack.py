@@ -13,7 +13,8 @@ from nvidia_resiliency_ext.services.attrsvc.slack import (
     AnalysisIdentity,
     SlackConfig,
     SlackNotifier,
-    format_notification,
+    format_details,
+    format_summary,
     latest_result_item,
     parse_notify_actions,
     run_name_from_log_path,
@@ -56,10 +57,29 @@ class _StubClient:
         self.messages = []
         self._error = error
 
-    def chat_postMessage(self, channel, text):
+    def chat_postMessage(self, channel, text, thread_ts=None):
         if self._error is not None:
             raise self._error
-        self.messages.append({"channel": channel, "text": text})
+        self.messages.append({"channel": channel, "text": text, "thread_ts": thread_ts})
+        return {"ok": True, "ts": f"171000000.{len(self.messages):06d}"}
+
+    @property
+    def alert_text(self):
+        """Summary and its thread reply, as one blob for content assertions."""
+        return "\n".join(m["text"] for m in self.messages)
+
+    @property
+    def summaries(self):
+        return [m for m in self.messages if m["thread_ts"] is None]
+
+    @property
+    def replies(self):
+        return [m for m in self.messages if m["thread_ts"] is not None]
+
+
+def summary_ts(client):
+    """The ts the stub returned for the summary, which replies must thread onto."""
+    return "171000000.000001"
 
 
 def _notifier(monkeypatch, client=None, **config_kwargs):
@@ -142,7 +162,7 @@ def test_latest_result_item_returns_none_without_items():
 
 
 def test_logsage_result_keeps_its_issue_wording():
-    text = format_notification(_job(), _parsed())
+    text = format_summary(_job(), _parsed()) + format_details(_job(), _parsed())
 
     assert "Primary issues: [hardware]" in text
     assert "Secondary issues: [nccl]" in text
@@ -150,14 +170,14 @@ def test_logsage_result_keeps_its_issue_wording():
 
 
 def test_notification_carries_job_label_and_log_path():
-    text = format_notification(_job(), _parsed())
+    text = format_summary(_job(), _parsed()) + format_details(_job(), _parsed())
 
     assert "`123 (nemotron_pretrain)`" in text
     assert "/lustre/logs/job.log" in text
 
 
 def test_notification_without_job_name_uses_bare_job_id():
-    text = format_notification(_job(name=''), _parsed())
+    text = format_summary(_job(name=''), _parsed())
     assert "`123`" in text
 
 
@@ -167,14 +187,21 @@ def test_notify_posts_message_with_action_reason_and_details(monkeypatch):
 
     assert notifier.notify(_job(), _parsed()) is True
 
-    assert len(client.messages) == 1
-    message = client.messages[0]
-    assert message["channel"] == "#trng-alerts"
-    assert "*NVRx attribution:* `STOP`" in message["text"]
-    assert "terminal failure" in message["text"]
-    assert "123 (nemotron_pretrain)" in message["text"]
-    assert "/lustre/logs/job.log" in message["text"]
-    assert "checkpoint corrupted" in message["text"]
+    assert len(client.summaries) == 1
+    assert len(client.replies) == 1
+
+    summary = client.summaries[0]
+    assert summary["channel"] == "#trng-alerts"
+    # The channel line stays scannable: decision, job, log path, nothing else.
+    assert "*NVRx attribution:* `STOP`" in summary["text"]
+    assert "123 (nemotron_pretrain)" in summary["text"]
+    assert "/lustre/logs/job.log" in summary["text"]
+    assert "checkpoint corrupted" not in summary["text"]
+
+    reply = client.replies[0]
+    assert reply["thread_ts"] == summary_ts(client)
+    assert "terminal failure" in reply["text"]
+    assert "checkpoint corrupted" in reply["text"]
 
 
 class _LookupClient(_StubClient):
@@ -200,7 +227,7 @@ def test_notify_mentions_the_job_owner_when_a_domain_is_configured(monkeypatch):
     notifier.notify(_job(), _parsed())
 
     assert client.looked_up == ["alice@example.com"]
-    assert client.messages[0]["text"].endswith("<@U123>")
+    assert client.summaries[0]["text"].endswith("<@U123>")
 
 
 def test_no_mention_is_attempted_without_a_configured_domain(monkeypatch):
@@ -211,8 +238,8 @@ def test_no_mention_is_attempted_without_a_configured_domain(monkeypatch):
     notifier.notify(_job(), _parsed())
 
     assert client.looked_up == []
-    assert "<@" not in client.messages[0]["text"]
-    assert len(client.messages) == 1
+    assert "<@" not in client.alert_text
+    assert len(client.summaries) == 1
 
 
 def test_failed_user_lookup_still_sends_the_alert(monkeypatch):
@@ -221,7 +248,7 @@ def test_failed_user_lookup_still_sends_the_alert(monkeypatch):
     notifier = _notifier(monkeypatch, client=client, email_domain="example.com")
 
     assert notifier.notify(_job(), _parsed()) is True
-    assert "<@" not in client.messages[0]["text"]
+    assert "<@" not in client.alert_text
 
 
 def test_email_domain_strips_a_leading_at(monkeypatch):
@@ -303,8 +330,8 @@ def test_restart_agent_response_reaches_slack(monkeypatch):
 
     notifier.notify(_job(), parse_attrsvc_response(_restart_agent_response(), log_path='/x.log'))
 
-    assert len(client.messages) == 1
-    assert "*NVRx attribution:* `STOP`" in client.messages[0]["text"]
+    assert len(client.summaries) == 1
+    assert "*NVRx attribution:* `STOP`" in client.alert_text
 
 
 # ─── restart-agent payloads have no LogSage item list ───
@@ -378,7 +405,7 @@ def test_restart_agent_message_has_no_placeholder_text(monkeypatch):
 
     notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
 
-    text = client.messages[0]["text"]
+    text = client.alert_text
     assert "No attribution available" not in text
     assert "No explanation available" not in text
     assert "Rank 3 exhausted device memory during the optimizer step." in text
@@ -399,7 +426,7 @@ def test_notification_does_not_repeat_reason_as_terminal_issue(monkeypatch):
     notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
 
     # The Restart Agent justification is both the reason and the terminal issue.
-    text = client.messages[0]["text"]
+    text = client.alert_text
     assert text.count("Line 28693 matched failure class observed_exception.") == 1
     assert "*Reason:*" not in text
 
@@ -410,7 +437,7 @@ def test_notification_keeps_reason_when_it_differs_from_explanation(monkeypatch)
 
     notifier.notify(_job(), _parsed())
 
-    text = client.messages[0]["text"]
+    text = client.alert_text
     assert "*Reason:* terminal failure" in text
     assert "checkpoint corrupted" in text
 
@@ -423,7 +450,7 @@ def test_message_leads_with_the_narrative_cause_not_the_typed_label(monkeypatch)
     notifier = _notifier(monkeypatch, client=client)
 
     notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
-    text = client.messages[0]["text"]
+    text = client.alert_text
 
     assert "Rank 3 exhausted device memory during the optimizer step." in text
     # The raw signature is no longer the headline.
@@ -435,7 +462,7 @@ def test_message_carries_an_evidence_line(monkeypatch):
     notifier = _notifier(monkeypatch, client=client)
 
     notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
-    text = client.messages[0]["text"]
+    text = client.alert_text
 
     assert "*Evidence:*" in text
     assert "`cuda_oom`" in text
@@ -448,7 +475,7 @@ def test_unconfirmed_results_show_causes_and_missing_evidence(monkeypatch):
     notifier = _notifier(monkeypatch, client=client)
 
     notifier.notify(_job(), parse_attrsvc_response(_restart_agent_payload(), log_path='/x.log'))
-    text = client.messages[0]["text"]
+    text = client.alert_text
 
     assert "*Plausible causes*" in text
     assert "supported_but_unconfirmed" in text
@@ -466,7 +493,7 @@ def test_confirmed_results_omit_causes_and_missing_evidence(monkeypatch):
     ] = "established_by_current_log"
 
     notifier.notify(_job(), parse_attrsvc_response(payload, log_path='/x.log'))
-    text = client.messages[0]["text"]
+    text = client.alert_text
 
     # The log established the cause; alternatives would be noise.
     assert "*Plausible causes*" not in text
@@ -565,7 +592,7 @@ def test_message_includes_the_why_section(monkeypatch):
     payload["result"]["retry_policy"] = _policy_payload()["retry_policy"]
 
     notifier.notify(_job(), parse_attrsvc_response(payload, log_path='/x.log'))
-    text = client.messages[0]["text"]
+    text = client.alert_text
 
     assert "*Why STOP:*" in text
     assert "rule `general_retry`" in text
@@ -577,7 +604,7 @@ def test_message_omits_the_why_section_without_policy_data(monkeypatch):
 
     notifier.notify(_job(), _parsed())  # LogSage result, no retry_policy
 
-    assert "*Why " not in client.messages[0]["text"]
+    assert "*Why " not in client.alert_text
 
 
 # ─── identity recovered from the analysis, not from a SLURM job ───
@@ -731,7 +758,7 @@ def test_message_names_the_cluster(monkeypatch):
 
     notifier.notify(_job(), _parsed())
 
-    assert "on *oci-aga-slurm-1*" in client.messages[0]["text"]
+    assert "on *oci-aga-slurm-1*" in client.alert_text
 
 
 def test_message_omits_the_cluster_when_unset(monkeypatch):
@@ -740,7 +767,7 @@ def test_message_omits_the_cluster_when_unset(monkeypatch):
 
     notifier.notify(_job(), _parsed())
 
-    assert " on *" not in client.messages[0]["text"]
+    assert " on *" not in client.alert_text
 
 
 def test_config_from_settings_reads_the_cluster_name(monkeypatch):
@@ -824,7 +851,7 @@ def test_message_quotes_the_failure_lines(monkeypatch, tmp_path):
     payload["result"]["primary_failure"]["line"] = 30
 
     notifier.notify(_job(), parse_attrsvc_response(payload, log_path=str(log)))
-    text = client.messages[0]["text"]
+    text = client.alert_text
 
     assert "*Log at the failure:*" in text
     assert "30: RuntimeError: CUDA error" in text
@@ -838,4 +865,97 @@ def test_message_omits_the_excerpt_when_the_log_is_unreadable(monkeypatch):
 
     notifier.notify(_job(), parse_attrsvc_response(payload, log_path="/no/such.log"))
 
-    assert "*Log at the failure:*" not in client.messages[0]["text"]
+    assert "*Log at the failure:*" not in client.alert_text
+
+
+# ─── channel stays scannable; detail goes to the thread ───
+
+
+def test_summary_is_three_lines(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client, cluster="aws-cmh-slurm-1")
+
+    notifier.notify(_job(), _parsed())
+    lines = client.summaries[0]["text"].splitlines()
+
+    assert len(lines) == 3
+    assert lines[0].startswith("*NVRx attribution:*")
+    assert lines[1].startswith("*Job ID:*")
+    assert lines[2].startswith("*Log path:*")
+
+
+def test_detail_sections_are_not_in_the_channel_line(monkeypatch, tmp_path):
+    log = _log_with(tmp_path)
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    payload = _restart_agent_payload()
+    payload["result"]["primary_failure"]["line"] = 30
+    payload["result"]["retry_policy"] = _policy_payload()["retry_policy"]
+
+    notifier.notify(_job(), parse_attrsvc_response(payload, log_path=str(log)))
+    summary, reply = client.summaries[0]["text"], client.replies[0]["text"]
+
+    for section in (
+        "*Failed due to:*",
+        "*Terminal issue:*",
+        "*Why ",
+        "*Evidence:*",
+        "*Log at the failure:*",
+        "*Plausible causes*",
+        "*Missing evidence:*",
+    ):
+        assert section not in summary, section
+        assert section in reply, section
+
+
+def test_reply_threads_onto_the_summary(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    notifier.notify(_job(), _parsed())
+
+    assert client.summaries[0]["thread_ts"] is None
+    assert client.replies[0]["thread_ts"] == summary_ts(client)
+
+
+def test_mention_rides_on_the_summary(monkeypatch):
+    client = _LookupClient()
+    notifier = _notifier(monkeypatch, client=client, email_domain="example.com")
+
+    notifier.notify(_job(), _parsed())
+
+    # The owner should be pinged by the visible line, not buried in a reply.
+    assert "<@U123>" in client.summaries[0]["text"]
+    assert "<@U123>" not in client.replies[0]["text"]
+
+
+def test_a_failed_reply_does_not_fail_the_alert(monkeypatch):
+    class _ReplyFails(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if thread_ts is not None:
+                raise RuntimeError("thread_not_found")
+            return super().chat_postMessage(channel, text)
+
+    monkeypatch.setattr(slack_mod, "SlackApiError", RuntimeError)
+    client = _ReplyFails()
+    notifier = _notifier(monkeypatch, client=client)
+
+    # The alert is already delivered; losing the detail is not a failed send.
+    assert notifier.notify(_job(), _parsed()) is True
+    assert notifier.stats.sent == 1
+    assert notifier.stats.failed == 0
+    assert len(client.summaries) == 1
+
+
+def test_no_reply_when_there_is_no_detail(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    bare = parse_attrsvc_response(
+        {"result": {}, "recommendation": {"action": "STOP", "reason": "", "source": ""}},
+        log_path="/x.log",
+    )
+
+    notifier.notify(_job(), bare)
+
+    assert len(client.summaries) == 1
+    assert client.replies == []
