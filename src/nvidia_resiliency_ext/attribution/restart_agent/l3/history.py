@@ -306,9 +306,9 @@ def _evaluate_job_progress(
                 HistoryProgressRelation.REGRESSED.value,
             },
         ),
-        consecutive_unknown_progress_attempts=_consecutive_job_relations(
-            comparisons,
-            {HistoryProgressRelation.UNKNOWN.value},
+        consecutive_unknown_progress_attempts=_consecutive_unknown_progress_attempts(
+            current_record,
+            ordered,
         ),
         progress_advanced=bool(comparisons)
         and comparisons[-1].relation == HistoryProgressRelation.ADVANCED.value,
@@ -647,6 +647,35 @@ def _consecutive_same_root_no_advance(
             HistoryProgressRelation.SAME.value,
             HistoryProgressRelation.REGRESSED.value,
         }:
+            break
+        count += 1
+    return count
+
+
+def _has_progress_signal(progress: AttemptProgressSummary) -> bool:
+    """Whether an attempt reported progress at all, on either dimension."""
+    return progress.training_progress != "unknown" or progress.checkpoint_progress != "unknown"
+
+
+def _consecutive_unknown_progress_attempts(
+    current_record: AttemptRecord,
+    ordered_priors: Sequence[AttemptRecord],
+) -> int:
+    """Consecutive attempts, ending at the current one, that reported no progress.
+
+    Counting UNKNOWN *comparisons* instead would scale with the number of prior
+    attempts rather than with the run of unverifiable ones: a comparison is
+    UNKNOWN whenever either side lacks a progress signal, so a single current
+    attempt with no signal makes every comparison UNKNOWN at once. A job would
+    then exhaust this guard the first time progress became unverifiable, purely
+    because it had accumulated enough history, even with every prior attempt
+    demonstrably advancing.
+    """
+    if _has_progress_signal(current_record.progress):
+        return 0
+    count = 1
+    for record in reversed(tuple(ordered_priors)):
+        if _has_progress_signal(record.progress):
             break
         count += 1
     return count
