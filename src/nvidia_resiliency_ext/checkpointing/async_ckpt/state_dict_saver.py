@@ -71,7 +71,8 @@ class CheckpointMetadataCache:
         validated_cache_reuse (bool): Flag indicating if checkpoint structures are consistent
         validated_loaded_metadata_reuse (bool): Flag indicating the metadata loaded from the prev checkpoint
                                          is validated to reuse, which skips all metadata communications
-        loaded_all_plans (List[SavePlan]): Cached local plans from the previous checkpoint's metadata file
+        loaded_all_plans (List[SavePlan]): Cached local plans from the previous checkpoint's metadata file,
+                                           present only in checkpoints written by older versions
 
     """
 
@@ -99,18 +100,27 @@ class CheckpointMetadataCache:
 
         This method stores the global metadata from a previous checkpoint and attempts to extract
         the local plans from it. The local plans are used to verify if the global metadata can
-        be reused in subsequent checkpoint saves.
+        be reused in subsequent checkpoint saves. The plans are removed from the metadata object,
+        so the reused metadata is written without them.
 
         Args:
-            cached_global_metadata (Metadata): The global metadata from a previous checkpoint
-                that contains information about the checkpoint structure and local plans.
+            cached_global_metadata (Metadata): The global metadata from a previous checkpoint.
+                Checkpoints written by older versions also carry the local plans of all ranks.
 
         Note:
             If the metadata does not contain local plans, a debug message is logged indicating
-            that global metadata reuse verification will not be possible.
+            that global metadata reuse verification will not be possible. Checkpoints written by
+            this version do not store local plans.
         """
         self.cached_global_metadata = cached_global_metadata
-        self.loaded_all_plans = getattr(self.cached_global_metadata, "all_local_plans", None)
+        # Metadata written by older versions carries every rank's local plan, about half of the
+        # .metadata size and pickling time. Keep the plans here for the reuse check, but take them
+        # off the metadata: a reused metadata is written again and would carry them forward.
+        self.loaded_all_plans = (
+            vars(cached_global_metadata).pop("all_local_plans", None)
+            if cached_global_metadata is not None
+            else None
+        )
         if self.loaded_all_plans is None:
             logger.debug("no all_local_plans in metadata - can't verify global metadata reuse...")
 
@@ -338,7 +348,6 @@ def save_state_dict_async_plan(
                     semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.global_metadata_create"
                 ):
                     _, global_metadata = planner.create_global_plan(all_local_plans)
-                    global_metadata.all_local_plans = all_local_plans
         else:
             logger.debug(f"rank: {rank}, Passed cached global metadata, {global_md_verify_reuse}")
             global_metadata = None
