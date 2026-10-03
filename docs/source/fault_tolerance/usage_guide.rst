@@ -85,8 +85,9 @@ To enable the external node health check with BCM:
 * Build and deploy an ``nvhcd``-compatible daemon on every allocated node.
 * Configure the daemon to invoke a BCM health check script, or a wrapper around
   an existing BCM prolog or epilog health check.
-* Ensure the wrapper translates the BCM result into JSON with ``fail_count == 0``
-  for a healthy node and a nonzero ``fail_count`` for an unhealthy node.
+* Ensure the wrapper translates the BCM result into JSON with an empty
+  ``failed_checks`` array for a healthy node and a non-empty array containing
+  the actionable check names for an unhealthy node.
 * Make the daemon's UDS visible from the job environment or training container.
 * Pass the socket path to ``ft_launcher`` with ``--ft-node-health-check-endpoint``
   (alias: ``--ft-node_health_check_endpoint``).
@@ -121,13 +122,13 @@ Compatible service contract:
 * NVRx calls the service with the configured health check arguments, which
   default to ``["--no-slurm", "--group", "prolog", "epilog", "logs", "gpu"]``.
 * To report an unhealthy node, return ``success=false``. For successful
-  responses, NVRx also treats JSON in ``output`` with a numeric ``fail_count``
-  value greater than zero as unhealthy. ``failed_checks`` can optionally list
-  the failed check names.
+  responses, NVRx treats JSON in ``output`` with a non-empty ``failed_checks``
+  array as unhealthy. ``fail_count`` is informational and may include checks
+  moved to ``failed_checks_ignored`` by site policy.
 * NVRx ignores unavailable or unusable health check signals. A missing endpoint,
   missing gRPC dependency, connectivity error, non-JSON ``output``, missing
-  ``fail_count``, or invalid ``fail_count`` value in a successful response is
-  logged and does not mark the node unhealthy.
+  ``failed_checks``, or invalid ``failed_checks`` value in a successful response
+  is logged and does not mark the node unhealthy.
 
 Example ``nvhcd`` configuration for BCM:
 
