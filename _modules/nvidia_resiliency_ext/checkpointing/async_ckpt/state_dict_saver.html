@@ -109,6 +109,8 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.planner</span><span class="w"> </span><span class="kn">import</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">SavePlanner</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_DistWrapper</span><span class="p">,</span> <span class="n">_get_failure_dict</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">semconv</span><span class="p">,</span> <span class="n">telemetry</span>
+
 <span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">.filesystem_async</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriterAsync</span>
 
@@ -430,10 +432,14 @@
 
         <span class="k">if</span> <span class="ow">not</span> <span class="n">loaded_all_plans</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">global_md_verify_reuse</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">"rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Passed cache non-reusable"</span><span class="p">)</span>
-            <span class="n">all_local_plans</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">gather_object</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
+            <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.plan_gather"</span><span class="p">):</span>
+                <span class="n">all_local_plans</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">gather_object</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">:</span>
-                <span class="n">_</span><span class="p">,</span> <span class="n">global_metadata</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">create_global_plan</span><span class="p">(</span><span class="n">all_local_plans</span><span class="p">)</span>
-                <span class="n">global_metadata</span><span class="o">.</span><span class="n">all_local_plans</span> <span class="o">=</span> <span class="n">all_local_plans</span>
+                <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span>
+                    <span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.global_metadata_create"</span>
+                <span class="p">):</span>
+                    <span class="n">_</span><span class="p">,</span> <span class="n">global_metadata</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">create_global_plan</span><span class="p">(</span><span class="n">all_local_plans</span><span class="p">)</span>
+                    <span class="n">global_metadata</span><span class="o">.</span><span class="n">all_local_plans</span> <span class="o">=</span> <span class="n">all_local_plans</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">"rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, Passed cached global metadata, </span><span class="si">{</span><span class="n">global_md_verify_reuse</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
             <span class="n">global_metadata</span> <span class="o">=</span> <span class="kc">None</span>
@@ -441,7 +447,10 @@
         <span class="n">local_plan</span> <span class="o">=</span> <span class="n">storage_writer</span><span class="o">.</span><span class="n">prepare_decentralized_global_plan</span><span class="p">(</span><span class="n">local_plan</span><span class="p">)</span>
         <span class="n">central_plan</span> <span class="o">=</span> <span class="n">local_plan</span>
     <span class="k">else</span><span class="p">:</span>
-        <span class="n">central_plan</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">reduce_scatter</span><span class="p">(</span><span class="s2">"plan"</span><span class="p">,</span> <span class="n">local_step</span><span class="p">,</span> <span class="n">global_step</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span>
+            <span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.plan_reduce_scatter"</span>
+        <span class="p">):</span>
+            <span class="n">central_plan</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">reduce_scatter</span><span class="p">(</span><span class="s2">"plan"</span><span class="p">,</span> <span class="n">local_step</span><span class="p">,</span> <span class="n">global_step</span><span class="p">)</span>
 
     <span class="n">central_plan</span> <span class="o">=</span> <span class="n">planner</span><span class="o">.</span><span class="n">finish_plan</span><span class="p">(</span><span class="n">central_plan</span><span class="p">)</span>
     <span class="n">end_plan</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
@@ -465,6 +474,7 @@
 
 <div class="viewcode-block" id="verify_global_md_reuse">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_md_reuse">[docs]</a>
+<span class="nd">@telemetry</span><span class="o">.</span><span class="n">trace_fn</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.verify_global_md_reuse"</span><span class="p">)</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">verify_global_md_reuse</span><span class="p">(</span>
     <span class="n">loaded_all_plans</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">SavePlan</span><span class="p">],</span>
     <span class="n">local_plan</span><span class="p">:</span> <span class="n">SavePlan</span><span class="p">,</span>
@@ -503,7 +513,10 @@
                 <span class="sa">f</span><span class="s2">" </span><span class="si">{</span><span class="n">_compare_dataclasses</span><span class="p">(</span><span class="n">local_plan</span><span class="p">,</span><span class="w"> </span><span class="n">loaded_all_plans</span><span class="p">[</span><span class="n">rank</span><span class="p">])</span><span class="si">}</span><span class="s2">"</span>
             <span class="p">)</span>
         <span class="n">all_results</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="n">local_verify_reuse</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"cuda"</span><span class="p">)</span>
-        <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">all_results</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MIN</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span>
+            <span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.validate_md_reuse_all_reduce"</span>
+        <span class="p">):</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">all_results</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MIN</span><span class="p">)</span>
         <span class="c1"># Check if all reduced results are True</span>
         <span class="n">global_md_verify_reuse</span> <span class="o">=</span> <span class="n">all_results</span><span class="o">.</span><span class="n">item</span><span class="p">()</span> <span class="o">==</span> <span class="mi">1</span>
     <span class="k">else</span><span class="p">:</span>
@@ -536,7 +549,8 @@
 
     <span class="c1"># Gather the write results that will be saved to the metadata file.</span>
     <span class="n">gather_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-    <span class="n">all_results</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">gather_object</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span>
+    <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.finalize_gather"</span><span class="p">):</span>
+        <span class="n">all_results</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">gather_object</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span>
     <span class="n">gather_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
     <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
         <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">gather_end</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, gather: </span><span class="si">{</span><span class="n">gather_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">gather_start</span><span class="si">}</span><span class="s2">"</span>
@@ -547,10 +561,13 @@
         <span class="n">node_failures</span> <span class="o">=</span> <span class="n">_get_failure_dict</span><span class="p">(</span><span class="n">all_results</span><span class="p">)</span>
         <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">node_failures</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
             <span class="k">assert</span> <span class="n">global_metadata</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-            <span class="n">write_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-            <span class="n">storage_writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">global_metadata</span><span class="p">,</span> <span class="n">all_results</span><span class="p">)</span>
-            <span class="n">write_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">write_end</span><span class="si">}</span><span class="s2">, metadata_write: </span><span class="si">{</span><span class="n">write_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">write_start</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+            <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span>
+                <span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.metadata_write"</span>
+            <span class="p">):</span>
+                <span class="n">write_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+                <span class="n">storage_writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">global_metadata</span><span class="p">,</span> <span class="n">all_results</span><span class="p">)</span>
+                <span class="n">write_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
+                <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">write_end</span><span class="si">}</span><span class="s2">, metadata_write: </span><span class="si">{</span><span class="n">write_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">write_start</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">node_failures</span> <span class="o">=</span> <span class="p">{}</span>
 
@@ -561,9 +578,10 @@
         <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int</span><span class="p">,</span>
         <span class="n">device</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">(),</span>
     <span class="p">)</span>
-    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span>
-        <span class="n">failures_occurred</span><span class="p">,</span> <span class="n">src</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">coordinator_rank</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span>
-    <span class="p">)</span>
+    <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.broadcast_failures"</span><span class="p">):</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span>
+            <span class="n">failures_occurred</span><span class="p">,</span> <span class="n">src</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">coordinator_rank</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span>
+        <span class="p">)</span>
     <span class="k">if</span> <span class="n">failures_occurred</span><span class="p">:</span>
         <span class="k">raise</span> <span class="n">CheckpointException</span><span class="p">(</span><span class="s2">"write"</span><span class="p">,</span> <span class="n">node_failures</span><span class="p">)</span></div>
 
