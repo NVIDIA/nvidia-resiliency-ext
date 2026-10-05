@@ -17,7 +17,6 @@
 This module provides an async utilities which allow to start
 a checkpoint save process in the background.
 """
-from functools import partial
 import gc
 import logging
 import os
@@ -119,10 +118,6 @@ def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
             except (subprocess.CalledProcessError, FileNotFoundError, PermissionError) as e:
                 logger.warning(f"PID {pid}: Failed to set I/O priority: {e}")
 
-def _get_fn_name(fn):
-    if isinstance(fn, partial):
-        return _get_fn_name(fn.func)
-    return getattr(fn, "__qualname__", getattr(fn, "__name__", "<unknown>"))
 
 class AsyncRequest(NamedTuple):
     """Represents an async request that needs to be scheduled for execution.
@@ -208,13 +203,7 @@ class AsyncRequest(NamedTuple):
         """
         with debug_time("finalize", logger):
             for finalize_fn in self.finalize_fns:
-                with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.finalize.fn") as span:
-                    try:
-                        fn_name = _get_fn_name(finalize_fn)
-                    except:
-                        fn_name = "<unknown>"
-                    span.set_attribute("fn_name", fn_name)
-                    finalize_fn()
+                finalize_fn()
 
             # Validate that matching call_idx are invoked from all ranks.
             # This ensures all ranks are correctly participating in CP save invocations
