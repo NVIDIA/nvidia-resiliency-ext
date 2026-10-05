@@ -28,5 +28,8 @@ SPAN_GROUP_CKPT = "nv.nvrx.ckpt"
 SPAN_GROUP_CKPT_PHASES = "nv.nvrx.ckpt.save"
 """Checkpoint stage and completion synchronization spans."""
 
+SPAN_GROUP_CKPT_PROFILING = "nv.nvrx.ckpt.profiling"
+"""Extra details for profiling checkpoint performance."""
+
 CKPT_CALL_IDX = "nv.nvrx.ckpt.call_idx"
 """Attribute key for the queue-local index shared by schedule, request, and finalize spans."""

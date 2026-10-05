@@ -20,16 +20,17 @@ Groups are registered at import so trainer instrumentation can use a provider in
 
 Public selectors in `shared_utils/semconv.py`:
 
-| Constant                 | Group                | Contents                                                |
-| ------------------------ | -------------------- | ------------------------------------------------------- |
-| `SPAN_GROUP_STARTUP`     | `nv.nvrx.ftl.python` | Process startup and imports                             |
-| `SPAN_GROUP_FT`          | `nv.nvrx.ftl`        | Fault-tolerance operations                              |
-| `SPAN_GROUP_CKPT`        | `nv.nvrx.ckpt`       | Checkpoint scheduling, worker requests and finalization |
-| `SPAN_GROUP_CKPT_PHASES` | `nv.nvrx.ckpt.save`  | Checkpoint stages and completion synchronization        |
+| Constant                    | Group                         | Contents                                                |
+| --------------------------- | ----------------------------- | ------------------------------------------------------- |
+| `SPAN_GROUP_STARTUP`        | `nv.nvrx.ftl.python`          | Process startup and imports                             |
+| `SPAN_GROUP_FT`             | `nv.nvrx.ftl`                 | Fault-tolerance operations                              |
+| `SPAN_GROUP_CKPT`           | `nv.nvrx.ckpt`                | Checkpoint scheduling, worker requests and finalization |
+| `SPAN_GROUP_CKPT_PHASES`    | `nv.nvrx.ckpt.save`           | Checkpoint stages and completion synchronization        |
+| `SPAN_GROUP_CKPT_PROFILING` | `nv.nvrx.ckpt.profiling`      | Extra detail for profiling checkpoint performance       |
 
 Groups match exactly: selecting `nv.nvrx.ckpt` does not enable `nv.nvrx.ckpt.save`.
 
-The `default` preset selects the first three groups. `per_step` and `profiling` select all four. Lens combines each library's registrations for the selected preset.
+The `default` preset selects the first three groups. `per_step` selects the first four, and `profiling` select all five. Lens combines each library's registrations for the selected preset.
 
 ## Identity and attributes
 
