@@ -334,7 +334,9 @@ def save_state_dict_async_plan(
             with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.plan_gather"):
                 all_local_plans = dist_wrapper.gather_object(local_plan)
             if dist_wrapper.is_coordinator:
-                with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.global_metadata_create"):
+                with telemetry.span(
+                    semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.global_metadata_create"
+                ):
                     _, global_metadata = planner.create_global_plan(all_local_plans)
                     global_metadata.all_local_plans = all_local_plans
         else:
@@ -344,7 +346,9 @@ def save_state_dict_async_plan(
         local_plan = storage_writer.prepare_decentralized_global_plan(local_plan)
         central_plan = local_plan
     else:
-        with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.plan_reduce_scatter"):
+        with telemetry.span(
+            semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.plan_reduce_scatter"
+        ):
             central_plan = dist_wrapper.reduce_scatter("plan", local_step, global_step)
 
     central_plan = planner.finish_plan(central_plan)
@@ -405,7 +409,9 @@ def verify_global_md_reuse(
                 f" {_compare_dataclasses(local_plan, loaded_all_plans[rank])}"
             )
         all_results = torch.tensor([local_verify_reuse], dtype=torch.int, device="cuda")
-        with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.validate_md_reuse_all_reduce"):
+        with telemetry.span(
+            semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.validate_md_reuse_all_reduce"
+        ):
             torch.distributed.all_reduce(all_results, op=torch.distributed.ReduceOp.MIN)
         # Check if all reduced results are True
         global_md_verify_reuse = all_results.item() == 1
@@ -448,7 +454,9 @@ def save_state_dict_async_finalize(
         node_failures = _get_failure_dict(all_results)
         if len(node_failures) == 0:
             assert global_metadata is not None
-            with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"):
+            with telemetry.span(
+                semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
+            ):
                 write_start = time()
                 storage_writer.finish(global_metadata, all_results)
                 write_end = time()

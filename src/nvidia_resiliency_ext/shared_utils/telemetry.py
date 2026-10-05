@@ -53,7 +53,12 @@ _PRESETS = {
         [semconv.SPAN_GROUP_STARTUP, semconv.SPAN_GROUP_FT, semconv.SPAN_GROUP_CKPT]
     ),
     "per_step": frozenset(
-        [semconv.SPAN_GROUP_STARTUP, semconv.SPAN_GROUP_FT, semconv.SPAN_GROUP_CKPT, semconv.SPAN_GROUP_CKPT_PHASES]
+        [
+            semconv.SPAN_GROUP_STARTUP,
+            semconv.SPAN_GROUP_FT,
+            semconv.SPAN_GROUP_CKPT,
+            semconv.SPAN_GROUP_CKPT_PHASES,
+        ]
     ),
     "profiling": _GROUPS,
 }
