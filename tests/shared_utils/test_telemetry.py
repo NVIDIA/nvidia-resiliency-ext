@@ -577,6 +577,7 @@ class TestSpanGroupRegistration:
             (semconv.SPAN_GROUP_FT, "nv.nvrx.ftl"),
             (semconv.SPAN_GROUP_CKPT, "nv.nvrx.ckpt"),
             (semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save"),
+            (semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.profiling"),
         ],
     )
     def test_import_registers_group(self, group, name):
@@ -598,7 +599,13 @@ class TestSpanGroupRegistration:
             ),
             pytest.param(
                 "profiling",
-                {"nv.nvrx.ftl.python", "nv.nvrx.ftl", "nv.nvrx.ckpt", "nv.nvrx.ckpt.save"},
+                {
+                    "nv.nvrx.ftl.python",
+                    "nv.nvrx.ftl",
+                    "nv.nvrx.ckpt",
+                    "nv.nvrx.ckpt.save",
+                    "nv.nvrx.ckpt.profiling",
+                },
                 id="profiling",
             ),
         ],
@@ -608,7 +615,14 @@ class TestSpanGroupRegistration:
 
         enabled, pending = SpanRegistry.resolve(preset)
         assert (
-            enabled & {"nv.nvrx.ftl.python", "nv.nvrx.ftl", "nv.nvrx.ckpt", "nv.nvrx.ckpt.save"}
+            enabled
+            & {
+                "nv.nvrx.ftl.python",
+                "nv.nvrx.ftl",
+                "nv.nvrx.ckpt",
+                "nv.nvrx.ckpt.save",
+                "nv.nvrx.ckpt.profiling",
+            }
             == expected
         )
         assert pending == frozenset()
