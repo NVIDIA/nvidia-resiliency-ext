@@ -26,7 +26,7 @@ Public selectors in `shared_utils/semconv.py`:
 | `SPAN_GROUP_FT`             | `nv.nvrx.ftl`                 | Fault-tolerance operations                              |
 | `SPAN_GROUP_CKPT`           | `nv.nvrx.ckpt`                | Checkpoint scheduling, worker requests and finalization |
 | `SPAN_GROUP_CKPT_PHASES`    | `nv.nvrx.ckpt.save`           | Checkpoint stages and completion synchronization        |
-| `SPAN_GROUP_CKPT_PROFILING` | `nv.nvrx.ckpt.save.profiling` | Extra detail for profiling checkpoint performance       |
+| `SPAN_GROUP_CKPT_PROFILING` | `nv.nvrx.ckpt.profiling`      | Extra detail for profiling checkpoint performance       |
 
 Groups match exactly: selecting `nv.nvrx.ckpt` does not enable `nv.nvrx.ckpt.save`.
 
