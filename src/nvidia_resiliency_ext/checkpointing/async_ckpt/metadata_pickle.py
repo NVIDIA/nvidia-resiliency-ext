@@ -24,14 +24,27 @@ classes, so stock ``torch.distributed.checkpoint`` loads it unchanged; it unpick
 ``Metadata`` equal to the one that was written.
 
 The writing loop is implemented twice with byte-identical output: in C++ (the optional
-``nvrx_metadata_pickle`` extension) and in Python as a fallback. If the torch classes do not have
-the expected layout, ``pickle.dump`` is used instead.
+``nvrx_metadata_pickle`` extension) and in Python as a fallback.
 
-Set ``NVRX_FAST_METADATA_PICKLE=0`` to always use ``pickle.dump``, or ``=python`` to skip the C++
-extension.
+The writers depend on how torch's metadata classes pickle, so they are used only when all of these
+hold, and ``pickle.dump`` is used otherwise:
+
+- torch is one of the versions they were checked against (``TESTED_TORCH_VERSIONS``);
+- each class is importable from the path the writers reference, and pickles its state exactly as
+  the writers encode it (``_layout_supported``);
+- a sample ``Metadata`` written by the writer unpickles equal to itself (``_works``).
+
+A metadata object that does not fit the writers at save time, for example a container of an
+unexpected type, also falls back to ``pickle.dump`` for that save.
+
+``NVRX_FAST_METADATA_PICKLE`` selects the writer: ``0`` always uses ``pickle.dump``, ``python``
+skips the C++ extension, and ``force`` uses the fast writers on untested torch versions too (the
+other checks still apply).
 """
 
+import copyreg
 import functools
+import importlib
 import io
 import logging
 import os
@@ -42,10 +55,10 @@ import os
 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
 import pickle  # nosec
 import struct
-from dataclasses import fields, is_dataclass
 from typing import IO, Callable, Optional
 
 import torch
+from packaging.version import Version
 from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import (
     BytesStorageMetadata,
@@ -69,6 +82,31 @@ SETITEMS, APPENDS, BUILD, NEWOBJ, REDUCE = b"u", b"e", b"b", b"\x81", b"R"
 STACK_GLOBAL, MEMOIZE, NONE = b"\x93", b"\x94", b"N"
 TUPLE, TUPLE1, TUPLE2, TUPLE3 = b"t", b"\x85", b"\x86", b"\x87"
 _BATCH = 1000  # same batching as the stdlib pickler
+
+# First and last torch (major, minor) versions the writers and FileSystemWriterAsync.finish were
+# checked against. Extend after checking a new torch release.
+TESTED_TORCH_VERSIONS = ((2, 4), (2, 14))
+
+_META = "torch.distributed.checkpoint.metadata"
+# The import path the writers emit for each class, as the stdlib pickler would.
+_CLASS_PATHS = {
+    torch.Size: ("torch", "Size"),
+    Metadata: (_META, "Metadata"),
+    MetadataIndex: (_META, "MetadataIndex"),
+    _StorageInfo: ("torch.distributed.checkpoint.filesystem", "_StorageInfo"),
+    ChunkStorageMetadata: (_META, "ChunkStorageMetadata"),
+    TensorStorageMetadata: (_META, "TensorStorageMetadata"),
+    BytesStorageMetadata: (_META, "BytesStorageMetadata"),
+}
+# The state each class is encoded with: these attributes, in this order. A _StorageInfo whose
+# transform_descriptors (PyTorch 2.8+) is set is left to the stdlib pickler.
+_STATE_KEYS = {
+    MetadataIndex: ("fqn", "index", "offset"),
+    _StorageInfo: ("relative_path", "offset", "length"),
+    ChunkStorageMetadata: ("offsets", "sizes"),
+    TensorStorageMetadata: ("properties", "size", "chunks"),
+    BytesStorageMetadata: (),
+}
 
 
 def _small_pickle(obj) -> bytes:
@@ -138,13 +176,19 @@ class _MetadataPickler:
         self.memo_len += 1
         return _str(s) + MEMOIZE
 
+    # The writers encode only exact types; anything else (a bool, a tuple for a torch.Size, ...)
+    # would unpickle as a different type, so it raises and dump_metadata falls back to pickle.dump.
     def int(self, i: int) -> bytes:
+        if type(i) is not int:
+            raise TypeError(f"expected int, got {type(i).__name__}")
         b = self.ints.get(i)
         if b is None:
             b = self.ints[i] = _int(i)
         return b
 
     def size(self, dims) -> bytes:
+        if type(dims) is not torch.Size:
+            raise TypeError(f"expected torch.Size, got {type(dims).__name__}")
         key = tuple(dims)
         b = self.sizes.get(key)
         if b is None:
@@ -160,21 +204,20 @@ class _MetadataPickler:
         return b
 
     def properties(self, p) -> bytes:
-        key = (str(p.dtype), str(p.layout), p.requires_grad, str(p.memory_format), p.pin_memory)
+        key = (type(p), tuple(vars(p).items()))
         b = self.props.get(key)
         if b is None:
             b = self.props[key] = _small_pickle(p)
         return b
 
     def dumps(self, md: Metadata) -> bytes:
-        meta = "torch.distributed.checkpoint.metadata"
-        self.SIZE = self.global_ref("torch", "Size")
-        METADATA = self.global_ref(meta, "Metadata")
-        INDEX = self.global_ref(meta, "MetadataIndex")
-        INFO = self.global_ref("torch.distributed.checkpoint.filesystem", "_StorageInfo")
-        CHUNK = self.global_ref(meta, "ChunkStorageMetadata")
-        TENSOR = self.global_ref(meta, "TensorStorageMetadata")
-        BYTES = self.global_ref(meta, "BytesStorageMetadata")
+        self.SIZE = self.global_ref(*_CLASS_PATHS[torch.Size])
+        METADATA = self.global_ref(*_CLASS_PATHS[Metadata])
+        INDEX = self.global_ref(*_CLASS_PATHS[MetadataIndex])
+        INFO = self.global_ref(*_CLASS_PATHS[_StorageInfo])
+        CHUNK = self.global_ref(*_CLASS_PATHS[ChunkStorageMetadata])
+        TENSOR = self.global_ref(*_CLASS_PATHS[TensorStorageMetadata])
+        BYTES = self.global_ref(*_CLASS_PATHS[BytesStorageMetadata])
         k = {}
         for name in (
             "fqn",
@@ -196,6 +239,8 @@ class _MetadataPickler:
         out.append(METADATA + EMPTY_TUPLE + NEWOBJ + EMPTY_DICT + MARK)
         for field, value in vars(md).items():
             out.append(_str(field))
+            if field in ("state_dict_metadata", "storage_data") and type(value) is not dict:
+                raise TypeError(f"expected dict for {field}, got {type(value).__name__}")
             if field == "state_dict_metadata":
                 out.append(EMPTY_DICT)
                 items = list(value.items())
@@ -223,6 +268,8 @@ class _MetadataPickler:
                             + EMPTY_LIST
                         )
                         chunks = v.chunks
+                        if type(chunks) is not list:
+                            raise TypeError(f"expected list of chunks, got {type(chunks).__name__}")
                         for cstart in range(0, len(chunks), _BATCH):
                             out.append(MARK)
                             out.extend(
@@ -298,31 +345,31 @@ def _native_dumps(md: Metadata) -> bytes:
     return nvrx_metadata_pickle.dumps(md, _small_pickle)
 
 
-# The pickled state of these classes is their instance __dict__ (no __slots__ or custom reduce),
-# with exactly these fields. _StorageInfo gained transform_descriptors in PyTorch 2.8, together
-# with a __getstate__ that leaves it out when None.
-_EXPECTED_FIELDS = {
-    MetadataIndex: {"fqn", "offset", "index"},
-    ChunkStorageMetadata: {"offsets", "sizes"},
-    TensorStorageMetadata: {"properties", "size", "chunks"},
-    BytesStorageMetadata: set(),
-}
-_STORAGE_INFO_FIELDS = {"relative_path", "offset", "length"}
+def _mode() -> str:
+    return os.environ.get("NVRX_FAST_METADATA_PICKLE", "1").strip().lower()
 
 
-def _layout_supported() -> bool:
-    """Whether the torch metadata classes have the layout the fast writers assume."""
-    for cls, expected in [*_EXPECTED_FIELDS.items(), (_StorageInfo, None)]:
-        if not is_dataclass(cls) or "__slots__" in vars(cls):
-            return False
-        if any(name in vars(cls) for name in ("__reduce__", "__reduce_ex__", "__setstate__")):
-            return False
-        names = {f.name for f in fields(cls)}
-        if cls is _StorageInfo:
-            if names - {"transform_descriptors"} != _STORAGE_INFO_FIELDS:
-                return False
-        elif names != expected or "__getstate__" in vars(cls):
-            return False
+@functools.lru_cache(maxsize=None)
+def fast_metadata_enabled() -> bool:
+    """Whether nvrx may write ``.metadata`` with its own code instead of torch's.
+
+    False if disabled by ``NVRX_FAST_METADATA_PICKLE=0``, or if torch is outside
+    ``TESTED_TORCH_VERSIONS`` (unless ``NVRX_FAST_METADATA_PICKLE=force``). Gates both the fast
+    writers and ``FileSystemWriterAsync.finish``.
+    """
+    mode = _mode()
+    if mode in ("0", "false", "off", "no"):
+        return False
+    if mode == "force":
+        return True
+    first, last = TESTED_TORCH_VERSIONS
+    if not first <= Version(torch.__version__).release[:2] <= last:
+        logger.info(
+            f"torch {torch.__version__} is outside the versions nvrx's .metadata writer was "
+            f"checked against ({first[0]}.{first[1]} to {last[0]}.{last[1]}); "
+            "using torch's own writer"
+        )
+        return False
     return True
 
 
@@ -360,6 +407,41 @@ def _sample_metadata() -> Metadata:
     return Metadata(state_dict_metadata={**tensors, **blobs}, storage_data=storage)
 
 
+def _reduces_as_encoded(obj, state: dict) -> bool:
+    """Whether pickle reduces obj to a NEWOBJ of its class with exactly this state.
+
+    That is what the writers encode in its place (no state at all when ``state`` is empty).
+    """
+    r = obj.__reduce_ex__(4)
+    return (
+        len(r) >= 3
+        and r[0] is copyreg.__newobj__
+        and r[1] == (type(obj),)
+        and all(x is None for x in r[3:])
+        and (r[2] == state if state else not r[2])
+    )
+
+
+def _layout_supported() -> bool:
+    """Whether torch's metadata classes pickle exactly as the fast writers encode them."""
+    try:
+        for cls, (module, name) in _CLASS_PATHS.items():
+            if getattr(importlib.import_module(module), name, None) is not cls:
+                return False
+        md = _sample_metadata()
+        if not _reduces_as_encoded(md, vars(md)):
+            return False
+        tensor = md.state_dict_metadata["w"]
+        index, info = next(iter(md.storage_data.items()))
+        for obj in (tensor, tensor.chunks[0], md.state_dict_metadata["obj.0/shard_0"], index, info):
+            if not _reduces_as_encoded(obj, {k: getattr(obj, k) for k in _STATE_KEYS[type(obj)]}):
+                return False
+        return tensor.size.__reduce_ex__(4) == (torch.Size, (tuple(tensor.size),))
+    except Exception:
+        logger.debug("torch DCP metadata layout check failed", exc_info=True)
+        return False
+
+
 def _works(dumps: Callable[[Metadata], bytes]) -> bool:
     md = _sample_metadata()
     try:
@@ -372,13 +454,12 @@ def _works(dumps: Callable[[Metadata], bytes]) -> bool:
 @functools.lru_cache(maxsize=None)
 def _select_dumps() -> Optional[Callable[[Metadata], bytes]]:
     """The fastest writer that works here, or None to use pickle.dump."""
-    mode = os.environ.get("NVRX_FAST_METADATA_PICKLE", "1").strip().lower()
-    if mode in ("0", "false", "off", "no"):
+    if not fast_metadata_enabled():
         return None
     if not _layout_supported():
         logger.warning("Unexpected torch DCP metadata classes; writing .metadata with pickle.dump")
         return None
-    if nvrx_metadata_pickle is not None and mode != "python" and _works(_native_dumps):
+    if nvrx_metadata_pickle is not None and _mode() != "python" and _works(_native_dumps):
         return _native_dumps
     if _works(_python_dumps):
         return _python_dumps

@@ -64,7 +64,10 @@ std::string_view utf8(PyObject* s) {
     return {p, static_cast<size_t>(n)};
 }
 
+// The writers encode only exact types; anything else (a bool, a tuple for a torch.Size, ...) would
+// unpickle as a different type, so it raises and the caller falls back to pickle.dump.
 int64_t as_int(PyObject* o) {
+    if (!PyLong_CheckExact(o)) throw py::type_error("expected int");
     long long v = PyLong_AsLongLong(o);
     if (v == -1 && PyErr_Occurred()) throw py::error_already_set();
     return v;
@@ -78,6 +81,7 @@ class Writer {
 
     std::string out_;
     uint32_t size_ref = 0;
+    PyObject* size_type = nullptr;  // torch.Size
 
     void put(char c) { out_.push_back(c); }
     void put(std::initializer_list<char> cs) { out_.append(cs.begin(), cs.end()); }
@@ -162,7 +166,9 @@ class Writer {
     }
 
     void size(PyObject* dims) {
-        if (!PyTuple_Check(dims)) throw py::type_error("expected torch.Size");
+        if (reinterpret_cast<PyObject*>(Py_TYPE(dims)) != size_type) {
+            throw py::type_error("expected torch.Size");
+        }
         put_get(size_ref);
         Py_ssize_t n = PyTuple_GET_SIZE(dims);
         if (n == 0) {
@@ -197,12 +203,14 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
     py::module_ meta_mod = py::module_::import("torch.distributed.checkpoint.metadata");
     py::object tensor_cls = meta_mod.attr("TensorStorageMetadata");
     py::object bytes_cls = meta_mod.attr("BytesStorageMetadata");
+    py::object size_cls = py::module_::import("torch").attr("Size");
 
     py::str a_dict("__dict__"), a_properties("properties"), a_size("size"), a_chunks("chunks");
     py::str a_offsets("offsets"), a_sizes("sizes"), a_fqn("fqn"), a_index("index"), a_offset("offset");
     py::str a_transform("transform_descriptors"), a_relative_path("relative_path"), a_length("length");
 
     Writer w(std::move(small_pickle));
+    w.size_type = size_cls.ptr();
     w.put({PROTO, '\x04'});
     const char* meta = "torch.distributed.checkpoint.metadata";
     w.size_ref = w.global_ref("torch", "Size");
@@ -224,6 +232,9 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
         std::string_view field = utf8(item.first.ptr());
         w.put_str(field);
         PyObject* value = item.second.ptr();
+        if ((field == "state_dict_metadata" || field == "storage_data") && !PyDict_CheckExact(value)) {
+            throw py::type_error("expected dict");
+        }
         if (field == "state_dict_metadata") {
             w.put(EMPTY_DICT);
             Py_ssize_t pos = 0, n = PyDict_Size(value);
@@ -250,7 +261,7 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
                     w.put_get(k_chunks);
                     w.put(EMPTY_LIST);
                     py::object chunks = getattr(v, a_chunks.ptr());
-                    if (!PyList_Check(chunks.ptr())) throw py::type_error("expected list of chunks");
+                    if (!PyList_CheckExact(chunks.ptr())) throw py::type_error("expected list of chunks");
                     Py_ssize_t nc = PyList_GET_SIZE(chunks.ptr());
                     for (Py_ssize_t j = 0; j < nc; ++j) {
                         if (j % BATCH == 0) w.put(MARK);

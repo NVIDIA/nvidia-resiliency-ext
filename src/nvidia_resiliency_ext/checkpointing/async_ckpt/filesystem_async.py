@@ -34,13 +34,13 @@ import torch
 from torch import multiprocessing as mp
 from torch.distributed.checkpoint import FileSystemWriter
 from torch.distributed.checkpoint.api import WRAPPED_EXCEPTION, _wrap_exception
-from torch.distributed.checkpoint.filesystem import (
-    DEFAULT_SUFFIX,
-    _metadata_fn,
-    _StoragePrefix,
-    _write_item,
-)
+from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX, _StoragePrefix, _write_item
 from torch.distributed.checkpoint.metadata import Metadata
+
+try:
+    from torch.distributed.checkpoint.filesystem import _metadata_fn  # PyTorch 2.4+
+except ImportError:  # finish() uses FileSystemWriter.finish there
+    _metadata_fn = None
 
 try:
     from torch.distributed.checkpoint.filesystem import _StorageWriterTransforms
@@ -67,7 +67,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
 from .core import PersistentAsyncCaller
-from .metadata_pickle import dump_metadata
+from .metadata_pickle import dump_metadata, fast_metadata_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1282,14 +1282,22 @@ class FileSystemWriterAsync(FileSystemWriter):
         """
         Finish the checkpointing process by writing the global metadata file.
 
-        Follows ``FileSystemWriter.finish`` of PyTorch 2.6 to 2.14, but writes ``.metadata`` with
-        :func:`dump_metadata`: the same pickle format as ``pickle.dump``, written much faster.
+        Follows ``FileSystemWriter.finish`` of the torch versions in
+        ``metadata_pickle.TESTED_TORCH_VERSIONS``, but writes ``.metadata`` with
+        :func:`dump_metadata`: the same pickle format as ``pickle.dump``, written much faster. On
+        other torch versions, or with ``NVRX_FAST_METADATA_PICKLE=0``, it uses
+        ``FileSystemWriter.finish`` (or, for MSC, ``pickle.dump``).
 
         Args:
             metadata (Metadata): metadata to save
             results (List[List[WriteResult]]): results to save
         """
-        if CURRENT_DCP_VERSION is not None:
+        fast = fast_metadata_enabled()
+        if not fast and not self.use_msc:
+            super().finish(metadata, results)
+            return
+
+        if fast and CURRENT_DCP_VERSION is not None:
             metadata.version = CURRENT_DCP_VERSION
 
         storage_md = {}
@@ -1297,7 +1305,9 @@ class FileSystemWriterAsync(FileSystemWriter):
             storage_md.update({wr.index: wr.storage_data for wr in wr_list})
         metadata.storage_data = storage_md
 
-        metadata.storage_meta = self.storage_meta()
+        # storage_meta was introduced since PyTorch 2.4
+        if "storage_meta" in inspect.signature(Metadata).parameters:
+            metadata.storage_meta = self.storage_meta()
 
         if self.use_msc:
             import multistorageclient as msc
@@ -1327,7 +1337,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 try:
                     os.fsync(metadata_file.fileno())
                 except (AttributeError, UnsupportedOperation):
-                    os.sync()
+                    os.sync()  # as PyTorch < 2.14 does; 2.14 only warns
 
         # delete in-case other checkpoints were present.
         if self.fs.exists(metadata_path):
