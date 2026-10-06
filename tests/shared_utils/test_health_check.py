@@ -571,7 +571,7 @@ class TestNodeHealthCheck(unittest.TestCase):
         self,
         args=None,
         success=True,
-        output='{"fail_count": 0}',
+        output='{"fail_count": 0, "failed_checks": []}',
         exit_code=0,
         error="",
     ):
@@ -624,7 +624,7 @@ class TestNodeHealthCheck(unittest.TestCase):
         request = stub.RunHealthCheck.call_args.args[0]
         self.assertEqual(request.args, ["--group", "epilog"])
 
-    def test_perform_health_check_fails_for_positive_fail_count(self):
+    def test_perform_health_check_fails_for_nonempty_failed_checks(self):
         checker, _ = self._checker_with_mocked_grpc(
             output='{"fail_count": 2, "failed_checks": ["bcm_healthcheck"]}'
         )
@@ -633,12 +633,40 @@ class TestNodeHealthCheck(unittest.TestCase):
 
         self.assertFalse(result)
 
-    def test_perform_health_check_fails_for_positive_fail_count_without_failed_checks(self):
-        checker, _ = self._checker_with_mocked_grpc(output='{"fail_count": 1}')
+    def test_perform_health_check_fails_for_nonempty_failed_checks_with_zero_fail_count(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            output='{"fail_count": 0, "failed_checks": ["bcm_healthcheck"]}'
+        )
 
         result = checker._perform_health_check()
 
         self.assertFalse(result)
+
+    def test_perform_health_check_fails_for_nonempty_failed_checks_without_fail_count(self):
+        checker, _ = self._checker_with_mocked_grpc(output='{"failed_checks": ["bcm_healthcheck"]}')
+
+        result = checker._perform_health_check()
+
+        self.assertFalse(result)
+
+    def test_perform_health_check_passes_for_positive_fail_count_with_empty_failed_checks(self):
+        checker, _ = self._checker_with_mocked_grpc(output='{"fail_count": 1, "failed_checks": []}')
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_passes_when_only_ignored_checks_failed(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            output=(
+                '{"fail_count": 1, "failed_checks": [], '
+                '"failed_checks_ignored": ["sw_sys_logs_general_error"]}'
+            )
+        )
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
 
     def test_perform_health_check_ignores_non_json_output(self):
         checker, _ = self._checker_with_mocked_grpc(output="health check script completed")
@@ -662,15 +690,17 @@ class TestNodeHealthCheck(unittest.TestCase):
 
         self.assertTrue(result)
 
-    def test_perform_health_check_ignores_missing_fail_count(self):
-        checker, _ = self._checker_with_mocked_grpc(output='{"status": "unavailable"}')
+    def test_perform_health_check_ignores_missing_failed_checks(self):
+        checker, _ = self._checker_with_mocked_grpc(output='{"fail_count": 1}')
 
         result = checker._perform_health_check()
 
         self.assertTrue(result)
 
-    def test_perform_health_check_ignores_boolean_fail_count(self):
-        checker, _ = self._checker_with_mocked_grpc(output='{"fail_count": true}')
+    def test_perform_health_check_ignores_invalid_failed_checks(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            output='{"fail_count": 1, "failed_checks": "bcm_healthcheck"}'
+        )
 
         result = checker._perform_health_check()
 

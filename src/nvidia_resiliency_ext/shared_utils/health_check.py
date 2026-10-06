@@ -1511,7 +1511,7 @@ class NodeHealthCheck:
           - If gRPC/protos are unavailable, or UDS socket is missing, return True (non-fatal/optional check).
           - On gRPC connectivity errors, return True.
           - A success=false response marks the node unhealthy.
-          - For successful responses, JSON output with fail_count > 0 marks the node unhealthy.
+          - For successful responses, JSON output with a non-empty failed_checks list marks the node unhealthy.
         """
         # Use pre-validated target computed during initialization
         target = self._channel_target
@@ -1538,7 +1538,7 @@ class NodeHealthCheck:
                     logger.warning(msg)
                     return False
 
-                # Parse JSON output and check fail_count
+                # Parse JSON output and check actionable failures.
                 try:
                     result = json.loads(getattr(response, "output", None))
                     if not isinstance(result, dict):
@@ -1547,22 +1547,16 @@ class NodeHealthCheck:
                             "ignoring health check result"
                         )
                         return True
-                    fail_count = result.get("fail_count")
-                    if fail_count is None:
+                    failed_checks = result.get("failed_checks")
+                    if not isinstance(failed_checks, list):
                         logger.warning(
-                            "Node health check: 'fail_count' field not found in response"
-                        )
-                        return True
-                    if isinstance(fail_count, bool) or not isinstance(fail_count, (int, float)):
-                        logger.warning(
-                            f"Node health check: invalid fail_count value: {fail_count}; "
+                            "Node health check: 'failed_checks' field is missing or invalid; "
                             "ignoring health check result"
                         )
                         return True
-                    if fail_count > 0:
-                        failed_checks = result.get("failed_checks", [])
+                    if failed_checks:
                         logger.warning(
-                            f"Node health check failed: fail_count={fail_count}, "
+                            f"Node health check failed: fail_count={result.get('fail_count')}, "
                             f"failed_checks={failed_checks}"
                         )
                         return False
@@ -1570,7 +1564,10 @@ class NodeHealthCheck:
                     logger.warning(f"Node health check: failed to parse JSON output: {e}")
                     return True
 
-                logger.debug(f"Node health check: success (fail_count={fail_count})")
+                logger.debug(
+                    f"Node health check: success (fail_count={result.get('fail_count')}, "
+                    f"failed_checks={failed_checks})"
+                )
                 return True
         except Exception as e:
             logger.warning(
