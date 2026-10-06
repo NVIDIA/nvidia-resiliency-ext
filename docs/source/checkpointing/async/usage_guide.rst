@@ -250,13 +250,15 @@ Writing the .metadata File
 writes the checkpoint's ``.metadata`` file with its own pickler instead of ``pickle.dump``
 (about 16 times faster on large checkpoints). The file is an ordinary
 pickle that ``torch.distributed.checkpoint`` loads unchanged. The pickler is used on the PyTorch
-versions it was tested with, 2.4 to 2.14; on other versions PyTorch writes the file.
+versions it was tested with, 2.4 to 2.14; on other versions the file is written with
+``pickle.dump``, as PyTorch writes it.
 
 The environment variable ``NVRX_FAST_METADATA_PICKLE``, read once per process, changes this:
 
-* ``0``: PyTorch writes the file.
+* ``0``: write the file with ``pickle.dump``.
 * ``python``: use the pure-Python pickler instead of the C++ extension.
-* ``force``: use the pickler on untested PyTorch versions too.
+* ``force``: use the pickler on untested PyTorch versions too, except those known not to work with
+  it (2.3), where an error is logged.
 
 
 Best Practices
