@@ -43,7 +43,11 @@ from torch.distributed.checkpoint.metadata import (
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
 
 HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo)}  # torch 2.8+
-WRITERS = [writer._python_dumps] + ([writer._native_dumps] if writer.native is not None else [])
+NEEDS_NATIVE = pytest.mark.skipif(writer.native is None, reason="native extension not built")
+WRITERS = [
+    pytest.param(writer._python_dumps, id="python"),
+    pytest.param(writer._native_dumps, id="native", marks=NEEDS_NATIVE),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -79,13 +83,9 @@ def stock_round_trip(md: Metadata) -> Metadata:
     return pickle.loads(pickle.dumps(md))
 
 
-def assert_writers_correct(md: Metadata) -> None:
-    """Every writer's output unpickles like stock pickle's; all writers write the same bytes."""
-    expected = stock_round_trip(md)
-    outputs = [dumps(md) for dumps in WRITERS]
-    for out in outputs:
-        assert_identical(pickle.loads(out), expected)
-    assert len(set(outputs)) == 1, "the native and Python writers differ"
+def assert_written_like_stock(dumps, md: Metadata) -> None:
+    """dumps(md) unpickles exactly as stock pickle round-trips md."""
+    assert_identical(pickle.loads(dumps(md)), stock_round_trip(md))
 
 
 # Strategies for Metadata the writers encode themselves. Integers stay within int64, which the
@@ -142,20 +142,7 @@ def metadatas(draw):
     )
 
 
-# Examples are random on purpose, to cover more inputs over time; failures found locally are
-# replayed from the example database in .hypothesis/.
-# TODO: persist the example database across CI runs.
-@settings(max_examples=200, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(metadatas())
-def test_writers_match_stock_pickle(md):
-    assert_writers_correct(md)
-
-
-def test_sample_metadata():
-    assert_writers_correct(writer._sample_metadata())
-
-
-def test_large_metadata():
+def large_metadata() -> Metadata:
     """Crosses the writers' size boundaries: batches of 1000 items, memo indices past 255,
     strings longer than 255 bytes, and integers of every width."""
     props = TensorProperties(dtype=torch.bfloat16)
@@ -173,11 +160,10 @@ def test_large_metadata():
         )
         for i in range(2500)
     }
-    md = Metadata(state_dict_metadata=state_dict_metadata, storage_data=storage_data)
-    assert_writers_correct(md)
+    return Metadata(state_dict_metadata=state_dict_metadata, storage_data=storage_data)
 
 
-def test_metadata_from_dcp_save(tmp_path):
+def dcp_saved_metadata(tmp_path) -> Metadata:
     """Metadata as torch writes it for a state dict of tensors and objects."""
     state_dict = {
         "scalar": torch.tensor(3.0),
@@ -188,7 +174,76 @@ def test_metadata_from_dcp_save(tmp_path):
     dcp.save(state_dict, storage_writer=dcp.FileSystemWriter(tmp_path))  # no process group
     md = dcp.FileSystemReader(tmp_path).read_metadata()
     assert md.storage_data, "expected storage entries"
-    assert_writers_correct(md)
+    return md
+
+
+def subclassed_metadata() -> Metadata:
+    """Objects of subclasses of the metadata classes, which must keep their class."""
+
+    md = writer._sample_metadata()
+    w = md.state_dict_metadata["w"]
+    chunks = [_Chunk(torch.Size([0, 0, 0, 0]), torch.Size([1, 1, 1, 1])), *w.chunks]
+    md.state_dict_metadata["w2"] = _Tensor(w.properties, w.size, chunks)
+    md.storage_data[_Index("w2", torch.Size([0, 0, 0, 0]), 0)] = _Info("__9_0.distcp", 5, 6)
+    return md
+
+
+class _Tensor(TensorStorageMetadata):
+    pass
+
+
+class _Chunk(ChunkStorageMetadata):
+    pass
+
+
+class _Index(MetadataIndex):
+    pass
+
+
+class _Info(_StorageInfo):
+    pass
+
+
+FIXED_METADATA = [
+    pytest.param(lambda tmp_path: writer._sample_metadata(), id="sample"),
+    pytest.param(lambda tmp_path: large_metadata(), id="large"),
+    pytest.param(dcp_saved_metadata, id="dcp-save"),
+    pytest.param(lambda tmp_path: subclassed_metadata(), id="subclasses"),
+]
+
+# Examples are random on purpose, to cover more inputs over time; failures found locally are
+# replayed from the example database in .hypothesis/.
+# TODO: persist the example database across CI runs.
+hypothesis_settings = settings(
+    max_examples=200, deadline=None, suppress_health_check=[HealthCheck.too_slow]
+)
+
+
+@pytest.mark.parametrize("dumps", WRITERS)
+@hypothesis_settings
+@given(metadatas())
+def test_writer_matches_stock_pickle(dumps, md):
+    assert_written_like_stock(dumps, md)
+
+
+@NEEDS_NATIVE
+@hypothesis_settings
+@given(metadatas())
+def test_native_matches_python(md):
+    assert writer._native_dumps(md) == writer._python_dumps(md)
+
+
+@pytest.mark.parametrize("dumps", WRITERS)
+@pytest.mark.parametrize("make", FIXED_METADATA)
+def test_writer_matches_stock_pickle_on(dumps, make, tmp_path):
+    assert_written_like_stock(dumps, make(tmp_path))
+
+
+@NEEDS_NATIVE
+@pytest.mark.parametrize("make", FIXED_METADATA)
+def test_native_matches_python_on(make, tmp_path):
+    md = make(tmp_path)
+    assert writer._native_dumps(md) == writer._python_dumps(md)
 
 
 def _set_index(md, value):
@@ -205,7 +260,7 @@ def _rename_first(md, rename):
 
 
 # (mutation, whether the Python writer rejects it too). The native writer rejects them all.
-@pytest.mark.parametrize(
+UNEXPECTED_VALUES = pytest.mark.parametrize(
     ("mutate", "python_rejects"),
     [
         pytest.param(
@@ -232,27 +287,50 @@ def _rename_first(md, rename):
             True,
             id="metadata-index-extra-attribute",
         ),
+        pytest.param(
+            lambda md: object.__setattr__(md.state_dict_metadata["w"], "extra", 1),
+            True,
+            id="tensor-extra-attribute",
+        ),
+        pytest.param(
+            lambda md: object.__setattr__(md.state_dict_metadata["w"].chunks[0], "extra", 1),
+            True,
+            id="chunk-extra-attribute",
+        ),
+        pytest.param(
+            lambda md: setattr(next(iter(md.storage_data.values())), "extra", 1),
+            True,
+            id="storage-info-extra-attribute",
+        ),
         pytest.param(lambda md: _set_index(md, 2**70), False, id="int-beyond-int64"),
         pytest.param(
             lambda md: _rename_first(md, lambda s: s + "\ud800"), False, id="lone-surrogate"
         ),
     ],
 )
-def test_unexpected_values_fall_back(mutate, python_rejects):
-    """Writers reject values they do not encode exactly, rather than write something wrong, and
-    dump_metadata then writes a correct pickle anyway."""
+
+
+@pytest.mark.parametrize("dumps", WRITERS)
+@UNEXPECTED_VALUES
+def test_writer_rejects_unexpected_values(dumps, mutate, python_rejects):
+    """A writer rejects a value it does not encode exactly, rather than write something wrong."""
     md = writer._sample_metadata()
     mutate(md)
-    expected = stock_round_trip(md)
-    for dumps in WRITERS:
-        if dumps is writer._native_dumps or python_rejects:
-            with pytest.raises((TypeError, OverflowError, UnicodeError)):
-                dumps(md)
-        else:
-            assert_identical(pickle.loads(dumps(md)), expected)
+    if dumps is writer._native_dumps or python_rejects:
+        with pytest.raises((TypeError, OverflowError, UnicodeError)):
+            dumps(md)
+    else:
+        assert_written_like_stock(dumps, md)
+
+
+@UNEXPECTED_VALUES
+def test_dump_metadata_falls_back(mutate, python_rejects):
+    """dump_metadata writes a correct pickle when the selected writer rejects a value."""
+    md = writer._sample_metadata()
+    mutate(md)
     buf = io.BytesIO()
     writer.dump_metadata(md, buf)
-    assert_identical(pickle.loads(buf.getvalue()), expected)
+    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
 
 
 def test_changed_pickled_state_disables_fast_writers(monkeypatch):
