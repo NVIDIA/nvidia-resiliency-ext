@@ -325,6 +325,34 @@ class DecisionRationale:
     def empty(self) -> bool:
         return not (self.rule or self.category_id is not None or self.retry_outlook)
 
+    def headline(self) -> str:
+        """One line naming what actually drove the decision.
+
+        Ordered by what overrode what: a budget that ran out beats the category,
+        because L4 stops on an exhausted ledger whatever L1 concluded - the live
+        case being a guard forcing STOP over a category that said RESTART.
+        """
+        if self.other_exhausted:
+            ledger = self.other_exhausted[0]
+            counted = _LEDGER_COUNTS.get(ledger.ledger_id, "matching attempts")
+            if ledger.attempts is not None and ledger.allowed_retries is not None:
+                return (
+                    f"`{ledger.ledger_id}` exhausted — "
+                    f"{ledger.attempts} of {ledger.allowed_retries} {counted}"
+                )
+            return f"`{ledger.ledger_id}` exhausted"
+        if self.budget_exhausted and self.rule:
+            budget = "" if self.allowed_retries is None else f" ({self.allowed_retries})"
+            return f"`{self.rule}` budget exhausted{budget}"
+        if self.category_id:
+            name = f" — {self.category_name}" if self.category_name else ""
+            return f"category {self.category_id}{name}"
+        if self.category_id == 0:
+            return "no listed category matched"
+        if self.rule:
+            return f"policy `{self.rule}`"
+        return ""
+
     def as_lines(self) -> list[str]:
         """Bullet lines, most decision-relevant first, omitting empty claims."""
         lines = []
@@ -550,6 +578,19 @@ class AnalysisIdentity:
         label = f"{job_id} ({self.run_name})" if self.run_name else job_id
         return f"{label} cycle {self.cycle_id}" if self.cycle_id is not None else label
 
+    def as_line(self) -> str:
+        """The job line: id, name and cycle as separate labelled fields.
+
+        Cycle is omitted rather than shown empty: logs without cycle numbers
+        come from runs that never restarted in place, where "cycle" is noise.
+        """
+        parts = [f"*Job ID:* `{self.job_id or 'unknown'}`"]
+        if self.run_name:
+            parts.append(f"*Job Name:* `{self.run_name}`")
+        if self.cycle_id is not None:
+            parts.append(f"*Cycle:* {self.cycle_id}")
+        return " | ".join(parts)
+
 
 def run_name_from_log_path(log_path: str, job_id: str = "") -> str:
     """Recover the run name from an application log filename.
@@ -628,7 +669,13 @@ def format_summary(
         header += f" on *{cluster}*"
     if result.recommendation.source:
         header += f" _(source: {result.recommendation.source})_"
-    return f"{header}\n" f"*Job ID:* `{identity.label}`\n" f"*Log path:* `{result.log_path or ''}`"
+
+    lines = [header, identity.as_line()]
+    headline = decision_rationale(result.result).headline()
+    if headline:
+        lines.append(f"*Why {result.recommendation.action}:* {headline}")
+    lines.append(f"*Log path:*\n```{result.log_path or ''}```")
+    return "\n".join(lines)
 
 
 def format_details(identity: AnalysisIdentity, result: AttrSvcResult) -> str:

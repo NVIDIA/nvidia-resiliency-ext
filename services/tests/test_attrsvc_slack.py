@@ -172,7 +172,8 @@ def test_logsage_result_keeps_its_issue_wording():
 def test_notification_carries_job_label_and_log_path():
     text = format_summary(_job(), _parsed()) + format_details(_job(), _parsed())
 
-    assert "`123 (nemotron_pretrain)`" in text
+    assert "*Job ID:* `123`" in text
+    assert "*Job Name:* `nemotron_pretrain`" in text
     assert "/lustre/logs/job.log" in text
 
 
@@ -194,7 +195,8 @@ def test_notify_posts_message_with_action_reason_and_details(monkeypatch):
     assert summary["channel"] == "#trng-alerts"
     # The channel line stays scannable: decision, job, log path, nothing else.
     assert "*NVRx attribution:* `STOP`" in summary["text"]
-    assert "123 (nemotron_pretrain)" in summary["text"]
+    assert "*Job ID:* `123`" in summary["text"]
+    assert "*Job Name:* `nemotron_pretrain`" in summary["text"]
     assert "/lustre/logs/job.log" in summary["text"]
     assert "checkpoint corrupted" not in summary["text"]
 
@@ -1010,17 +1012,35 @@ def test_message_omits_the_excerpt_when_the_log_is_unreadable(monkeypatch):
 # ─── channel stays scannable; detail goes to the thread ───
 
 
-def test_summary_is_three_lines(monkeypatch):
+def test_summary_is_four_fields(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client, cluster="aws-cmh-slurm-1")
 
     notifier.notify(_job(), _parsed())
     lines = client.summaries[0]["text"].splitlines()
 
-    assert len(lines) == 3
+    # No retry policy in this result, so there is no reason to state: header,
+    # job, then the path as a fenced block.
     assert lines[0].startswith("*NVRx attribution:*")
     assert lines[1].startswith("*Job ID:*")
     assert lines[2].startswith("*Log path:*")
+    assert lines[3].startswith("```")
+    assert len(lines) == 4
+
+
+def test_summary_states_the_reason_when_there_is_one(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    parsed = _parsed()
+    parsed.result["retry_policy"] = _policy_payload()["retry_policy"]
+    parsed.result["l1_assessment"] = _policy_payload()["l1_assessment"]
+
+    notifier.notify(_job(), parsed)
+    lines = client.summaries[0]["text"].splitlines()
+
+    assert len(lines) == 5
+    assert lines[2].startswith("*Why STOP:*")
+    assert "category 13" in lines[2]
 
 
 def test_detail_sections_are_not_in_the_channel_line(monkeypatch, tmp_path):
@@ -1037,7 +1057,6 @@ def test_detail_sections_are_not_in_the_channel_line(monkeypatch, tmp_path):
     for section in (
         "*Failed due to:*",
         "*Terminal issue:*",
-        "*Why ",
         "*Evidence:*",
         "*Log at the failure:*",
         "*Plausible causes*",
@@ -1045,6 +1064,13 @@ def test_detail_sections_are_not_in_the_channel_line(monkeypatch, tmp_path):
     ):
         assert section not in summary, section
         assert section in reply, section
+
+    # The reason is summarised in one line in the channel and itemised in the
+    # thread; the bullet list must not leak out of the thread.
+    assert "*Why " in summary
+    assert "*Why " in reply
+    assert "\n  •" not in summary
+    assert "•" in reply
 
 
 def test_reply_threads_onto_the_summary(monkeypatch):
@@ -1129,7 +1155,7 @@ def test_summary_carries_the_cycle(monkeypatch):
 
     notifier.notify(ident, _parsed())
 
-    assert "cycle 4" in client.summaries[0]["text"]
+    assert "*Cycle:* 4" in client.summaries[0]["text"]
 
 
 def test_backend_passes_the_cycle_to_the_alert():
@@ -1160,3 +1186,53 @@ def test_backend_passes_the_cycle_to_the_alert():
 
     assert sent[0].cycle_id == 2
     assert "cycle 2" in sent[0].label
+
+
+# ─── the one-line reason in the channel ───
+
+
+def test_headline_names_the_guard_over_the_category():
+    # Live case 4234179: L1 picked a category that said RESTART and a job guard
+    # forced STOP anyway. The channel line has to show what actually decided.
+    payload = _policy_payload(
+        retry_budget_exhausted=True,
+        **_ledgers(
+            exhausted_by=["job_no_progress_guard"],
+            job_no_progress_guard={
+                "ledger_id": "job_no_progress_guard",
+                "applicable": True,
+                "allowed_retries": 3,
+                "matching_prior_attempts": 3,
+                "exhausted": True,
+            },
+        ),
+    )
+    headline = slack_mod.decision_rationale(payload).headline()
+
+    assert headline == (
+        "`job_no_progress_guard` exhausted — 3 of 3 attempts with no progress for this job"
+    )
+
+
+def test_headline_falls_back_to_the_category():
+    assert "category 13" in slack_mod.decision_rationale(_policy_payload()).headline()
+
+
+def test_headline_reports_the_rules_own_exhausted_budget():
+    payload = _policy_payload(
+        retry_budget_exhausted=True,
+        effective_policy={"rule": "workload_unrecoverable", "allowed_retries": 0},
+    )
+    assert slack_mod.decision_rationale(payload).headline() == (
+        "`workload_unrecoverable` budget exhausted (0)"
+    )
+
+
+def test_headline_falls_back_to_the_policy_without_a_category():
+    payload = _policy_payload()
+    payload.pop("l1_assessment")
+    assert slack_mod.decision_rationale(payload).headline() == "policy `general_retry`"
+
+
+def test_headline_is_empty_without_a_decision():
+    assert slack_mod.decision_rationale({}).headline() == ""
