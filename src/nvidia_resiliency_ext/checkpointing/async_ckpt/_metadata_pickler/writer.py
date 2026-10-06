@@ -222,14 +222,31 @@ class _MetadataPickler:
         return b
 
     def dumps(self, md: Metadata) -> bytes:
+        """The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field."""
+        self._prelude()
+        out = self.out
+        out.append(self.METADATA + EMPTY_TUPLE + NEWOBJ + EMPTY_DICT + MARK)
+        for field, value in vars(md).items():
+            out.append(_str(field))
+            if field == "state_dict_metadata":
+                self._state_dict_metadata(value)
+            elif field == "storage_data":
+                self._storage_data(value)
+            else:
+                out.append(_small_pickle(value))
+        out.append(SETITEMS + BUILD + STOP)
+        return b"".join(out)
+
+    def _prelude(self) -> None:
+        """The classes and dict keys the encoding refers to, each memoized once."""
         self.SIZE = self.global_ref(*_CLASS_PATHS[torch.Size])
-        METADATA = self.global_ref(*_CLASS_PATHS[Metadata])
-        INDEX = self.global_ref(*_CLASS_PATHS[MetadataIndex])
-        INFO = self.global_ref(*_CLASS_PATHS[_StorageInfo])
-        CHUNK = self.global_ref(*_CLASS_PATHS[ChunkStorageMetadata])
-        TENSOR = self.global_ref(*_CLASS_PATHS[TensorStorageMetadata])
-        BYTES = self.global_ref(*_CLASS_PATHS[BytesStorageMetadata])
-        k = {}
+        self.METADATA = self.global_ref(*_CLASS_PATHS[Metadata])
+        self.INDEX = self.global_ref(*_CLASS_PATHS[MetadataIndex])
+        self.INFO = self.global_ref(*_CLASS_PATHS[_StorageInfo])
+        self.CHUNK = self.global_ref(*_CLASS_PATHS[ChunkStorageMetadata])
+        self.TENSOR = self.global_ref(*_CLASS_PATHS[TensorStorageMetadata])
+        self.BYTES = self.global_ref(*_CLASS_PATHS[BytesStorageMetadata])
+        self.k = {}
         for name in (
             "fqn",
             "index",
@@ -243,140 +260,136 @@ class _MetadataPickler:
             "chunks",
         ):
             self.out.append(_str(name) + MEMOIZE + POP)
-            k[name] = self._memoize_top()
-        out = self.out
-        size, string, int_ = self.size, self.string, self.int
+            self.k[name] = self._memoize_top()
 
-        out.append(METADATA + EMPTY_TUPLE + NEWOBJ + EMPTY_DICT + MARK)
-        for field, value in vars(md).items():
-            out.append(_str(field))
-            if field in ("state_dict_metadata", "storage_data") and type(value) is not dict:
-                raise TypeError(f"expected dict for {field}, got {type(value).__name__}")
-            if field == "state_dict_metadata":
-                out.append(EMPTY_DICT)
-                items = list(value.items())
-                for start in range(0, len(items), _BATCH):
+    def _state_dict_metadata(self, value: dict) -> None:
+        """Metadata.state_dict_metadata: fqn -> TensorStorageMetadata or BytesStorageMetadata."""
+        if type(value) is not dict:
+            raise TypeError(f"expected dict for state_dict_metadata, got {type(value).__name__}")
+        out, k, size, string = self.out, self.k, self.size, self.string
+        TENSOR, CHUNK, BYTES = self.TENSOR, self.CHUNK, self.BYTES
+        out.append(EMPTY_DICT)
+        items = list(value.items())
+        for start in range(0, len(items), _BATCH):
+            out.append(MARK)
+            for fqn, v in items[start : start + _BATCH]:
+                out.append(string(fqn))
+                if type(v) is BytesStorageMetadata and not vars(v):
+                    out.append(BYTES + EMPTY_TUPLE + NEWOBJ)
+                    continue
+                if type(v) is not TensorStorageMetadata:
+                    out.append(_small_pickle(v))
+                    continue
+                state = vars(v)
+                if len(state) != 3:
+                    raise TypeError(f"unexpected TensorStorageMetadata attributes: {list(state)}")
+                chunks = state["chunks"]
+                if type(chunks) is not list:
+                    raise TypeError(f"expected list of chunks, got {type(chunks).__name__}")
+                out.append(
+                    TENSOR
+                    + EMPTY_TUPLE
+                    + NEWOBJ
+                    + EMPTY_DICT
+                    + MARK
+                    + k["properties"]
+                    + self.properties(state["properties"])
+                    + k["size"]
+                    + size(state["size"])
+                    + k["chunks"]
+                    + EMPTY_LIST
+                )
+                for cstart in range(0, len(chunks), _BATCH):
                     out.append(MARK)
-                    for fqn, v in items[start : start + _BATCH]:
-                        out.append(string(fqn))
-                        if type(v) is BytesStorageMetadata and not vars(v):
-                            out.append(BYTES + EMPTY_TUPLE + NEWOBJ)
+                    for c in chunks[cstart : cstart + _BATCH]:
+                        if type(c) is not ChunkStorageMetadata:
+                            out.append(_small_pickle(c))
                             continue
-                        if type(v) is not TensorStorageMetadata:
-                            out.append(_small_pickle(v))
-                            continue
-                        state = vars(v)
-                        if len(state) != 3:
+                        cstate = vars(c)
+                        if len(cstate) != 2:
                             raise TypeError(
-                                f"unexpected TensorStorageMetadata attributes: {list(state)}"
+                                f"unexpected ChunkStorageMetadata attributes: {list(cstate)}"
                             )
-                        chunks = state["chunks"]
-                        if type(chunks) is not list:
-                            raise TypeError(f"expected list of chunks, got {type(chunks).__name__}")
                         out.append(
-                            TENSOR
+                            CHUNK
                             + EMPTY_TUPLE
                             + NEWOBJ
                             + EMPTY_DICT
                             + MARK
-                            + k["properties"]
-                            + self.properties(state["properties"])
-                            + k["size"]
-                            + size(state["size"])
-                            + k["chunks"]
-                            + EMPTY_LIST
-                        )
-                        for cstart in range(0, len(chunks), _BATCH):
-                            out.append(MARK)
-                            for c in chunks[cstart : cstart + _BATCH]:
-                                if type(c) is not ChunkStorageMetadata:
-                                    out.append(_small_pickle(c))
-                                    continue
-                                cstate = vars(c)
-                                if len(cstate) != 2:
-                                    raise TypeError(
-                                        f"unexpected ChunkStorageMetadata attributes: {list(cstate)}"
-                                    )
-                                out.append(
-                                    CHUNK
-                                    + EMPTY_TUPLE
-                                    + NEWOBJ
-                                    + EMPTY_DICT
-                                    + MARK
-                                    + k["offsets"]
-                                    + size(cstate["offsets"])
-                                    + k["sizes"]
-                                    + size(cstate["sizes"])
-                                    + SETITEMS
-                                    + BUILD
-                                )
-                            out.append(APPENDS)
-                        out.append(SETITEMS + BUILD)
-                    out.append(SETITEMS)
-            elif field == "storage_data":
-                out.append(EMPTY_DICT)
-                items = list(value.items())
-                for start in range(0, len(items), _BATCH):
-                    out.append(MARK)
-                    for idx, info in items[start : start + _BATCH]:
-                        if type(idx) is not MetadataIndex:
-                            out.append(_small_pickle(idx))
-                        else:
-                            # MetadataIndex sets offset only when it is given; pickle its __dict__.
-                            state = vars(idx)
-                            offset = state.get("offset", _ABSENT)
-                            if len(state) != (2 if offset is _ABSENT else 3):
-                                raise TypeError(
-                                    f"unexpected MetadataIndex attributes: {list(state)}"
-                                )
-                            index = state["index"]
-                            out.append(
-                                INDEX
-                                + EMPTY_TUPLE
-                                + NEWOBJ
-                                + EMPTY_DICT
-                                + MARK
-                                + k["fqn"]
-                                + string(state["fqn"])
-                                + k["index"]
-                                + (NONE if index is None else int_(index))
-                                + (
-                                    b""
-                                    if offset is _ABSENT
-                                    else k["offset"] + (NONE if offset is None else size(offset))
-                                )
-                                + SETITEMS
-                                + BUILD
-                            )
-                        # _StorageInfo pickles its __dict__ without None values. transform_descriptors
-                        # exists from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib
-                        # pickler.
-                        state = vars(info) if type(info) is _StorageInfo else None
-                        if state is None or state.get("transform_descriptors") is not None:
-                            out.append(_small_pickle(info))
-                            continue
-                        if len(state) != (4 if "transform_descriptors" in state else 3):
-                            raise TypeError(f"unexpected _StorageInfo attributes: {list(state)}")
-                        out.append(
-                            INFO
-                            + EMPTY_TUPLE
-                            + NEWOBJ
-                            + EMPTY_DICT
-                            + MARK
-                            + k["relative_path"]
-                            + string(state["relative_path"])
-                            + k["offset"]
-                            + int_(state["offset"])
-                            + k["length"]
-                            + int_(state["length"])
+                            + k["offsets"]
+                            + size(cstate["offsets"])
+                            + k["sizes"]
+                            + size(cstate["sizes"])
                             + SETITEMS
                             + BUILD
                         )
-                    out.append(SETITEMS)
-            else:
-                out.append(_small_pickle(value))
-        out.append(SETITEMS + BUILD + STOP)
-        return b"".join(out)
+                    out.append(APPENDS)
+                out.append(SETITEMS + BUILD)
+            out.append(SETITEMS)
+
+    def _storage_data(self, value: dict) -> None:
+        """Metadata.storage_data: MetadataIndex -> _StorageInfo."""
+        if type(value) is not dict:
+            raise TypeError(f"expected dict for storage_data, got {type(value).__name__}")
+        out, k, size, string, int_ = self.out, self.k, self.size, self.string, self.int
+        INDEX, INFO = self.INDEX, self.INFO
+        out.append(EMPTY_DICT)
+        items = list(value.items())
+        for start in range(0, len(items), _BATCH):
+            out.append(MARK)
+            for idx, info in items[start : start + _BATCH]:
+                if type(idx) is not MetadataIndex:
+                    out.append(_small_pickle(idx))
+                else:
+                    # MetadataIndex sets offset only when it is given; pickle its __dict__.
+                    state = vars(idx)
+                    offset = state.get("offset", _ABSENT)
+                    if len(state) != (2 if offset is _ABSENT else 3):
+                        raise TypeError(f"unexpected MetadataIndex attributes: {list(state)}")
+                    index = state["index"]
+                    out.append(
+                        INDEX
+                        + EMPTY_TUPLE
+                        + NEWOBJ
+                        + EMPTY_DICT
+                        + MARK
+                        + k["fqn"]
+                        + string(state["fqn"])
+                        + k["index"]
+                        + (NONE if index is None else int_(index))
+                        + (
+                            b""
+                            if offset is _ABSENT
+                            else k["offset"] + (NONE if offset is None else size(offset))
+                        )
+                        + SETITEMS
+                        + BUILD
+                    )
+                # _StorageInfo pickles its __dict__ without None values. transform_descriptors
+                # exists from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib
+                # pickler.
+                state = vars(info) if type(info) is _StorageInfo else None
+                if state is None or state.get("transform_descriptors") is not None:
+                    out.append(_small_pickle(info))
+                    continue
+                if len(state) != (4 if "transform_descriptors" in state else 3):
+                    raise TypeError(f"unexpected _StorageInfo attributes: {list(state)}")
+                out.append(
+                    INFO
+                    + EMPTY_TUPLE
+                    + NEWOBJ
+                    + EMPTY_DICT
+                    + MARK
+                    + k["relative_path"]
+                    + string(state["relative_path"])
+                    + k["offset"]
+                    + int_(state["offset"])
+                    + k["length"]
+                    + int_(state["length"])
+                    + SETITEMS
+                    + BUILD
+                )
+            out.append(SETITEMS)
 
 
 def _python_dumps(md: Metadata) -> bytes:
