@@ -140,6 +140,12 @@ class MonitorState:
     post_success: int = 0  # Successful POSTs
     results_fetched: int = 0  # Successful GETs
     completed_cycles_analyzed: int = 0  # Cycles analyzed once a successor proved them done
+    # Analysis identity -> cycle log currently being analyzed for it. L3 builds
+    # attempt history from attempts that have *completed*, so a run's cycles
+    # must be analyzed one at a time, ascending. Keyed by run rather than by
+    # SLURM task because concurrent array tasks share one log series: a
+    # per-task gate just lets sibling tasks start different cycles at once.
+    cycle_inflight: dict[str, str] = field(default_factory=dict)
     # Log path error counters (from attrsvc responses and local checks)
     path_errors_permission: int = 0  # Permission denied
     path_errors_not_found: int = 0  # Path not found

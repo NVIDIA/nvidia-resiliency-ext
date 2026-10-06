@@ -152,6 +152,37 @@ def request_terminal_analysis(
     return True
 
 
+def cycle_analysis_finished(
+    analysis_job_id: str,
+    log_path: str,
+    attrsvc_client: "AttrsvcClient",
+) -> bool:
+    """Whether ``log_path``'s analysis has settled, so the next cycle may start.
+
+    Fails open: a GET that errors or 404s means attrsvc has no running record
+    for the path, and holding the job's remaining cycles hostage to a lost
+    request would stall attribution for that run indefinitely.
+    """
+    settled = True
+
+    def on_success(response):
+        nonlocal settled
+        try:
+            status = (response.json() or {}).get("status")
+        except Exception:
+            return
+        settled = status not in ("registered", "analyzing", "pending")
+
+    attrsvc_client.request_with_retry(
+        method="GET",
+        job_id=analysis_job_id,
+        log_path=log_path,
+        on_success=on_success,
+        on_client_error=lambda _error: None,
+    )
+    return settled
+
+
 def analyze_completed_cycle(
     job: "SlurmJob",
     log_path: str,

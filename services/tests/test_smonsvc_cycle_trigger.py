@@ -46,28 +46,56 @@ def _job(job_id="4173891_96", state=JobState.RUNNING):
     )
 
 
-def test_completed_cycles_are_analyzed_and_the_live_one_is_only_tracked():
+def test_the_oldest_complete_cycle_goes_first_and_the_live_one_is_only_tracked():
     resolved = _cycles(4)
     monitor = _monitor(resolved)
     job = _job()
 
     submit, analyze = monitor._sync_jobs_from_slurm({job.job_id: job})
 
-    # cycle3 is still being written; cycles 0-2 each have a successor.
-    assert [path for _, path in analyze] == resolved[:3]
+    # cycles 0-2 are complete, but only the oldest starts: L3 compares an
+    # attempt against completed predecessors, so they must not run together.
+    assert [path for _, path in analyze] == [resolved[0]]
     assert [path for _, path in submit] == [resolved[3]]
+    assert monitor.state.cycle_inflight == {"4173891": resolved[0]}
 
 
-def test_a_new_cycle_promotes_its_predecessor_without_redoing_the_rest():
+def test_no_further_cycle_starts_while_one_is_in_flight():
     resolved = _cycles(4)
     monitor = _monitor(resolved)
     job = _job()
     monitor._sync_jobs_from_slurm({job.job_id: job})
 
-    resolved.append(f"{BASE}_cycle4.log")
     _, analyze = monitor._sync_jobs_from_slurm({job.job_id: job})
 
-    assert [path for _, path in analyze] == [f"{BASE}_cycle3.log"]
+    assert analyze == []
+
+
+def test_the_next_cycle_starts_once_the_previous_one_settles():
+    resolved = _cycles(4)
+    monitor = _monitor(resolved)
+    job = _job()
+    monitor._sync_jobs_from_slurm({job.job_id: job})
+
+    monitor.state.cycle_inflight.clear()  # _release_finished_cycles on completion
+    _, analyze = monitor._sync_jobs_from_slurm({job.job_id: job})
+
+    assert [path for _, path in analyze] == [resolved[1]]
+
+
+def test_cycles_are_worked_through_in_ascending_order():
+    resolved = _cycles(4)
+    monitor = _monitor(resolved)
+    job = _job()
+
+    started = []
+    for _ in range(4):
+        _, analyze = monitor._sync_jobs_from_slurm({job.job_id: job})
+        started.extend(path for _, path in analyze)
+        monitor.state.cycle_inflight.clear()
+
+    # Ascending, and the live cycle is never among them.
+    assert started == resolved[:3]
 
 
 def test_a_quiet_poll_re_analyzes_nothing():
@@ -89,21 +117,26 @@ def test_the_live_cycle_is_left_for_the_terminal_path():
     monitor = _monitor(resolved)
     job = _job()
 
-    monitor._sync_jobs_from_slurm({job.job_id: job})
+    for _ in range(4):
+        monitor._sync_jobs_from_slurm({job.job_id: job})
+        monitor.state.cycle_inflight.clear()
 
     assert resolved[3] not in monitor.state.analyzed_log_paths
     assert set(resolved[:3]) <= monitor.state.analyzed_log_paths
 
 
-def test_sibling_array_tasks_do_not_each_analyze_the_same_cycle():
-    # 149 concurrent tasks resolve to one shared application log.
+def test_sibling_array_tasks_do_not_start_different_cycles_at_once():
+    # 149 concurrent tasks resolve to one shared application log, so a gate kept
+    # per SLURM task would not hold: the second task would skip the cycle the
+    # first claimed and start the next one alongside it. The gate is per run.
     resolved = _cycles(3)
     monitor = _monitor(resolved)
     tasks = {f"4173891_{index}": _job(f"4173891_{index}") for index in (96, 133, 141)}
 
     _, analyze = monitor._sync_jobs_from_slurm(tasks)
 
-    assert [path for _, path in analyze] == resolved[:2]
+    # One cycle, claimed by exactly one of the three sibling tasks.
+    assert [path for _, path in analyze] == [resolved[0]]
 
 
 def test_analysis_identity_drops_the_array_task_for_a_shared_app_log():

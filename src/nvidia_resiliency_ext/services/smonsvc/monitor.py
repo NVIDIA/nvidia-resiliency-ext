@@ -13,7 +13,12 @@ from pathlib import Path
 from types import FrameType
 
 from .attrsvc_client import AttrsvcClient
-from .job_handlers import analyze_completed_cycle, fetch_results, submit_log
+from .job_handlers import (
+    analyze_completed_cycle,
+    cycle_analysis_finished,
+    fetch_results,
+    submit_log,
+)
 from .log_resolver import AppLogResolution, base_job_id, resolve_app_logs
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
 from .slurm import SlurmClient, expand_slurm_patterns
@@ -261,6 +266,8 @@ class SlurmJobMonitor:
         jobs_to_submit: list[tuple[SlurmJob, str]] = []
         jobs_to_fetch: list[tuple[SlurmJob, str]] = []
 
+        self._release_finished_cycles()
+
         with self._state_lock:
             self._mark_disappeared_jobs_finished(current_jobs)
             jobs_to_submit, cycles_to_analyze = self._sync_jobs_from_slurm(current_jobs)
@@ -367,9 +374,18 @@ class SlurmJobMonitor:
             # Only the newest is still being written, and it is the one the
             # terminal path picks up when the allocation finally ends.
             *complete, live = log_paths
-            for log_path in complete:
-                if self._claim_analysis_path(tracked_job, log_path):
-                    cycles_to_analyze.append((tracked_job, log_path))
+            # One at a time, oldest first. L3 compares an attempt against those
+            # that have already *completed*, so starting cycle N+1 before N
+            # finishes leaves it blind to its own history - which is exactly
+            # what happened when all of a job's cycles were fired at once and
+            # then completed in reverse order.
+            run_id = self._analysis_job_id(tracked_job, complete[0] if complete else live)
+            if not self.state.cycle_inflight.get(run_id):
+                for log_path in complete:
+                    if self._claim_analysis_path(tracked_job, log_path):
+                        self.state.cycle_inflight[run_id] = log_path
+                        cycles_to_analyze.append((tracked_job, log_path))
+                        break
             if not tracked_job.log_submitted and self._claim_log_path(tracked_job, live):
                 jobs_to_submit.append((tracked_job, live))
 
@@ -601,6 +617,20 @@ class SlurmJobMonitor:
         if job.stdout_path and log_path == self._expand_slurm_patterns(job.stdout_path, job):
             return job.job_id
         return base_job_id(job.job_id)
+
+    def _release_finished_cycles(self) -> None:
+        """Clear the in-flight marker for cycles whose analysis has settled.
+
+        Does its HTTP outside ``_state_lock``: the poll loop must not block the
+        status server while waiting on attrsvc.
+        """
+        with self._state_lock:
+            pending = list(self.state.cycle_inflight.items())
+        for run_id, log_path in pending:
+            if cycle_analysis_finished(run_id, log_path, self._attrsvc_client):
+                with self._state_lock:
+                    if self.state.cycle_inflight.get(run_id) == log_path:
+                        del self.state.cycle_inflight[run_id]
 
     def _analyze_completed_cycle(self, job: SlurmJob, log_path: str) -> None:
         """Run a full analysis of a cycle a successor has proven complete."""
