@@ -24,6 +24,10 @@ exclude = [
     "src/nvidia_resiliency_ext/attribution/straggler/cupti_src",
     "src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native_src",
 ]
+# TODO: figure out the sdist story. Excluding native_src (like cupti_src) keeps the C++ source out of
+# the wheel, but also out of the sdist, so a wheel built from the sdist falls back to the Python
+# metadata writer. An sdist-only include ends up in the wheel too, since the build script's wheel
+# build copies what the sdist includes.
 
 [tool.poetry.build]
 script = "build.py"
