@@ -66,7 +66,7 @@ import struct
 from typing import IO, Callable, Optional
 
 import torch
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import (
     BytesStorageMetadata,
@@ -427,7 +427,10 @@ def fast_metadata_enabled() -> bool:
     mode = _mode()
     if mode in ("0", "false", "off", "no"):
         return False
-    release = Version(torch.__version__).release[:2]
+    try:
+        release = Version(torch.__version__).release[:2]
+    except InvalidVersion:  # an unparseable version counts as untested
+        release = None
     if release in INCOMPATIBLE_TORCH_VERSIONS:
         if mode == "force":
             logger.error(
@@ -438,7 +441,7 @@ def fast_metadata_enabled() -> bool:
     if mode == "force":
         return True
     first, last = TESTED_TORCH_VERSIONS
-    if not first <= release <= last:
+    if release is None or not first <= release <= last:
         logger.info(
             f"torch {torch.__version__} is outside the versions nvrx's .metadata writer was "
             f"checked against ({first[0]}.{first[1]} to {last[0]}.{last[1]}); "

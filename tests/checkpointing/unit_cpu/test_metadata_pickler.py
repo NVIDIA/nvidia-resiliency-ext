@@ -479,6 +479,8 @@ _FAST = writer._native_dumps if writer.native is not None else writer._python_du
         (None, f"{_LAST[0]}.{_LAST[1] + 1}.0", None),
         ("force", f"{_LAST[0]}.{_LAST[1] + 1}.0", _FAST),
         ("force", "2.3.1", None),  # in INCOMPATIBLE_TORCH_VERSIONS
+        (None, "2.7.0_custom", None),  # not PEP 440: untested
+        ("force", "2.7.0_custom", _FAST),
         (None, f"{_LAST[0]}.{_LAST[1]}.0a0+git1234567", _FAST),
         (None, f"{_FIRST[0]}.{_FIRST[1]}.0+cu121", _FAST),
     ],
