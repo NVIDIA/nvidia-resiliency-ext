@@ -139,12 +139,20 @@ def _small_pickle(obj) -> bytes:
     return data[2:-1]
 
 
+def _str_header(n: int) -> bytes:
+    """The opcode and length of an n-byte str, as the stdlib pickler picks them at protocol 4:
+    SHORT_BINUNICODE, BINUNICODE from 256 bytes on, BINUNICODE8 past 4 GiB."""
+    if n < 256:
+        return b"\x8c" + bytes((n,))
+    if n <= 0xFFFFFFFF:
+        return b"X" + struct.pack("<I", n)
+    return b"\x8d" + struct.pack("<Q", n)
+
+
 def _str(s: str) -> bytes:
-    """A str: SHORT_BINUNICODE, or BINUNICODE from 256 bytes on."""
+    """A str."""
     raw = s.encode("utf-8", "surrogatepass")
-    if len(raw) < 256:
-        return b"\x8c" + bytes((len(raw),)) + raw
-    return b"X" + struct.pack("<I", len(raw)) + raw
+    return _str_header(len(raw)) + raw
 
 
 def _int(i: int) -> bytes:

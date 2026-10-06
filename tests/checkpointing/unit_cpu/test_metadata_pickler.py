@@ -439,6 +439,22 @@ def test_dump_metadata_raises_or_loads_when_metadata_changes(case):
     pickle.loads(buf.getvalue())
 
 
+@pytest.mark.parametrize(
+    ("n", "header"),
+    [
+        (255, b"\x8c\xff"),
+        (256, b"X\x00\x01\x00\x00"),
+        (2**32 - 1, b"X\xff\xff\xff\xff"),
+        (2**32, b"\x8d\x00\x00\x00\x00\x01\x00\x00\x00"),
+    ],
+)
+def test_str_header(n, header):
+    """The str opcode for each length boundary, including BINUNICODE8 past 4 GiB."""
+    assert writer._str_header(n) == header
+    if n < 2**20:  # small enough to compare with the stdlib pickler
+        assert header + b"a" in pickle.dumps("a" * n, protocol=4)
+
+
 def test_changed_pickled_state_disables_fast_writers(monkeypatch):
     monkeypatch.setattr(
         ChunkStorageMetadata, "__getstate__", lambda self: {"offsets": self.offsets}, raising=False

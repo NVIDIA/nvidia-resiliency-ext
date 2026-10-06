@@ -306,14 +306,18 @@ class Writer {
     void put(char c) { out_.push_back(c); }
     void put(std::initializer_list<char> cs) { out_.append(cs.begin(), cs.end()); }
 
-    // A str: SHORT_BINUNICODE, or BINUNICODE from 256 bytes on.
+    // A str, with the opcode the stdlib pickler picks at protocol 4: SHORT_BINUNICODE,
+    // BINUNICODE from 256 bytes on, BINUNICODE8 past 4 GiB.
     void put_str(std::string_view s) {
         if (s.size() < 256) {
             put('\x8c');
             put(static_cast<char>(s.size()));
-        } else {
+        } else if (s.size() <= UINT32_MAX) {
             put('X');
-            put_le(static_cast<uint32_t>(s.size()), 4);
+            put_le(s.size(), 4);
+        } else {
+            put('\x8d');
+            put_le(s.size(), 8);
         }
         out_.append(s);
     }
