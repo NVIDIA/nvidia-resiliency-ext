@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -151,18 +152,17 @@ class Writer {
         return memo_len_++;
     }
 
-    // First use writes the string and memoizes it; later uses fetch it from the memo. Keys view the
-    // UTF-8 buffers of the Python strings, which the metadata keeps alive for the whole dump.
+    // First use writes the string and memoizes it; later uses fetch it from the memo. The memo owns
+    // a copy of each distinct string and is looked up by view, so lookups do not allocate.
     void string(PyObject* s) {
         std::string_view v = utf8(s);
-        auto [it, inserted] = strings_.try_emplace(v, memo_len_);
-        if (!inserted) {
+        if (auto it = strings_.find(v); it != strings_.end()) {
             put_get(it->second);
-        } else {
-            ++memo_len_;
-            put_str(v);
-            put(MEMOIZE);
+            return;
         }
+        strings_.emplace(v, memo_len_++);
+        put_str(v);
+        put(MEMOIZE);
     }
 
     void size(PyObject* dims) {
@@ -194,9 +194,17 @@ class Writer {
         for (int k = 0; k < nbytes; ++k) put(static_cast<char>((v >> (8 * k)) & 0xff));
     }
 
+    // Hashes std::string keys and std::string_view lookups alike (C++20 heterogeneous lookup).
+    struct StringHash {
+        using is_transparent = void;
+        size_t operator()(std::string_view s) const noexcept {
+            return std::hash<std::string_view>{}(s);
+        }
+    };
+
     py::object small_pickle_;
     uint32_t memo_len_ = 0;
-    std::unordered_map<std::string_view, uint32_t> strings_;
+    std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> strings_;
 };
 
 py::bytes dumps(py::handle md, py::object small_pickle) {

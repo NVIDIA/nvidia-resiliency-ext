@@ -198,7 +198,7 @@ def build(setup_kwargs):
             ['src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native.cpp'],
             extra_compile_args=['-O3'],
             language='c++',
-            cxx_std=17,
+            cxx_std=20,
             optional=True,
         )
     ]
