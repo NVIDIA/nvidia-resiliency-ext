@@ -67,6 +67,7 @@ PyObject* dict_item(PyObject* dict, PyObject* key) {
     return r;
 }
 
+// UTF-8 view of a str's characters, valid while s is alive.
 std::string_view utf8(PyObject* s) {
     if (!PyUnicode_CheckExact(s)) throw py::type_error("expected str");
     Py_ssize_t n;
@@ -75,8 +76,9 @@ std::string_view utf8(PyObject* s) {
     return {p, static_cast<size_t>(n)};
 }
 
-// The writers encode only exact types; anything else (a bool, a tuple for a torch.Size, ...) would
-// unpickle as a different type, so it raises and the caller falls back to pickle.dump.
+// The value of an int that fits int64. Like the other checks here, it accepts only the exact type:
+// anything else (a bool, a tuple for a torch.Size, ...) would unpickle as a different type, so it
+// raises and the caller falls back to pickle.dump.
 int64_t as_int(PyObject* o) {
     if (!PyLong_CheckExact(o)) throw py::type_error("expected int");
     long long v = PyLong_AsLongLong(o);
@@ -84,8 +86,10 @@ int64_t as_int(PyObject* o) {
     return v;
 }
 
+// Writes the pickle of one Metadata into out_; use once per dump.
 class Writer {
    public:
+    // Look up the metadata classes the encoding checks objects against.
     explicit Writer(py::object small_pickle) : small_pickle_(std::move(small_pickle)) {
         py::module_ meta = py::module_::import("torch.distributed.checkpoint.metadata");
         tensor_cls_ = meta.attr("TensorStorageMetadata");
@@ -266,9 +270,11 @@ class Writer {
         return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
     }
 
+    // Append raw opcode bytes.
     void put(char c) { out_.push_back(c); }
     void put(std::initializer_list<char> cs) { out_.append(cs.begin(), cs.end()); }
 
+    // A str: SHORT_BINUNICODE, or BINUNICODE from 256 bytes on.
     void put_str(std::string_view s) {
         if (s.size() < 256) {
             put('\x8c');
@@ -280,6 +286,7 @@ class Writer {
         out_.append(s);
     }
 
+    // Fetch memo entry idx: BINGET, or LONG_BINGET from 256 on.
     void put_get(uint32_t idx) {
         if (idx < 256) {
             put('h');
@@ -290,6 +297,7 @@ class Writer {
         }
     }
 
+    // An int, in the shortest form pickle uses: BININT1, BININT2, BININT or LONG1.
     void put_int(int64_t i) {
         if (i >= 0 && i < 256) {
             put('K');
@@ -323,6 +331,7 @@ class Writer {
         return memo_len_++;
     }
 
+    // Push a dict key once into the memo; return its memo index.
     uint32_t key_ref(std::string_view name) {
         put_str(name);
         put({MEMOIZE, POP});
@@ -342,6 +351,7 @@ class Writer {
         put(MEMOIZE);
     }
 
+    // A torch.Size, as pickle reduces it: torch.Size(tuple_of_ints).
     void size(PyObject* dims) {
         if (!is(dims, size_cls_)) throw py::type_error("expected torch.Size");
         put_get(size_ref_);
@@ -356,6 +366,7 @@ class Writer {
         put({TUPLE1, REDUCE});
     }
 
+    // An object left to the stdlib pickler, spliced in from small_pickle's opcodes.
     void small(PyObject* obj) {
         py::object b = small_pickle_(py::handle(obj));
         char* p;
@@ -364,11 +375,13 @@ class Writer {
         out_.append(p, n);
     }
 
+    // The low nbytes bytes of v, least significant first.
     void put_le(uint64_t v, int nbytes) {
         for (int k = 0; k < nbytes; ++k) put(static_cast<char>((v >> (8 * k)) & 0xff));
     }
 
-    // Hashes std::string keys and std::string_view lookups alike (C++20 heterogeneous lookup).
+    // Transparent hash, so strings_ can be looked up by string_view without building a std::string
+    // per lookup. std::hash<std::string> is not transparent; this hashes both key types the same.
     struct StringHash {
         using is_transparent = void;
         size_t operator()(std::string_view s) const noexcept {

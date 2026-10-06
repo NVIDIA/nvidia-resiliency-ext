@@ -135,6 +135,7 @@ def _small_pickle(obj) -> bytes:
 
 
 def _str(s: str) -> bytes:
+    """A str: SHORT_BINUNICODE, or BINUNICODE from 256 bytes on."""
     raw = s.encode("utf-8", "surrogatepass")
     if len(raw) < 256:
         return b"\x8c" + bytes((len(raw),)) + raw
@@ -142,6 +143,7 @@ def _str(s: str) -> bytes:
 
 
 def _int(i: int) -> bytes:
+    """An int, in the shortest form pickle uses: BININT1, BININT2, BININT or LONG1."""
     if 0 <= i < 256:
         return b"K" + bytes((i,))
     if 0 <= i < 65536:
@@ -153,6 +155,7 @@ def _int(i: int) -> bytes:
 
 
 def _get(idx: int) -> bytes:
+    """Fetch memo entry idx: BINGET, or LONG_BINGET from 256 on."""
     return b"h" + bytes((idx,)) if idx < 256 else b"j" + struct.pack("<I", idx)
 
 
@@ -160,6 +163,7 @@ class _MetadataPickler:
     """Pure-Python writer; the C++ extension implements the same loop with the same output."""
 
     def __init__(self):
+        """An empty protocol 4 pickle; dumps writes one Metadata into it."""
         self.out: list = [PROTO + b"\x04"]
         self.memo_len = 0
         self.strings: dict = {}
@@ -168,6 +172,7 @@ class _MetadataPickler:
         self.props: dict = {}
 
     def _memoize_top(self) -> bytes:
+        """Memo index of the object just memoized, as the opcode that fetches it."""
         ref = _get(self.memo_len)
         self.memo_len += 1
         return ref
@@ -188,9 +193,13 @@ class _MetadataPickler:
         self.memo_len += 1
         return _str(s) + MEMOIZE
 
-    # The writers encode only exact types; anything else (a bool, a tuple for a torch.Size, ...)
-    # would unpickle as a different type, so it raises and dump_metadata falls back to pickle.dump.
     def int(self, i: int) -> bytes:
+        """An int, encoded once per value.
+
+        Like the other checks here, it accepts only the exact type: anything else (a bool, a tuple
+        for a torch.Size, ...) would unpickle as a different type, so it raises and dump_metadata
+        falls back to pickle.dump.
+        """
         if type(i) is not int:
             raise TypeError(f"expected int, got {type(i).__name__}")
         b = self.ints.get(i)
@@ -199,6 +208,7 @@ class _MetadataPickler:
         return b
 
     def size(self, dims) -> bytes:
+        """A torch.Size, as pickle reduces it: torch.Size(tuple_of_ints). Encoded once per value."""
         if type(dims) is not torch.Size:
             raise TypeError(f"expected torch.Size, got {type(dims).__name__}")
         key = tuple(dims)
@@ -216,6 +226,7 @@ class _MetadataPickler:
         return b
 
     def properties(self, p) -> bytes:
+        """A TensorProperties, from the stdlib pickler, once per distinct value."""
         key = (type(p), tuple(vars(p).items()))
         b = self.props.get(key)
         if b is None:
@@ -380,14 +391,17 @@ class _MetadataPickler:
 
 
 def _python_dumps(md: Metadata) -> bytes:
+    """The pickle of md, from the Python writer."""
     return _MetadataPickler().dumps(md)
 
 
 def _native_dumps(md: Metadata) -> bytes:
+    """The pickle of md, from the native writer."""
     return native.dumps(md, _small_pickle)
 
 
 def _mode() -> str:
+    """The value of NVRX_FAST_METADATA_PICKLE, normalized."""
     return os.environ.get("NVRX_FAST_METADATA_PICKLE", "1").strip().lower()
 
 
@@ -503,6 +517,7 @@ def _layout_supported() -> bool:
 
 
 def _works(dumps: Callable[[Metadata], bytes]) -> bool:
+    """Whether dumps writes the sample Metadata so that it unpickles equal to itself."""
     md = _sample_metadata()
     try:
         return pickle.loads(dumps(md)) == md  # nosec - our own bytes
