@@ -178,8 +178,9 @@ can be used if it implements the expected gRPC API over a Unix domain socket
 <li><p>Build and deploy an <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>-compatible daemon on every allocated node.</p></li>
 <li><p>Configure the daemon to invoke a BCM health check script, or a wrapper around
 an existing BCM prolog or epilog health check.</p></li>
-<li><p>Ensure the wrapper translates the BCM result into JSON with <code class="docutils literal notranslate"><span class="pre">fail_count</span> <span class="pre">==</span> <span class="pre">0</span></code>
-for a healthy node and a nonzero <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> for an unhealthy node.</p></li>
+<li><p>Ensure the wrapper translates the BCM result into JSON with an empty
+<code class="docutils literal notranslate"><span class="pre">failed_checks</span></code> array for a healthy node and a non-empty array containing
+the actionable check names for an unhealthy node.</p></li>
 <li><p>Make the daemon’s UDS visible from the job environment or training container.</p></li>
 <li><p>Pass the socket path to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> with <code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code>
 (alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>).</p></li>
@@ -211,13 +212,13 @@ not fail the job for that reason.</p></li>
 <li><p>NVRx calls the service with the configured health check arguments, which
 default to <code class="docutils literal notranslate"><span class="pre">[&quot;--no-slurm&quot;,</span> <span class="pre">&quot;--group&quot;,</span> <span class="pre">&quot;prolog&quot;,</span> <span class="pre">&quot;epilog&quot;,</span> <span class="pre">&quot;logs&quot;,</span> <span class="pre">&quot;gpu&quot;]</span></code>.</p></li>
 <li><p>To report an unhealthy node, return <code class="docutils literal notranslate"><span class="pre">success=false</span></code>. For successful
-responses, NVRx also treats JSON in <code class="docutils literal notranslate"><span class="pre">output</span></code> with a numeric <code class="docutils literal notranslate"><span class="pre">fail_count</span></code>
-value greater than zero as unhealthy. <code class="docutils literal notranslate"><span class="pre">failed_checks</span></code> can optionally list
-the failed check names.</p></li>
+responses, NVRx treats JSON in <code class="docutils literal notranslate"><span class="pre">output</span></code> with a non-empty <code class="docutils literal notranslate"><span class="pre">failed_checks</span></code>
+array as unhealthy. <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> is informational and may include checks
+moved to <code class="docutils literal notranslate"><span class="pre">failed_checks_ignored</span></code> by site policy.</p></li>
 <li><p>NVRx ignores unavailable or unusable health check signals. A missing endpoint,
 missing gRPC dependency, connectivity error, non-JSON <code class="docutils literal notranslate"><span class="pre">output</span></code>, missing
-<code class="docutils literal notranslate"><span class="pre">fail_count</span></code>, or invalid <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> value in a successful response is
-logged and does not mark the node unhealthy.</p></li>
+<code class="docutils literal notranslate"><span class="pre">failed_checks</span></code>, or invalid <code class="docutils literal notranslate"><span class="pre">failed_checks</span></code> value in a successful response
+is logged and does not mark the node unhealthy.</p></li>
 </ul>
 <p>Example <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> configuration for BCM:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">socket_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/var/run/nvhcd.sock</span>
