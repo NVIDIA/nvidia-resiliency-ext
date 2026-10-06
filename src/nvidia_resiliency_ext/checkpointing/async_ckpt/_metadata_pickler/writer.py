@@ -24,7 +24,7 @@ classes, so stock ``torch.distributed.checkpoint`` loads it unchanged; it unpick
 ``Metadata`` equal to the one that was written.
 
 The writing loop is implemented twice with byte-identical output: in C++ (the optional
-``nvrx_metadata_pickle`` extension) and in Python as a fallback.
+``native`` extension of this package) and in Python as a fallback.
 
 The writers depend on how torch's metadata classes pickle, so they are used only when all of these
 hold, and ``pickle.dump`` is used otherwise:
@@ -70,9 +70,9 @@ from torch.distributed.checkpoint.metadata import (
 )
 
 try:
-    import nvrx_metadata_pickle
-except ImportError:
-    nvrx_metadata_pickle = None
+    from . import native
+except ImportError:  # not built, or failed to compile
+    native = None
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +342,7 @@ def _python_dumps(md: Metadata) -> bytes:
 
 
 def _native_dumps(md: Metadata) -> bytes:
-    return nvrx_metadata_pickle.dumps(md, _small_pickle)
+    return native.dumps(md, _small_pickle)
 
 
 def _mode() -> str:
@@ -459,7 +459,7 @@ def _select_dumps() -> Optional[Callable[[Metadata], bytes]]:
     if not _layout_supported():
         logger.warning("Unexpected torch DCP metadata classes; writing .metadata with pickle.dump")
         return None
-    if nvrx_metadata_pickle is not None and _mode() != "python" and _works(_native_dumps):
+    if native is not None and _mode() != "python" and _works(_native_dumps):
         return _native_dumps
     if _works(_python_dumps):
         return _python_dumps

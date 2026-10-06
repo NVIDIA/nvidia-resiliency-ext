@@ -15,7 +15,7 @@
  * limitations under the License.
 */
 
-// Native version of `metadata_pickle._MetadataPickler`: writes the standard pickle opcodes for a
+// Native version of `writer._MetadataPickler`: writes the standard pickle opcodes for a
 // torch DCP `Metadata` directly. Its output is byte-identical to the Python writer. The few small
 // objects (TensorProperties, StorageMeta, ...) are encoded by the Python `small_pickle` callback.
 
@@ -324,7 +324,7 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
 
 }  // namespace
 
-PYBIND11_MODULE(nvrx_metadata_pickle, m) {
+PYBIND11_MODULE(native, m) {
     m.doc() = "Fast pickling of torch.distributed.checkpoint Metadata.";
     m.def("dumps", &dumps, py::arg("metadata"), py::arg("small_pickle"),
           "Return the pickle of a torch.distributed.checkpoint Metadata, as standard pickle bytes.");

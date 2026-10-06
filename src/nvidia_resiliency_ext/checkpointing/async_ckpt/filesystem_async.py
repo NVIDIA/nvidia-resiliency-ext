@@ -66,8 +66,8 @@ except ImportError:
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
+from . import _metadata_pickler
 from .core import PersistentAsyncCaller
-from .metadata_pickle import dump_metadata, fast_metadata_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -1283,16 +1283,16 @@ class FileSystemWriterAsync(FileSystemWriter):
         Finish the checkpointing process by writing the global metadata file.
 
         Follows ``FileSystemWriter.finish`` of the torch versions in
-        ``metadata_pickle.TESTED_TORCH_VERSIONS``, but writes ``.metadata`` with
-        :func:`dump_metadata`: the same pickle format as ``pickle.dump``, written much faster. On
-        other torch versions, or with ``NVRX_FAST_METADATA_PICKLE=0``, it uses
+        ``_metadata_pickler.TESTED_TORCH_VERSIONS``, but writes ``.metadata`` with
+        ``_metadata_pickler.dump_metadata``: the same pickle format as ``pickle.dump``, written
+        much faster. On other torch versions, or with ``NVRX_FAST_METADATA_PICKLE=0``, it uses
         ``FileSystemWriter.finish`` (or, for MSC, ``pickle.dump``).
 
         Args:
             metadata (Metadata): metadata to save
             results (List[List[WriteResult]]): results to save
         """
-        fast = fast_metadata_enabled()
+        fast = _metadata_pickler.fast_metadata_enabled()
         if not fast and not self.use_msc:
             super().finish(metadata, results)
             return
@@ -1314,7 +1314,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
             with msc.open(path, "wb") as metadata_file:
-                dump_metadata(metadata, metadata_file)
+                _metadata_pickler.dump_metadata(metadata, metadata_file)
             return
 
         # PyTorch 2.9+ writes one metadata file per rank when collectives are disabled.
@@ -1330,7 +1330,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 metadata_path = self.metadata_path
         tmp_path = cast(Path, self.fs.concat_path(self.path, tmp_filename))
         with self.fs.create_stream(tmp_path, "wb") as metadata_file:
-            dump_metadata(metadata, metadata_file)
+            _metadata_pickler.dump_metadata(metadata, metadata_file)
             if self.sync_files:
                 # Flush Python-level buffers (OS for local files, network for cloud storage) before fsync.
                 metadata_file.flush()
