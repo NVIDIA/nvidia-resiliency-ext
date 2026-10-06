@@ -447,7 +447,9 @@ class TestAsyncSave:
         """After a restart, the first save reuses the loaded checkpoint's metadata if it applies.
 
         It applies if the new local plans write the chunks it lists; then the global metadata is
-        not built again. The checkpoint stores no local plans for this.
+        not built again. The checkpoint stores no local plans for this. The loaded metadata, here
+        as written by older versions with every rank's local plan, is not modified, and the plans
+        are not written again.
         """
         Utils.initialize_distributed()
         coordinator = torch.distributed.get_rank() == 0
@@ -463,6 +465,8 @@ class TestAsyncSave:
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             loaded_md = FileSystemReader(loaded_dir).read_metadata()
         assert 'all_local_plans' not in vars(loaded_md)
+        loaded_md.all_local_plans = ['plans of an older version']
+        loaded_before = dict(vars(loaded_md))
 
         # A restarted job: a new cache, given the metadata read from the checkpoint on every rank.
         cache = CheckpointMetadataCache()
@@ -480,11 +484,14 @@ class TestAsyncSave:
             )
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             built = CountingSavePlanner.calls['global']
+            written_md = FileSystemReader(ckpt_dir).read_metadata()
             loaded = self.load_checkpoint(
                 ckpt_dir, {k: torch.empty_like(v) for k, v in state_dict.items()}
             )
         # Asserted after the collectives, so a failure on one rank doesn't hang the others.
         assert built == (1 if extra and coordinator else 0)
+        assert vars(loaded_md) == loaded_before
+        assert 'all_local_plans' not in vars(written_md)
         for key, value in state_dict.items():
             assert torch.equal(loaded[key], value), f'mismatch for {key!r}'
 

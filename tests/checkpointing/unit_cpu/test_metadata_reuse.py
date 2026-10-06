@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Checking the local plans of a save against a loaded checkpoint's metadata.
+"""Reusing global metadata: the check of a save's local plans against a loaded checkpoint's
+metadata, and the CheckpointMetadataCache that carries metadata and plans between saves.
 
 Ranks are simulated: each plan's votes are computed as its rank would, and summed here as the
 all_reduce would.
@@ -21,6 +22,7 @@ all_reduce would.
 
 import dataclasses
 import pickle
+from dataclasses import fields
 
 import pytest
 import torch
@@ -38,6 +40,7 @@ from torch.distributed.checkpoint.metadata import (
 from torch.distributed.checkpoint.planner import SavePlan, TensorWriteData, WriteItem, WriteItemType
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
+from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 
 
 def tensor_item(fqn, offsets, sizes, size, dtype=torch.float32, requires_grad=False):
@@ -284,3 +287,66 @@ def test_any_missing_chunk_doesnt_reuse(tensors, data):
     plans = [SavePlan(items[r::3]) for r in range(3)]
     kept = items[:dropped] + items[dropped + 1 :]
     assert not reusable([SavePlan(kept[r::3]) for r in range(3)], metadata_of(plans))
+
+
+def test_set_cached_global_metadata_leaves_the_metadata_alone():
+    """The caller (e.g. Megatron's load strategy) keeps using the metadata it passes."""
+    metadata = metadata_of(sample_plans())
+    metadata.all_local_plans = sample_plans()  # as written by older versions
+    before = dict(vars(metadata))
+    cache = CheckpointMetadataCache()
+    cache.set_cached_global_metadata(metadata)
+    assert vars(metadata) == before
+    assert cache.metadata is metadata
+
+
+def test_reused_metadata_is_a_copy_without_local_plans():
+    """The coordinator writes a copy: finish may modify it, and old local plans aren't written."""
+    plans = sample_plans()
+    metadata = metadata_of(plans)
+    metadata.all_local_plans = plans
+    storage_data = metadata.storage_data
+    cache = CheckpointMetadataCache()
+    cache.set_cached_global_metadata(metadata)
+    written = cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True)
+    assert written is not metadata
+    assert "all_local_plans" not in vars(written)
+    assert all(getattr(written, f.name) == getattr(metadata, f.name) for f in fields(metadata))
+    written.storage_data = {"rewritten": None}  # as finish does
+    assert cache.metadata.storage_data is storage_data
+    again = cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True)
+    assert again is not written and again.storage_data is storage_data
+
+
+def test_only_the_coordinator_keeps_metadata_after_a_save():
+    """Other ranks drop the loaded metadata once the first save checked it."""
+    plans = sample_plans()
+    metadata = metadata_of(plans)
+    other = CheckpointMetadataCache()
+    other.set_cached_global_metadata(metadata)
+    assert other._update(plans[1], plans[1], None, reused=True, is_coordinator=False) is None
+    assert other.metadata is None and other.local_plan is plans[1]
+
+    built = metadata_of(plans)
+    coordinator = CheckpointMetadataCache()
+    coordinator.set_cached_global_metadata(metadata)
+    assert coordinator._update(plans[0], plans[0], built, False, is_coordinator=True) is built
+    assert coordinator.metadata is built
+
+
+def test_reuse_without_metadata_on_the_coordinator_raises():
+    """E.g. a different coordinator rank than in the previous save."""
+    plans = sample_plans()
+    cache = CheckpointMetadataCache()
+    with pytest.raises(RuntimeError, match="coordinator rank must stay the same"):
+        cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True)
+
+
+def test_set_cached_global_metadata_starts_over():
+    """After loading a checkpoint, the next save is checked against its metadata again."""
+    plans = sample_plans()
+    cache = CheckpointMetadataCache()
+    cache._update(plans[0], plans[0], metadata_of(plans), reused=False, is_coordinator=True)
+    loaded = metadata_of(plans)
+    cache.set_cached_global_metadata(loaded)
+    assert cache.metadata is loaded and cache.local_plan is None and cache.central_plan is None
