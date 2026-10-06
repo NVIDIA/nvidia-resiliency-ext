@@ -33,6 +33,7 @@ from torch.distributed.checkpoint import (
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
     AsyncRequest,
@@ -198,6 +199,49 @@ class TestAsyncSave:
                     loaded_sync_state_dict[key], state_dict[key]
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
+
+    @pytest.mark.parametrize('mode', ['1', 'python', '0'])
+    def test_metadata_matches_torch(self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode):
+        """FileSystemWriterAsync writes the same .metadata as torch's FileSystemWriter.
+
+        Covers the native writer, the Python writer and, with mode '0', torch's own.
+        """
+        monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
+        md_writer.fast_metadata_enabled.cache_clear()
+        md_writer._select_dumps.cache_clear()
+        native = (
+            md_writer._native_dumps if md_writer.native is not None else md_writer._python_dumps
+        )
+        expected = {'1': native, 'python': md_writer._python_dumps, '0': None}[mode]
+        assert md_writer._select_dumps() is expected
+
+        Utils.initialize_distributed()
+        model = FSDP(Model((1024, 1024), 8))
+        state_dict = model.state_dict()
+        planner = DefaultSavePlanner()
+        try:
+            with (
+                TempNamedDir(tmp_path_dist_ckpt / 'nvrx_metadata', sync=True) as async_ckpt_dir,
+                TempNamedDir(tmp_path_dist_ckpt / 'torch_metadata', sync=True) as sync_ckpt_dir,
+            ):
+                self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
+                self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+
+                nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
+                torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
+                for field in fields(torch_md):
+                    if field.name != 'storage_meta':  # holds the checkpoint path
+                        assert getattr(nvrx_md, field.name) == getattr(
+                            torch_md, field.name
+                        ), f'{field.name} differs from torch\'s'
+
+                loaded = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
+                for key, value in state_dict.items():
+                    assert torch.equal(loaded[key], value), f'Mismatch for key {key!r}'
+        finally:
+            md_writer.fast_metadata_enabled.cache_clear()
+            md_writer._select_dumps.cache_clear()
 
     @pytest.mark.parametrize(
         ('persistent_is_daemon', 'is_multiproc_io'),
