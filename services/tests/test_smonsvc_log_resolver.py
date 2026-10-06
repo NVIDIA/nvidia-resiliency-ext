@@ -889,3 +889,56 @@ def test_claim_settles_the_job_only_when_all_cycles_are_analyzed():
     SlurmJobMonitor._claim_analysis_path(monitor, job, cycles[1])
     assert SlurmJobMonitor._claim_analysis_path(monitor, sibling, cycles[1]) is False
     assert sibling.result_fetched is True
+
+
+# ─── one array job ID, several runs ───
+
+
+def _run(log_dir, stamp, cycles, start_time):
+    """Write ``cycles`` cycle logs for one run of job 4173891.
+
+    mtimes are set explicitly: a test that writes every file in the same
+    instant cannot distinguish an older run from a newer one.
+    """
+    written = []
+    for index in range(cycles):
+        path = log_dir / f"nemotron4_4173891_date_{stamp}_cycle{index}.log"
+        path.write_text("x")
+        os.utime(path, (start_time + index, start_time + index))
+        written.append(path)
+    return written
+
+
+def test_cycle_series_covers_one_run_not_every_run_of_the_array_job(tmp_path):
+    # The log name embeds the array job ID but the timestamp changes per
+    # invocation, so one job ID can own two runs that each start at cycle 0.
+    log_dir = tmp_path / "logs"
+    stdout_dir = tmp_path / "slurm_out"
+    log_dir.mkdir()
+    stdout_dir.mkdir()
+    _run(log_dir, "26-10-01_time_08-00-00", 3, start_time=1_000_000)
+    newer = _run(log_dir, "26-10-02_time_09-00-00", 2, start_time=2_000_000)
+    stdout = stdout_dir / "slurm-4173891_96.out"
+    stdout.write_text("x")
+
+    resolved = resolve_app_logs(
+        str(stdout), "4173891_96", AppLogResolution(enabled=True), job_name="nemotron4"
+    )
+
+    assert resolved == [str(path) for path in newer]
+
+
+def test_a_single_run_is_unaffected_by_the_run_scoping(tmp_path):
+    log_dir = tmp_path / "logs"
+    stdout_dir = tmp_path / "slurm_out"
+    log_dir.mkdir()
+    stdout_dir.mkdir()
+    only = _run(log_dir, "26-10-02_time_09-00-00", 4, start_time=2_000_000)
+    stdout = stdout_dir / "slurm-4173891_96.out"
+    stdout.write_text("x")
+
+    resolved = resolve_app_logs(
+        str(stdout), "4173891_96", AppLogResolution(enabled=True), job_name="nemotron4"
+    )
+
+    assert resolved == [str(path) for path in only]

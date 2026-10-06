@@ -112,6 +112,17 @@ def _cycle_number(path: Path) -> int:
     return int(match.group(1)) if match else -1
 
 
+def _run_stem(path: Path) -> str:
+    """The run a cycle log belongs to: its name with the ``_cycleN.log`` dropped.
+
+    One array job ID can own several runs, since the name embeds the array job
+    but the timestamp changes per invocation. Only cycles of the same run form
+    an ordered series - across runs the numbering restarts, so mixing them
+    yields two cycle 0s.
+    """
+    return _CYCLE_RE.sub("", path.name)
+
+
 def _is_sidecar(path: Path) -> bool:
     return path.name.endswith(SIDECAR_SUFFIXES)
 
@@ -366,12 +377,15 @@ def resolve_app_log(
     return str(best)
 
 
-def _rank_key(path: Path):
+def _mtime(path: Path) -> float:
     try:
-        mtime = path.stat().st_mtime
+        return path.stat().st_mtime
     except OSError:
-        mtime = 0.0
-    return (_cycle_number(path), mtime)
+        return 0.0
+
+
+def _rank_key(path: Path):
+    return (_cycle_number(path), _mtime(path))
 
 
 def resolve_app_logs(
@@ -415,4 +429,14 @@ def resolve_app_logs(
     cycles = [p for p in siblings if _cycle_number(p) >= 0]
     if len(cycles) < 2:
         return [best]
-    return [str(p) for p in sorted(cycles, key=_rank_key)]
+    # Restrict to one run. Two runs of the same array job each start at cycle 0,
+    # so a merged series has two cycle 0s and collides on (job_id, cycle_id).
+    # Pick by recency rather than by `best`, which ranks cycle number ahead of
+    # mtime: across runs that lets a stale run's cycle 2 outrank a live cycle 1.
+    runs: dict[str, list[Path]] = {}
+    for path in cycles:
+        runs.setdefault(_run_stem(path), []).append(path)
+    series = max(runs.values(), key=lambda group: max(_mtime(member) for member in group))
+    if len(series) < 2:
+        return [best]
+    return [str(p) for p in sorted(series, key=_rank_key)]
