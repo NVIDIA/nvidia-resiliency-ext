@@ -15,7 +15,8 @@
 
 """Internal: fast writer for the ``.metadata`` file of torch distributed checkpoints.
 
-See :mod:`.writer`. ``native`` is the optional C++ extension built from ``native.cpp``.
+See :mod:`.writer`. ``native`` is the optional C++ extension built from
+``native_src/native.cpp``.
 """
 
 from .writer import TESTED_TORCH_VERSIONS, dump_metadata, fast_metadata_enabled

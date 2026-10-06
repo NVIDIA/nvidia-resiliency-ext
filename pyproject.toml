@@ -22,6 +22,7 @@ packages = [
 exclude = [
     "src/nvidia_resiliency_ext/attribution/legacy_logsage/**",
     "src/nvidia_resiliency_ext/attribution/straggler/cupti_src",
+    "src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native_src",
 ]
 
 [tool.poetry.build]
