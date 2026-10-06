@@ -22,7 +22,6 @@
 #include <pybind11/pybind11.h>
 
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -130,22 +129,17 @@ class Writer {
             put('J');
             put_le(static_cast<uint32_t>(static_cast<int32_t>(i)), 4);
         } else {
-            // pickle.encode_long: minimal little-endian two's complement.
-            unsigned __int128 mag = i < 0 ? static_cast<unsigned __int128>(-static_cast<__int128>(i))
-                                          : static_cast<unsigned __int128>(i);
-            int bit_length = 0;
-            while (mag) {
-                ++bit_length;
-                mag >>= 1;
+            // LONG1 with pickle.encode_long's bytes: the shortest little-endian two's complement.
+            // Drop top bytes that only repeat the sign of the byte below them.
+            uint64_t u = static_cast<uint64_t>(i);
+            auto byte = [u](int k) { return static_cast<uint8_t>(u >> (8 * k)); };
+            int nbytes = 8;
+            while (nbytes > 1 && (byte(nbytes - 1) == (byte(nbytes - 2) & 0x80 ? 0xff : 0x00))) {
+                --nbytes;
             }
-            int nbytes = (bit_length >> 3) + 1;
-            unsigned char full[16];
-            __int128 x = i;
-            std::memcpy(full, &x, 16);  // little-endian
-            if (i < 0 && nbytes > 1 && full[nbytes - 1] == 0xff && (full[nbytes - 2] & 0x80)) --nbytes;
             put('\x8a');
             put(static_cast<char>(nbytes));
-            out_.append(reinterpret_cast<const char*>(full), nbytes);
+            put_le(u, nbytes);
         }
     }
 
