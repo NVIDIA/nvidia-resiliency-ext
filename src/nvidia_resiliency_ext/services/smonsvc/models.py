@@ -139,6 +139,7 @@ class MonitorState:
     logs_submitted: int = 0  # POST attempts (success or client error)
     post_success: int = 0  # Successful POSTs
     results_fetched: int = 0  # Successful GETs
+    completed_cycles_analyzed: int = 0  # Cycles analyzed once a successor proved them done
     # Log path error counters (from attrsvc responses and local checks)
     path_errors_permission: int = 0  # Permission denied
     path_errors_not_found: int = 0  # Path not found

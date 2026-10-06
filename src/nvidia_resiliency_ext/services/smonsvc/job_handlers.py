@@ -51,6 +51,7 @@ def submit_log(
     log_path: str,
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
 ) -> None:
     """
     Submit a log file to the attribution service.
@@ -60,7 +61,10 @@ def submit_log(
         log_path: Path to the log file
         state: MonitorState to update counters
         attrsvc_client: Client for attrsvc HTTP requests
+        analysis_job_id: Identity to analyze under, when it differs from the
+            SLURM task ID (see Monitor._analysis_job_id). Defaults to the task.
     """
+    analysis_job_id = analysis_job_id or job.job_id
 
     def on_success(response):
         job.log_submitted = True
@@ -97,7 +101,7 @@ def submit_log(
 
     attrsvc_client.request_with_retry(
         method="POST",
-        job_id=job.job_id,
+        job_id=analysis_job_id,
         log_path=log_path,
         on_success=on_success,
         on_client_error=on_client_error,
@@ -106,11 +110,72 @@ def submit_log(
     )
 
 
+def request_terminal_analysis(
+    job: "SlurmJob",
+    log_path: str,
+    attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
+) -> bool:
+    """Ask attrsvc for a full analysis of ``log_path``, at most once per path.
+
+    attrsvc runs the pipeline and sends the Slack alert off the back of this
+    POST, so this is the whole notification trigger; the later GET only feeds
+    smonsvc's own console summary.
+
+    Returns True when a request was issued, False when the path was already
+    signaled.
+    """
+    analysis_job_id = analysis_job_id or job.job_id
+    signaled = getattr(job, "terminal_signaled_paths", None)
+    if signaled is None:
+        signaled = set()
+        job.terminal_signaled_paths = signaled
+    if log_path in signaled:
+        return False
+    signaled.add(log_path)
+
+    def on_terminal_success(_response):
+        logger.info(f"[{analysis_job_id}] Terminal analysis requested: {log_path}")
+
+    def on_terminal_client_error(error_msg: str):
+        logger.debug(f"[{analysis_job_id}] Terminal analysis request POST failed: {error_msg}")
+
+    attrsvc_client.request_with_retry(
+        method="POST",
+        job_id=analysis_job_id,
+        log_path=log_path,
+        on_success=on_terminal_success,
+        on_client_error=on_terminal_client_error,
+        user=job.user,
+        analysis_intent=ANALYSIS_INTENT_TERMINAL,
+    )
+    return True
+
+
+def analyze_completed_cycle(
+    job: "SlurmJob",
+    log_path: str,
+    state: "MonitorState",
+    attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
+) -> None:
+    """Analyze a cycle log that a successor cycle has proven complete.
+
+    Waiting for SLURM to go terminal is the wrong trigger for a job that
+    restarts in place: the allocation stays RUNNING across every cycle, so the
+    alert would arrive only when some array task happens to die, hours after
+    the failure it describes.
+    """
+    if request_terminal_analysis(job, log_path, attrsvc_client, analysis_job_id):
+        state.completed_cycles_analyzed += 1
+
+
 def fetch_results(
     job: "SlurmJob",
     log_path: str,
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
 ) -> None:
     """
     Fetch attribution results for a completed job.
@@ -120,30 +185,11 @@ def fetch_results(
         log_path: Path to the log file
         state: MonitorState to update counters
         attrsvc_client: Client for attrsvc HTTP requests
+        analysis_job_id: Identity to analyze under; defaults to the SLURM task.
     """
+    analysis_job_id = analysis_job_id or job.job_id
 
-    signaled = getattr(job, "terminal_signaled_paths", None)
-    if signaled is None:
-        signaled = set()
-        job.terminal_signaled_paths = signaled
-    if log_path not in signaled:
-        signaled.add(log_path)
-
-        def on_terminal_success(_response):
-            logger.info(f"[{job.job_id}] Terminal analysis requested: {log_path}")
-
-        def on_terminal_client_error(error_msg: str):
-            logger.debug(f"[{job.job_id}] Terminal analysis request POST failed: {error_msg}")
-
-        attrsvc_client.request_with_retry(
-            method="POST",
-            job_id=job.job_id,
-            log_path=log_path,
-            on_success=on_terminal_success,
-            on_client_error=on_terminal_client_error,
-            user=job.user,
-            analysis_intent=ANALYSIS_INTENT_TERMINAL,
-        )
+    request_terminal_analysis(job, log_path, attrsvc_client, analysis_job_id)
 
     def on_success(response):
         try:
@@ -164,7 +210,7 @@ def fetch_results(
 
     attrsvc_client.request_with_retry(
         method="GET",
-        job_id=job.job_id,
+        job_id=analysis_job_id,
         log_path=log_path,
         on_success=on_success,
         on_client_error=on_client_error,

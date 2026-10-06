@@ -13,8 +13,8 @@ from pathlib import Path
 from types import FrameType
 
 from .attrsvc_client import AttrsvcClient
-from .job_handlers import fetch_results, submit_log
-from .log_resolver import AppLogResolution, resolve_app_logs
+from .job_handlers import analyze_completed_cycle, fetch_results, submit_log
+from .log_resolver import AppLogResolution, base_job_id, resolve_app_logs
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
 from .slurm import SlurmClient, expand_slurm_patterns
 from .stats import format_stats_summary, get_health_status, get_jobs_list, get_stats_dict
@@ -263,12 +263,15 @@ class SlurmJobMonitor:
 
         with self._state_lock:
             self._mark_disappeared_jobs_finished(current_jobs)
-            jobs_to_submit = self._sync_jobs_from_slurm(current_jobs)
+            jobs_to_submit, cycles_to_analyze = self._sync_jobs_from_slurm(current_jobs)
             self._fetch_paths_for_terminal_jobs()
             jobs_to_fetch = self._collect_jobs_for_fetch()
 
         for job, log_path in jobs_to_submit:
             self._submit_log(job, log_path)
+
+        for job, log_path in cycles_to_analyze:
+            self._analyze_completed_cycle(job, log_path)
 
         for job, log_path in jobs_to_fetch:
             self._fetch_results(job, log_path)
@@ -313,13 +316,15 @@ class SlurmJobMonitor:
 
     def _sync_jobs_from_slurm(
         self, current_jobs: dict[str, SlurmJob]
-    ) -> list[tuple[SlurmJob, str]]:
+    ) -> tuple[list[tuple[SlurmJob, str]], list[tuple[SlurmJob, str]]]:
         """
         Sync tracked jobs with current SLURM state. Must hold _state_lock.
 
-        Returns list of (job, log_path) tuples for jobs needing submission.
+        Returns ``(jobs_to_submit, cycles_to_analyze)``: logs to register for
+        tracking, and completed cycle logs ready for full analysis.
         """
         jobs_to_submit: list[tuple[SlurmJob, str]] = []
+        cycles_to_analyze: list[tuple[SlurmJob, str]] = []
 
         for job_id, job in current_jobs.items():
             if not self._matches_filters(job):
@@ -348,16 +353,27 @@ class SlurmJobMonitor:
 
             tracked_job = self.state.jobs[job_id]
 
-            # Check if job needs log submission
-            if not tracked_job.log_submitted and not tracked_job.result_fetched:
-                log_paths = self._get_log_paths(tracked_job)
-                if not log_paths and tracked_job.app_log_missing:
-                    tracked_job.log_submitted = True  # settled; nothing to analyze
-                for log_path in log_paths:
-                    if self._claim_log_path(tracked_job, log_path):
-                        jobs_to_submit.append((tracked_job, log_path))
+            if tracked_job.result_fetched:
+                continue
 
-        return jobs_to_submit
+            log_paths = self._get_log_paths(tracked_job)
+            if not log_paths:
+                if tracked_job.app_log_missing:
+                    tracked_job.log_submitted = True  # settled; nothing to analyze
+                continue
+
+            # A cycle log stops growing the moment its successor appears, so
+            # every cycle but the last is complete and can be analyzed now.
+            # Only the newest is still being written, and it is the one the
+            # terminal path picks up when the allocation finally ends.
+            *complete, live = log_paths
+            for log_path in complete:
+                if self._claim_analysis_path(tracked_job, log_path):
+                    cycles_to_analyze.append((tracked_job, log_path))
+            if not tracked_job.log_submitted and self._claim_log_path(tracked_job, live):
+                jobs_to_submit.append((tracked_job, live))
+
+        return jobs_to_submit, cycles_to_analyze
 
     @staticmethod
     def _script_path(job: SlurmJob) -> str:
@@ -568,13 +584,45 @@ class SlurmJobMonitor:
             )
         return []
 
+    def _analysis_job_id(self, job: SlurmJob, log_path: str) -> str:
+        """The identity to analyze under: the array job, not the array task.
+
+        Concurrent array tasks of one run share a single application log, so
+        whichever task resolved it is incidental - these runs spread ~149 tasks
+        over one training job. It is also actively harmful: L3 groups attempt
+        history by exact job ID, so letting each cycle inherit a different task
+        splits one run's history into unrelated fragments and every retry
+        ledger counts against the wrong population.
+
+        A task's own SLURM wrapper is not shared, so it keeps the task ID.
+        """
+        if not self._app_log_resolution.enabled:
+            return job.job_id
+        if job.stdout_path and log_path == self._expand_slurm_patterns(job.stdout_path, job):
+            return job.job_id
+        return base_job_id(job.job_id)
+
+    def _analyze_completed_cycle(self, job: SlurmJob, log_path: str) -> None:
+        """Run a full analysis of a cycle a successor has proven complete."""
+        analyze_completed_cycle(
+            job,
+            log_path,
+            self.state,
+            self._attrsvc_client,
+            self._analysis_job_id(job, log_path),
+        )
+
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:
         """Submit a log file to the attribution service."""
-        submit_log(job, log_path, self.state, self._attrsvc_client)
+        submit_log(
+            job, log_path, self.state, self._attrsvc_client, self._analysis_job_id(job, log_path)
+        )
 
     def _fetch_results(self, job: SlurmJob, log_path: str) -> None:
         """Fetch attribution results for a completed job."""
-        fetch_results(job, log_path, self.state, self._attrsvc_client)
+        fetch_results(
+            job, log_path, self.state, self._attrsvc_client, self._analysis_job_id(job, log_path)
+        )
 
     def _cleanup_old_jobs(self) -> None:
         """Remove old completed jobs from state to prevent memory growth."""
