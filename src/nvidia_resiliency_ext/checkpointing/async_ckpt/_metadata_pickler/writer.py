@@ -227,7 +227,9 @@ class _MetadataPickler:
 
     def properties(self, p) -> bytes:
         """A TensorProperties, from the stdlib pickler, once per distinct value."""
-        key = (type(p), tuple(vars(p).items()))
+        # Values' types are part of the key: equal values of different types (True and 1) are
+        # pickled differently.
+        key = (type(p), tuple((name, type(v), v) for name, v in vars(p).items()))
         b = self.props.get(key)
         if b is None:
             b = self.props[key] = _small_pickle(p)

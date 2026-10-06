@@ -98,7 +98,7 @@ texts = st.text(max_size=300)
 properties = st.builds(
     TensorProperties,
     dtype=st.sampled_from([torch.float32, torch.bfloat16, torch.int64, torch.uint8]),
-    requires_grad=st.booleans(),
+    requires_grad=st.sampled_from([True, False, 1, 0]),  # equal values, different pickles
 )
 chunks = st.builds(ChunkStorageMetadata, offsets=sizes, sizes=sizes)
 
@@ -204,11 +204,25 @@ class _Info(_StorageInfo):
     pass
 
 
+def properties_of_equal_values() -> Metadata:
+    """TensorProperties whose values are equal but of different types: True and 1."""
+    md = writer._sample_metadata()
+    w = md.state_dict_metadata["w"]
+    md.state_dict_metadata["w1"] = TensorStorageMetadata(
+        TensorProperties(dtype=torch.float32, requires_grad=True), w.size, w.chunks
+    )
+    md.state_dict_metadata["w2"] = TensorStorageMetadata(
+        TensorProperties(dtype=torch.float32, requires_grad=1), w.size, w.chunks
+    )
+    return md
+
+
 FIXED_METADATA = [
     pytest.param(lambda tmp_path: writer._sample_metadata(), id="sample"),
     pytest.param(lambda tmp_path: large_metadata(), id="large"),
     pytest.param(dcp_saved_metadata, id="dcp-save"),
     pytest.param(lambda tmp_path: subclassed_metadata(), id="subclasses"),
+    pytest.param(lambda tmp_path: properties_of_equal_values(), id="equal-properties"),
 ]
 
 # Examples are random on purpose, to cover more inputs over time; failures found locally are
