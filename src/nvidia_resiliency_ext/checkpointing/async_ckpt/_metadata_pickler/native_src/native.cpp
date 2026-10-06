@@ -39,39 +39,39 @@ constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
 // New reference to obj.name, throwing on error.
-py::object getattr(PyObject* obj, PyObject* name) {
-    PyObject* r = PyObject_GetAttr(obj, name);
+[[nodiscard]] py::object getattr(PyObject* obj, PyObject* name) {
+    PyObject* const r = PyObject_GetAttr(obj, name);
     if (!r) throw py::error_already_set();
     return py::reinterpret_steal<py::object>(r);
 }
 
 // New reference to obj.__dict__, the state pickle writes for the metadata classes.
-py::object instance_dict(PyObject* obj) {
-    static PyObject* name = PyUnicode_InternFromString("__dict__");
-    py::object d = getattr(obj, name);
+[[nodiscard]] py::object instance_dict(PyObject* obj) {
+    static PyObject* const name = PyUnicode_InternFromString("__dict__");
+    const py::object d = getattr(obj, name);
     if (!PyDict_CheckExact(d.ptr())) throw py::type_error("expected a __dict__");
     return d;
 }
 
 // Borrowed reference to dict[key], or nullptr if key is missing.
-PyObject* dict_get(PyObject* dict, PyObject* key) {
-    PyObject* r = PyDict_GetItemWithError(dict, key);
+[[nodiscard]] PyObject* dict_get(PyObject* dict, PyObject* key) {
+    PyObject* const r = PyDict_GetItemWithError(dict, key);
     if (!r && PyErr_Occurred()) throw py::error_already_set();
     return r;
 }
 
 // Borrowed reference to dict[key], throwing if key is missing.
-PyObject* dict_item(PyObject* dict, PyObject* key) {
-    PyObject* r = dict_get(dict, key);
+[[nodiscard]] PyObject* dict_item(PyObject* dict, PyObject* key) {
+    PyObject* const r = dict_get(dict, key);
     if (!r) throw py::type_error("missing attribute");
     return r;
 }
 
 // UTF-8 view of a str's characters, valid while s is alive.
-std::string_view utf8(PyObject* s) {
+[[nodiscard]] std::string_view utf8(PyObject* s) {
     if (!PyUnicode_CheckExact(s)) throw py::type_error("expected str");
     Py_ssize_t n;
-    const char* p = PyUnicode_AsUTF8AndSize(s, &n);
+    const char* const p = PyUnicode_AsUTF8AndSize(s, &n);
     if (!p) throw py::error_already_set();
     return {p, static_cast<size_t>(n)};
 }
@@ -79,9 +79,9 @@ std::string_view utf8(PyObject* s) {
 // The value of an int that fits int64. Like the other checks here, it accepts only the exact type:
 // anything else (a bool, a tuple for a torch.Size, ...) would unpickle as a different type, so it
 // raises and the caller falls back to pickle.dump.
-int64_t as_int(PyObject* o) {
+[[nodiscard]] int64_t as_int(PyObject* o) {
     if (!PyLong_CheckExact(o)) throw py::type_error("expected int");
-    long long v = PyLong_AsLongLong(o);
+    const long long v = PyLong_AsLongLong(o);
     if (v == -1 && PyErr_Occurred()) throw py::error_already_set();
     return v;
 }
@@ -96,25 +96,27 @@ class Writer {
         bytes_cls_ = meta.attr("BytesStorageMetadata");
         chunk_cls_ = meta.attr("ChunkStorageMetadata");
         index_cls_ = meta.attr("MetadataIndex");
-        info_cls_ = py::module_::import("torch.distributed.checkpoint.filesystem").attr("_StorageInfo");
+        info_cls_ =
+            py::module_::import("torch.distributed.checkpoint.filesystem").attr("_StorageInfo");
         size_cls_ = py::module_::import("torch").attr("Size");
     }
 
     // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field.
-    py::bytes dumps(PyObject* md) {
-        py::object fields = instance_dict(md);
+    [[nodiscard]] py::bytes dumps(PyObject* md) {
+        const py::object fields = instance_dict(md);
         // About 98 bytes per storage entry: its MetadataIndex and
         // _StorageInfo, plus the matching chunk in state_dict_metadata.
-        PyObject* storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
-        size_t n_storage = storage_data && PyDict_Check(storage_data) ? PyDict_Size(storage_data) : 0;
+        PyObject* const storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
+        const size_t n_storage =
+            storage_data && PyDict_Check(storage_data) ? PyDict_Size(storage_data) : 0;
         out_.reserve(4096 + 100 * n_storage);
 
         prelude();
         put_get(metadata_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-        for (auto item : py::reinterpret_borrow<py::dict>(fields)) {
-            std::string_view field = utf8(item.first.ptr());
-            PyObject* value = item.second.ptr();
+        for (const auto item : py::reinterpret_borrow<py::dict>(fields)) {
+            const std::string_view field = utf8(item.first.ptr());
+            PyObject* const value = item.second.ptr();
             put_str(field);
             if (field == "state_dict_metadata") {
                 dump_state_dict_metadata(value);
@@ -132,7 +134,7 @@ class Writer {
     // Protocol 4 header, then the classes and dict keys the encoding refers to, each memoized once.
     void prelude() {
         put({PROTO, '\x04'});
-        const char* meta = "torch.distributed.checkpoint.metadata";
+        constexpr const char* meta = "torch.distributed.checkpoint.metadata";
         size_ref_ = global_ref("torch", "Size");
         metadata_ref_ = global_ref(meta, "Metadata");
         index_ref_ = global_ref(meta, "MetadataIndex");
@@ -156,7 +158,8 @@ class Writer {
     void dump_state_dict_metadata(PyObject* dict) {
         if (!PyDict_CheckExact(dict)) throw py::type_error("expected dict");
         put(EMPTY_DICT);
-        Py_ssize_t pos = 0, n = PyDict_Size(dict);
+        const Py_ssize_t n = PyDict_Size(dict);
+        Py_ssize_t pos = 0;
         PyObject *fqn, *v;
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &fqn, &v); ++i) {
             if (i % BATCH == 0) put(MARK);
@@ -167,8 +170,8 @@ class Writer {
             } else if (!is(v, tensor_cls_)) {
                 small(v);
             } else {
-                py::object state = instance_dict(v);
-                PyObject* chunks = dict_item(state.ptr(), a_chunks_.ptr());
+                const py::object state = instance_dict(v);
+                PyObject* const chunks = dict_item(state.ptr(), a_chunks_.ptr());
                 if (PyDict_Size(state.ptr()) != 3) {
                     throw py::type_error("unexpected TensorStorageMetadata attributes");
                 }
@@ -181,14 +184,14 @@ class Writer {
                 size(dict_item(state.ptr(), a_size_.ptr()));
                 put_get(k_chunks_);
                 put(EMPTY_LIST);
-                Py_ssize_t nc = PyList_GET_SIZE(chunks);
+                const Py_ssize_t nc = PyList_GET_SIZE(chunks);
                 for (Py_ssize_t j = 0; j < nc; ++j) {
                     if (j % BATCH == 0) put(MARK);
-                    PyObject* c = PyList_GET_ITEM(chunks, j);
+                    PyObject* const c = PyList_GET_ITEM(chunks, j);
                     if (!is(c, chunk_cls_)) {
                         small(c);
                     } else {
-                        py::object chunk = instance_dict(c);
+                        const py::object chunk = instance_dict(c);
                         if (PyDict_Size(chunk.ptr()) != 2) {
                             throw py::type_error("unexpected ChunkStorageMetadata attributes");
                         }
@@ -212,7 +215,8 @@ class Writer {
     void dump_storage_data(PyObject* dict) {
         if (!PyDict_CheckExact(dict)) throw py::type_error("expected dict");
         put(EMPTY_DICT);
-        Py_ssize_t pos = 0, n = PyDict_Size(dict);
+        const Py_ssize_t n = PyDict_Size(dict);
+        Py_ssize_t pos = 0;
         PyObject *idx, *info;
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &idx, &info); ++i) {
             if (i % BATCH == 0) put(MARK);
@@ -220,10 +224,10 @@ class Writer {
                 small(idx);
             } else {
                 // MetadataIndex sets offset only when it is given; pickle its __dict__.
-                py::object state = instance_dict(idx);
-                PyObject* fqn = dict_item(state.ptr(), a_fqn_.ptr());
-                PyObject* index = dict_item(state.ptr(), a_index_.ptr());
-                PyObject* offset = dict_get(state.ptr(), a_offset_.ptr());
+                const py::object state = instance_dict(idx);
+                PyObject* const fqn = dict_item(state.ptr(), a_fqn_.ptr());
+                PyObject* const index = dict_item(state.ptr(), a_index_.ptr());
+                PyObject* const offset = dict_get(state.ptr(), a_offset_.ptr());
                 if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
                     throw py::type_error("unexpected MetadataIndex attributes");
                 }
@@ -242,8 +246,9 @@ class Writer {
 
             // _StorageInfo pickles its __dict__ without None values. transform_descriptors exists
             // from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib pickler.
-            py::object state = is(info, info_cls_) ? instance_dict(info) : py::object();
-            PyObject* transforms = state ? dict_get(state.ptr(), a_transform_.ptr()) : nullptr;
+            const py::object state = is(info, info_cls_) ? instance_dict(info) : py::object();
+            PyObject* const transforms =
+                state ? dict_get(state.ptr(), a_transform_.ptr()) : nullptr;
             if (!state || (transforms && transforms != Py_None)) {
                 small(info);
             } else {
@@ -266,7 +271,7 @@ class Writer {
 
     // Whether obj is exactly of class cls. Objects of exactly the metadata classes are encoded
     // here; others, subclasses included, are left to the stdlib pickler and keep their class.
-    static bool is(PyObject* obj, const py::object& cls) {
+    [[nodiscard]] static bool is(PyObject* obj, const py::object& cls) {
         return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
     }
 
@@ -311,8 +316,8 @@ class Writer {
         } else {
             // LONG1 with pickle.encode_long's bytes: the shortest little-endian two's complement.
             // Drop top bytes that only repeat the sign of the byte below them.
-            uint64_t u = static_cast<uint64_t>(i);
-            auto byte = [u](int k) { return static_cast<uint8_t>(u >> (8 * k)); };
+            const uint64_t u = static_cast<uint64_t>(i);
+            const auto byte = [u](int k) { return static_cast<uint8_t>(u >> (8 * k)); };
             int nbytes = 8;
             while (nbytes > 1 && (byte(nbytes - 1) == (byte(nbytes - 2) & 0x80 ? 0xff : 0x00))) {
                 --nbytes;
@@ -324,7 +329,7 @@ class Writer {
     }
 
     // Push module.name once into the memo; return its memo index.
-    uint32_t global_ref(std::string_view module, std::string_view name) {
+    [[nodiscard]] uint32_t global_ref(std::string_view module, std::string_view name) {
         put_str(module);
         put_str(name);
         put({STACK_GLOBAL, MEMOIZE, POP});
@@ -332,7 +337,7 @@ class Writer {
     }
 
     // Push a dict key once into the memo; return its memo index.
-    uint32_t key_ref(std::string_view name) {
+    [[nodiscard]] uint32_t key_ref(std::string_view name) {
         put_str(name);
         put({MEMOIZE, POP});
         return memo_len_++;
@@ -341,8 +346,8 @@ class Writer {
     // First use writes the string and memoizes it; later uses fetch it from the memo. The memo owns
     // a copy of each distinct string and is looked up by view, so lookups do not allocate.
     void string(PyObject* s) {
-        std::string_view v = utf8(s);
-        if (auto it = strings_.find(v); it != strings_.end()) {
+        const std::string_view v = utf8(s);
+        if (const auto it = strings_.find(v); it != strings_.end()) {
             put_get(it->second);
             return;
         }
@@ -355,7 +360,7 @@ class Writer {
     void size(PyObject* dims) {
         if (!is(dims, size_cls_)) throw py::type_error("expected torch.Size");
         put_get(size_ref_);
-        Py_ssize_t n = PyTuple_GET_SIZE(dims);
+        const Py_ssize_t n = PyTuple_GET_SIZE(dims);
         if (n == 0) {
             put(EMPTY_TUPLE);
         } else {
@@ -368,7 +373,7 @@ class Writer {
 
     // An object left to the stdlib pickler, spliced in from small_pickle's opcodes.
     void small(PyObject* obj) {
-        py::object b = small_pickle_(py::handle(obj));
+        const py::object b = small_pickle_(py::handle(obj));
         char* p;
         Py_ssize_t n;
         if (PyBytes_AsStringAndSize(b.ptr(), &p, &n) != 0) throw py::error_already_set();
@@ -384,7 +389,7 @@ class Writer {
     // per lookup. std::hash<std::string> is not transparent; this hashes both key types the same.
     struct StringHash {
         using is_transparent = void;
-        size_t operator()(std::string_view s) const noexcept {
+        [[nodiscard]] size_t operator()(std::string_view s) const noexcept {
             return std::hash<std::string_view>{}(s);
         }
     };
@@ -409,7 +414,7 @@ class Writer {
 
 // Return the pickle of md; small_pickle(obj) returns the opcodes for an object the writer leaves to
 // the stdlib pickler.
-py::bytes dumps(py::handle md, py::object small_pickle) {
+[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle) {
     return Writer(std::move(small_pickle)).dumps(md.ptr());
 }
 
@@ -418,5 +423,6 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
 PYBIND11_MODULE(native, m) {
     m.doc() = "Fast pickling of torch.distributed.checkpoint Metadata.";
     m.def("dumps", &dumps, py::arg("metadata"), py::arg("small_pickle"),
-          "Return the pickle of a torch.distributed.checkpoint Metadata, as standard pickle bytes.");
+          "Return the pickle of a torch.distributed.checkpoint Metadata, as standard pickle "
+          "bytes.");
 }
