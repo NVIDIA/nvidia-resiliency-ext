@@ -244,6 +244,21 @@ The following code demonstrates a complete workflow for saving and loading check
     loaded_state_dict = load_checkpoint(checkpoint_path, state_dict.copy())
 
 
+Writing the .metadata File
+--------------------------
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync`
+writes the checkpoint's ``.metadata`` file with its own pickler instead of ``pickle.dump``
+(about 16 times faster on large checkpoints). The file is an ordinary
+pickle that ``torch.distributed.checkpoint`` loads unchanged. The pickler is used on the PyTorch
+versions it was tested with, 2.4 to 2.14; on other versions PyTorch writes the file.
+
+The environment variable ``NVRX_FAST_METADATA_PICKLE``, read once per process, changes this:
+
+* ``0``: PyTorch writes the file.
+* ``python``: use the pure-Python pickler instead of the C++ extension.
+* ``force``: use the pickler on untested PyTorch versions too.
+
+
 Best Practices
 --------------
 * Use process binding to pin the checkpointing process to a specific GPU. This is important for pre-staging tensors to host memory.
