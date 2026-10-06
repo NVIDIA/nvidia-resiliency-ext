@@ -42,7 +42,8 @@ The environment variable ``NVRX_FAST_METADATA_PICKLE`` selects how ``.metadata``
 - unset or ``1`` (default): the C++ writer if it is built, else the Python writer, subject to the
   checks above;
 - ``python``: the Python writer, subject to the same checks;
-- ``force``: as the default, but also on torch versions outside ``TESTED_TORCH_VERSIONS``;
+- ``force``: as the default, but also on torch versions outside ``TESTED_TORCH_VERSIONS``, except
+  those in ``INCOMPATIBLE_TORCH_VERSIONS`` (logged as an error);
 - ``0``, ``false``, ``off`` or ``no``: torch's own ``FileSystemWriter.finish`` and ``pickle.dump``.
 
 Other values act as the default. The variable is read once per process, at the first save that
@@ -95,6 +96,10 @@ _ABSENT = object()
 # First and last torch (major, minor) versions the writers and FileSystemWriterAsync.finish were
 # checked against. Extend after checking a new torch release.
 TESTED_TORCH_VERSIONS = ((2, 4), (2, 14))
+# Torch (major, minor) versions known not to work with them, even with
+# NVRX_FAST_METADATA_PICKLE=force. Torch 2.3's FileSystemWriter lacks metadata_path and
+# storage_meta, which FileSystemWriterAsync.finish uses.
+INCOMPATIBLE_TORCH_VERSIONS = frozenset({(2, 3)})
 
 _META = "torch.distributed.checkpoint.metadata"
 # The import path the writers emit for each class, as the stdlib pickler would.
@@ -413,18 +418,27 @@ def _mode() -> str:
 def fast_metadata_enabled() -> bool:
     """Whether nvrx may write ``.metadata`` with its own code instead of torch's.
 
-    False if disabled by ``NVRX_FAST_METADATA_PICKLE=0``, or if torch is outside
-    ``TESTED_TORCH_VERSIONS`` (unless ``NVRX_FAST_METADATA_PICKLE=force``). Gates both the fast
-    writers and ``FileSystemWriterAsync.finish``. Evaluated once per process; see the module
-    docstring for the values of ``NVRX_FAST_METADATA_PICKLE``.
+    False if disabled by ``NVRX_FAST_METADATA_PICKLE=0``, if torch is in
+    ``INCOMPATIBLE_TORCH_VERSIONS``, or if it is outside ``TESTED_TORCH_VERSIONS`` (unless
+    ``NVRX_FAST_METADATA_PICKLE=force``). Gates both the fast writers and
+    ``FileSystemWriterAsync.finish``. Evaluated once per process; see the module docstring for the
+    values of ``NVRX_FAST_METADATA_PICKLE``.
     """
     mode = _mode()
     if mode in ("0", "false", "off", "no"):
         return False
+    release = Version(torch.__version__).release[:2]
+    if release in INCOMPATIBLE_TORCH_VERSIONS:
+        if mode == "force":
+            logger.error(
+                f"NVRX_FAST_METADATA_PICKLE=force ignored: torch {torch.__version__} is known not "
+                "to work with nvrx's .metadata writer; using torch's own writer"
+            )
+        return False
     if mode == "force":
         return True
     first, last = TESTED_TORCH_VERSIONS
-    if not first <= Version(torch.__version__).release[:2] <= last:
+    if not first <= release <= last:
         logger.info(
             f"torch {torch.__version__} is outside the versions nvrx's .metadata writer was "
             f"checked against ({first[0]}.{first[1]} to {last[0]}.{last[1]}); "

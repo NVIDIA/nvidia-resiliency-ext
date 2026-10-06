@@ -21,6 +21,7 @@ tests/checkpointing/unit/test_async_writer.py, on GPUs.
 """
 
 import io
+import logging
 import pickle
 from collections import OrderedDict
 from dataclasses import fields
@@ -477,6 +478,7 @@ _FAST = writer._native_dumps if writer.native is not None else writer._python_du
         (None, f"{_FIRST[0]}.{_FIRST[1] - 1}.1", None),
         (None, f"{_LAST[0]}.{_LAST[1] + 1}.0", None),
         ("force", f"{_LAST[0]}.{_LAST[1] + 1}.0", _FAST),
+        ("force", "2.3.1", None),  # in INCOMPATIBLE_TORCH_VERSIONS
         (None, f"{_LAST[0]}.{_LAST[1]}.0a0+git1234567", _FAST),
         (None, f"{_FIRST[0]}.{_FIRST[1]}.0+cu121", _FAST),
     ],
@@ -487,6 +489,15 @@ def test_writer_selection(monkeypatch, mode, version, expected):
     monkeypatch.setattr(torch, "__version__", version)
     assert writer.fast_metadata_enabled() is (expected is not None)
     assert writer._select_dumps() is expected
+
+
+@pytest.mark.parametrize("version", ["2.3.1", "2.3.0+cu121"])
+def test_force_on_incompatible_torch_logs_error(monkeypatch, caplog, version):
+    monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", "force")
+    monkeypatch.setattr(torch, "__version__", version)
+    with caplog.at_level(logging.ERROR, logger=writer.__name__):
+        assert not writer.fast_metadata_enabled()
+    assert "known not to work" in caplog.text
 
 
 def test_python_writer_without_native(monkeypatch):
