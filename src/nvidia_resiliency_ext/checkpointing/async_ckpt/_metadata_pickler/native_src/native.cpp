@@ -57,6 +57,17 @@ py::object getattr_or_none(PyObject* obj, PyObject* name) {
     return py::reinterpret_steal<py::object>(r);
 }
 
+// Borrowed reference to dict[key], throwing if it is missing.
+PyObject* dict_item(PyObject* dict, PyObject* key) {
+    if (!PyDict_Check(dict)) throw py::type_error("expected __dict__");
+    PyObject* r = PyDict_GetItemWithError(dict, key);
+    if (!r) {
+        if (PyErr_Occurred()) throw py::error_already_set();
+        throw py::type_error("missing attribute");
+    }
+    return r;
+}
+
 std::string_view utf8(PyObject* s) {
     if (!PyUnicode_CheckExact(s)) throw py::type_error("expected str");
     Py_ssize_t n;
@@ -298,16 +309,25 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
             PyObject *idx, *info;
             for (Py_ssize_t i = 0; PyDict_Next(value, &pos, &idx, &info); ++i) {
                 if (i % BATCH == 0) w.put(MARK);
+                // MetadataIndex sets offset only when it is given; pickle its __dict__.
+                py::object state = getattr(idx, a_dict.ptr());
+                PyObject* fqn = dict_item(state.ptr(), a_fqn.ptr());
+                PyObject* index = dict_item(state.ptr(), a_index.ptr());
+                PyObject* offset = PyDict_GetItemWithError(state.ptr(), a_offset.ptr());
+                if (!offset && PyErr_Occurred()) throw py::error_already_set();
+                if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
+                    throw py::type_error("unexpected MetadataIndex attributes");
+                }
                 w.put_get(index_ref);
                 w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                 w.put_get(k_fqn);
-                w.string(getattr(idx, a_fqn.ptr()).ptr());
+                w.string(fqn);
                 w.put_get(k_index);
-                py::object index = getattr(idx, a_index.ptr());
-                if (index.is_none()) w.put(NONE); else w.put_int(as_int(index.ptr()));
-                w.put_get(k_offset);
-                py::object offset = getattr(idx, a_offset.ptr());
-                if (offset.is_none()) w.put(NONE); else w.size(offset.ptr());
+                if (index == Py_None) w.put(NONE); else w.put_int(as_int(index));
+                if (offset) {
+                    w.put_get(k_offset);
+                    if (offset == Py_None) w.put(NONE); else w.size(offset);
+                }
                 w.put({SETITEMS, BUILD});
 
                 // transform_descriptors does not exist before PyTorch 2.8; when present and

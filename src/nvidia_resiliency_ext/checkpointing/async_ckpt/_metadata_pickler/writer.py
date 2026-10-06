@@ -89,6 +89,7 @@ SETITEMS, APPENDS, BUILD, NEWOBJ, REDUCE = b"u", b"e", b"b", b"\x81", b"R"
 STACK_GLOBAL, MEMOIZE, NONE = b"\x93", b"\x94", b"N"
 TUPLE, TUPLE1, TUPLE2, TUPLE3 = b"t", b"\x85", b"\x86", b"\x87"
 _BATCH = 1000  # same batching as the stdlib pickler
+_ABSENT = object()
 
 # First and last torch (major, minor) versions the writers and FileSystemWriterAsync.finish were
 # checked against. Extend after checking a new torch release.
@@ -105,8 +106,9 @@ _CLASS_PATHS = {
     TensorStorageMetadata: (_META, "TensorStorageMetadata"),
     BytesStorageMetadata: (_META, "BytesStorageMetadata"),
 }
-# The state each class is encoded with: these attributes, in this order. A _StorageInfo whose
-# transform_descriptors (PyTorch 2.8+) is set is left to the stdlib pickler.
+# The state each class is encoded with: these attributes, in this order. A MetadataIndex has no
+# offset attribute when it was created without one, and its state then has no offset either. A
+# _StorageInfo whose transform_descriptors (PyTorch 2.8+) is set is left to the stdlib pickler.
 _STATE_KEYS = {
     MetadataIndex: ("fqn", "index", "offset"),
     _StorageInfo: ("relative_path", "offset", "length"),
@@ -304,6 +306,12 @@ class _MetadataPickler:
                 for start in range(0, len(items), _BATCH):
                     out.append(MARK)
                     for idx, info in items[start : start + _BATCH]:
+                        # MetadataIndex sets offset only when it is given; pickle its __dict__.
+                        state = vars(idx)
+                        offset = state.get("offset", _ABSENT)
+                        if len(state) != (2 if offset is _ABSENT else 3):
+                            raise TypeError(f"unexpected MetadataIndex attributes: {list(state)}")
+                        index = state["index"]
                         out.append(
                             INDEX
                             + EMPTY_TUPLE
@@ -311,11 +319,14 @@ class _MetadataPickler:
                             + EMPTY_DICT
                             + MARK
                             + k["fqn"]
-                            + string(idx.fqn)
+                            + string(state["fqn"])
                             + k["index"]
-                            + (NONE if idx.index is None else int_(idx.index))
-                            + k["offset"]
-                            + (NONE if idx.offset is None else size(idx.offset))
+                            + (NONE if index is None else int_(index))
+                            + (
+                                b""
+                                if offset is _ABSENT
+                                else k["offset"] + (NONE if offset is None else size(offset))
+                            )
                             + SETITEMS
                             + BUILD
                         )
@@ -417,18 +428,27 @@ def _sample_metadata() -> Metadata:
     return Metadata(state_dict_metadata={**tensors, **blobs}, storage_data=storage)
 
 
-def _reduces_as_encoded(obj, state: dict) -> bool:
-    """Whether pickle reduces obj to a NEWOBJ of its class with exactly this state.
+def _encoded_state(obj) -> dict:
+    """The state the writers encode obj with."""
+    keys = _STATE_KEYS[type(obj)]
+    if type(obj) is MetadataIndex:
+        keys = [key for key in keys if key in vars(obj)]
+    return {key: getattr(obj, key) for key in keys}
 
-    That is what the writers encode in its place (no state at all when ``state`` is empty).
+
+def _reduces_as_encoded(obj) -> bool:
+    """Whether pickle reduces obj to a NEWOBJ of its class with the state the writers encode.
+
+    The state must match in order too; an empty state means no state at all.
     """
+    state = _encoded_state(obj)
     r = obj.__reduce_ex__(4)
     return (
         len(r) >= 3
         and r[0] is copyreg.__newobj__
         and r[1] == (type(obj),)
         and all(x is None for x in r[3:])
-        and (r[2] == state if state else not r[2])
+        and (list(r[2].items()) == list(state.items()) if state else not r[2])
     )
 
 
@@ -439,13 +459,21 @@ def _layout_supported() -> bool:
             if getattr(importlib.import_module(module), name, None) is not cls:
                 return False
         md = _sample_metadata()
-        if not _reduces_as_encoded(md, vars(md)):
+        r = md.__reduce_ex__(4)
+        if r[:2] != (copyreg.__newobj__, (Metadata,)) or r[2] != vars(md):
             return False
         tensor = md.state_dict_metadata["w"]
         index, info = next(iter(md.storage_data.items()))
-        for obj in (tensor, tensor.chunks[0], md.state_dict_metadata["obj.0/shard_0"], index, info):
-            if not _reduces_as_encoded(obj, {k: getattr(obj, k) for k in _STATE_KEYS[type(obj)]}):
-                return False
+        samples = [
+            tensor,
+            tensor.chunks[0],
+            md.state_dict_metadata["obj.0/shard_0"],
+            index,
+            MetadataIndex("obj.0/shard_0"),  # without an offset
+            info,
+        ]
+        if not all(_reduces_as_encoded(obj) for obj in samples):
+            return False
         return tensor.size.__reduce_ex__(4) == (torch.Size, (tuple(tensor.size),))
     except Exception:
         logger.debug("torch DCP metadata layout check failed", exc_info=True)
