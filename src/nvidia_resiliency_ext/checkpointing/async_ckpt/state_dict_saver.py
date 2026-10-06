@@ -119,6 +119,8 @@ class CheckpointMetadataCache:
         # TODO: revisit with the plan-hash change. This mutates the caller's Metadata (Megatron's
         # load strategy holds the same object), and checkpoints written by this version carry no
         # plans, so reuse of loaded metadata is only possible for checkpoints from older versions.
+        # Then add CPU tests for this method (no torchrun needed): metadata with all_local_plans,
+        # with plan hashes, and with neither.
         self.loaded_all_plans = (
             vars(cached_global_metadata).pop("all_local_plans", None)
             if cached_global_metadata is not None

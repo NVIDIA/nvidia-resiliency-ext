@@ -257,6 +257,8 @@ class TestAsyncSave:
                 assert 'Worker failure' not in str(exc_info.value)
 
     def test_cached_metadata(self, tmp_path_dist_ckpt, async_queue):
+        # TODO: with the plan-hash change, assert what the saved .metadata carries for plan reuse
+        # (plan hashes, no all_local_plans), and add a save that reuses metadata loaded from disk.
         Utils.initialize_distributed()
         model = FSDP(Model((1024, 1024), 8))
         state_dict_non_cached = model.state_dict()
