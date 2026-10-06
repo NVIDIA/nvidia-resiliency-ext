@@ -37,9 +37,16 @@ hold, and ``pickle.dump`` is used otherwise:
 A metadata object that does not fit the writers at save time, for example a container of an
 unexpected type, also falls back to ``pickle.dump`` for that save.
 
-``NVRX_FAST_METADATA_PICKLE`` selects the writer: ``0`` always uses ``pickle.dump``, ``python``
-skips the C++ extension, and ``force`` uses the fast writers on untested torch versions too (the
-other checks still apply).
+The environment variable ``NVRX_FAST_METADATA_PICKLE`` selects how ``.metadata`` is written:
+
+- unset or ``1`` (default): the C++ writer if it is built, else the Python writer, subject to the
+  checks above;
+- ``python``: the Python writer, subject to the same checks;
+- ``force``: as the default, but also on torch versions outside ``TESTED_TORCH_VERSIONS``;
+- ``0``, ``false``, ``off`` or ``no``: torch's own ``FileSystemWriter.finish`` and ``pickle.dump``.
+
+Other values act as the default. The variable is read once per process, at the first save that
+writes ``.metadata``; changing it later in the process has no effect.
 """
 
 import copyreg
@@ -357,7 +364,8 @@ def fast_metadata_enabled() -> bool:
 
     False if disabled by ``NVRX_FAST_METADATA_PICKLE=0``, or if torch is outside
     ``TESTED_TORCH_VERSIONS`` (unless ``NVRX_FAST_METADATA_PICKLE=force``). Gates both the fast
-    writers and ``FileSystemWriterAsync.finish``.
+    writers and ``FileSystemWriterAsync.finish``. Evaluated once per process; see the module
+    docstring for the values of ``NVRX_FAST_METADATA_PICKLE``.
     """
     mode = _mode()
     if mode in ("0", "false", "off", "no"):

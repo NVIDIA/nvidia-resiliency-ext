@@ -116,6 +116,9 @@ class CheckpointMetadataCache:
         # Metadata written by older versions carries every rank's local plan, about half of the
         # .metadata size and pickling time. Keep the plans here for the reuse check, but take them
         # off the metadata: a reused metadata is written again and would carry them forward.
+        # TODO: revisit with the plan-hash change. This mutates the caller's Metadata (Megatron's
+        # load strategy holds the same object), and checkpoints written by this version carry no
+        # plans, so reuse of loaded metadata is only possible for checkpoints from older versions.
         self.loaded_all_plans = (
             vars(cached_global_metadata).pop("all_local_plans", None)
             if cached_global_metadata is not None
