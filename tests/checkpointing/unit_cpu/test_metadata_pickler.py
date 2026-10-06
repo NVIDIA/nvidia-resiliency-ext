@@ -51,17 +51,6 @@ WRITERS = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def fresh_selection(monkeypatch):
-    """Each test selects the writer anew, from the default environment."""
-    monkeypatch.delenv("NVRX_FAST_METADATA_PICKLE", raising=False)
-    writer.fast_metadata_enabled.cache_clear()
-    writer._select_dumps.cache_clear()
-    yield
-    writer.fast_metadata_enabled.cache_clear()
-    writer._select_dumps.cache_clear()
-
-
 def assert_identical(a, b, path="metadata"):
     """a and b are equal, have the same types throughout, and their dicts the same order."""
     assert type(a) is type(b), f"{path}: {type(a).__name__} != {type(b).__name__}"
