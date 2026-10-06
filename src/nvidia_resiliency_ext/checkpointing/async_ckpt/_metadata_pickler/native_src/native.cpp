@@ -46,25 +46,25 @@ py::object getattr(PyObject* obj, PyObject* name) {
     return py::reinterpret_steal<py::object>(r);
 }
 
-// obj.name, or None if obj has no such attribute.
-py::object getattr_or_none(PyObject* obj, PyObject* name) {
-    PyObject* r = PyObject_GetAttr(obj, name);
-    if (!r) {
-        if (!PyErr_ExceptionMatches(PyExc_AttributeError)) throw py::error_already_set();
-        PyErr_Clear();
-        return py::none();
-    }
-    return py::reinterpret_steal<py::object>(r);
+// New reference to obj.__dict__, the state pickle writes for the metadata classes.
+py::object instance_dict(PyObject* obj) {
+    static PyObject* name = PyUnicode_InternFromString("__dict__");
+    py::object d = getattr(obj, name);
+    if (!PyDict_CheckExact(d.ptr())) throw py::type_error("expected a __dict__");
+    return d;
 }
 
-// Borrowed reference to dict[key], throwing if it is missing.
-PyObject* dict_item(PyObject* dict, PyObject* key) {
-    if (!PyDict_Check(dict)) throw py::type_error("expected __dict__");
+// Borrowed reference to dict[key], or nullptr if key is missing.
+PyObject* dict_get(PyObject* dict, PyObject* key) {
     PyObject* r = PyDict_GetItemWithError(dict, key);
-    if (!r) {
-        if (PyErr_Occurred()) throw py::error_already_set();
-        throw py::type_error("missing attribute");
-    }
+    if (!r && PyErr_Occurred()) throw py::error_already_set();
+    return r;
+}
+
+// Borrowed reference to dict[key], throwing if key is missing.
+PyObject* dict_item(PyObject* dict, PyObject* key) {
+    PyObject* r = dict_get(dict, key);
+    if (!r) throw py::type_error("missing attribute");
     return r;
 }
 
@@ -222,14 +222,21 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
     py::module_ meta_mod = py::module_::import("torch.distributed.checkpoint.metadata");
     py::object tensor_cls = meta_mod.attr("TensorStorageMetadata");
     py::object bytes_cls = meta_mod.attr("BytesStorageMetadata");
+    py::object chunk_cls = meta_mod.attr("ChunkStorageMetadata");
+    py::object index_cls = meta_mod.attr("MetadataIndex");
+    py::object info_cls = py::module_::import("torch.distributed.checkpoint.filesystem").attr("_StorageInfo");
     py::object size_cls = py::module_::import("torch").attr("Size");
+    // Objects of exactly these classes are encoded here; others, subclasses included, are left to
+    // the stdlib pickler, so that they unpickle as their own class.
+    auto is = [](PyObject* obj, const py::object& cls) {
+        return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
+    };
 
-    py::str a_dict("__dict__"), a_properties("properties"), a_size("size"), a_chunks("chunks");
+    py::str a_properties("properties"), a_size("size"), a_chunks("chunks");
     py::str a_offsets("offsets"), a_sizes("sizes"), a_fqn("fqn"), a_index("index"), a_offset("offset");
     py::str a_transform("transform_descriptors"), a_relative_path("relative_path"), a_length("length");
 
-    py::object fields = getattr(md.ptr(), a_dict.ptr());
-    if (!PyDict_Check(fields.ptr())) throw py::type_error("expected Metadata.__dict__");
+    py::object fields = instance_dict(md.ptr());
     // About 98 bytes per storage entry: its MetadataIndex and
     // _StorageInfo, plus the matching chunk in state_dict_metadata.
     PyObject* storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
@@ -266,37 +273,45 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
             for (Py_ssize_t i = 0; PyDict_Next(value, &pos, &fqn, &v); ++i) {
                 if (i % BATCH == 0) w.put(MARK);
                 w.string(fqn);
-                int is_bytes = PyObject_IsInstance(v, bytes_cls.ptr());
-                if (is_bytes < 0) throw py::error_already_set();
-                int is_tensor = PyObject_IsInstance(v, tensor_cls.ptr());
-                if (is_tensor < 0) throw py::error_already_set();
-                if (is_bytes && PyDict_Size(getattr(v, a_dict.ptr()).ptr()) == 0) {
+                if (is(v, bytes_cls) && PyDict_Size(instance_dict(v).ptr()) == 0) {
                     w.put_get(bytes_ref);
                     w.put({EMPTY_TUPLE, NEWOBJ});
-                } else if (!is_tensor) {
+                } else if (!is(v, tensor_cls)) {
                     w.small(v);
                 } else {
+                    py::object state = instance_dict(v);
+                    PyObject* chunks = dict_item(state.ptr(), a_chunks.ptr());
+                    if (PyDict_Size(state.ptr()) != 3) {
+                        throw py::type_error("unexpected TensorStorageMetadata attributes");
+                    }
+                    if (!PyList_CheckExact(chunks)) throw py::type_error("expected list of chunks");
                     w.put_get(tensor_ref);
                     w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                     w.put_get(k_properties);
-                    w.small(getattr(v, a_properties.ptr()));
+                    w.small(dict_item(state.ptr(), a_properties.ptr()));
                     w.put_get(k_size);
-                    w.size(getattr(v, a_size.ptr()).ptr());
+                    w.size(dict_item(state.ptr(), a_size.ptr()));
                     w.put_get(k_chunks);
                     w.put(EMPTY_LIST);
-                    py::object chunks = getattr(v, a_chunks.ptr());
-                    if (!PyList_CheckExact(chunks.ptr())) throw py::type_error("expected list of chunks");
-                    Py_ssize_t nc = PyList_GET_SIZE(chunks.ptr());
+                    Py_ssize_t nc = PyList_GET_SIZE(chunks);
                     for (Py_ssize_t j = 0; j < nc; ++j) {
                         if (j % BATCH == 0) w.put(MARK);
-                        PyObject* c = PyList_GET_ITEM(chunks.ptr(), j);
-                        w.put_get(chunk_ref);
-                        w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-                        w.put_get(k_offsets);
-                        w.size(getattr(c, a_offsets.ptr()).ptr());
-                        w.put_get(k_sizes);
-                        w.size(getattr(c, a_sizes.ptr()).ptr());
-                        w.put({SETITEMS, BUILD});
+                        PyObject* c = PyList_GET_ITEM(chunks, j);
+                        if (!is(c, chunk_cls)) {
+                            w.small(c);
+                        } else {
+                            py::object chunk = instance_dict(c);
+                            if (PyDict_Size(chunk.ptr()) != 2) {
+                                throw py::type_error("unexpected ChunkStorageMetadata attributes");
+                            }
+                            w.put_get(chunk_ref);
+                            w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
+                            w.put_get(k_offsets);
+                            w.size(dict_item(chunk.ptr(), a_offsets.ptr()));
+                            w.put_get(k_sizes);
+                            w.size(dict_item(chunk.ptr(), a_sizes.ptr()));
+                            w.put({SETITEMS, BUILD});
+                        }
                         if (j % BATCH == BATCH - 1 || j == nc - 1) w.put(APPENDS);
                     }
                     w.put({SETITEMS, BUILD});
@@ -309,40 +324,48 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
             PyObject *idx, *info;
             for (Py_ssize_t i = 0; PyDict_Next(value, &pos, &idx, &info); ++i) {
                 if (i % BATCH == 0) w.put(MARK);
-                // MetadataIndex sets offset only when it is given; pickle its __dict__.
-                py::object state = getattr(idx, a_dict.ptr());
-                PyObject* fqn = dict_item(state.ptr(), a_fqn.ptr());
-                PyObject* index = dict_item(state.ptr(), a_index.ptr());
-                PyObject* offset = PyDict_GetItemWithError(state.ptr(), a_offset.ptr());
-                if (!offset && PyErr_Occurred()) throw py::error_already_set();
-                if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
-                    throw py::type_error("unexpected MetadataIndex attributes");
+                if (!is(idx, index_cls)) {
+                    w.small(idx);
+                } else {
+                    // MetadataIndex sets offset only when it is given; pickle its __dict__.
+                    py::object state = instance_dict(idx);
+                    PyObject* fqn = dict_item(state.ptr(), a_fqn.ptr());
+                    PyObject* index = dict_item(state.ptr(), a_index.ptr());
+                    PyObject* offset = dict_get(state.ptr(), a_offset.ptr());
+                    if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
+                        throw py::type_error("unexpected MetadataIndex attributes");
+                    }
+                    w.put_get(index_ref);
+                    w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
+                    w.put_get(k_fqn);
+                    w.string(fqn);
+                    w.put_get(k_index);
+                    if (index == Py_None) w.put(NONE); else w.put_int(as_int(index));
+                    if (offset) {
+                        w.put_get(k_offset);
+                        if (offset == Py_None) w.put(NONE); else w.size(offset);
+                    }
+                    w.put({SETITEMS, BUILD});
                 }
-                w.put_get(index_ref);
-                w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-                w.put_get(k_fqn);
-                w.string(fqn);
-                w.put_get(k_index);
-                if (index == Py_None) w.put(NONE); else w.put_int(as_int(index));
-                if (offset) {
-                    w.put_get(k_offset);
-                    if (offset == Py_None) w.put(NONE); else w.size(offset);
-                }
-                w.put({SETITEMS, BUILD});
 
-                // transform_descriptors does not exist before PyTorch 2.8; when present and
-                // set, the whole _StorageInfo goes through the stdlib pickler.
-                if (!getattr_or_none(info, a_transform.ptr()).is_none()) {
+                // _StorageInfo pickles its __dict__ without None values. transform_descriptors
+                // exists from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib pickler.
+                py::object state = is(info, info_cls) ? instance_dict(info) : py::object();
+                PyObject* transforms = state ? dict_get(state.ptr(), a_transform.ptr()) : nullptr;
+                if (!state || (transforms && transforms != Py_None)) {
                     w.small(info);
                 } else {
+                    if (PyDict_Size(state.ptr()) != (transforms ? 4 : 3)) {
+                        throw py::type_error("unexpected _StorageInfo attributes");
+                    }
                     w.put_get(info_ref);
                     w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                     w.put_get(k_relative_path);
-                    w.string(getattr(info, a_relative_path.ptr()).ptr());
+                    w.string(dict_item(state.ptr(), a_relative_path.ptr()));
                     w.put_get(k_offset);
-                    w.put_int(as_int(getattr(info, a_offset.ptr()).ptr()));
+                    w.put_int(as_int(dict_item(state.ptr(), a_offset.ptr())));
                     w.put_get(k_length);
-                    w.put_int(as_int(getattr(info, a_length.ptr()).ptr()));
+                    w.put_int(as_int(dict_item(state.ptr(), a_length.ptr())));
                     w.put({SETITEMS, BUILD});
                 }
                 if (i % BATCH == BATCH - 1 || i == n - 1) w.put(SETITEMS);
