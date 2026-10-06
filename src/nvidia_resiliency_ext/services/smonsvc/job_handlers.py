@@ -72,7 +72,7 @@ def submit_log(
         try:
             result = response.json()
         except Exception as e:
-            logger.warning(f"[{job.job_id}] POST 2xx but JSON parse failed: {e}")
+            logger.warning(f"[{analysis_job_id}] POST 2xx but JSON parse failed: {e}")
             return
         mode = result.get(RESP_MODE, JobMode.SINGLE.value)
         if mode == JobMode.SPLITLOG.value:
@@ -80,11 +80,11 @@ def submit_log(
             sched_restarts = result.get(RESP_SCHED_RESTARTS, 0)
             files_analyzed = result.get(RESP_FILES_ANALYZED, 0)
             logger.info(
-                f"[{job.job_id}] POST submitted (splitlog mode): {log_path} "
+                f"[{analysis_job_id}] POST submitted (splitlog mode): {log_path} "
                 f"(logs_dir={logs_dir}, sched_restarts={sched_restarts}, files_analyzed={files_analyzed})"
             )
         else:
-            logger.info(f"[{job.job_id}] POST submitted: {log_path}")
+            logger.info(f"[{analysis_job_id}] POST submitted: {log_path}")
         job.post_success = True
         state.post_success += 1
 
@@ -94,7 +94,7 @@ def submit_log(
         categorize_path_error(state, error_msg)
 
     def on_404():
-        logger.debug(f"[{job.job_id}] POST 404 (file not found): {log_path}")
+        logger.debug(f"[{analysis_job_id}] POST 404 (file not found): {log_path}")
         job.log_submitted = True  # Don't retry - attrsvc received the path
         state.logs_submitted += 1
         state.path_errors_not_found += 1
