@@ -299,12 +299,9 @@ def _evaluate_job_progress(
         availability_reason="ready",
         same_job_attempts=len(ordered),
         comparisons=comparisons,
-        consecutive_no_advance_attempts=_consecutive_job_relations(
-            comparisons,
-            {
-                HistoryProgressRelation.SAME.value,
-                HistoryProgressRelation.REGRESSED.value,
-            },
+        consecutive_no_advance_attempts=_consecutive_no_advance_attempts(
+            current_record,
+            ordered,
         ),
         consecutive_unknown_progress_attempts=_consecutive_unknown_progress_attempts(
             current_record,
@@ -681,13 +678,47 @@ def _consecutive_unknown_progress_attempts(
     return count
 
 
-def _consecutive_job_relations(
-    comparisons: Sequence[HistoryProgressComparison],
-    qualifying_relations: set[str],
+#: Relations that mean an attempt did not get further than what came before it.
+_NO_ADVANCE_RELATIONS = frozenset(
+    {
+        HistoryProgressRelation.SAME.value,
+        HistoryProgressRelation.REGRESSED.value,
+    }
+)
+
+
+def _advanced_over(record: AttemptRecord, predecessor: AttemptRecord) -> bool:
+    """Whether ``record`` got further than the attempt immediately before it."""
+    return _compare_job_progress(record, predecessor).relation not in _NO_ADVANCE_RELATIONS
+
+
+def _consecutive_no_advance_attempts(
+    current_record: AttemptRecord,
+    ordered_priors: Sequence[AttemptRecord],
 ) -> int:
-    count = 0
-    for comparison in reversed(comparisons):
-        if comparison.relation not in qualifying_relations:
+    """Consecutive attempts, ending at the current one, that got no further.
+
+    Each attempt is judged against its own immediate predecessor. Counting
+    SAME/REGRESSED *comparisons* instead measures something different: every
+    comparison is current-vs-a-prior, so the count becomes "how many of the
+    most recent predecessors did the current attempt fail to get past", not
+    "how many attempts in a row stalled".
+
+    Those agree while progress only moves forward, and diverge on a rollback.
+    A run that resumes from an earlier checkpoint sits below several
+    predecessors at once by design, inflating the count by that many and
+    exhausting the guard on one cycle - which is how job 4234179 reached STOP
+    with three counted attempts while its own cycle 1 reported progress
+    advancing.
+    """
+    ordered = tuple(ordered_priors)
+    if not ordered:
+        return 0
+    if _advanced_over(current_record, ordered[-1]):
+        return 0
+    count = 1
+    for index in range(len(ordered) - 1, 0, -1):
+        if _advanced_over(ordered[index], ordered[index - 1]):
             break
         count += 1
     return count
