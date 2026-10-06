@@ -104,6 +104,9 @@ class DecentralizedSavePlanner(CountingSavePlanner):
 
     can_run_decentralized_global_plan = True
 
+    def __init__(self):
+        super().__init__(flatten_state_dict=False)
+
     def create_decentralized_global_plan(self, local_plan):
         return local_plan
 
@@ -344,8 +347,6 @@ class TestAsyncSave:
                 assert 'Worker failure' not in str(exc_info.value)
 
     def test_cached_metadata(self, tmp_path_dist_ckpt, async_queue):
-        # TODO: with the plan-hash change, assert what the saved .metadata carries for plan reuse
-        # (plan hashes, no all_local_plans), and add a save that reuses metadata loaded from disk.
         Utils.initialize_distributed()
         model = FSDP(Model((1024, 1024), 8))
         state_dict_non_cached = model.state_dict()
@@ -413,7 +414,7 @@ class TestAsyncSave:
         CountingSavePlanner.calls.clear()
         cache = CheckpointMetadataCache()
         state_dict = rank_state_dict()
-        calls = []
+        calls, loaded = [], []
         for i in range(3):
             with TempNamedDir(tmp_path_dist_ckpt / f'reuse_{i}', sync=True) as ckpt_dir:
                 self.async_save_checkpoint(
@@ -427,15 +428,65 @@ class TestAsyncSave:
                 async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
                 calls.append(dict(CountingSavePlanner.calls))
                 CountingSavePlanner.calls.clear()
-                loaded = self.load_checkpoint(
-                    ckpt_dir, {k: torch.empty_like(v) for k, v in state_dict.items()}
+                loaded.append(
+                    self.load_checkpoint(
+                        ckpt_dir, {k: torch.empty_like(v) for k, v in state_dict.items()}
+                    )
                 )
-                for key, value in state_dict.items():
-                    assert torch.equal(loaded[key], value), f'save {i}: mismatch for {key!r}'
 
+        # Asserted after the collectives, so a failure on one rank doesn't hang the others.
+        for i, loaded_i in enumerate(loaded):
+            for key, value in state_dict.items():
+                assert torch.equal(loaded_i[key], value), f'save {i}: mismatch for {key!r}'
         assert [c.get('local', 0) for c in calls] == [1, 1, 1]
         built = [1, 0, 0] if torch.distributed.get_rank() == 0 else [0, 0, 0]
         assert [c.get('global', 0) for c in calls] == built
+
+    @pytest.mark.parametrize('extra', [False, True], ids=['same', 'changed'])
+    def test_cache_reuses_loaded_metadata(self, tmp_path_dist_ckpt, async_queue, extra):
+        """After a restart, the first save reuses the loaded checkpoint's metadata if it applies.
+
+        It applies if the new local plans write the chunks it lists; then the global metadata is
+        not built again. The checkpoint stores no local plans for this.
+        """
+        Utils.initialize_distributed()
+        coordinator = torch.distributed.get_rank() == 0
+        with TempNamedDir(tmp_path_dist_ckpt / 'loaded', sync=True) as loaded_dir:
+            self.async_save_checkpoint(
+                loaded_dir,
+                rank_state_dict(),
+                DecentralizedSavePlanner(),
+                async_queue,
+                caching=True,
+                metadata_cache=CheckpointMetadataCache(),
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            loaded_md = FileSystemReader(loaded_dir).read_metadata()
+        assert 'all_local_plans' not in vars(loaded_md)
+
+        # A restarted job: a new cache, given the metadata read from the checkpoint on every rank.
+        cache = CheckpointMetadataCache()
+        cache.set_cached_global_metadata(loaded_md)
+        state_dict = rank_state_dict(extra=extra)
+        CountingSavePlanner.calls.clear()
+        with TempNamedDir(tmp_path_dist_ckpt / 'after_restart', sync=True) as ckpt_dir:
+            self.async_save_checkpoint(
+                ckpt_dir,
+                state_dict,
+                DecentralizedSavePlanner(),
+                async_queue,
+                caching=True,
+                metadata_cache=cache,
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            built = CountingSavePlanner.calls['global']
+            loaded = self.load_checkpoint(
+                ckpt_dir, {k: torch.empty_like(v) for k, v in state_dict.items()}
+            )
+        # Asserted after the collectives, so a failure on one rank doesn't hang the others.
+        assert built == (1 if extra and coordinator else 0)
+        for key, value in state_dict.items():
+            assert torch.equal(loaded[key], value), f'mismatch for {key!r}'
 
     @pytest.mark.parametrize('planner_cls', [CountingSavePlanner, DecentralizedSavePlanner])
     def test_cache_raises_when_structure_changes(
