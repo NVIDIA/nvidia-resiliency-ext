@@ -333,6 +333,92 @@ def test_dump_metadata_falls_back(mutate, python_rejects):
     assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
 
 
+# Objects whose pickling changes the metadata being written, through a class attribute set by the
+# test. The native writer must raise or write a loadable pickle, never crash or write garbage.
+class _EmptiesChunkList(ChunkStorageMetadata):
+    target = None
+
+    def __reduce_ex__(self, protocol):
+        type(self).target.clear()
+        return super().__reduce_ex__(protocol)
+
+
+class _ReplacesChunkList(TensorProperties):
+    target = None
+
+    def __reduce_ex__(self, protocol):
+        type(self).target.chunks = []  # frees the list being written
+        return super().__reduce_ex__(protocol)
+
+
+class _DeletesEntries(BytesStorageMetadata):
+    target = None
+
+    def __reduce_ex__(self, protocol):
+        for fqn in [fqn for fqn in type(self).target if fqn.startswith("obj.")][:250]:
+            del type(self).target[fqn]
+        return super().__reduce_ex__(protocol)
+
+
+class _ReplacesStorageInfo(MetadataIndex):
+    target = None
+
+    def __reduce_ex__(self, protocol):
+        type(self).target[self] = _StorageInfo("__9_9.distcp", 0, 1)  # frees the old value
+        return super().__reduce_ex__(protocol)
+
+
+def _metadata_changed_while_pickled(case):
+    md = writer._sample_metadata()
+    w = md.state_dict_metadata["w"]
+    if case == "chunk-list-emptied":
+        w.chunks = [_EmptiesChunkList(torch.Size([0]), torch.Size([1])), *w.chunks * 1000]
+        _EmptiesChunkList.target = w.chunks
+    elif case == "chunk-list-replaced":
+        w.properties = _ReplacesChunkList(dtype=torch.float32)
+        w.chunks = w.chunks * 2500
+        _ReplacesChunkList.target = w
+    elif case == "entries-deleted":
+        md.state_dict_metadata = {"first": _DeletesEntries(), **md.state_dict_metadata}
+        _DeletesEntries.target = md.state_dict_metadata
+    elif case == "storage-info-replaced":
+        index = _ReplacesStorageInfo("w2", torch.Size([0, 0, 0, 0]), 0)
+        md.storage_data = {index: _StorageInfo("__0_0.distcp", 0, 1), **md.storage_data}
+        _ReplacesStorageInfo.target = md.storage_data
+    return md
+
+
+CHANGED_WHILE_PICKLED = [
+    "chunk-list-emptied",
+    "chunk-list-replaced",
+    "entries-deleted",
+    "storage-info-replaced",
+]
+
+
+@NEEDS_NATIVE
+@pytest.mark.parametrize("case", CHANGED_WHILE_PICKLED)
+def test_native_survives_metadata_changed_while_pickled(case):
+    md = _metadata_changed_while_pickled(case)
+    try:
+        out = writer._native_dumps(md)
+    except RuntimeError as e:
+        assert "changed size" in str(e)
+    else:
+        pickle.loads(out)
+
+
+@pytest.mark.parametrize("case", CHANGED_WHILE_PICKLED)
+def test_dump_metadata_raises_or_loads_when_metadata_changes(case):
+    md = _metadata_changed_while_pickled(case)
+    buf = io.BytesIO()
+    try:
+        writer.dump_metadata(md, buf)
+    except RuntimeError:
+        return  # as stock pickle does when a dict changes size
+    pickle.loads(buf.getvalue())
+
+
 def test_changed_pickled_state_disables_fast_writers(monkeypatch):
     monkeypatch.setattr(
         ChunkStorageMetadata, "__getstate__", lambda self: {"offsets": self.offsets}, raising=False

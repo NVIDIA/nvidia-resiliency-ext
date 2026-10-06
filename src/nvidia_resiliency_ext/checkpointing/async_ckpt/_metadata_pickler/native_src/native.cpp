@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -114,9 +115,12 @@ class Writer {
         prelude();
         put_get(metadata_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-        for (const auto item : py::reinterpret_borrow<py::dict>(fields)) {
-            const std::string_view field = utf8(item.first.ptr());
-            PyObject* const value = item.second.ptr();
+        // A snapshot, which holds the fields while small() runs Python code that could change them.
+        const auto items = py::reinterpret_steal<py::list>(PyDict_Items(fields.ptr()));
+        if (!items) throw py::error_already_set();
+        for (const py::handle item : items) {
+            const std::string_view field = utf8(PyTuple_GET_ITEM(item.ptr(), 0));
+            PyObject* const value = PyTuple_GET_ITEM(item.ptr(), 1);
             put_str(field);
             if (field == "state_dict_metadata") {
                 dump_state_dict_metadata(value);
@@ -162,6 +166,8 @@ class Writer {
         Py_ssize_t pos = 0;
         PyObject *fqn, *v;
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &fqn, &v); ++i) {
+            // small() runs Python code, which could change the dict: fqn and v are not used after
+            // it, and the dict's size is checked after it.
             if (i % BATCH == 0) put(MARK);
             string(fqn);
             if (is(v, bytes_cls_) && PyDict_Size(instance_dict(v).ptr()) == 0) {
@@ -169,13 +175,17 @@ class Writer {
                 put({EMPTY_TUPLE, NEWOBJ});
             } else if (!is(v, tensor_cls_)) {
                 small(v);
+                check_size(dict, n);
             } else {
                 const py::object state = instance_dict(v);
-                PyObject* const chunks = dict_item(state.ptr(), a_chunks_.ptr());
+                const auto chunks =
+                    py::reinterpret_borrow<py::object>(dict_item(state.ptr(), a_chunks_.ptr()));
                 if (PyDict_Size(state.ptr()) != 3) {
                     throw py::type_error("unexpected TensorStorageMetadata attributes");
                 }
-                if (!PyList_CheckExact(chunks)) throw py::type_error("expected list of chunks");
+                if (!PyList_CheckExact(chunks.ptr())) {
+                    throw py::type_error("expected list of chunks");
+                }
                 put_get(tensor_ref_);
                 put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                 put_get(k_properties_);
@@ -184,12 +194,13 @@ class Writer {
                 size(dict_item(state.ptr(), a_size_.ptr()));
                 put_get(k_chunks_);
                 put(EMPTY_LIST);
-                const Py_ssize_t nc = PyList_GET_SIZE(chunks);
+                const Py_ssize_t nc = PyList_GET_SIZE(chunks.ptr());
                 for (Py_ssize_t j = 0; j < nc; ++j) {
                     if (j % BATCH == 0) put(MARK);
-                    PyObject* const c = PyList_GET_ITEM(chunks, j);
+                    PyObject* const c = PyList_GET_ITEM(chunks.ptr(), j);
                     if (!is(c, chunk_cls_)) {
                         small(c);
+                        check_size(chunks.ptr(), nc);
                     } else {
                         const py::object chunk = instance_dict(c);
                         if (PyDict_Size(chunk.ptr()) != 2) {
@@ -206,6 +217,7 @@ class Writer {
                     if (j % BATCH == BATCH - 1 || j == nc - 1) put(APPENDS);
                 }
                 put({SETITEMS, BUILD});
+                check_size(dict, n);  // after small() of the properties
             }
             if (i % BATCH == BATCH - 1 || i == n - 1) put(SETITEMS);
         }
@@ -220,8 +232,12 @@ class Writer {
         PyObject *idx, *info;
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &idx, &info); ++i) {
             if (i % BATCH == 0) put(MARK);
+            // Owns info while small(idx) runs Python code, which could remove it from the dict.
+            py::object keep_info;
             if (!is(idx, index_cls_)) {
+                keep_info = py::reinterpret_borrow<py::object>(info);
                 small(idx);
+                check_size(dict, n);
             } else {
                 // MetadataIndex sets offset only when it is given; pickle its __dict__.
                 const py::object state = instance_dict(idx);
@@ -251,6 +267,7 @@ class Writer {
                 state ? dict_get(state.ptr(), a_transform_.ptr()) : nullptr;
             if (!state || (transforms && transforms != Py_None)) {
                 small(info);
+                check_size(dict, n);
             } else {
                 if (PyDict_Size(state.ptr()) != (transforms ? 4 : 3)) {
                     throw py::type_error("unexpected _StorageInfo attributes");
@@ -266,6 +283,14 @@ class Writer {
                 put({SETITEMS, BUILD});
             }
             if (i % BATCH == BATCH - 1 || i == n - 1) put(SETITEMS);
+        }
+    }
+
+    // Raise if Python code run by small() changed the size of a dict or list being written: the
+    // loops would read past its end or skip entries. Stock pickle raises for dicts too.
+    static void check_size(PyObject* container, Py_ssize_t n) {
+        if (PyObject_Size(container) != n) {
+            throw std::runtime_error("metadata changed size while being pickled");
         }
     }
 
