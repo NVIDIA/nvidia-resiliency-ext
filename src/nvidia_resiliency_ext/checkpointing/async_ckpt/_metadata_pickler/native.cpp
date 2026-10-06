@@ -76,8 +76,8 @@ int64_t as_int(PyObject* o) {
 
 class Writer {
    public:
-    explicit Writer(py::object small_pickle) : small_pickle_(std::move(small_pickle)) {
-        out_.reserve(256u << 20);
+    Writer(py::object small_pickle, size_t expected_size) : small_pickle_(std::move(small_pickle)) {
+        out_.reserve(expected_size);
     }
 
     std::string out_;
@@ -217,7 +217,13 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
     py::str a_offsets("offsets"), a_sizes("sizes"), a_fqn("fqn"), a_index("index"), a_offset("offset");
     py::str a_transform("transform_descriptors"), a_relative_path("relative_path"), a_length("length");
 
-    Writer w(std::move(small_pickle));
+    py::object fields = getattr(md.ptr(), a_dict.ptr());
+    if (!PyDict_Check(fields.ptr())) throw py::type_error("expected Metadata.__dict__");
+    // About 98 bytes per storage entry: its MetadataIndex and
+    // _StorageInfo, plus the matching chunk in state_dict_metadata.
+    PyObject* storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
+    size_t n_storage = storage_data && PyDict_Check(storage_data) ? PyDict_Size(storage_data) : 0;
+    Writer w(std::move(small_pickle), 4096 + 100 * n_storage);
     w.size_type = size_cls.ptr();
     w.put({PROTO, '\x04'});
     const char* meta = "torch.distributed.checkpoint.metadata";
@@ -235,7 +241,6 @@ py::bytes dumps(py::handle md, py::object small_pickle) {
 
     w.put_get(metadata_ref);
     w.put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-    py::object fields = getattr(md.ptr(), a_dict.ptr());
     for (auto item : py::reinterpret_borrow<py::dict>(fields)) {
         std::string_view field = utf8(item.first.ptr());
         w.put_str(field);
