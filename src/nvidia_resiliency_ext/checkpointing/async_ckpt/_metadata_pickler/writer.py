@@ -169,6 +169,8 @@ class _MetadataPickler:
 
     def string(self, s: str) -> bytes:
         """First use writes the string and memoizes it; later uses fetch it from the memo."""
+        if type(s) is not str:
+            raise TypeError(f"expected str, got {type(s).__name__}")
         ref = self.strings.get(s)
         if ref is not None:
             return ref

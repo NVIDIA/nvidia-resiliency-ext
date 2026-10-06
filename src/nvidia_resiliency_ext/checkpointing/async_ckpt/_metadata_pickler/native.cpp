@@ -58,7 +58,7 @@ py::object getattr_or_none(PyObject* obj, PyObject* name) {
 }
 
 std::string_view utf8(PyObject* s) {
-    if (!PyUnicode_Check(s)) throw py::type_error("expected str");
+    if (!PyUnicode_CheckExact(s)) throw py::type_error("expected str");
     Py_ssize_t n;
     const char* p = PyUnicode_AsUTF8AndSize(s, &n);
     if (!p) throw py::error_already_set();
