@@ -41,7 +41,7 @@ jobs:
       matrix:
         container:
           - 'ghcr.io/nvidia/nvidia-resiliency-ext/builder_amd64:cuda-13.0-devel-ubuntu24.04-py3.12-py3.14'
-        test_type: ['fault_tolerance']
+        test_type: ['fault_tolerance', 'checkpointing_cpu']
     container:
       image: ${{ matrix.container }}
     env:
@@ -57,7 +57,7 @@ jobs:
           path: ./dist/
       - name: Set up environment
         run: |
-          "$PYTHON" -m pip install pytest
+          "$PYTHON" -m pip install pytest hypothesis
           "$PYTHON" -m pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==2.8.0+cpu"
           PY_VER_NODOT=$("$PYTHON" -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           "$PYTHON" -m pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
@@ -74,6 +74,8 @@ jobs:
               "$PYTHON" -m pytest -s -vvv tests/straggler/unit/ -k "${STRAGGLER_DET_CPU_TESTS_PATTERN}"
           elif [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
               "$PYTHON" -m pytest -s -vvv ./tests/fault_tolerance/unit/
+          elif [[ "${{ matrix.test_type }}" == "checkpointing_cpu" ]]; then
+              "$PYTHON" -m pytest -s -vvv ./tests/checkpointing/unit_cpu/
           else
               echo "Unknown test type: ${{ matrix.test_type }}"
               exit 1
