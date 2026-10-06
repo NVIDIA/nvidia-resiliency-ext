@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import stat
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from queue import SimpleQueue
 from threading import Event, RLock, Thread
@@ -63,6 +65,9 @@ from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperation
 from .slack import AnalysisIdentity, SlackNotifier, run_name_from_log_path
 
 logger = logging.getLogger(__name__)
+
+#: Cache layout version. A mismatch is ignored rather than guessed at.
+_CACHE_SCHEMA = "restart_agent_cache.v1"
 
 _STATUS_REGISTERED = "registered"
 _STATUS_ANALYZING = "analyzing"
@@ -192,7 +197,9 @@ class RestartAgentServiceBackend:
         precompute_executor: ThreadPoolExecutor | None = None,
         accumulator_factory: Callable[[str], ProgressiveL0Accumulator] = (ProgressiveL0Accumulator),
         slack_notifier: SlackNotifier | None = None,
+        cache_file: str = "",
     ) -> None:
+        self._cache_file = (cache_file or "").strip()
         self._allowed_root = os.path.realpath(allowed_root)
         self._runtime = runtime
         self._config = config
@@ -230,6 +237,7 @@ class RestartAgentServiceBackend:
         self._scheduler.start()
 
     def shutdown(self) -> None:
+        self._save_cache(self._cache_file)
         with self._lock:
             self._shutdown = True
         self._scheduler_wakeup.set()
@@ -247,15 +255,147 @@ class RestartAgentServiceBackend:
 
     async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> dict[str, Any]:
         del loop
-        return {"cache_entries_loaded": 0, "backend": "lib"}
+        return {"cache_entries_loaded": self._load_cache(self._cache_file), "backend": "lib"}
 
     async def save_cache(self, cache_file: str | None = None) -> bool:
-        del cache_file
-        return False
+        return self._save_cache(cache_file if cache_file is not None else self._cache_file)
 
     async def load_cache(self, cache_file: str | None = None) -> int:
-        del cache_file
-        return 0
+        return self._load_cache(cache_file if cache_file is not None else self._cache_file)
+
+    def _file_identity(self, log_path: str) -> dict[str, Any]:
+        try:
+            stat = os.stat(log_path)
+        except OSError:
+            return {}
+        return {"mtime": stat.st_mtime, "size": stat.st_size}
+
+    def _save_cache(self, cache_file: str) -> bool:
+        """Persist completed analyses and attempt history to ``cache_file``.
+
+        Both halves matter on restart: without the analyses every complete
+        cycle of every running job is re-analyzed, and without the attempt
+        records L3 evaluates each of those as a first attempt.
+        """
+        path = (cache_file or "").strip()
+        if not path:
+            return False
+        with self._lock:
+            entries = [
+                {
+                    "log_path": entry.log_path,
+                    "user": entry.user,
+                    "job_id": entry.job_id,
+                    "cycle_id": entry.cycle_id,
+                    "source": entry.best_source,
+                    "result": (entry.final_result or entry.best_result).to_payload(),
+                    **self._file_identity(entry.log_path),
+                }
+                for entry in self._entries.values()
+                if entry.status == _STATUS_COMPLETED
+                and (entry.final_result or entry.best_result) is not None
+            ]
+        try:
+            records = [
+                record.to_payload() for record in self._runtime.attempt_record_control.records()
+            ]
+        except Exception:  # history disabled, or a runtime without the control seam
+            records = []
+        payload = {
+            "schema": _CACHE_SCHEMA,
+            "saved_at": time.time(),
+            "entries": entries,
+            "attempt_records": records,
+        }
+        tmp = f"{path}.tmp.{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+            os.replace(tmp, path)
+        except OSError as exc:
+            logger.warning("Could not write attribution cache %s: %s", path, exc)
+            with suppress(OSError):
+                os.unlink(tmp)
+            return False
+        return True
+
+    def _load_cache(self, cache_file: str) -> int:
+        path = (cache_file or "").strip()
+        if not path or not os.path.exists(path):
+            return 0
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not read attribution cache %s: %s", path, exc)
+            return 0
+        if not isinstance(payload, Mapping) or payload.get("schema") != _CACHE_SCHEMA:
+            logger.warning("Ignoring attribution cache %s: unrecognized schema", path)
+            return 0
+
+        # Seed history first: it is useful even for entries whose log has moved
+        # on and whose cached analysis is therefore dropped below.
+        records = payload.get("attempt_records")
+        if isinstance(records, list) and records:
+            try:
+                self._runtime.attempt_record_control.seed(records, mode="replace")
+            except Exception as exc:
+                logger.warning("Could not restore attempt history: %s", exc)
+
+        loaded = 0
+        for item in payload.get("entries") or []:
+            if self._restore_entry(item):
+                loaded += 1
+        return loaded
+
+    def _restore_entry(self, item: Any) -> bool:
+        """Rebuild one completed analysis, if its log is byte-for-byte unchanged.
+
+        Validation is unconditional rather than honoring CACHE_GRACE_PERIOD_SECONDS:
+        that window exists to skip stat() on a hot in-process cache, and a
+        restart invalidates any such freshness assumption. It also matters
+        here - the newest cycle log is still being appended to, and serving a
+        stale verdict for it would attribute a failure from minutes ago.
+        """
+        if not isinstance(item, Mapping):
+            return False
+        log_path = str(item.get("log_path") or "")
+        result_payload = item.get("result")
+        if not log_path or not isinstance(result_payload, Mapping):
+            return False
+        identity = self._file_identity(log_path)
+        if not identity:
+            return False  # log is gone
+        if identity.get("size") != item.get("size") or identity.get("mtime") != item.get("mtime"):
+            return False  # grew or was rewritten since it was analyzed
+        try:
+            result = AnalysisResult(**dict(result_payload))
+        except TypeError:
+            return False
+        job_id = item.get("job_id")
+        cycle_id = item.get("cycle_id")
+        key: Hashable = (
+            (job_id, cycle_id) if job_id is not None and cycle_id is not None else log_path
+        )
+        entry = _AttemptExecution(
+            key=key,
+            log_path=log_path,
+            user=str(item.get("user") or "unknown"),
+            job_id=None if job_id is None else str(job_id),
+            cycle_id=None if cycle_id is None else int(cycle_id),
+            status=_STATUS_COMPLETED,
+            best_result=result,
+            final_result=result,
+            best_source=str(item.get("source") or ""),
+            progressive_phase="completed",
+            completed_at=time.monotonic(),
+        )
+        with self._lock:
+            if key in self._entries or log_path in self._path_index:
+                return False
+            self._entries[key] = entry
+            self._path_index[log_path] = key
+        return True
 
     async def check_mcp_health(self, timeout_seconds: float = 5.0) -> tuple[str, str]:
         del timeout_seconds
@@ -799,6 +939,7 @@ class RestartAgentServiceBackend:
                 route_count=completed_route_count,
             )
             self._notify_slack(key)
+            self._save_cache(self._cache_file)
         except Exception as exc:
             with self._lock:
                 self._execution_errors += 1

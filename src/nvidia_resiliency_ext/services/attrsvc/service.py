@@ -138,6 +138,7 @@ class AttributionHttpAdapter:
             runtime=build_restart_agent_runtime(restart_config),
             config=restart_config,
             slack_notifier=slack_notifier,
+            cache_file=cfg.CACHE_FILE,
             convergence=LogConvergencePolicy(
                 quiet_seconds=cfg.RESTART_AGENT_LOG_QUIET_SECONDS,
                 max_wait_seconds=cfg.RESTART_AGENT_LOG_MAX_WAIT_SECONDS,
