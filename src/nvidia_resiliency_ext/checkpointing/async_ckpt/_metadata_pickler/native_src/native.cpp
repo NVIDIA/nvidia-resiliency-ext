@@ -93,6 +93,7 @@ class Writer {
     // Look up the metadata classes the encoding checks objects against.
     explicit Writer(py::object small_pickle) : small_pickle_(std::move(small_pickle)) {
         py::module_ meta = py::module_::import("torch.distributed.checkpoint.metadata");
+        metadata_cls_ = meta.attr("Metadata");
         tensor_cls_ = meta.attr("TensorStorageMetadata");
         bytes_cls_ = meta.attr("BytesStorageMetadata");
         chunk_cls_ = meta.attr("ChunkStorageMetadata");
@@ -104,6 +105,7 @@ class Writer {
 
     // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field.
     [[nodiscard]] py::bytes dumps(PyObject* md) {
+        if (!is(md, metadata_cls_)) throw py::type_error("expected Metadata");
         const py::object fields = instance_dict(md);
         // About 98 bytes per storage entry: its MetadataIndex and
         // _StorageInfo, plus the matching chunk in state_dict_metadata.
@@ -420,7 +422,8 @@ class Writer {
     };
 
     py::object small_pickle_;
-    py::object tensor_cls_, bytes_cls_, chunk_cls_, index_cls_, info_cls_, size_cls_;
+    py::object metadata_cls_, tensor_cls_, bytes_cls_, chunk_cls_, index_cls_, info_cls_;
+    py::object size_cls_;
     py::str a_properties_{"properties"}, a_size_{"size"}, a_chunks_{"chunks"};
     py::str a_offsets_{"offsets"}, a_sizes_{"sizes"};
     py::str a_fqn_{"fqn"}, a_index_{"index"}, a_offset_{"offset"};

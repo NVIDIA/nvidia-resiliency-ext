@@ -237,6 +237,8 @@ class _MetadataPickler:
 
     def dumps(self, md: Metadata) -> bytes:
         """The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field."""
+        if type(md) is not Metadata:
+            raise TypeError(f"expected Metadata, got {type(md).__name__}")
         self._prelude()
         out = self.out
         out.append(self.METADATA + EMPTY_TUPLE + NEWOBJ + EMPTY_DICT + MARK)

@@ -188,6 +188,10 @@ def subclassed_metadata() -> Metadata:
     return md
 
 
+class _Metadata(Metadata):
+    pass
+
+
 class _Tensor(TensorStorageMetadata):
     pass
 
@@ -316,6 +320,7 @@ UNEXPECTED_VALUES = pytest.mark.parametrize(
             True,
             id="storage-info-extra-attribute",
         ),
+        pytest.param(lambda md: setattr(md, "__class__", _Metadata), True, id="metadata-subclass"),
         pytest.param(lambda md: _set_index(md, 2**70), False, id="int-beyond-int64"),
         pytest.param(
             lambda md: _rename_first(md, lambda s: s + "\ud800"), False, id="lone-surrogate"
