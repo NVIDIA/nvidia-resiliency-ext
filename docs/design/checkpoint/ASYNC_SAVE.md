@@ -10,14 +10,14 @@ Scope:
 
 ## Terms
 
-| Term | Meaning |
-| --- | --- |
-| Local plan | A rank's `SavePlan` from `planner.create_local_plan()`: one `WriteItem` per tensor chunk or bytes entry the rank writes. |
-| Global plan | A rank's local plan after `create_decentralized_global_plan` and `prepare_decentralized_global_plan`; the writer adds the file prefix `__<rank>_`. Each rank makes its own; on this path the coordinator does not. |
+| Term            | Meaning                                                                                                                                                                                                                    |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local plan      | A rank's `SavePlan` from `planner.create_local_plan()`: one `WriteItem` per tensor chunk or bytes entry the rank writes.                                                                                                   |
+| Global plan     | A rank's local plan after `create_decentralized_global_plan` and `prepare_decentralized_global_plan`; the writer adds the file prefix `__<rank>_`. Each rank makes its own; on this path the coordinator does not.         |
 | Global metadata | The `Metadata` written to `.metadata`. `state_dict_metadata` is built from the write items of all ranks' local plans; `storage_data` (file, offset, length of each chunk) is built from the write results at finalization. |
-| Coordinator | The planning rank that builds the global metadata and writes `.metadata` (rank 0 in Megatron-LM). |
-| Shm tensor | A CPU tensor in shared memory (`share_memory_()`), one per tensor the rank saves, holding the values being written. |
-| Async worker | The persistent process per rank that writes the files. In CPU shared-memory mode it never initializes CUDA. |
+| Coordinator     | The planning rank that builds the global metadata and writes `.metadata` (rank 0 in Megatron-LM).                                                                                                                          |
+| Shm tensor      | A CPU tensor in shared memory (`share_memory_()`), one per tensor the rank saves, holding the values being written.                                                                                                        |
+| Async worker    | The persistent process per rank that writes the files. In CPU shared-memory mode it never initializes CUDA.                                                                                                                |
 
 ## Phases of a save
 
@@ -29,20 +29,20 @@ Scope:
 
 `CheckpointMetadataCache`, one per training process, kept by the caller across saves (Megatron-LM: in the save strategy):
 
-| Field | Rank | Content |
-| --- | --- | --- |
-| `global_metadata` | all ranks | A copy of the loaded checkpoint's global metadata, from `set_cached_global_metadata` until the first save. The caller's object is never written to, and the copy drops the local plans older versions attach. |
-| | coordinator | Global metadata of the previous save, built or reused. |
-| `local_plan` | all ranks | This rank's local plan of the previous save; `None` before the first save in the process. |
-| `central_plan` | all ranks | This rank's global plan of the previous save. |
+| Field             | Rank        | Content                                                                                                                                                                                                       |
+| ----------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `global_metadata` | all ranks   | A copy of the loaded checkpoint's global metadata, from `set_cached_global_metadata` until the first save. The caller's object is never written to, and the copy drops the local plans older versions attach. |
+|                   | coordinator | Global metadata of the previous save, built or reused.                                                                                                                                                        |
+| `local_plan`      | all ranks   | This rank's local plan of the previous save; `None` before the first save in the process.                                                                                                                     |
+| `central_plan`    | all ranks   | This rank's global plan of the previous save.                                                                                                                                                                 |
 
 Staging buffers, keyed by a hash of the rank's tensor write items:
 
-| Cache | Process | Content |
-| --- | --- | --- |
-| `FileSystemWriterAsync._shm_tensor_cache` | training | The shm tensors, reused by later saves with the same items. |
-| `FileSystemWriterAsync._cached_identifiers` | training | Keys whose shm tensors the worker already holds. |
-| `PersistentAsyncCaller._worker_data_cache` | worker | References to the same shm tensors, so they are sent to the worker only once. |
+| Cache                                       | Process  | Content                                                                       |
+| ------------------------------------------- | -------- | ----------------------------------------------------------------------------- |
+| `FileSystemWriterAsync._shm_tensor_cache`   | training | The shm tensors, reused by later saves with the same items.                   |
+| `FileSystemWriterAsync._cached_identifiers` | training | Keys whose shm tensors the worker already holds.                              |
+| `PersistentAsyncCaller._worker_data_cache`  | worker   | References to the same shm tensors, so they are sent to the worker only once. |
 
 Both are empty in a new process. `FileSystemWriterAsync.cleanup_tensor_caches` clears the training-side caches when the worker restarts.
 
@@ -202,12 +202,12 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 
 ## Code map
 
-| What | Where (`src/nvidia_resiliency_ext/checkpointing/async_ckpt/`) |
-| --- | --- |
-| Planning, cache, reuse decision | `state_dict_saver.py`: `save_state_dict_async_plan`, `CheckpointMetadataCache`, `verify_global_metadata_reuse`, `_check_plan_unchanged` |
-| Reuse check against loaded metadata | `_metadata_reuse.py` |
-| Finalization | `state_dict_saver.py`: `save_state_dict_async_finalize` |
-| Staging into shared memory, `.metadata` | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`) |
-| Writing in the worker | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*` |
-| `.metadata` pickler | `_metadata_pickler/` |
-| Async workers, finalize scheduling, shm drain | `core.py`: `AsyncCallsQueue`, `PersistentAsyncCaller` |
+| What                                          | Where (`src/nvidia_resiliency_ext/checkpointing/async_ckpt/`)                                                                           |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Planning, cache, reuse decision               | `state_dict_saver.py`: `save_state_dict_async_plan`, `CheckpointMetadataCache`, `verify_global_metadata_reuse`, `_check_plan_unchanged` |
+| Reuse check against loaded metadata           | `_metadata_reuse.py`                                                                                                                    |
+| Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                 |
+| Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`)                                                         |
+| Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                      |
+| `.metadata` pickler                           | `_metadata_pickler/`                                                                                                                    |
+| Async workers, finalize scheduling, shm drain | `core.py`: `AsyncCallsQueue`, `PersistentAsyncCaller`                                                                                   |
