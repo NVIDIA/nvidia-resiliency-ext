@@ -48,7 +48,7 @@ class CheckpointMetadataCache:
 
     * The first save in a process reuses the metadata of a loaded checkpoint (see
       `set_cached_global_metadata`) if all ranks' local plans write exactly the chunks it lists;
-      `verify_global_md_reuse` checks that with one all_reduce.
+      `verify_global_metadata_reuse` checks that with one all_reduce.
     * Later saves reuse the plans and metadata of the previous save without communicating:
       `enable_cache` promises that the checkpoint structure does not change. Each rank still
       creates its local plan and raises if it differs from the previous one.
@@ -227,7 +227,7 @@ def save_state_dict_async_plan(
         local_plan = local_step()
         if metadata_cache is not None:
             # The first save in this process: every rank takes part, with or without metadata.
-            reused = verify_global_md_reuse(metadata_cache.metadata, local_plan, dist_wrapper)
+            reused = verify_global_metadata_reuse(metadata_cache.metadata, local_plan, dist_wrapper)
 
         if not reused:
             logger.debug(f"rank: {rank}, Passed cache non-reusable")
@@ -313,8 +313,10 @@ def _check_plan_unchanged(previous: SavePlan, current: SavePlan, rank: int) -> N
     )
 
 
-@telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.verify_global_md_reuse")
-def verify_global_md_reuse(
+@telemetry.trace_fn(
+    semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.verify_global_metadata_reuse"
+)
+def verify_global_metadata_reuse(
     loaded_metadata: Optional[Metadata],
     local_plan: SavePlan,
     dist_wrapper: _DistWrapper,
@@ -341,7 +343,8 @@ def verify_global_md_reuse(
         votes = _metadata_reuse.votes(local_plan, loaded_metadata, rank, world_size)
     summed = torch.tensor(votes, dtype=torch.int64, device=torch.cuda.current_device())
     with telemetry.span(
-        semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.validate_md_reuse_all_reduce"
+        semconv.SPAN_GROUP_CKPT_PROFILING,
+        "nv.nvrx.ckpt.save.verify_global_metadata_reuse_all_reduce",
     ):
         torch.distributed.all_reduce(summed, group=dist_wrapper.group)
     reuse = _metadata_reuse.can_reuse(summed.tolist())

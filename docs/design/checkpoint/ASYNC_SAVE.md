@@ -64,7 +64,7 @@ sequenceDiagram
     and
         R->>R: local_step
     end
-    Note over C,R: verify_global_md_reuse: all_reduce of 5 int64,<br/>no metadata, so every rank votes against reuse
+    Note over C,R: verify_global_metadata_reuse: all_reduce of 5 int64,<br/>no metadata, so every rank votes against reuse
     R->>C: gather_object(local plan)
     Note over C: Unpickle all plans<br/>create_global_plan: dedup, build metadata, validate
     Note over R: Continues at once, then waits for the coordinator<br/>at the next collective in training
@@ -166,7 +166,7 @@ sequenceDiagram
         R->>R: local_step
         R->>R: votes
     end
-    Note over C,R: verify_global_md_reuse: all_reduce(SUM) of 5 int64
+    Note over C,R: verify_global_metadata_reuse: all_reduce(SUM) of 5 int64
     alt sum is zero: same chunks, sizes and properties
         Note over C: Writes a copy of the loaded metadata
         Note over R: Drop the loaded metadata
@@ -204,7 +204,7 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 
 | What | Where (`src/nvidia_resiliency_ext/checkpointing/async_ckpt/`) |
 | --- | --- |
-| Planning, cache, reuse decision | `state_dict_saver.py`: `save_state_dict_async_plan`, `CheckpointMetadataCache`, `verify_global_md_reuse`, `_check_plan_unchanged` |
+| Planning, cache, reuse decision | `state_dict_saver.py`: `save_state_dict_async_plan`, `CheckpointMetadataCache`, `verify_global_metadata_reuse`, `_check_plan_unchanged` |
 | Reuse check against loaded metadata | `_metadata_reuse.py` |
 | Finalization | `state_dict_saver.py`: `save_state_dict_async_finalize` |
 | Staging into shared memory, `.metadata` | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`) |
