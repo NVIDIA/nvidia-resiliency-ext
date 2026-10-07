@@ -249,20 +249,19 @@ def save_state_dict_async_plan(
             planner.create_decentralized_global_plan(local_plan)
         )
     else:
-        # reduce_scatter runs local_step itself, so that an exception on one rank is raised on
-        # every rank; keep the local plan it creates for the cache.
-        local_plans = []
+        # Keep the local plan, so that the next save can compare against it.
+        local_plan = None
 
         def local_step_kept():
             """Run local_step and keep its plan."""
-            local_plans.append(local_step())
-            return local_plans[-1]
+            nonlocal local_plan
+            local_plan = local_step()
+            return local_plan
 
         with telemetry.span(
             semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.plan_reduce_scatter"
         ):
             central_plan = dist_wrapper.reduce_scatter("plan", local_step_kept, global_step)
-        local_plan = local_plans[-1]
 
     final_plan = planner.finish_plan(central_plan)
     end_plan = time()
