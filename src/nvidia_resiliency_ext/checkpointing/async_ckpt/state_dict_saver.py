@@ -159,12 +159,13 @@ def save_state_dict_async_plan(
         storage_writer (FileSystemWriterAsync): in current version only an instance of
             FileSystemWriterAsync
         process_group (dist.ProcessGroup, optional): process group used for save planning
-        coordinator_rank (int, optional): coordinator rank for planning. Defaults to 0.
+        coordinator_rank (int): coordinator rank for planning. Defaults to 0.
         planner (SavePlanner, optional): save planner for torch.distributed.checkpoint format
-        enable_cache (bool, optional): Reuse global metadata instead of building it: the first save
-            reuses a loaded checkpoint's metadata if it still applies, later saves reuse the
-            previous save's plans and metadata, as the checkpoint structure must not change
-            between them (a rank whose local plan changed raises). See CheckpointMetadataCache.
+        enable_cache (bool): Reuse global metadata instead of building it: the first save reuses
+            a loaded checkpoint's metadata if it still applies, later saves reuse the previous
+            save's plans and metadata, as the checkpoint structure must not change between them
+            (a rank whose local plan changed raises). See CheckpointMetadataCache. Defaults to
+            False.
         metadata_cache (CheckpointMetadataCache, optional): Custom metadata cache instance to use
             for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.
 
