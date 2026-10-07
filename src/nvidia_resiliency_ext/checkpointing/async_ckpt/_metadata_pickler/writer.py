@@ -422,7 +422,7 @@ def _mode() -> str:
     return os.environ.get("NVRX_FAST_METADATA_PICKLE", "1").strip().lower()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def fast_metadata_enabled() -> bool:
     """Whether nvrx may write ``.metadata`` with its own code instead of torch's.
 
@@ -555,7 +555,7 @@ def _works(dumps: Callable[[Metadata], bytes]) -> bool:
         return False
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _select_dumps() -> Optional[Callable[[Metadata], bytes]]:
     """The fastest writer that works here, or None to use pickle.dump."""
     if not fast_metadata_enabled():
