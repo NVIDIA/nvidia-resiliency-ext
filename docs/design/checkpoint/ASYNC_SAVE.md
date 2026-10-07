@@ -31,7 +31,7 @@ Scope:
 
 | Field | Rank | Content |
 | --- | --- | --- |
-| `metadata` | all ranks | Loaded checkpoint's global metadata, from `set_cached_global_metadata` until the first save. |
+| `global_metadata` | all ranks | A copy of the loaded checkpoint's global metadata, from `set_cached_global_metadata` until the first save. The caller's object is never written to, and the copy drops the local plans older versions attach. |
 | | coordinator | Global metadata of the previous save, built or reused. |
 | `local_plan` | all ranks | This rank's local plan of the previous save; `None` before the first save in the process. |
 | `central_plan` | all ranks | This rank's global plan of the previous save. |
@@ -132,7 +132,7 @@ sequenceDiagram
         and
             R->>R: prepare_write_data: copy GPU to the cached shm tensors
         end
-        Note over C: Writes a copy of the cached metadata<br/>(dataclasses.replace), so finish never modifies the cache
+        Note over C: Writes the cached metadata
     end
 
     C->>W: schedule_async_request, shm tensors not sent again
@@ -168,7 +168,7 @@ sequenceDiagram
     end
     Note over C,R: verify_global_metadata_reuse: all_reduce(SUM) of 5 int64
     alt sum is zero: same chunks, sizes and properties
-        Note over C: Writes a copy of the loaded metadata
+        Note over C: Writes the cached copy of the loaded metadata
         Note over R: Drop the loaded metadata
     else plans differ (e.g. world size or parallelism changed)
         R->>C: gather_object(local plan)
