@@ -115,7 +115,7 @@ def mismatch(plan: SavePlan, metadata: Metadata) -> str:
         return "planner data is not checked"
     entries = metadata.state_dict_metadata
     for item in plan.items:
-        # Bytes entries carry nothing to compare; bytes vs tensor is part of the chunk hash.
+        # Bytes entries have no attributes; their fqn and kind are compared by the chunk hash.
         if item.type == WriteItemType.BYTE_IO:
             continue
         fqn = item.index.fqn
@@ -152,5 +152,8 @@ def votes(plan: SavePlan, metadata: Metadata, rank: int, world_size: int) -> Lis
 def can_reuse(summed_votes: List[int]) -> bool:
     """Whether the votes summed over all ranks allow reusing the metadata."""
     failures, lanes = summed_votes[0], summed_votes[1:]
+    # Each lane sum is exact (32-bit values summed in int64) but can exceed 32 bits. Python ints
+    # have arbitrary precision, so recombining the lane sums at their 32-bit offsets carries the
+    # excess into the next lane, as adding the 128-bit values directly would; then reduce mod 2^128.
     total = sum(lane << (LANE_BITS * k) for k, lane in enumerate(lanes))
     return failures == 0 and total & HASH_MASK == 0
