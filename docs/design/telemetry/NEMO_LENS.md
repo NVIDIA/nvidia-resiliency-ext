@@ -32,6 +32,8 @@ Groups match exactly: selecting `nv.nvrx.ckpt` does not enable `nv.nvrx.ckpt.sav
 
 The `default` preset selects the first three groups. `per_step` selects the first four, and `profiling` select all five. Lens combines each library's registrations for the selected preset.
 
+NVRx-owned processes read Lens settings with the `NVRX_OTEL_` prefix first and fall back to `NEMO_LENS_`. For example, `NVRX_OTEL_SPAN_GROUPS=profiling` selects all NVRx groups in the launcher and checkpoint workers while trainers keep `NEMO_LENS_SPAN_GROUPS`.
+
 ## Identity and attributes
 
 Resource attributes describe a process and remain fixed after provider initialization. Span attributes describe an operation, including values that change within the process. Resource publication accepts scalar strings, booleans, integers and floats, encoded as strings in `OTEL_RESOURCE_ATTRIBUTES`. Span attributes also accept homogeneous arrays of those types.
