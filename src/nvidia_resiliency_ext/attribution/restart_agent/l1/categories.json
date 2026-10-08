@@ -4,7 +4,7 @@
     {
       "id": 1,
       "name": "SLURM step cancelled / drain / preemption",
-      "description": "Clean external cancellation by the scheduler - scancel, drain, preemption or a wall-clock timeout - with no application fault. The log shows healthy iterations to the very end, then SIGTERM delivered to many ranks at once. Interpreter teardown after that signal emits tracebacks that read like application errors: \"Exception ignored in atexit callback\", weakref finalizer failures, and TypeError/AttributeError on None as module globals are destroyed. Those are artifacts of the kill, not its cause. A log that ends this way after sustained successful progress belongs here, not in a workload-code category.",
+      "description": "Clean external cancellation by the scheduler - scancel, requeue, drain, preemption or a wall-clock timeout - with no application fault. Either surface is sufficient on its own. (a) A slurmstepd marker, e.g. \"*** STEP <id> ON <node> CANCELLED AT <time> ***\", with or without a stated reason, sometimes as the only content in an otherwise empty log. (b) Healthy iterations to the very end, then SIGTERM across many ranks, after which interpreter teardown emits tracebacks that read like application errors: \"Exception ignored in atexit callback\", weakref finalizer failures, TypeError/AttributeError on None as module globals are destroyed - artifacts of the kill, not its cause. If the stated reason is node failure, use cat 2 instead.",
       "decision": "RESTART"
     },
     {
