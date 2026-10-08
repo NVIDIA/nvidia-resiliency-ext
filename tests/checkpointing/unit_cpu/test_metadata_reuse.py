@@ -26,8 +26,10 @@ from dataclasses import fields
 
 import pytest
 import torch
+import torch.distributed.checkpoint as dcp
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.default_planner import (
     DefaultSavePlanner,
     create_default_global_save_plan,
@@ -38,8 +40,11 @@ from torch.distributed.checkpoint.metadata import (
     TensorProperties,
 )
 from torch.distributed.checkpoint.planner import SavePlan, TensorWriteData, WriteItem, WriteItemType
+from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 
 
@@ -362,5 +367,68 @@ def test_set_cached_global_metadata_starts_over():
     cache._update(plans[0], plans[0], metadata_of(plans), reused=False, is_coordinator=True)
     loaded = metadata_of(plans)
     cache.set_cached_global_metadata(loaded)
-    assert cache.global_metadata is loaded
+    assert cache.global_metadata == dataclasses.replace(loaded, storage_data=None)
     assert cache.local_plan is None and cache.central_plan is None
+
+
+def test_cache_does_not_keep_the_loaded_storage_data():
+    """No save needs the loaded checkpoint's storage_data: finish rebuilds it every save."""
+    loaded = metadata_of(sample_plans())
+    loaded.storage_data = {"loaded": None}
+    cache = CheckpointMetadataCache()
+    cache.set_cached_global_metadata(loaded)
+    assert cache.global_metadata.storage_data is None
+    assert loaded.storage_data == {"loaded": None}
+
+
+@pytest.mark.parametrize("pickler", ["1", "0"], ids=["nvrx-writer", "pickle-dump"])
+@pytest.mark.parametrize("reused", [False, True], ids=["built", "reused"])
+def test_finish_leaves_the_cache_and_the_caller_alone(tmp_path, monkeypatch, reused, pickler):
+    """Three saves through the real FileSystemWriterAsync.finish, with both .metadata writers.
+
+    The cache's metadata and the caller's are compared as pickles before and after each save, so
+    an in-place change to any nested object would show. Each save's .metadata holds its own
+    storage_data.
+    """
+    monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", pickler)
+    writer.fast_metadata_enabled.cache_clear()
+    writer._select_dumps.cache_clear()
+    state_dict = {f"t{i}": torch.randn(2, 3 + i) for i in range(4)}
+    state_dict["step"] = 7
+    dcp.save(state_dict, storage_writer=FileSystemWriter(tmp_path / "loaded"))  # no process group
+    loaded = FileSystemReader(tmp_path / "loaded").read_metadata()
+    infos = loaded.storage_data
+
+    cache = CheckpointMetadataCache()
+    built = None
+    if reused:
+        cache.set_cached_global_metadata(loaded)
+    else:
+        built = dataclasses.replace(loaded, storage_data=None)  # as create_global_plan leaves it
+    caller_before = pickle.dumps(loaded)
+    for save in range(3):
+        written = cache._update(None, None, built, reused or save > 0, is_coordinator=True)
+        cache_before = pickle.dumps(cache.global_metadata)
+        results = [
+            [
+                WriteResult(
+                    index=index,
+                    size_in_bytes=info.length,
+                    storage_data=dataclasses.replace(info, relative_path=f"save{save}.distcp"),
+                )
+                for index, info in infos.items()
+            ]
+        ]
+        path = tmp_path / f"save{save}"
+        path.mkdir()
+        storage_writer = FileSystemWriterAsync(path)
+        storage_writer.set_up_storage_writer(True)
+        storage_writer.finish(written, results)
+
+        assert pickle.dumps(cache.global_metadata) == cache_before, f"save {save}: cache changed"
+        assert pickle.dumps(loaded) == caller_before, f"save {save}: caller's metadata changed"
+        written_back = FileSystemReader(path).read_metadata()
+        assert {info.relative_path for info in written_back.storage_data.values()} == {
+            f"save{save}.distcp"
+        }
+        assert written_back.state_dict_metadata == loaded.state_dict_metadata

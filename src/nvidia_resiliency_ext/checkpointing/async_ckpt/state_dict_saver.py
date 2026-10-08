@@ -57,8 +57,9 @@ class CheckpointMetadataCache:
     holds a save's storage_data and never modifies the metadata it was given.
 
     Attributes:
-        global_metadata (Metadata): The global metadata to reuse: the loaded checkpoint's on every
-            rank until the first save, the previous save's on the coordinator afterwards.
+        global_metadata (Metadata): The global metadata to reuse: the loaded checkpoint's, without
+            its storage_data, on every rank until the first save, the previous save's on the
+            coordinator afterwards.
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
         central_plan (SavePlan): This rank's global plan of the previous save.
@@ -80,7 +81,12 @@ class CheckpointMetadataCache:
         Args:
             cached_global_metadata (Metadata): The global metadata from a previous checkpoint.
         """
-        self.global_metadata = cached_global_metadata
+        # Without the loaded storage_data: no save needs it, as finish rebuilds it every save.
+        self.global_metadata = (
+            dataclasses.replace(cached_global_metadata, storage_data=None)
+            if cached_global_metadata is not None
+            else None
+        )
         self.local_plan = None
         self.central_plan = None
 
@@ -105,11 +111,8 @@ class CheckpointMetadataCache:
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
-        # finish writes the save's storage_data into the metadata it is given. Kept in the cache,
-        # each save's storage_data, built from the gathered write results, would stay alive on
-        # the coordinator and slow down its every full garbage collection. The copy has only the
-        # dataclass fields, so the local plans older versions attach (all_local_plans) are not
-        # written again.
+        # `finish` populates `storage_data` in the `Metadata` object it's given. Create a fresh copy
+        # so that the `storage_data` does not persist in memory after `finish`.
         return dataclasses.replace(self.global_metadata)
 
 

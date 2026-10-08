@@ -29,12 +29,12 @@ Scope:
 
 `CheckpointMetadataCache`, one per training process, kept by the caller across saves (Megatron-LM: in the save strategy):
 
-| Field             | Rank        | Content                                                                                      |
-| ----------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| `global_metadata` | all ranks   | Loaded checkpoint's global metadata, from `set_cached_global_metadata` until the first save. |
-|                   | coordinator | Global metadata of the previous save, built or reused.                                       |
-| `local_plan`      | all ranks   | This rank's local plan of the previous save; `None` before the first save in the process.    |
-| `central_plan`    | all ranks   | This rank's global plan of the previous save.                                                |
+| Field             | Rank        | Content                                                                                                                 |
+| ----------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `global_metadata` | all ranks   | Loaded checkpoint's global metadata without its `storage_data`, from `set_cached_global_metadata` until the first save. |
+|                   | coordinator | Global metadata of the previous save, built or reused.                                                                  |
+| `local_plan`      | all ranks   | This rank's local plan of the previous save; `None` before the first save in the process.                               |
+| `central_plan`    | all ranks   | This rank's global plan of the previous save.                                                                           |
 
 On every save the coordinator hands `finish` a shallow copy of the cached metadata, so the save's `storage_data` is dropped once written. Kept in the cache, it would stay alive on the coordinator and slow down every full garbage collection there, which its data-parallel peers wait for at the next save.
 
