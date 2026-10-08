@@ -70,7 +70,7 @@
     {
       "id": 12,
       "name": "Distributed rendezvous / TCPStore socket timeout",
-      "description": "c10d/TCPStore rendezvous socket timeout as the INITIATING failure only. TCPStore socket errors appear as cascade signatures across many other failure modes: when any rank dies for any reason (CUDA OOM, SIGKILL, node failure, mid-training watchdog abort, checkpoint code error, etc.), the surviving ranks eventually time out waiting for the dead peer on the TCPStore, so many logs contain TCPStore timeout lines that are secondary. Pick this category ONLY when TCPStore rendezvous timeout is the primary observable event and there is no earlier crash, OOM, watchdog trigger, or other upstream fault in the log that better explains the failure. Otherwise pick the upstream category.",
+      "description": "c10d/TCPStore rendezvous or socket failure as the earliest failure surface visible in this log. These errors are frequently secondary: when a rank dies for any reason (CUDA OOM, SIGKILL, node failure, watchdog abort, checkpoint error), the surviving ranks later fail against the store. If an upstream fault appears earlier in this log, pick that category instead. If TCPStore is the only failure surface present, pick this category with reduced confidence rather than declining to classify - including when the initiating rank's own output is absent and only cascade warnings remain, which is the normal shape when the store host died first.",
       "decision": "RESTART"
     },
     {
