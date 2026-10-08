@@ -150,6 +150,7 @@ RESP_WL_RESTART_COUNT = "wl_restart_count"
 RESP_SCHED_RESTARTS = "sched_restarts"
 RESP_LOGS_DIR = "logs_dir"
 RESP_FILES_ANALYZED = "files_analyzed"
+RESP_RECOMMENDATION = "recommendation"
 # Inner result dict (RESP_RESULT value from analysis pipeline)
 RESP_MODULE = "module"
 RESP_STATE = "state"

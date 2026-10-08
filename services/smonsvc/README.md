@@ -34,6 +34,102 @@ Environment variables (prefix: `NVRX_SMONSVC_`) or command-line arguments:
 
 CLI arguments override environment variables.
 
+## Application Log Resolution
+
+Some launchers point SLURM `StdOut` at a batch wrapper rather than the training
+log. A common layout:
+
+```
+<run_dir>/slurm_out/slurm-<jobid>_<task>.out          # wrapper: launcher banner, few KB
+<run_dir>/logs/<name>_<jobid>_date_..._cycle<N>.log   # the training log
+```
+
+Both naming conventions are handled — multi-cycle runs (`..._cycle<N>.log`) and
+single-cycle runs (`....log`). A cycle log outranks a plain one, metadata
+sidecars (`.env.log`, `.tasks.log`) are never selected, and empty logs never
+outrank populated ones.
+
+Layout varies because SLURM writes `slurm-<jobid>.out` into the **submit
+directory**, while the run script picks its own `LOGS_DIR`. Those are
+independent, so the wrapper may sit beside `logs/`, under `slurm_out/`, or one
+level above the run directory. All three are searched.
+
+When the layout does not resolve, the wrapper's launcher banner is consulted for
+a `LOGS_DIR=` declaration. That is the launcher's own statement rather than an
+inference, and it reaches places structure cannot — a run submitted from one
+directory can write logs to an unrelated sibling. About half the observed
+wrappers emit it; it is read only on fallback, so the common path costs no
+file read.
+
+Attributing the wrapper yields "no failure signature found" regardless of what
+the job did. When enabled, the monitor maps the wrapper back to the newest cycle
+log for the same SLURM job.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NVRX_SMONSVC_APP_LOG_RESOLUTION` | `false` | Enable resolution (`1`/`true`/`yes`/`on`) |
+| `NVRX_SMONSVC_APP_LOG_STDOUT_SUBDIR` | `slurm_out` | Wrapper directory, stripped to find the run directory |
+| `NVRX_SMONSVC_APP_LOG_SUBDIR` | `logs` | Application log directory, relative to the run directory |
+
+**Off by default** — it encodes a site layout convention, and a deployment whose
+`StdOut` already *is* the training log must not have its paths rewritten. While
+disabled, the `StdOut` path is submitted unchanged.
+
+When resolution is enabled and finds no application log, the job is **skipped**
+rather than falling back to the wrapper. A job with no application log died
+before training produced output, so the wrapper holds a launcher banner and
+nothing a log analyzer can attribute. One observed array job had 1002 tasks and
+only `.env.log` / `.tasks.log` sidecars: analyzing the wrappers cost 159 model
+calls and produced 159 unattributable results. Each skip is logged once per job at INFO with the job ID, job name and the
+`StdOut` path it gave up on, and counted as `no_app_log_skipped` under
+`log_paths` in `/stats`:
+
+```
+[3911280_100] No application log found; skipping analysis (job_name=..., stdout=.../slurm-3911280_100.out)
+```
+
+The line matters because a skip and a resolution bug look identical from the
+outside — every layout gap found so far surfaced as a job that should have
+resolved and did not. Reviewing the skip list is how the next one gets caught:
+
+```bash
+grep "skipping analysis" <logs>/*_smonsvc.log
+```
+
+A job that restarts in place writes one log per cycle, and **every cycle is
+analyzed**, oldest first. Analyzing only the last one discards the earlier
+failures and leaves L3 with no attempt history: its retry-budget rules compare
+an attempt against its predecessors, so on a single submission they can never
+fire. Ascending order is what makes that history meaningful, since L3 asks for
+attempts *before* a given cycle.
+
+Only `_cycle<N>` logs form an ordered series. Two launches that differ solely by
+timestamp are not related by anything the scheduler records, so they stay a
+single submission rather than an invented order.
+
+Application logs embed the **parent** job ID, so every array task of a job
+resolves to the same log. The monitor claims a log once at submission and again
+before the terminal analysis, skipping siblings at both stages.
+
+Claiming at both stages is necessary. A job appears in `squeue` before it writes
+its application log, so the first poll cannot resolve one yet and each array task
+submits its own wrapper. By the time they go terminal the log exists and they all
+resolve to it — without the second claim that is one terminal analysis and one
+Slack alert per task, for a single log.
+
+Counts appear under `log_paths` in `/stats`:
+
+```json
+{"log_paths": {"claimed": 160, "duplicates_skipped": 74,
+               "analyzed": 12, "duplicate_analyses": 148}}
+```
+
+## Slack Notifications
+
+Alerting lives in **nvrx-attrsvc**, not here, so that inline NVRx deployments —
+which have no monitor — are covered by the same implementation. See
+[attrsvc/README.md](../attrsvc/README.md#slack-notifications).
+
 ## API Endpoints
 
 When `PORT` is set, the monitor exposes an HTTP server:
@@ -47,7 +143,8 @@ When `PORT` is set, the monitor exposes an HTTP server:
 ## How It Works
 
 1. Polls SLURM for completed/failed jobs in configured partitions
-2. For each terminal job, extracts the output log path
+2. For each terminal job, extracts the output log path (optionally resolving it
+   to the application log, see below)
 3. Submits the log to the Attribution Service via POST /logs
 4. Tracks job state to avoid duplicate submissions
 
@@ -142,6 +239,7 @@ nvrx-smonsvc -v
 | `slurm.py` | SLURM subprocess calls (squeue, scontrol, sacct) with batching and het job support |
 | `attrsvc_client.py` | HTTP client for Attribution Service |
 | `status_server.py` | Status server (/stats, /jobs, /healthz) |
+| `log_resolver.py` | Maps SLURM stdout wrappers to application logs |
 | `models.py` | Data models (JobState, SlurmJob, MonitorState) |
 | `deploy/run_smonsvc.sh` | Run service with logging (background) |
 | `deploy/snapshot_smonsvc.sh` | Periodic endpoint snapshot for debugging |

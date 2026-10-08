@@ -16,6 +16,17 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class JobPaths:
+    """Per-job SLURM metadata used to locate the log worth analyzing."""
+
+    stdout: str = ""
+    stderr: str = ""
+    #: Submit directory and submit script, used to resolve where logs were written.
+    work_dir: str = ""
+    command: str = ""
+
+
 def _resolve_slurm_command(command: str) -> str:
     resolved = shutil.which(command)
     if resolved is None:
@@ -236,7 +247,9 @@ class SlurmClient:
                 if job_id in existing_paths:
                     stdout_path, stderr_path = existing_paths[job_id]
                 else:
-                    stdout_path, stderr_path = fetched_paths.get(job_id, ("", ""))
+                    info = fetched_paths.get(job_id)
+                    stdout_path = info.stdout if info else ""
+                    stderr_path = info.stderr if info else ""
 
                 jobs[job_id] = {
                     "name": name,
@@ -258,7 +271,7 @@ class SlurmClient:
             self.stats.squeue_failures += 1
             return None
 
-    def get_job_output_paths(self, job_ids: list[str]) -> dict[str, tuple[str, str]]:
+    def get_job_output_paths(self, job_ids: list[str]) -> dict[str, JobPaths]:
         """
         Get stdout and stderr paths for multiple jobs using batched scontrol/sacct calls.
 
@@ -266,12 +279,12 @@ class SlurmClient:
             job_ids: List of job IDs to fetch paths for
 
         Returns:
-            Dict mapping job_id -> (stdout_path, stderr_path)
+            Dict mapping job_id -> :class:`JobPaths`
         """
         if not job_ids:
             return {}
 
-        result_paths: dict[str, tuple[str, str]] = {}
+        result_paths: dict[str, JobPaths] = {}
         batch_size = self.SCONTROL_BATCH_SIZE
         total_batches = (len(job_ids) + batch_size - 1) // batch_size
 
@@ -321,12 +334,16 @@ class SlurmClient:
             current_job_id = None
             current_stdout = ""
             current_stderr = ""
+            current_workdir = ""
+            current_command = ""
 
             for line in result.stdout.split("\n"):
                 if "JobId=" in line:
                     # Save previous job
                     if current_job_id:
-                        result_paths[current_job_id] = (current_stdout, current_stderr)
+                        result_paths[current_job_id] = JobPaths(
+                            current_stdout, current_stderr, current_workdir, current_command
+                        )
 
                     # Extract job ID - handle array jobs
                     job_match = re.search(r"JobId=(\S+)", line)
@@ -343,6 +360,8 @@ class SlurmClient:
                     if current_job_id:
                         current_stdout = ""
                         current_stderr = ""
+                        current_workdir = ""
+                        current_command = ""
                 elif "StdOut=" in line:
                     match = re.search(r"StdOut=(\S+)", line)
                     if match:
@@ -351,10 +370,20 @@ class SlurmClient:
                     match = re.search(r"StdErr=(\S+)", line)
                     if match:
                         current_stderr = match.group(1)
+                elif "WorkDir=" in line:
+                    match = re.search(r"WorkDir=(\S+)", line)
+                    if match:
+                        current_workdir = match.group(1)
+                elif "Command=" in line:
+                    match = re.search(r"Command=(\S+)", line)
+                    if match:
+                        current_command = match.group(1)
 
             # Save last job
             if current_job_id:
-                result_paths[current_job_id] = (current_stdout, current_stderr)
+                result_paths[current_job_id] = JobPaths(
+                    current_stdout, current_stderr, current_workdir, current_command
+                )
 
         except subprocess.TimeoutExpired as e:
             logger.warning(
@@ -415,7 +444,7 @@ class SlurmClient:
                     job_ids_str,
                     "--noheader",
                     "--parsable2",
-                    "--format=JobID,StdOut,StdErr",
+                    "--format=JobID,StdOut,StdErr,WorkDir,SubmitLine",
                 ],
                 timeout=self.scontrol_timeout,
             )
@@ -436,6 +465,8 @@ class SlurmClient:
                     job_id_raw = parts[0]
                     stdout_path = parts[1] if parts[1] else ""
                     stderr_path = parts[2] if parts[2] else ""
+                    work_dir = parts[3] if len(parts) > 3 else ""
+                    submit_line = parts[4] if len(parts) > 4 else ""
 
                     # Handle job steps
                     if ".batch" in job_id_raw:
@@ -449,7 +480,12 @@ class SlurmClient:
                     if stdout_path and base_id in normalized_to_original:
                         for original_id in normalized_to_original[base_id]:
                             if original_id not in result_paths:
-                                result_paths[original_id] = (stdout_path, stderr_path)
+                                result_paths[original_id] = JobPaths(
+                                    stdout_path,
+                                    stderr_path,
+                                    work_dir,
+                                    _script_from_submit_line(submit_line),
+                                )
 
         except subprocess.TimeoutExpired as e:
             logger.warning(f"sacct timed out after {e.timeout}s for {len(job_ids)} jobs")
@@ -457,6 +493,12 @@ class SlurmClient:
         except FileNotFoundError:
             logger.error("sacct command not found")
             self.stats.sacct_failures += 1
+
+
+def _script_from_submit_line(submit_line: str) -> str:
+    """The script argument from an ``sbatch ...`` command line, if one is present."""
+    match = re.search(r"sbatch\s+(?:-\S+(?:\s+\S+)?\s+)*(\S+\.sh)\b", submit_line or "")
+    return match.group(1) if match else ""
 
 
 def expand_slurm_patterns(

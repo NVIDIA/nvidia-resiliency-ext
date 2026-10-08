@@ -24,6 +24,8 @@
 #
 # Optional environment variables:
 #   NVRX_LOGS_DIR - Directory for service logs (default: current directory)
+#   SLACK_BOT_TOKEN_FILE / SLACK_CHANNEL - Enable attrsvc Slack alerts
+#   NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS    - Actions that page (default: STOP)
 #
 # API Key Options for the default Restart Agent backend:
 #   1. LLM_API_KEY_FILE env var (path to file containing key)

@@ -9,10 +9,17 @@ import re
 import signal
 import threading
 import time
+from pathlib import Path
 from types import FrameType
 
 from .attrsvc_client import AttrsvcClient
-from .job_handlers import fetch_results, submit_log
+from .job_handlers import (
+    analyze_completed_cycle,
+    cycle_analysis_finished,
+    fetch_results,
+    submit_log,
+)
+from .log_resolver import AppLogResolution, base_job_id, resolve_app_logs
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
 from .slurm import SlurmClient, expand_slurm_patterns
 from .stats import format_stats_summary, get_health_status, get_jobs_list, get_stats_dict
@@ -53,6 +60,7 @@ class SlurmJobMonitor:
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         port: int | None = None,
         host: str = DEFAULT_STATUS_HOST,
+        app_log_resolution: AppLogResolution | None = None,
     ):
         """
         Initialize the SLURM job monitor.
@@ -67,6 +75,8 @@ class SlurmJobMonitor:
             timeout: HTTP request timeout in seconds
             port: Port for HTTP server with stats/health/jobs endpoints (None to disable)
             host: Host/interface for the HTTP status server
+            app_log_resolution: SLURM-stdout-to-application-log mapping
+                (default: built from environment; disabled unless opted in)
         """
         self.attrsvc_url = attrsvc_url.rstrip("/")
         self.poll_interval = poll_interval
@@ -81,6 +91,9 @@ class SlurmJobMonitor:
         self.timeout = timeout
         self.state = MonitorState()
         self._shutdown_requested = False
+        self._app_log_resolution = (
+            AppLogResolution.from_env() if app_log_resolution is None else app_log_resolution
+        )
 
         # Attribution service client
         self._attrsvc_client = AttrsvcClient(
@@ -204,6 +217,7 @@ class SlurmJobMonitor:
             logger.info(f"  Partitions: {', '.join(self.partitions)}")
             if self.job_pattern:
                 logger.info(f"  Job name pattern: {self.job_pattern.pattern}")
+            logger.info(f"  App log resolution: {self._app_log_resolution.describe()}")
 
             self._start_status_server()
             logger.info("=" * 60)
@@ -252,14 +266,19 @@ class SlurmJobMonitor:
         jobs_to_submit: list[tuple[SlurmJob, str]] = []
         jobs_to_fetch: list[tuple[SlurmJob, str]] = []
 
+        self._release_finished_cycles()
+
         with self._state_lock:
             self._mark_disappeared_jobs_finished(current_jobs)
-            jobs_to_submit = self._sync_jobs_from_slurm(current_jobs)
+            jobs_to_submit, cycles_to_analyze = self._sync_jobs_from_slurm(current_jobs)
             self._fetch_paths_for_terminal_jobs()
             jobs_to_fetch = self._collect_jobs_for_fetch()
 
         for job, log_path in jobs_to_submit:
             self._submit_log(job, log_path)
+
+        for job, log_path in cycles_to_analyze:
+            self._analyze_completed_cycle(job, log_path)
 
         for job, log_path in jobs_to_fetch:
             self._fetch_results(job, log_path)
@@ -282,10 +301,10 @@ class SlurmJobMonitor:
                     and not tracked_job.result_fetched
                     and tracked_job.get_attempts < self.MAX_GET_ATTEMPTS
                 ):
-                    log_path = self._get_log_path(tracked_job)
-                    if log_path:
-                        tracked_job.get_attempts += 1
-                        jobs_to_fetch.append((tracked_job, log_path))
+                    for log_path in self._get_log_paths(tracked_job):
+                        if self._claim_analysis_path(tracked_job, log_path):
+                            tracked_job.get_attempts += 1
+                            jobs_to_fetch.append((tracked_job, log_path))
                 elif tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
                     self._mark_get_exhausted(job_id, tracked_job)
 
@@ -304,13 +323,15 @@ class SlurmJobMonitor:
 
     def _sync_jobs_from_slurm(
         self, current_jobs: dict[str, SlurmJob]
-    ) -> list[tuple[SlurmJob, str]]:
+    ) -> tuple[list[tuple[SlurmJob, str]], list[tuple[SlurmJob, str]]]:
         """
         Sync tracked jobs with current SLURM state. Must hold _state_lock.
 
-        Returns list of (job, log_path) tuples for jobs needing submission.
+        Returns ``(jobs_to_submit, cycles_to_analyze)``: logs to register for
+        tracking, and completed cycle logs ready for full analysis.
         """
         jobs_to_submit: list[tuple[SlurmJob, str]] = []
+        cycles_to_analyze: list[tuple[SlurmJob, str]] = []
 
         for job_id, job in current_jobs.items():
             if not self._matches_filters(job):
@@ -339,13 +360,81 @@ class SlurmJobMonitor:
 
             tracked_job = self.state.jobs[job_id]
 
-            # Check if job needs log submission
-            if not tracked_job.log_submitted and not tracked_job.result_fetched:
-                log_path = self._get_log_path(tracked_job)
-                if log_path:
-                    jobs_to_submit.append((tracked_job, log_path))
+            if tracked_job.result_fetched:
+                continue
 
-        return jobs_to_submit
+            log_paths = self._get_log_paths(tracked_job)
+            if not log_paths:
+                if tracked_job.app_log_missing:
+                    tracked_job.log_submitted = True  # settled; nothing to analyze
+                continue
+
+            # A cycle log stops growing the moment its successor appears, so
+            # every cycle but the last is complete and can be analyzed now.
+            # Only the newest is still being written, and it is the one the
+            # terminal path picks up when the allocation finally ends.
+            *complete, live = log_paths
+            # One at a time, oldest first. L3 compares an attempt against those
+            # that have already *completed*, so starting cycle N+1 before N
+            # finishes leaves it blind to its own history - which is exactly
+            # what happened when all of a job's cycles were fired at once and
+            # then completed in reverse order.
+            run_id = self._analysis_job_id(tracked_job, complete[0] if complete else live)
+            if not self.state.cycle_inflight.get(run_id):
+                for log_path in complete:
+                    if self._claim_analysis_path(tracked_job, log_path):
+                        self.state.cycle_inflight[run_id] = log_path
+                        cycles_to_analyze.append((tracked_job, log_path))
+                        break
+            if not tracked_job.log_submitted and self._claim_log_path(tracked_job, live):
+                jobs_to_submit.append((tracked_job, live))
+
+        return jobs_to_submit, cycles_to_analyze
+
+    @staticmethod
+    def _script_path(job: SlurmJob) -> str:
+        """Absolute path to the submit script, which SLURM may record relatively."""
+        if not job.script:
+            return ""
+        script = Path(job.script)
+        if not script.is_absolute() and job.work_dir:
+            script = Path(job.work_dir) / script
+        return str(script)
+
+    def _claim_log_path(self, job: SlurmJob, log_path: str) -> bool:
+        """Claim ``log_path`` for ``job``; False when a sibling task already owns it.
+
+        Array tasks of one job share a single application log. Submitting it once
+        per task would re-analyze identical content and collide in the attrsvc
+        registry, which keys a path to one job ID.
+        """
+        if log_path in self.state.submitted_log_paths:
+            logger.debug(f"[{job.job_id}] Log already claimed by a sibling task: {log_path}")
+            job.log_submitted = True  # settled; nothing to fetch for this task
+            self.state.duplicate_log_paths += 1
+            return False
+        self.state.submitted_log_paths.add(log_path)
+        return True
+
+    def _claim_analysis_path(self, job: SlurmJob, log_path: str) -> bool:
+        """Claim ``log_path`` for analysis; False when a sibling task already analyzed it.
+
+        Submit-time claiming is not sufficient. A job appears in squeue before it
+        writes its application log, so the first poll cannot resolve one yet and
+        every array task submits its own wrapper. By the time they go terminal the
+        log exists and they all resolve to it, which would run one terminal
+        analysis and send one alert per task.
+        """
+        if log_path in self.state.analyzed_log_paths:
+            logger.debug(f"[{job.job_id}] Already analyzed by a sibling task: {log_path}")
+            self.state.duplicate_analyses += 1
+            # Settle the job only when no cycle of it is still outstanding;
+            # a sibling array task claiming one cycle must not retire the rest.
+            if all(p in self.state.analyzed_log_paths for p in self._get_log_paths(job)):
+                job.result_fetched = True
+            return False
+        self.state.analyzed_log_paths.add(log_path)
+        return True
 
     def _fetch_paths_for_terminal_jobs(self) -> None:
         """Fetch output paths for terminal jobs that don't have them. Must hold _state_lock."""
@@ -370,12 +459,16 @@ class SlurmJobMonitor:
             if job_id in self.state.jobs:
                 self.state.jobs[job_id].path_fetch_attempted = True
                 if job_id in fetched_paths:
-                    stdout, stderr = fetched_paths[job_id]
-                    if stdout:
+                    info = fetched_paths[job_id]
+                    if info.stdout:
                         if not self.state.jobs[job_id].stdout_path:
                             self.state.with_output_path += 1
-                        self.state.jobs[job_id].stdout_path = stdout
-                        self.state.jobs[job_id].stderr_path = stderr
+                        self.state.jobs[job_id].stdout_path = info.stdout
+                        self.state.jobs[job_id].stderr_path = info.stderr
+                    if info.work_dir:
+                        self.state.jobs[job_id].work_dir = info.work_dir
+                    if info.command:
+                        self.state.jobs[job_id].script = info.command
 
     def _collect_jobs_for_fetch(self) -> list[tuple[SlurmJob, str]]:
         """Collect terminal jobs that need result fetching. Must hold _state_lock."""
@@ -390,10 +483,10 @@ class SlurmJobMonitor:
                 if tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
                     self._mark_get_exhausted(job_id, tracked_job)
                     continue
-                log_path = self._get_log_path(tracked_job)
-                if log_path:
-                    tracked_job.get_attempts += 1
-                    jobs_to_fetch.append((tracked_job, log_path))
+                for log_path in self._get_log_paths(tracked_job):
+                    if self._claim_analysis_path(tracked_job, log_path):
+                        tracked_job.get_attempts += 1
+                        jobs_to_fetch.append((tracked_job, log_path))
 
         return jobs_to_fetch
 
@@ -462,19 +555,104 @@ class SlurmJobMonitor:
         )
 
     def _get_log_path(self, job: SlurmJob) -> str | None:
-        """Get the log file path for a job from SLURM StdOut."""
-        if job.stdout_path:
-            return self._expand_slurm_patterns(job.stdout_path, job)
-        logger.debug(f"[{job.job_id}] No StdOut path available")
-        return None
+        """The single log to analyze, or None. Kept for callers wanting one path."""
+        paths = self._get_log_paths(job)
+        return paths[-1] if paths else None
+
+    def _get_log_paths(self, job: SlurmJob) -> list[str]:
+        """Every log to analyze for this job, oldest cycle first.
+
+        Ordering matters: L3 builds attempt history from earlier cycles, so a
+        later cycle only sees its predecessors if they were submitted first.
+        """
+        if not job.stdout_path:
+            logger.debug(f"[{job.job_id}] No StdOut path available")
+            return []
+
+        stdout_path = self._expand_slurm_patterns(job.stdout_path, job)
+        if not self._app_log_resolution.enabled:
+            return [stdout_path]
+
+        resolved = resolve_app_logs(
+            stdout_path,
+            job.job_id,
+            self._app_log_resolution,
+            script=self._script_path(job),
+            job_name=job.name,
+        )
+        if resolved:
+            if len(resolved) > 1:
+                logger.debug(f"[{job.job_id}] Resolved {len(resolved)} cycle logs")
+            return resolved
+
+        # No application log means the job died before training wrote one. What
+        # remains is the SLURM wrapper, which holds a launcher banner and no
+        # training output, so there is nothing for a log analyzer to attribute.
+        if not job.app_log_missing:
+            job.app_log_missing = True
+            self.state.jobs_without_app_log += 1
+            # Logged at INFO, once per job: a skip is indistinguishable from a
+            # resolution bug without it, and every layout gap found so far
+            # surfaced as a job that should have resolved and did not.
+            logger.info(
+                f"[{job.job_id}] No application log found; skipping analysis "
+                f"(job_name={job.name or '?'}, stdout={stdout_path})"
+            )
+        return []
+
+    def _analysis_job_id(self, job: SlurmJob, log_path: str) -> str:
+        """The identity to analyze under: the array job, not the array task.
+
+        Concurrent array tasks of one run share a single application log, so
+        whichever task resolved it is incidental - these runs spread ~149 tasks
+        over one training job. It is also actively harmful: L3 groups attempt
+        history by exact job ID, so letting each cycle inherit a different task
+        splits one run's history into unrelated fragments and every retry
+        ledger counts against the wrong population.
+
+        A task's own SLURM wrapper is not shared, so it keeps the task ID.
+        """
+        if not self._app_log_resolution.enabled:
+            return job.job_id
+        if job.stdout_path and log_path == self._expand_slurm_patterns(job.stdout_path, job):
+            return job.job_id
+        return base_job_id(job.job_id)
+
+    def _release_finished_cycles(self) -> None:
+        """Clear the in-flight marker for cycles whose analysis has settled.
+
+        Does its HTTP outside ``_state_lock``: the poll loop must not block the
+        status server while waiting on attrsvc.
+        """
+        with self._state_lock:
+            pending = list(self.state.cycle_inflight.items())
+        for run_id, log_path in pending:
+            if cycle_analysis_finished(run_id, log_path, self._attrsvc_client):
+                with self._state_lock:
+                    if self.state.cycle_inflight.get(run_id) == log_path:
+                        del self.state.cycle_inflight[run_id]
+
+    def _analyze_completed_cycle(self, job: SlurmJob, log_path: str) -> None:
+        """Run a full analysis of a cycle a successor has proven complete."""
+        analyze_completed_cycle(
+            job,
+            log_path,
+            self.state,
+            self._attrsvc_client,
+            self._analysis_job_id(job, log_path),
+        )
 
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:
         """Submit a log file to the attribution service."""
-        submit_log(job, log_path, self.state, self._attrsvc_client)
+        submit_log(
+            job, log_path, self.state, self._attrsvc_client, self._analysis_job_id(job, log_path)
+        )
 
     def _fetch_results(self, job: SlurmJob, log_path: str) -> None:
         """Fetch attribution results for a completed job."""
-        fetch_results(job, log_path, self.state, self._attrsvc_client)
+        fetch_results(
+            job, log_path, self.state, self._attrsvc_client, self._analysis_job_id(job, log_path)
+        )
 
     def _cleanup_old_jobs(self) -> None:
         """Remove old completed jobs from state to prevent memory growth."""
