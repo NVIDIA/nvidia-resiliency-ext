@@ -317,6 +317,7 @@ class TemporalAsyncCaller(AsyncCaller):
     def __init__(self):
         super().__init__()
         self.preloaded_holder = None
+        self._execution_holder = None
 
     @_disable_gc()
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
@@ -352,6 +353,10 @@ class TemporalAsyncCaller(AsyncCaller):
         ctx = mp.get_context('fork')
         self.start_time = time()
         async_fn_kwargs = dict(async_req.async_fn_kwargs or {})
+        # Process.start() drops its parent-side target/args/kwargs. Keep the
+        # post-preload execution state alive until the forked child is joined,
+        # including CPU tensors passed without a preload_fn (e.g. torch.save).
+        self._execution_holder = (async_req.async_fn, async_fn_args, async_fn_kwargs)
         self.process = ctx.Process(
             target=async_req.async_fn, args=async_fn_args, kwargs=async_fn_kwargs
         )
@@ -408,8 +413,9 @@ class TemporalAsyncCaller(AsyncCaller):
             if abort:
                 logger.warning(f"Temporal worker aborted in rank {self.rank}")
                 self.process.kill()
-            else:
-                self.process.join()
+            # Even after kill(), wait for exit before releasing parent-owned
+            # CPU execution data that the child may still be accessing.
+            self.process.join()
             self.process = None
             logger.debug(
                 "TemporalAsyncCaller: Async process join finished "
@@ -417,6 +423,7 @@ class TemporalAsyncCaller(AsyncCaller):
             )
             self.start_time = None
             self.preloaded_holder = None
+            self._execution_holder = None
 
     def __del__(self):
         pass
@@ -784,27 +791,37 @@ class PersistentAsyncCaller(AsyncCaller):
                         "nv.nvrx.ckpt.save.request",
                         {semconv.CKPT_CALL_IDX: item.call_idx},
                     ):
+                        call_idx = item.call_idx
+                        async_fn = item.async_fn
                         async_fn_args = list(item.async_fn_args)
-                        if item.preload_fn:
-                            call_idx = preload_q.get()
+                        async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                        has_preload = bool(item.preload_fn)
+                        if has_preload:
+                            preload_call_idx = preload_q.get()
                             with telemetry.span(
                                 semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.preload"
                             ):
                                 # the 2nd arg is state dict
                                 async_fn_args[1] = item.preload_fn()
-                            logger.debug(f"{rank} has completed D2H of {call_idx}")
+
+                        # Persistence only needs the staged arguments. Release the request's
+                        # transient source/IPC references before waking the training process.
+                        # Intentional references in _worker_data_cache remain unchanged.
+                        del item
+                        if has_preload:
+                            logger.debug(f"{rank} has completed D2H of {preload_call_idx}")
                             preload_q.task_done()
-                        if item.async_fn is not None:
-                            async_fn_kwargs = dict(item.async_fn_kwargs or {})
+                        if async_fn is not None:
                             with telemetry.span(
                                 semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.write"
                             ):
-                                item.async_fn(*async_fn_args, **async_fn_kwargs)
-                        logger.debug(f"{rank} has completed saving {item.call_idx}")
-                        comp_q.put(item.call_idx)
+                                async_fn(*async_fn_args, **async_fn_kwargs)
+                        logger.debug(f"{rank} has completed saving {call_idx}")
+                        comp_q.put(call_idx)
                         queue.task_done()
-                        del async_fn_args
-                del item
+                        del async_fn, async_fn_args, async_fn_kwargs
+                else:
+                    del item
                 gc.collect()
         except RuntimeError as e:
             if "pidfd_getfd" in str(e) and "Operation not permitted" in str(e):
@@ -1008,7 +1025,16 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             async_caller.schedule_async_call(
                 async_request._replace(call_idx=self.call_idx, finalize_fns=[])
             )
-        self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
+        # Execution belongs to the caller after scheduling. The active queue only needs
+        # finalization state and must not retain staging sources through execution fields.
+        finalize_request = async_request._replace(
+            async_fn=None,
+            async_fn_args=(),
+            async_fn_kwargs=None,
+            preload_fn=None,
+            call_idx=self.call_idx,
+        )
+        self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, finalize_request))
         return self.call_idx
 
     def maybe_finalize_async_calls(self, blocking=False, no_dist=False) -> List[int]:
