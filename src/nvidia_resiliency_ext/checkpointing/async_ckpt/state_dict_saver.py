@@ -15,10 +15,11 @@
 
 """State dict saver for PyT Distributed format allowing asynchronous save."""
 
+import dataclasses
 from dataclasses import fields
 from logging import getLogger
 from time import time
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -30,6 +31,8 @@ from torch.distributed.checkpoint.utils import _DistWrapper, _get_failure_dict
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
+from . import _metadata_reuse
+
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
 
@@ -37,169 +40,77 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 
-def _compare_dataclasses(obj1, obj2):
-    if type(obj1) is not type(obj2):
-        return f"Objects are of different types: {type(obj1)} and {type(obj2)}"
-
-    differences = []
-    for field in fields(obj1):
-        value1 = getattr(obj1, field.name)
-        value2 = getattr(obj2, field.name)
-        if value1 != value2:
-            differences.append(f"{field.name}: {value1} != {value2}")
-
-    return differences if differences else "All fields are equal"
-
-
 class CheckpointMetadataCache:
-    """Cache of metadata for checkpoint saving.
+    """Global metadata and plans carried from one save to the next, to reuse the metadata.
 
-    This class maintains a cache of metadata used during distributed checkpoint saving operations.
-    It stores various components of the save plan and metadata to optimize subsequent checkpoint
-    saves by avoiding redundant planning and metadata generation when the checkpoint structure
-    remains consistent across iterations.
+    Building the global metadata gathers every rank's local plan on the coordinator. With
+    `enable_cache`, `save_state_dict_async_plan` avoids that:
 
-    This caching mechanism helps optimize checkpoint saving by:
-    1. Avoiding redundant planning when checkpoint structures are consistent
-    2. Reusing global metadata when possible
-    3. Enabling decentralized planning when supported by the planner and storage writer
+    * The first save in a process reuses the metadata of a loaded checkpoint (see
+      `set_cached_global_metadata`) if all ranks' local plans write exactly the chunks it lists;
+      `verify_global_metadata_reuse` checks that with one all_reduce.
+    * Later saves reuse the plans and metadata of the previous save without communicating:
+      `enable_cache` promises that the checkpoint structure does not change. Each rank still
+      creates its local plan and raises if it differs from the previous one.
 
-    Args:
-        cached_central_plan (SavePlan): The aggregated global save plan from all ranks
-        cached_local_plan (SavePlan): The local save plan describing how the local state_dict is written
-        cached_global_metadata (Metadata): The global metadata (only held by the coordinator rank)
-        validated_cache_reuse (bool): Flag indicating if checkpoint structures are consistent
-        validated_loaded_metadata_reuse (bool): Flag indicating the metadata loaded from the prev checkpoint
-                                         is validated to reuse, which skips all metadata communications
-        loaded_all_plans (List[SavePlan]): Cached local plans from the previous checkpoint's metadata file
-
+    Attributes:
+        global_metadata (Metadata): The global metadata to reuse: a copy of the loaded
+            checkpoint's on every rank until the first save, the previous save's on the
+            coordinator afterwards.
+        local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
+            it; None before the first save in this process.
+        central_plan (SavePlan): This rank's global plan of the previous save.
     """
 
     def __init__(self):
-        # Cached SavePlans to skip plan in `save_state_dict_async_plan`
-        # cached outcome of `SavePlan.prepare_global_plan`,
-        # which aggregates local plans from all ranks
-        self.cached_central_plan: Optional[SavePlan] = None
-        # cached outcome of `SavePlan.prepare_local_plan` describes how local state_dict is written
-        self.cached_local_plan: Optional[SavePlan] = None
-        # Cached global metadata, only `coordinator` for dist-ckpt holds
-        # if central plans are consistent over iters
-        self.cached_global_metadata: Optional[Metadata] = None
-        # This variable records if the ckpt structures are consistent
-        # so the following checkpoint savings reuse `cached_global_metadata`
-        self.validated_cache_reuse: bool = False
-        # The knob to enable cached metadata communication in saving
-        self.validated_loaded_metadata_reuse: bool = False
-        # The cached all_local_plans from the loaded metadata file of the previous checkpoint
-        self.loaded_all_plans: Optional[List[SavePlan]] = None
+        self.global_metadata: Optional[Metadata] = None
+        self.local_plan: Optional[SavePlan] = None
+        self.central_plan: Optional[SavePlan] = None
 
-    def set_cached_global_metadata(self, cached_global_metadata):
+    def set_cached_global_metadata(self, cached_global_metadata: Optional[Metadata]):
         """
-        Sets the cached global metadata and extracts local plans from it.
+        Sets the global metadata of a loaded checkpoint, to be reused if it still applies.
 
-        This method stores the global metadata from a previous checkpoint and attempts to extract
-        the local plans from it. The local plans are used to verify if the global metadata can
-        be reused in subsequent checkpoint saves.
+        Every rank must set it. The next save checks whether all ranks' local plans write exactly
+        the chunks this metadata lists, and if so reuses it instead of gathering the plans and
+        building the global metadata again. The metadata is not modified.
 
         Args:
-            cached_global_metadata (Metadata): The global metadata from a previous checkpoint
-                that contains information about the checkpoint structure and local plans.
-
-        Note:
-            If the metadata does not contain local plans, a debug message is logged indicating
-            that global metadata reuse verification will not be possible.
+            cached_global_metadata (Metadata): The global metadata from a previous checkpoint.
         """
-        self.cached_global_metadata = cached_global_metadata
-        self.loaded_all_plans = getattr(self.cached_global_metadata, "all_local_plans", None)
-        if self.loaded_all_plans is None:
-            logger.debug("no all_local_plans in metadata - can't verify global metadata reuse...")
-
-    def set_cache_metadata(
-        self, central_plan: SavePlan, local_plan: SavePlan, global_md_verify_reuse: bool
-    ):
-        """
-        Sets the cached metadata and updates the cache flags.
-
-        This method updates the cache with the latest central plan, local plan, and metadata reuse
-        validation results. It also checks if the central plan is consistent with the cached plan.
-
-        Args:
-            central_plan (SavePlan): The latest central plan
-            local_plan (SavePlan): The latest local plan
-            global_md_verify_reuse (bool): Flag indicating if global metadata reuse is valid
-        """
-        self.validated_loaded_metadata_reuse = global_md_verify_reuse
-        self.validated_cache_reuse = bool(central_plan == self.cached_central_plan)
-        logger.debug(f"validated: {self.validated_cache_reuse}")
-        self.cached_central_plan = central_plan
-        self.cached_local_plan = local_plan
-
-    def prepare_save_state_dict_ret(
-        self,
-        rank: int,
-        coordinator: int,
-        save_state_dict_ret: Tuple["FileSystemWriterAsync", Union[Metadata, None]],
-    ) -> Tuple["FileSystemWriterAsync", Union[Metadata, None]]:
-        """
-        Prepares the save state dict return value based on the cached metadata.
-
-        This method checks if the global metadata can be reused from the previous checkpoint.
-        If so, it updates the save state dict return value with the cached global metadata.
-
-        Args:
-            rank (int): The rank of the current process
-            coordinator (int): The coordinator rank
-            save_state_dict_ret (Tuple[FileSystemWriterAsync, Union[Metadata, None]]):
-                                The return value of the save state dict
-
-        Returns:
-            Tuple[FileSystemWriterAsync, Union[Metadata, None]]:
-            The updated save state dict return value with the cached global metadata
-            if it can be reused.
-        """
-        if (
-            self.loaded_all_plans
-            and self.cached_global_metadata
-            and self.validated_loaded_metadata_reuse
-        ):
-            if coordinator == rank:
-                logger.debug(
-                    f"rank: {rank}, reuse global metadata from loaded"
-                    f" .metadata, {save_state_dict_ret[1]}"
-                )
-                save_state_dict_ret = list(save_state_dict_ret)
-                save_state_dict_ret[1] = self.cached_global_metadata
-
-        elif self.validated_cache_reuse:
-            logger.debug(f"rank: {rank}, cache validated")
-            if save_state_dict_ret[1]:  # when global_metadata is not cached
-                self.cached_global_metadata = save_state_dict_ret[1]  # Cache Metadata
-            # Only Coordinator rank holds cached global_metadata
-            # (None is returned for global_metadata)
-            elif coordinator == rank:
-                logger.debug(
-                    f"rank: {rank}, reuse global metadata cached from previous"
-                    f" save iteration, {save_state_dict_ret[1]}"
-                )
-                save_state_dict_ret = list(save_state_dict_ret)
-                save_state_dict_ret[1] = self.cached_global_metadata
-        return save_state_dict_ret
-
-    def get_cache_metadata(
-        self,
-    ) -> Tuple[Optional[SavePlan], Optional[SavePlan], bool, Optional[List[SavePlan]]]:
-        """
-        Retrieves the cached metadata components.
-
-        This method returns a tuple containing the cached central plan, local plan, cache reuse
-        validation, and all local plans from the previous checkpoint's metadata file.
-        """
-        return (
-            self.cached_central_plan,
-            self.cached_local_plan,
-            self.validated_cache_reuse,
-            self.loaded_all_plans,
+        # A copy: finish writes into the metadata it is given. It has only the dataclass fields,
+        # so the local plans that older versions attach (all_local_plans) are not written again.
+        self.global_metadata = (
+            dataclasses.replace(cached_global_metadata)
+            if cached_global_metadata is not None
+            else None
         )
+        self.local_plan = None
+        self.central_plan = None
+
+    def _update(
+        self,
+        local_plan: SavePlan,
+        central_plan: SavePlan,
+        global_metadata: Optional[Metadata],
+        reused: bool,
+        is_coordinator: bool,
+    ) -> Optional[Metadata]:
+        """Record a planned save; return the global metadata the coordinator writes for it."""
+        self.local_plan = local_plan
+        self.central_plan = central_plan
+        if not reused:
+            self.global_metadata = global_metadata if is_coordinator else None
+            return global_metadata
+        if not is_coordinator:
+            self.global_metadata = None
+            return None
+        if self.global_metadata is None:
+            raise RuntimeError(
+                "the coordinator holds no global metadata to reuse; with enable_cache, the "
+                "coordinator rank must stay the same between saves"
+            )
+        return self.global_metadata
 
 
 _checkpoint_metadata_cache = None
@@ -248,10 +159,13 @@ def save_state_dict_async_plan(
         storage_writer (FileSystemWriterAsync): in current version only an instance of
             FileSystemWriterAsync
         process_group (dist.ProcessGroup, optional): process group used for save planning
-        coordinator_rank (int, optional): coordinator rank for planning. Defaults to 0.
+        coordinator_rank (int): coordinator rank for planning. Defaults to 0.
         planner (SavePlanner, optional): save planner for torch.distributed.checkpoint format
-        enable_cache (bool, optional): Flag to enable caching of checkpoint metadata. When True,
-            previously saved metadata can be reused to speed up subsequent saves.
+        enable_cache (bool): Reuse global metadata instead of building it: the first save reuses
+            a loaded checkpoint's metadata if it still applies, later saves reuse the previous
+            save's plans and metadata, as the checkpoint structure must not change between them
+            (a rank whose local plan changed raises). See CheckpointMetadataCache. Defaults to
+            False.
         metadata_cache (CheckpointMetadataCache, optional): Custom metadata cache instance to use
             for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.
 
@@ -259,27 +173,16 @@ def save_state_dict_async_plan(
         tuple: Contains:
 
             - storage writer (the one passed as input)
-            - metadata from planning (or None if we reuse cached global metadata)
+            - global metadata to write (on the coordinator; None on other ranks)
             - distributed wrapper used for planning
 
     The return value of this function should be passed as an input to
-    `save_state_dict_async_finalize` and cached_plan to skip `reduce_scatter` at planning.
+    `save_state_dict_async_finalize`.
     """
-    cached_central_plan, cached_local_plan, validated_cache_reuse, loaded_all_plans = (
-        None,
-        None,
-        False,
-        None,
-    )
     global _checkpoint_metadata_cache
     metadata_cache = metadata_cache if metadata_cache is not None else _checkpoint_metadata_cache
-    if enable_cache and metadata_cache:
-        (
-            cached_central_plan,
-            cached_local_plan,
-            validated_cache_reuse,
-            loaded_all_plans,
-        ) = metadata_cache.get_cache_metadata()
+    if not enable_cache:
+        metadata_cache = None
 
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     dist_wrapper = _DistWrapper(process_group, True, coordinator_rank)
@@ -289,20 +192,16 @@ def save_state_dict_async_plan(
 
     global_metadata = None
     logger.debug(f"rank: {rank}, starting state dict save")
-    local_plan = cached_local_plan
-    global_md_verify_reuse = False
+    reused = False
 
     def local_step():
-        nonlocal local_plan
+        """Set up the planner and storage writer for this save and create the local plan."""
         assert planner is not None
         # PyTorch 2.4 introduced additional `metadata` argument,
         # we have to reference `is_coordinator` args by name
         planner.set_up_planner(state_dict, is_coordinator=dist_wrapper.is_coordinator)
         storage_writer.set_up_storage_writer(dist_wrapper.is_coordinator)
-        if not validated_cache_reuse and local_plan is None:
-            local_plan = planner.create_local_plan()
-        local_plan = storage_writer.prepare_local_plan(local_plan)
-        return local_plan
+        return storage_writer.prepare_local_plan(planner.create_local_plan())
 
     def global_step(all_local_plans):
         nonlocal global_metadata
@@ -317,19 +216,26 @@ def save_state_dict_async_plan(
     # the metadata but prepare the plans independently on each rank.
     # In the worst case we have to reduce_scatter all the plans.
     start_plan = time()
-    if validated_cache_reuse and cached_central_plan:
+    if metadata_cache is not None and metadata_cache.local_plan is not None:
+        # A previous save in this process planned the same structure: `enable_cache` promises
+        # it does not change, so reuse its plan and metadata without communication. The local
+        # plan is still created (cheap) to catch a broken promise on this rank.
         logger.debug(f"rank: {rank}, Passed cache reusable")
-        local_step()
-        central_plan = cached_central_plan
+        local_plan = local_step()
+        _check_plan_unchanged(metadata_cache.local_plan, local_plan, rank)
+        central_plan = metadata_cache.central_plan
+        reused = True
     elif getattr(planner, "can_run_decentralized_global_plan", False) and getattr(
         storage_writer, "can_run_decentralized_global_plan", False
     ):
         local_plan = local_step()
-        global_md_verify_reuse = verify_global_md_reuse(
-            loaded_all_plans, local_plan, rank, dist_wrapper
-        )
+        if metadata_cache is not None:
+            # The first save in this process: every rank takes part, with or without metadata.
+            reused = verify_global_metadata_reuse(
+                metadata_cache.global_metadata, local_plan, dist_wrapper
+            )
 
-        if not loaded_all_plans or not global_md_verify_reuse:
+        if not reused:
             logger.debug(f"rank: {rank}, Passed cache non-reusable")
             with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.plan_gather"):
                 all_local_plans = dist_wrapper.gather_object(local_plan)
@@ -338,86 +244,123 @@ def save_state_dict_async_plan(
                     semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.global_metadata_create"
                 ):
                     _, global_metadata = planner.create_global_plan(all_local_plans)
-                    global_metadata.all_local_plans = all_local_plans
         else:
-            logger.debug(f"rank: {rank}, Passed cached global metadata, {global_md_verify_reuse}")
-            global_metadata = None
-        local_plan = planner.create_decentralized_global_plan(local_plan)
-        local_plan = storage_writer.prepare_decentralized_global_plan(local_plan)
-        central_plan = local_plan
+            logger.debug(f"rank: {rank}, Passed cached global metadata")
+        central_plan = storage_writer.prepare_decentralized_global_plan(
+            planner.create_decentralized_global_plan(local_plan)
+        )
     else:
+        # Keep the local plan, so that the next save can compare against it.
+        local_plan = None
+
+        def local_step_kept():
+            """Run local_step and keep its plan."""
+            nonlocal local_plan
+            local_plan = local_step()
+            return local_plan
+
         with telemetry.span(
             semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.plan_reduce_scatter"
         ):
-            central_plan = dist_wrapper.reduce_scatter("plan", local_step, global_step)
+            central_plan = dist_wrapper.reduce_scatter("plan", local_step_kept, global_step)
 
-    central_plan = planner.finish_plan(central_plan)
+    final_plan = planner.finish_plan(central_plan)
     end_plan = time()
     logger.debug(f"rank: {rank}, plan time: {end_plan - start_plan}")
     # Prepare async writing of tensors.
     # The `storage_writer` will store the information about tensors it needs to save
     start = time()
-    storage_writer.prepare_write_data(central_plan, planner)
+    storage_writer.prepare_write_data(final_plan, planner)
     end = time()
     logger.debug(f"{time()} rank: {rank}, write(async) time: {end - start}")
-    save_state_dict_ret = (storage_writer, global_metadata, dist_wrapper)
-    if enable_cache and metadata_cache:
-        logger.debug(f"{time()} rank: {rank}, setting metadata caching")
-        metadata_cache.set_cache_metadata(central_plan, local_plan, global_md_verify_reuse)
-        save_state_dict_ret = metadata_cache.prepare_save_state_dict_ret(
-            rank, coordinator_rank, save_state_dict_ret
+    if metadata_cache is not None:
+        global_metadata = metadata_cache._update(
+            local_plan, central_plan, global_metadata, reused, dist_wrapper.is_coordinator
         )
-    return save_state_dict_ret
+    return storage_writer, global_metadata, dist_wrapper
 
 
-@telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.verify_global_md_reuse")
-def verify_global_md_reuse(
-    loaded_all_plans: List[SavePlan],
+@telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.check_plan_unchanged")
+def _check_plan_unchanged(previous: SavePlan, current: SavePlan, rank: int) -> None:
+    """Raise if this rank's local plan differs from the one of the previous save.
+
+    With `enable_cache`, saves after the first reuse the first save's plans and metadata without
+    communicating, trusting that the checkpoint structure does not change. A changed plan would
+    otherwise be written with stale metadata.
+
+    Args:
+        previous (SavePlan): local plan of the previous save
+        current (SavePlan): local plan of this save
+        rank (int): this rank, for the error message
+    """
+    differing = [
+        f.name
+        for f in fields(current)
+        if f.name != "storage_data" and getattr(previous, f.name) != getattr(current, f.name)
+    ]
+    if not differing:
+        return
+    detail = ", ".join(differing)
+    if "items" in differing:
+        new_fqns = {item.index.fqn for item in current.items}
+        old_fqns = {item.index.fqn for item in previous.items}
+        first_changed = next(
+            (new.index.fqn for old, new in zip(previous.items, current.items) if old != new), None
+        )
+        detail = (
+            f"{detail}; {len(previous.items)} items before, {len(current.items)} now; "
+            f"added {sorted(new_fqns - old_fqns)[:5]}, removed {sorted(old_fqns - new_fqns)[:5]}, "
+            f"first changed {first_changed!r}"
+        )
+    raise RuntimeError(
+        f"rank {rank}: the local save plan differs from the previous save's ({detail}). "
+        "enable_cache requires the checkpoint structure to stay the same between saves."
+    )
+
+
+@telemetry.trace_fn(
+    semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.verify_global_metadata_reuse"
+)
+def verify_global_metadata_reuse(
+    loaded_metadata: Optional[Metadata],
     local_plan: SavePlan,
-    rank: int,
     dist_wrapper: _DistWrapper,
 ) -> bool:
     """
-    Verifies that global metadata reuse is possible by checking the loaded plans from the
-     checkpoint are consistent, which means we have the same settings when resuming training.
+    Verifies that the metadata of a loaded checkpoint can be reused as this save's global metadata.
+
+    It can if all ranks' local plans write exactly the chunks the metadata lists, with the same
+    types, global sizes and properties; see `_metadata_reuse`. Collective: every rank of the
+    planning group must call it, also ranks without loaded metadata, which vote against reuse.
 
     Args:
-        loaded_all_plans: List[SavePlan], The loaded plans from the checkpoint
-         (stored in checkpoint metadata).
-        local_plan: SavePlan, The local save plan.
-        rank: Current process rank.
+        loaded_metadata (Metadata, optional): The global metadata of the loaded checkpoint.
+        local_plan (SavePlan): This rank's local save plan.
         dist_wrapper (_DistWrapper): distributed wrapper created during planning
 
     Returns: True iff the global metadata reuse is possible.
 
     """
-    logger.debug("verifying reuse of global metadata")
-    if not loaded_all_plans:
-        global_md_verify_reuse = False
-        logger.debug("loaded global metadata reuse verification: no loaded plans passed")
-
-    elif len(loaded_all_plans) == dist_wrapper.get_world_size():
-        local_verify_reuse = all(
-            getattr(local_plan, f.name) == getattr(loaded_all_plans[rank], f.name)
-            for f in fields(local_plan)
-            if f.name != "storage_data"
-        )
-
-        if not local_verify_reuse:
-            logger.debug(
-                f"local_verify_reuse is False: diffs -"
-                f" {_compare_dataclasses(local_plan, loaded_all_plans[rank])}"
-            )
-        all_results = torch.tensor([local_verify_reuse], dtype=torch.int, device="cuda")
-        with telemetry.span(
-            semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.validate_md_reuse_all_reduce"
-        ):
-            torch.distributed.all_reduce(all_results, op=torch.distributed.ReduceOp.MIN)
-        # Check if all reduced results are True
-        global_md_verify_reuse = all_results.item() == 1
+    rank, world_size = dist_wrapper.rank, dist_wrapper.get_world_size()
+    if loaded_metadata is None:
+        votes = [1] + [0] * _metadata_reuse.LANES
     else:
-        global_md_verify_reuse = False
-    return global_md_verify_reuse
+        votes = _metadata_reuse.votes(local_plan, loaded_metadata, rank, world_size)
+    summed = torch.tensor(votes, dtype=torch.int64, device=torch.cuda.current_device())
+    with telemetry.span(
+        semconv.SPAN_GROUP_CKPT_PROFILING,
+        "nv.nvrx.ckpt.save.verify_global_metadata_reuse_all_reduce",
+    ):
+        torch.distributed.all_reduce(summed, group=dist_wrapper.group)
+    reuse = _metadata_reuse.can_reuse(summed.tolist())
+    if loaded_metadata is not None and dist_wrapper.is_coordinator:
+        logger.info(
+            "reusing the loaded checkpoint's global metadata"
+            if reuse
+            else "the loaded checkpoint's global metadata doesn't match the save plans; "
+            "building new global metadata"
+        )
+    return reuse
 
 
 def save_state_dict_async_finalize(
