@@ -172,7 +172,7 @@
     {
       "id": 29,
       "name": "Triton cubin / TorchInductor software toolchain error",
-      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels (idx 1311/1418/1420) + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup (idx 1417); clean Python exceptions, multi-node, deterministic in-container.",
+      "description": "Triton autotuner KeyError \"Unknown key: cubin\", or TorchInductor StaticCudaLauncher reporting \"CUDA driver error: file not found\" during JIT warmup. Presents as a clean Python exception rather than a native crash, appears on every node rather than one, and reproduces deterministically for a given container image. That reproducibility is the discriminator: a build or toolchain mismatch, which a retry on the same image cannot clear.",
       "decision": "STOP"
     },
     {
@@ -202,13 +202,13 @@
     {
       "id": 34,
       "name": "Segmentation fault / native runtime crash",
-      "description": "Single-rank (rank 608) SIGSEGV in torch's pinned host allocator during GPTDataset index load, wild HIGH address (not 0x8), no self-reported corruption guard and no HW signal; a single log genuinely cannot separate a torch race from host-memory corruption.",
+      "description": "SIGSEGV in native code with no accompanying hardware signal and no self-reported corruption guard, usually confined to a single rank. A wild or high faulting address, rather than a near-null offset, points at memory corruption rather than a null dereference; host-side pinned-allocator and dataset-index paths are common sites. A single log cannot separate a library race from host-memory corruption, so this stays retryable.",
       "decision": "RESTART"
     },
     {
       "id": 35,
       "name": "Node-local native SIGBUS (Triton/TE native kernel)",
-      "description": "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT .so dlopen/mmap at kernel load (idx 1006; driver.py compile_module_from_src -> create_module; zero iterations); (b) mid-training in the TE/Triton MoE permutation forward (idx 534; permutation.py; one node's 4 ranks after ckpt 27600 while thousands of peers keep running). Node-local hardware/memory fault.",
+      "description": "Native SIGBUS confined to one node or tray, in two forms: during Triton JIT .so dlopen/mmap at kernel load, before any iteration completes; or mid-training inside a TE/Triton native kernel, where only that node's ranks die while thousands of peers keep running. The node-local blast radius is the discriminator, and points at a node-local hardware or memory fault rather than a workload bug.",
       "decision": "RESTART"
     },
     {
