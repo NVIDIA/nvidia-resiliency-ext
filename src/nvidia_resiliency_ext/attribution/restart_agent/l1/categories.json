@@ -16,7 +16,7 @@
     {
       "id": 3,
       "name": "Off-file termination / external teardown (cause not in log)",
-      "description": "Healthy training then an external-signal all-thread faulthandler dump (no 'Fatal Python error' / no 'Current thread 0x'), log truncated mid-dump; no in-file CANCELLED / watchdog / IB / Xid / NVRx marker. A real termination occurred but its cause is off-file (most likely a SLURM cancel/preempt/timeout).",
+      "description": "A real termination whose cause is not in this log. Training progresses normally, then only downstream surfaces appear and no initiating fault: an external-signal faulthandler dump, TCPStore connection resets as surviving ranks notice a peer vanish, \"destroy_process_group() was not called before program exit\" warnings at an abrupt exit, or atexit teardown noise. Completed iterations are the key signal - they prove rendezvous and setup already succeeded, so a later store or teardown error is a symptom rather than the cause. Usually a rank was killed, preempted or lost with its node, and the applog never sees why. If the log carries an explicit scheduler marker or SIGTERM across many ranks, use cat 1; if no iteration ever completed, use cat 12.",
       "decision": "RESTART"
     },
     {
@@ -70,7 +70,7 @@
     {
       "id": 12,
       "name": "Distributed rendezvous / TCPStore socket timeout",
-      "description": "c10d/TCPStore rendezvous or socket failure as the earliest failure surface visible in this log. These errors are frequently secondary: when a rank dies for any reason (CUDA OOM, SIGKILL, node failure, watchdog abort, checkpoint error), the surviving ranks later fail against the store. If an upstream fault appears earlier in this log, pick that category instead. If TCPStore is the only failure surface present, pick this category with reduced confidence rather than declining to classify - including when the initiating rank's own output is absent and only cascade warnings remain, which is the normal shape when the store host died first.",
+      "description": "c10d/TCPStore rendezvous or socket failure during process-group setup, before training progresses: the store never comes up, or it fails while ranks are still joining. When store errors are the only failure surface, pick this with reduced confidence rather than declining to classify, even if the initiating rank's own output is absent. Two exclusions. If an upstream fault appears earlier in the log, pick that category. And if training iterations completed before the store errors began, rendezvous had already succeeded, so the store failed because something else died first - that is cat 3, not this.",
       "decision": "RESTART"
     },
     {
