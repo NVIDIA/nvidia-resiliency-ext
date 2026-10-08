@@ -53,10 +53,12 @@ class CheckpointMetadataCache:
       `enable_cache` promises that the checkpoint structure does not change. Each rank still
       creates its local plan and raises if it differs from the previous one.
 
+    The coordinator writes a shallow copy of the cached metadata on every save, so the cache never
+    holds a save's storage_data and never modifies the metadata it was given.
+
     Attributes:
-        global_metadata (Metadata): The global metadata to reuse: a copy of the loaded
-            checkpoint's on every rank until the first save, the previous save's on the
-            coordinator afterwards.
+        global_metadata (Metadata): The global metadata to reuse: the loaded checkpoint's on every
+            rank until the first save, the previous save's on the coordinator afterwards.
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
         central_plan (SavePlan): This rank's global plan of the previous save.
@@ -78,13 +80,7 @@ class CheckpointMetadataCache:
         Args:
             cached_global_metadata (Metadata): The global metadata from a previous checkpoint.
         """
-        # A copy: finish writes into the metadata it is given. It has only the dataclass fields,
-        # so the local plans that older versions attach (all_local_plans) are not written again.
-        self.global_metadata = (
-            dataclasses.replace(cached_global_metadata)
-            if cached_global_metadata is not None
-            else None
-        )
+        self.global_metadata = cached_global_metadata
         self.local_plan = None
         self.central_plan = None
 
@@ -99,18 +95,22 @@ class CheckpointMetadataCache:
         """Record a planned save; return the global metadata the coordinator writes for it."""
         self.local_plan = local_plan
         self.central_plan = central_plan
-        if not reused:
-            self.global_metadata = global_metadata if is_coordinator else None
-            return global_metadata
         if not is_coordinator:
             self.global_metadata = None
             return None
-        if self.global_metadata is None:
+        if not reused:
+            self.global_metadata = global_metadata
+        elif self.global_metadata is None:
             raise RuntimeError(
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
-        return self.global_metadata
+        # finish writes the save's storage_data into the metadata it is given. Kept in the cache,
+        # each save's storage_data, built from the gathered write results, would stay alive on
+        # the coordinator and slow down its every full garbage collection. The copy has only the
+        # dataclass fields, so the local plans older versions attach (all_local_plans) are not
+        # written again.
+        return dataclasses.replace(self.global_metadata)
 
 
 _checkpoint_metadata_cache = None

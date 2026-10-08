@@ -289,32 +289,46 @@ def test_any_missing_chunk_doesnt_reuse(tensors, data):
     assert not reusable([SavePlan(kept[r::3]) for r in range(3)], metadata_of(plans))
 
 
-def test_set_cached_global_metadata_keeps_a_copy_without_local_plans():
-    """The caller's metadata (e.g. Megatron's load strategy's) is not modified: the cache keeps a
-    copy for finish to write into, with only the dataclass fields, so the local plans that older
-    versions attach are not written again."""
-    metadata = metadata_of(sample_plans())
-    metadata.all_local_plans = sample_plans()  # as written by older versions
+def test_reuse_leaves_the_loaded_metadata_alone():
+    """The caller's metadata (e.g. Megatron's load strategy's) is not modified by a save, and the
+    local plans that older versions attach are not written again."""
+    plans = sample_plans()
+    metadata = metadata_of(plans)
+    metadata.all_local_plans = plans  # as written by older versions
     before = dict(vars(metadata))
     cache = CheckpointMetadataCache()
     cache.set_cached_global_metadata(metadata)
+    written = cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True)
+    written.storage_data = {"rewritten": None}  # as finish does
     assert vars(metadata) == before
-    copy = cache.global_metadata
-    assert copy is not metadata
-    assert "all_local_plans" not in vars(copy)
-    assert all(getattr(copy, f.name) == getattr(metadata, f.name) for f in fields(metadata))
-    copy.storage_data = {"rewritten": None}  # as finish does
-    assert vars(metadata) == before
+    assert "all_local_plans" not in vars(written)
+    assert all(
+        getattr(written, f.name) == before[f.name]
+        for f in fields(metadata)
+        if f.name != "storage_data"
+    )
 
 
-def test_reuse_writes_the_cached_metadata():
-    """Every save that reuses the metadata hands the coordinator the cache's own copy."""
+@pytest.mark.parametrize("reused", [False, True], ids=["built", "reused"])
+def test_finish_never_writes_into_the_cache(reused):
+    """Each save's storage_data goes into a copy: kept in the cache, it would stay alive on the
+    coordinator and slow down every full garbage collection there."""
     plans = sample_plans()
     cache = CheckpointMetadataCache()
-    cache.set_cached_global_metadata(metadata_of(plans))
-    copy = cache.global_metadata
-    assert cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True) is copy
-    assert cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True) is copy
+    if reused:
+        cache.set_cached_global_metadata(metadata_of(plans))
+        built = None
+    else:
+        built = metadata_of(plans)
+        built.storage_data = None  # create_global_plan leaves it to finish
+    for save in range(3):
+        written = cache._update(plans[0], plans[0], built, reused or save > 0, is_coordinator=True)
+        cached = cache.global_metadata
+        storage_data = cached.storage_data
+        assert written is not cached
+        written.storage_data = {f"save {save}": None}  # as finish does
+        assert cached.storage_data is storage_data
+        assert written.state_dict_metadata is cached.state_dict_metadata
 
 
 def test_only_the_coordinator_keeps_metadata_after_a_save():
@@ -329,7 +343,7 @@ def test_only_the_coordinator_keeps_metadata_after_a_save():
     built = metadata_of(plans)
     coordinator = CheckpointMetadataCache()
     coordinator.set_cached_global_metadata(metadata)
-    assert coordinator._update(plans[0], plans[0], built, False, is_coordinator=True) is built
+    assert coordinator._update(plans[0], plans[0], built, False, is_coordinator=True) == built
     assert coordinator.global_metadata is built
 
 
@@ -348,5 +362,5 @@ def test_set_cached_global_metadata_starts_over():
     cache._update(plans[0], plans[0], metadata_of(plans), reused=False, is_coordinator=True)
     loaded = metadata_of(plans)
     cache.set_cached_global_metadata(loaded)
-    assert cache.global_metadata == loaded
+    assert cache.global_metadata is loaded
     assert cache.local_plan is None and cache.central_plan is None
