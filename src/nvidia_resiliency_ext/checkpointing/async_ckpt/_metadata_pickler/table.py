@@ -154,6 +154,15 @@ def decode(buf) -> Table:
     offsets = raw[pos : pos + 8 * n_offsets].view("<i8")
     pos += 8 * n_offsets
     blob = raw[pos : pos + n_bytes].tobytes()
+    if len(blob) != n_bytes or len(entry) != n_entries:
+        raise ValueError("write-result table is truncated")
+    ids = entry[:, [FQN, PATH]]
+    ndim = entry[:, OFFSET_NDIM]
+    has_size = (entry[:, FLAGS] & FLAG_OFFSET_SIZE) != 0
+    if (ids < 0).any() or (ids >= n_strings).any() or (ndim < 0).any():
+        raise ValueError("write-result table: string id or offset dims out of range")
+    if int(ndim[has_size].sum()) != n_offsets:
+        raise ValueError("write-result table: offset dims don't match the offsets")
     strings, start = [], 0
     for n in string_len.tolist():
         strings.append(blob[start : start + n].decode("utf-8", "surrogatepass"))
