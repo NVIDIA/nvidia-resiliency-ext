@@ -194,7 +194,7 @@ def build(setup_kwargs):
     # build continues and the checkpointing code falls back to its pure-Python writer.
     ext_modules = [
         Pybind11Extension(
-            'nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.native',
+            'nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler._native',
             [
                 'src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native_src/native.cpp'
             ],

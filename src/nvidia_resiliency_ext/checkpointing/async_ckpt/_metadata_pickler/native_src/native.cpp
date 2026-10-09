@@ -755,17 +755,17 @@ class Writer {
 };
 
 // Return the pickle of md; small_pickle(obj) returns the opcodes for an object the writer leaves to
-// the stdlib pickler. With rows, storage_data is written from them (see Writer::dumps).
-[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle, py::object rows) {
-    return Writer(std::move(small_pickle)).dumps(md.ptr(), rows);
+// the stdlib pickler. With storage_rows, storage_data is written from them (see Writer::dumps).
+[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle, py::object storage_rows) {
+    return Writer(std::move(small_pickle)).dumps(md.ptr(), storage_rows);
 }
 
 }  // namespace
 
-PYBIND11_MODULE(native, m) {
+PYBIND11_MODULE(_native, m) {
     m.doc() = "Fast pickling of torch.distributed.checkpoint Metadata.";
     m.def("dumps", &dumps, py::arg("metadata"), py::arg("small_pickle"),
-          py::arg("rows") = py::none(),
+          py::arg("storage_rows") = py::none(),
           "Return the pickle of a torch.distributed.checkpoint Metadata, as standard pickle "
           "bytes.");
 }

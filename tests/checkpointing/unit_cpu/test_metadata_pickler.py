@@ -47,7 +47,7 @@ HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo
 NEEDS_NATIVE = pytest.mark.skipif(writer.native is None, reason="native extension not built")
 WRITERS = [
     pytest.param(pickler.dumps, id="python"),
-    pytest.param(writer._native_dumps, id="native", marks=NEEDS_NATIVE),
+    pytest.param(writer.native.dumps if writer.native else None, id="native", marks=NEEDS_NATIVE),
 ]
 
 
@@ -238,7 +238,7 @@ def test_writer_matches_stock_pickle(dumps, md):
 @hypothesis_settings
 @given(metadatas())
 def test_native_matches_python(md):
-    assert writer._native_dumps(md) == pickler.dumps(md)
+    assert writer.native.dumps(md) == pickler.dumps(md)
 
 
 @pytest.mark.parametrize("dumps", WRITERS)
@@ -251,7 +251,7 @@ def test_writer_matches_stock_pickle_on(dumps, make, tmp_path):
 @pytest.mark.parametrize("make", FIXED_METADATA)
 def test_native_matches_python_on(make, tmp_path):
     md = make(tmp_path)
-    assert writer._native_dumps(md) == pickler.dumps(md)
+    assert writer.native.dumps(md) == pickler.dumps(md)
 
 
 def _set_index(md, value):
@@ -325,7 +325,7 @@ def test_writer_rejects_unexpected_values(dumps, mutate, python_rejects):
     """A writer rejects a value it does not encode exactly, rather than write something wrong."""
     md = writer._sample_metadata()
     mutate(md)
-    if dumps is writer._native_dumps or python_rejects:
+    if dumps is not pickler.dumps or python_rejects:
         with pytest.raises((TypeError, OverflowError, UnicodeError)):
             dumps(md)
     else:
@@ -410,7 +410,7 @@ CHANGED_WHILE_PICKLED = [
 def test_native_survives_metadata_changed_while_pickled(case):
     md = _metadata_changed_while_pickled(case)
     try:
-        out = writer._native_dumps(md)
+        out = writer.native.dumps(md)
     except RuntimeError as e:
         assert "changed size" in str(e)
     else:
@@ -470,7 +470,7 @@ def test_layout_supported_on_this_torch():
 _LAST = max(writer.TESTED_TORCH_VERSIONS)
 _TESTED = f"{_LAST[0]}.{_LAST[1]}.0"  # whatever torch runs the tests
 _UNTESTED = f"{_LAST[0]}.{_LAST[1] + 1}.0"
-_FAST = writer._native_dumps if writer.native is not None else pickler.dumps
+_FAST = writer.native.dumps if writer.native is not None else pickler.dumps
 
 
 @pytest.mark.parametrize(

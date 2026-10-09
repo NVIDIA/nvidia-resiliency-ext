@@ -261,7 +261,7 @@ class TestAsyncSave:
         monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
         md_writer.fast_metadata_enabled.cache_clear()
         md_writer._select_dumps.cache_clear()
-        native = md_writer._native_dumps if md_writer.native is not None else pickler.dumps
+        native = md_writer.native.dumps if md_writer.native is not None else pickler.dumps
         expected = {'1': native, 'python': pickler.dumps, '0': None}[mode]
         assert md_writer._select_dumps() is expected
 

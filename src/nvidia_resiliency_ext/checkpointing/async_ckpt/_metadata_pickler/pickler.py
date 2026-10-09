@@ -23,7 +23,7 @@ name once and refers back to it. The result is an ordinary pickle that reference
 classes, so stock ``torch.distributed.checkpoint`` loads it unchanged; it unpickles into a
 ``Metadata`` equal to the one that was written.
 
-The C++ ``native`` extension implements the same writer with byte-identical output.
+native.py has the same writer in C++, with the same interface and byte-identical output.
 """
 
 import io
