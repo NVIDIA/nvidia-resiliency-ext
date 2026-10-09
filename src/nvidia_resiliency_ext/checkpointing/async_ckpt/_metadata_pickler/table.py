@@ -26,10 +26,8 @@ Layout of an encoded table (little-endian):
     offsets     int64[offset values] all entries' MetadataIndex offsets, concatenated
     strings     uint8[string bytes]  the strings, UTF-8 (surrogatepass), concatenated
 
-Entry columns: fqn and path are string ids. index is MetadataIndex.index, valid if FLAG_INDEX.
-offset_ndim is the number of MetadataIndex.offset dims, valid if FLAG_OFFSET (the index has an
-offset attribute) and FLAG_OFFSET_SIZE (it is a torch.Size, not None). offset and length are the
-_StorageInfo's.
+The coordinator receives each rank's table zero-padded to a common width; the padding is ignored.
+See WriteResultTable for what the entries hold.
 """
 
 from dataclasses import dataclass
@@ -55,8 +53,39 @@ class Unencodable(TypeError):
 
 
 @dataclass
-class Table:
-    """A decoded table: numpy views into the received buffer, and its strings."""
+class WriteResultTable:
+    """A decoded table: numpy views into the received buffer, and its strings.
+
+    Each entry (a row of ``entry``) is one write result, ``WriteResult(index, size_in_bytes,
+    storage_data)``, which the coordinator writes as the ``storage_data`` item ``index ->
+    storage_data``. Only those two are kept: ``size_in_bytes`` is the storage length.
+
+    ===========  ===================================================================================
+    Column       Value
+    ===========  ===================================================================================
+    FQN          ``index.fqn``: an id into ``strings``.
+    INDEX        ``index.index`` if FLAG_INDEX is set, else 0 (the index is None).
+    OFFSET_NDIM  The number of dims of ``index.offset`` if FLAG_OFFSET_SIZE is set, else 0. Its dims
+                 are the next OFFSET_NDIM values of ``offsets``: entries take theirs in order, and
+                 together they use up ``offsets``.
+    PATH         ``storage_data.relative_path``: an id into ``strings``.
+    OFFSET       ``storage_data.offset``.
+    LENGTH       ``storage_data.length``.
+    FLAGS        A bitmask of the FLAG_* values below.
+    ===========  ===================================================================================
+
+    Flags, for the attributes a value can't express:
+
+    - FLAG_INDEX (0x1): ``index.index`` is an int, not None.
+    - FLAG_OFFSET (0x2): ``index`` has an ``offset`` attribute. A MetadataIndex created without
+      an offset has none, and pickles without it.
+    - FLAG_OFFSET_SIZE (0x4): ``index.offset`` is a ``torch.Size``, not None; set only with
+      FLAG_OFFSET.
+
+    Strings are stored once per table, so an fqn or path shared by several entries has one id.
+    ``storage_data`` is a ``_StorageInfo`` without ``transform_descriptors``; ``encode`` raises
+    Unencodable for anything else, and that rank's write results are sent pickled.
+    """
 
     entry: np.ndarray  # int64[entries, COLUMNS]
     offsets: np.ndarray  # int64[offset values]
@@ -139,7 +168,7 @@ def encode(results: List[WriteResult]) -> bytes:
     )
 
 
-def decode(buf) -> Table:
+def decode(buf) -> WriteResultTable:
     """The table in buf (bytes, or a uint8 array possibly padded at the end), without copying."""
     raw = np.frombuffer(buf, dtype=np.uint8)
     header = raw[: HEADER * 8].view("<i8")
@@ -169,15 +198,15 @@ def decode(buf) -> Table:
     for n in string_len.tolist():
         strings.append(blob[start : start + n].decode("utf-8", "surrogatepass"))
         start += n
-    return Table(entry=entry, offsets=offsets, strings=strings)
+    return WriteResultTable(entry=entry, offsets=offsets, strings=strings)
 
 
-def decode_rows(rows: np.ndarray) -> List[Table]:
+def decode_rows(rows: np.ndarray) -> List[WriteResultTable]:
     """The tables in the rows of a 2-D uint8 array, one zero-padded table per row."""
     return [decode(row) for row in rows]
 
 
-def to_storage_data(tables: List[Table]) -> dict:
+def to_storage_data(tables: List[WriteResultTable]) -> dict:
     """The storage_data dict the tables describe, as finish builds it from write results."""
     storage_data = {}
     for table in tables:
@@ -200,7 +229,7 @@ def to_storage_data(tables: List[Table]) -> dict:
     return storage_data
 
 
-def to_write_results(t: Table) -> List[WriteResult]:
+def to_write_results(t: WriteResultTable) -> List[WriteResult]:
     """The write results a table holds, as torch's finish takes them. size_in_bytes is the storage
     length, as torch's writer reports it."""
     return [
