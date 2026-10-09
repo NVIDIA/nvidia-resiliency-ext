@@ -60,14 +60,25 @@ class WriteResultTable:
     storage_data)``, which the coordinator writes as the ``storage_data`` item ``index ->
     storage_data``. Only those two are kept: ``size_in_bytes`` is the storage length.
 
+    The table has three parts:
+
+    - ``entry``: ``int64[entries, COLUMNS]``, one row per write result, columns below.
+    - ``offsets``: ``int64[offset values]``, the dims of every entry's ``index.offset``,
+      concatenated in entry order. An offset has one value per dim of its tensor, so it doesn't fit
+      a fixed number of columns; each entry's OFFSET_NDIM says how many of these values are its. A
+      reader walks the entries in order with a running position into ``offsets``, starting at 0;
+      at the end, the position must equal ``len(offsets)``. For example, entries with offsets
+      ``(0, 64)``, None and ``(128,)`` have OFFSET_NDIM 2, 0 and 1, and ``offsets`` is
+      ``[0, 64, 128]``.
+    - ``strings``: the distinct fqns and relative paths, which FQN and PATH index.
+
     ===========  ===================================================================================
     Column       Value
     ===========  ===================================================================================
     FQN          ``index.fqn``: an id into ``strings``.
     INDEX        ``index.index`` if FLAG_INDEX is set, else 0 (the index is None).
-    OFFSET_NDIM  The number of dims of ``index.offset`` if FLAG_OFFSET_SIZE is set, else 0. Its dims
-                 are the next OFFSET_NDIM values of ``offsets``: entries take theirs in order, and
-                 together they use up ``offsets``.
+    OFFSET_NDIM  The number of dims of ``index.offset`` if FLAG_OFFSET_SIZE is set, else 0: how many
+                 values of ``offsets``, from the running position, are its dims.
     PATH         ``storage_data.relative_path``: an id into ``strings``.
     OFFSET       ``storage_data.offset``.
     LENGTH       ``storage_data.length``.
