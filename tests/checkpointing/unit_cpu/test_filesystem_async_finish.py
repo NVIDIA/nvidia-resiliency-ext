@@ -23,13 +23,14 @@ import os
 import pickle
 from dataclasses import fields
 
+import numpy as np
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.storage import WriteResult
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 
 # FileSystemWriter.set_up_storage_writer takes rank and use_collectives from PyTorch 2.9.
@@ -57,15 +58,20 @@ def saved(tmp_path_factory):
     return md, results
 
 
-def finish(writer_cls, path, saved, sync_files=True, **setup_kwargs):
-    """Run writer_cls.finish into path; return the files it wrote and their loaded contents."""
+def finish(writer_cls, path, saved, sync_files=True, as_rows=False, **setup_kwargs):
+    """Run writer_cls.finish into path, given the write results or (as_rows) their table; return
+    the files it wrote and their loaded contents."""
     md, results = saved
     md = pickle.loads(pickle.dumps(md))
     path.mkdir(exist_ok=True)  # as prepare_local_plan does before a save
     md.storage_data = None
     writer = writer_cls(path, sync_files=sync_files)
     writer.set_up_storage_writer(True, **setup_kwargs)
-    writer.finish(md, results)
+    if as_rows:
+        rows = np.frombuffer(table.encode(results[0]), dtype=np.uint8)[None, :]
+        writer.finish(md, [], storage_rows=rows)
+    else:
+        writer.finish(md, results)
     files = sorted(os.listdir(path))
     return files, (
         [FileSystemReader(path).read_metadata()]
@@ -109,7 +115,9 @@ def test_finish_writes_per_rank_metadata(tmp_path, saved):
         ("force", "2.3.1", True),  # in INCOMPATIBLE_TORCH_VERSIONS
     ],
 )
-def test_finish_defers_to_torch(monkeypatch, tmp_path, saved, mode, version, defers):
+@pytest.mark.parametrize("as_rows", [False, True], ids=["results", "rows"])
+def test_finish_defers_to_torch(monkeypatch, tmp_path, saved, mode, version, defers, as_rows):
+    """finish writes with torch's writer if nvrx's is off, also given tables, which it converts."""
     if mode is not None:
         monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", mode)
     if version is not None:
@@ -119,6 +127,6 @@ def test_finish_defers_to_torch(monkeypatch, tmp_path, saved, mode, version, def
     monkeypatch.setattr(
         FileSystemWriter, "finish", lambda self, *args: calls.append(1) or torch_finish(self, *args)
     )
-    files, (md,) = finish(FileSystemWriterAsync, tmp_path, saved)
+    files, (md,) = finish(FileSystemWriterAsync, tmp_path, saved, as_rows=as_rows)
     assert bool(calls) is defers
     assert md.storage_data == saved[0].storage_data

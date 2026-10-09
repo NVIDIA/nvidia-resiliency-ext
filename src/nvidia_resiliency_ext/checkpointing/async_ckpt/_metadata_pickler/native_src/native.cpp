@@ -22,7 +22,9 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#include <bit>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -41,15 +43,84 @@ constexpr char STACK_GLOBAL = '\x93', MEMOIZE = '\x94', NONE = 'N';
 constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
-// Columns and flags of a write-result table's entries, as in table.py.
+// Write-result tables, as table.py encodes them: little-endian int64s, header first.
+static_assert(std::endian::native == std::endian::little, "write-result tables are little-endian");
+constexpr int64_t TABLE_MAGIC = 0x4E56525854424C31, TABLE_VERSION = 1;
+constexpr size_t HEADER = 8;  // int64s
 enum class Column : uint8_t { Fqn, Index, OffsetNdim, Path, Offset, Length, Flags };
 constexpr size_t COLUMNS = 7;
 constexpr int64_t FLAG_INDEX = 0x1, FLAG_OFFSET = 0x2, FLAG_OFFSET_SIZE = 0x4;
-using Int64Array = py::array_t<int64_t, py::array::c_style | py::array::forcecast>;
+// The gathered tables: one zero-padded table per row.
+using Rows = py::array_t<uint8_t, py::array::c_style | py::array::forcecast>;
 
-// Column c of an entry: an entry is a row of COLUMNS int64s.
-[[nodiscard]] constexpr int64_t at(const int64_t* entry, Column c) {
-    return entry[static_cast<size_t>(c)];
+// The int64 at p, which need not be aligned.
+[[nodiscard]] int64_t load(const uint8_t* p) {
+    int64_t v;
+    std::memcpy(&v, p, sizeof v);
+    return v;
+}
+
+// Column c of an entry: an entry is COLUMNS int64s.
+[[nodiscard]] int64_t at(const uint8_t* entry, Column c) {
+    return load(entry + sizeof(int64_t) * static_cast<size_t>(c));
+}
+
+// Reject a malformed table, before anything reads past its row.
+[[noreturn]] void bad_table(const char* what) {
+    throw py::value_error(std::string("write-result table: ") + what);
+}
+
+// One table's sections within its row. Its strings are checked when they are split; entries are
+// checked as they are written.
+struct Table {
+    const uint8_t* string_len;  // int64[n_strings]
+    const uint8_t* entries;     // int64[n_entries][COLUMNS]
+    const uint8_t* offsets;     // int64[n_offsets]
+    const char* blob;           // char[n_bytes]
+    size_t n_strings, n_entries, n_offsets, n_bytes;
+};
+
+// The table in a row of width bytes, its sections checked to lie within the row.
+[[nodiscard]] Table parse_table(const uint8_t* row, size_t width) {
+    if (width < sizeof(int64_t) * HEADER) {
+        bad_table("truncated");
+    }
+    if (load(row) != TABLE_MAGIC || load(row + 8) != TABLE_VERSION) {
+        bad_table("not a table of this version");
+    }
+    size_t pos = sizeof(int64_t) * HEADER;
+    // The next count items of size bytes each; a count is checked against the room left, so the
+    // byte counts cannot overflow.
+    const auto take = [&](size_t header_slot, size_t size, size_t& count) {
+        const int64_t n = load(row + sizeof(int64_t) * header_slot);
+        if (n < 0 || static_cast<uint64_t>(n) > (width - pos) / size) {
+            bad_table("truncated");
+        }
+        count = static_cast<size_t>(n);
+        const uint8_t* const p = row + pos;
+        pos += count * size;
+        return p;
+    };
+    Table t{};
+    t.string_len = take(3, sizeof(int64_t), t.n_strings);
+    t.entries = take(2, sizeof(int64_t) * COLUMNS, t.n_entries);
+    t.offsets = take(5, sizeof(int64_t), t.n_offsets);
+    t.blob = reinterpret_cast<const char*>(take(4, 1, t.n_bytes));
+    return t;
+}
+
+// The tables in the rows of a 2-D uint8 array.
+[[nodiscard]] std::vector<Table> parse_tables(const Rows& rows) {
+    if (rows.ndim() != 2) {
+        throw py::value_error("expected a 2-D array of write-result tables");
+    }
+    const size_t width = static_cast<size_t>(rows.shape(1));
+    std::vector<Table> tables;
+    tables.reserve(rows.shape(0));
+    for (py::ssize_t r = 0; r < rows.shape(0); ++r) {
+        tables.push_back(parse_table(rows.data() + r * width, width));
+    }
+    return tables;
 }
 
 // New reference to obj.name, throwing on error.
@@ -132,17 +203,21 @@ class Writer {
         size_cls_ = py::module_::import("torch").attr("Size");
     }
 
-    // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field. With tables
-    // (write-result tables: (entry, offsets, strings) each), storage_data is written from them.
-    [[nodiscard]] py::bytes dumps(PyObject* md, const py::object& tables) {
+    // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field. With rows
+    // (the gathered write-result tables), storage_data is written from them.
+    [[nodiscard]] py::bytes dumps(PyObject* md, const py::object& rows) {
         if (!is(md, metadata_cls_)) {
             throw py::type_error("expected Metadata");
         }
         const py::object fields = instance_dict(md);
+        // Holds the rows the tables point into.
+        const Rows rows_array = rows.is_none() ? Rows() : rows.cast<Rows>();
+        const std::vector<Table> tables =
+            rows.is_none() ? std::vector<Table>() : parse_tables(rows_array);
         size_t n_storage = 0;
-        if (!tables.is_none()) {
-            for (const py::handle t : tables) {
-                n_storage += t.cast<py::tuple>()[0].cast<Int64Array>().shape(0);
+        if (!rows.is_none()) {
+            for (const Table& t : tables) {
+                n_storage += t.n_entries;
             }
         } else if (PyObject* const storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
                    storage_data && PyDict_Check(storage_data)) {
@@ -167,7 +242,7 @@ class Writer {
             if (field == "state_dict_metadata") {
                 dump_state_dict_metadata(value);
             } else if (field == "storage_data") {
-                if (tables.is_none()) {
+                if (rows.is_none()) {
                     dump_storage_data(value);
                 } else {
                     dump_storage_tables(tables);
@@ -358,38 +433,37 @@ class Writer {
 
     // Metadata.storage_data from write-result tables, as dump_storage_data writes the dict that
     // finish builds from the same write results.
-    void dump_storage_tables(const py::object& tables) {
+    void dump_storage_tables(const std::vector<Table>& tables) {
         put(EMPTY_DICT);
         size_t total = 0;
-        std::vector<py::tuple> parts;
-        for (const py::handle t : tables) {
-            parts.push_back(t.cast<py::tuple>());
-            total += parts.back()[0].cast<Int64Array>().shape(0);
+        for (const Table& t : tables) {
+            total += t.n_entries;
         }
         size_t i = 0;
-        for (const py::tuple& part : parts) {
-            const Int64Array entry = part[0].cast<Int64Array>();
-            const Int64Array offsets = part[1].cast<Int64Array>();
-            const py::list strings_list = part[2].cast<py::list>();
-            if (entry.ndim() != 2 || entry.shape(1) != COLUMNS || offsets.ndim() != 1) {
-                throw py::value_error("malformed write-result table");
+        std::vector<std::string_view> strings;  // the current table's, views into its row
+        for (const Table& t : tables) {
+            strings.clear();
+            size_t start = 0;
+            for (size_t k = 0; k < t.n_strings; ++k) {
+                const int64_t len = load(t.string_len + sizeof(int64_t) * k);
+                if (len < 0 || static_cast<uint64_t>(len) > t.n_bytes - start) {
+                    bad_table("string lengths exceed the string bytes");
+                }
+                strings.emplace_back(t.blob + start, static_cast<size_t>(len));
+                start += static_cast<size_t>(len);
             }
-            // Views of the strs' UTF-8 buffers: strings_list holds the strs while they are used.
-            std::vector<std::string_view> strings;
-            strings.reserve(strings_list.size());
-            for (const py::handle str : strings_list) strings.push_back(utf8(str.ptr()));
-                        const int64_t* const dims = offsets.data();
-            const size_t n_dims = static_cast<size_t>(offsets.shape(0));
-            size_t pos = 0;
+            if (start != t.n_bytes) {
+                bad_table("string lengths don't match the string bytes");
+            }
             const auto string_at = [&strings](int64_t id) {
                 if (id < 0 || static_cast<size_t>(id) >= strings.size()) {
-                    throw py::value_error("write-result table: string id out of range");
+                    bad_table("string id out of range");
                 }
                 return strings[id];
             };
-            const int64_t* const entries = entry.data();
-            for (py::ssize_t r = 0; r < entry.shape(0); ++r, ++i) {
-                const int64_t* const row = entries + r * COLUMNS;
+            size_t pos = 0;  // into the offsets
+            for (size_t r = 0; r < t.n_entries; ++r, ++i) {
+                const uint8_t* const row = t.entries + sizeof(int64_t) * COLUMNS * r;
                 if (i % BATCH == 0) {
                     put(MARK);
                 }
@@ -408,10 +482,10 @@ class Writer {
                     put_get(k_offset_);
                     if (flags & FLAG_OFFSET_SIZE) {
                         const int64_t ndim = at(row, Column::OffsetNdim);
-                        if (ndim < 0 || pos + static_cast<size_t>(ndim) > n_dims) {
-                            throw py::value_error("write-result table: offsets out of range");
+                        if (ndim < 0 || static_cast<uint64_t>(ndim) > t.n_offsets - pos) {
+                            bad_table("offsets out of range");
                         }
-                        size(dims + pos, static_cast<size_t>(ndim));
+                        size(t.offsets + sizeof(int64_t) * pos, static_cast<size_t>(ndim));
                         pos += static_cast<size_t>(ndim);
                     } else {
                         put(NONE);
@@ -430,6 +504,9 @@ class Writer {
                 if (i % BATCH == BATCH - 1 || i == total - 1) {
                     put(SETITEMS);
                 }
+            }
+            if (pos != t.n_offsets) {
+                bad_table("offset dims don't match the offsets");
             }
         }
     }
@@ -555,7 +632,7 @@ class Writer {
     }
 
     // The same, for n dims from a write-result table.
-    void size(const int64_t* dims, size_t n) {
+    void size(const uint8_t* dims, size_t n) {
         put_get(size_ref_);
         if (n == 0) {
             put(EMPTY_TUPLE);
@@ -563,7 +640,7 @@ class Writer {
             if (n > 3) {
                 put(MARK);
             }
-            for (size_t j = 0; j < n; ++j) put_int(dims[j]);
+            for (size_t j = 0; j < n; ++j) put_int(load(dims + sizeof(int64_t) * j));
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
         put({TUPLE1, REDUCE});
@@ -614,9 +691,9 @@ class Writer {
 };
 
 // Return the pickle of md; small_pickle(obj) returns the opcodes for an object the writer leaves to
-// the stdlib pickler. With tables, storage_data is written from them (see Writer::dumps).
-[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle, py::object tables) {
-    return Writer(std::move(small_pickle)).dumps(md.ptr(), tables);
+// the stdlib pickler. With rows, storage_data is written from them (see Writer::dumps).
+[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle, py::object rows) {
+    return Writer(std::move(small_pickle)).dumps(md.ptr(), rows);
 }
 
 }  // namespace
@@ -624,7 +701,7 @@ class Writer {
 PYBIND11_MODULE(native, m) {
     m.doc() = "Fast pickling of torch.distributed.checkpoint Metadata.";
     m.def("dumps", &dumps, py::arg("metadata"), py::arg("small_pickle"),
-          py::arg("tables") = py::none(),
+          py::arg("rows") = py::none(),
           "Return the pickle of a torch.distributed.checkpoint Metadata, as standard pickle "
           "bytes.");
 }

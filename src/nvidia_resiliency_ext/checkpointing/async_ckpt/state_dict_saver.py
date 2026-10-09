@@ -25,7 +25,7 @@ import pickle  # nosec
 from dataclasses import fields
 from logging import getLogger
 from time import time
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -34,8 +34,7 @@ from torch.distributed.checkpoint import CheckpointException
 from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.metadata import STATE_DICT_TYPE, Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner
-from torch.distributed.checkpoint.storage import WriteResult
-from torch.distributed.checkpoint.utils import _DistWrapper, _get_failure_dict
+from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_exception
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
@@ -390,19 +389,29 @@ def _encode_write_results(write_results) -> bytes:
 
 
 def _gather_payloads(payload: bytes, dist_wrapper: _DistWrapper) -> Optional[np.ndarray]:
-    """Collective: the ranks' payloads on the coordinator, one zero-padded row per rank."""
-    device = torch.cuda.current_device()
-    width = torch.tensor([len(payload)], dtype=torch.int64, device=device)
-    torch.distributed.all_reduce(width, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group)
-    row = torch.zeros(int(width.item()), dtype=torch.uint8)
-    row.numpy()[: len(payload)] = np.frombuffer(payload, dtype=np.uint8)
+    """Collective: the ranks' payloads on the coordinator, one zero-padded row per rank.
+
+    Rows are a multiple of 8 bytes wide, so a table's int64s are aligned and every row holds the
+    8 bytes that tell a table from a pickle.
+    """
+    width = len(payload)
+    device = torch.cuda.current_device() if dist_wrapper.use_dist else None
+    if dist_wrapper.use_dist:
+        widest = torch.tensor([width], dtype=torch.int64, device=device)
+        torch.distributed.all_reduce(
+            widest, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group
+        )
+        width = int(widest.item())
+    width = -(-width // 8) * 8
+    row = np.zeros(width, dtype=np.uint8)
+    row[: len(payload)] = np.frombuffer(payload, dtype=np.uint8)
+    if not dist_wrapper.use_dist:
+        return row[None, :]
     rows = None
     if dist_wrapper.is_coordinator:
-        rows = torch.empty(
-            (dist_wrapper.get_world_size(), len(row)), dtype=torch.uint8, device=device
-        )
+        rows = torch.empty((dist_wrapper.get_world_size(), width), dtype=torch.uint8, device=device)
     torch.distributed.gather(
-        row.to(device),
+        torch.from_numpy(row).to(device),
         list(rows) if rows is not None else None,
         dst=getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank),
         group=dist_wrapper.group,
@@ -410,21 +419,15 @@ def _gather_payloads(payload: bytes, dist_wrapper: _DistWrapper) -> Optional[np.
     return rows.cpu().numpy() if rows is not None else None
 
 
-def _decode_payloads(rows: np.ndarray) -> list:
-    """Each rank's write results from its row: a table, a list of WriteResults or an exception."""
+def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
+    """Which ranks sent a table, and what each other rank pickled: its write results or exception."""
+    is_table = rows[:, :8].copy().view("<i8")[:, 0] == table.MAGIC
     # Unpickles only what this job's ranks pickled, as dist.gather_object does.
-    return [
-        table.decode(row) if table.is_table(row) else pickle.loads(row.tobytes())  # nosec B301
-        for row in rows
-    ]
-
-
-def _write_results_of(t: table.Table) -> List[WriteResult]:
-    """The write results a table holds (size_in_bytes is the storage length, as torch writes)."""
-    return [
-        WriteResult(index=index, size_in_bytes=info.length, storage_data=info)
-        for index, info in table.to_storage_data([t]).items()
-    ]
+    pickled = {
+        int(rank): pickle.loads(rows[rank].tobytes())  # nosec B301
+        for rank in np.flatnonzero(~is_table)
+    }
+    return is_table, pickled
 
 
 def save_state_dict_async_finalize(
@@ -451,11 +454,7 @@ def save_state_dict_async_finalize(
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.finalize_gather"):
-        if dist_wrapper.use_dist:
-            rows = _gather_payloads(_encode_write_results(write_results), dist_wrapper)
-            all_results = _decode_payloads(rows) if rows is not None else None
-        else:
-            all_results = [write_results]
+        rows = _gather_payloads(_encode_write_results(write_results), dist_wrapper)
     gather_end = time()
     logger.debug(
         f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end - gather_start}"
@@ -463,21 +462,20 @@ def save_state_dict_async_finalize(
 
     # Store the metadata on coordinator rank
     if dist_wrapper.is_coordinator:
-        node_failures = _get_failure_dict(all_results)
+        is_table, pickled = _decode_payloads(rows)
+        node_failures = {rank: r for rank, r in pickled.items() if _is_wrapped_exception(r)}
         if len(node_failures) == 0:
             assert global_metadata is not None
             with telemetry.span(
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
-                if _metadata_pickler.writes_tables() and all(
-                    isinstance(r, table.Table) for r in all_results
-                ):
-                    storage_writer.finish(global_metadata, [], storage_tables=all_results)
+                if is_table.all() and _metadata_pickler.writes_tables():
+                    storage_writer.finish(global_metadata, [], storage_rows=rows)
                 else:
                     results = [
-                        _write_results_of(r) if isinstance(r, table.Table) else r
-                        for r in all_results
+                        table.to_write_results(table.decode(row)) if sent_table else pickled[rank]
+                        for rank, (row, sent_table) in enumerate(zip(rows, is_table))
                     ]
                     storage_writer.finish(global_metadata, results)
                 write_end = time()

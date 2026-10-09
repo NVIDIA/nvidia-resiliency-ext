@@ -282,9 +282,9 @@ class TestAsyncSave:
         received = []
 
         def record_decode_payloads(rows):
-            results = decode_payloads(rows)
-            received.extend(isinstance(r, state_dict_saver.table.Table) for r in results)
-            return results
+            is_table, pickled = decode_payloads(rows)
+            received.extend(is_table.tolist())
+            return is_table, pickled
 
         monkeypatch.setattr(state_dict_saver.table, 'encode', encode_or_fail)
         monkeypatch.setattr(state_dict_saver, '_decode_payloads', record_decode_payloads)
