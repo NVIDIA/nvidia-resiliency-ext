@@ -110,7 +110,7 @@ a checkpoint save process in the background.</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller">
 <span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.</span></span><span class="sig-name descname"><span class="pre">AsyncCaller</span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#AsyncCaller"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCaller" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/abc.html#abc.ABC" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ABC</span></code></a></p>
 <p>Wrapper around mp.Process that ensures correct semantic of distributed finalization.</p>
 <p>Starts process asynchronously and allows checking if all processes on all ranks are done.</p>
 <dl class="py method">
@@ -119,7 +119,7 @@ a checkpoint save process in the background.</p>
 <dd><p>Terminate the async caller at exit of an application or some termination conditions</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
+<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
 the checkpoint async process needs to be aborted.</p>
 </dd>
 </dl>
@@ -134,10 +134,10 @@ This method must be called on all ranks.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until the call is done
+<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until the call is done
 on all ranks. Otherwise, returns immediately if at least one rank
 is still active. Defaults to False.</p></li>
-<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>Optional</em>) – if True, training ranks simply check its
+<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>Optional</em>) – if True, training ranks simply check its
 asynchronous checkpoint writer without synchronization.</p></li>
 </ul>
 </dd>
@@ -149,7 +149,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)">bool</a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)">bool</a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -179,13 +179,13 @@ start async process</p>
 <dd><p>Check if all ranks have completed async checkpoint writing</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>is_alive</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – if True, the current async request is not completed</p>
+<dd class="field-odd"><p><strong>is_alive</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – if True, the current async request is not completed</p>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
 <dd class="field-even"><p>True if all ranks are done, False if at least one rank is still active.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)">bool</a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)">bool</a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -195,7 +195,7 @@ start async process</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue">
 <span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.</span></span><span class="sig-name descname"><span class="pre">AsyncCallsQueue</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#AsyncCallsQueue"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Manages a queue of async calls.</p>
 <p>Allows adding a new async call with <cite>schedule_async_request</cite> and finalizing
 active calls with <cite>maybe_finalize_async_calls</cite>.</p>
@@ -205,7 +205,7 @@ active calls with <cite>maybe_finalize_async_calls</cite>.</p>
 <dd><p>Finalize all calls upon closing.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
+<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
 the checkpoint async process needs to be aborted.</p>
 </dd>
 </dl>
@@ -225,10 +225,10 @@ the checkpoint async process needs to be aborted.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until all active requests
+<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until all active requests
 are done. Otherwise, finalizes only the async request that already
 finished. Defaults to False.</p></li>
-<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, training ranks simply check its
+<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, training ranks simply check its
 asynchronous checkpoint writer without synchronization.</p></li>
 </ul>
 </dd>
@@ -240,7 +240,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>List[<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)">int</a>]</p>
+<dd class="field-odd"><p>List[<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a>]</p>
 </dd>
 <dt class="field-even">Raises<span class="colon">:</span></dt>
 <dd class="field-even"><p><strong>CheckpointException</strong> – if any rank(s) raised an exception during checkpoint
@@ -266,7 +266,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)">int</a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -278,14 +278,14 @@ asynchronous checkpoint writer without synchronization.</p></li>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – the current distributed rank.</p></li>
-<li><p><strong>is_daemon</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – whether to spawn the worker as a daemon process.</p></li>
-<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Nice value for CPU scheduling (0-19, higher = lower priority).</p></li>
-<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>Optional</em>) – ionice scheduling class (0-3). Use 3 (idle) to
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – the current distributed rank.</p></li>
+<li><p><strong>is_daemon</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – whether to spawn the worker as a daemon process.</p></li>
+<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Nice value for CPU scheduling (0-19, higher = lower priority).</p></li>
+<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em>, </em><em>Optional</em>) – ionice scheduling class (0-3). Use 3 (idle) to
 deprioritize checkpoint I/O. NOTE: class 1 = realtime (highest priority —
 NOT recommended for checkpoint workers).</p></li>
-<li><p><strong>sigterm_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – seconds to wait after SIGTERM before escalating to SIGKILL.</p></li>
-<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – if True, skip CUDA device init in the worker (no CUDA IPC needed).</p></li>
+<li><p><strong>sigterm_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – seconds to wait after SIGTERM before escalating to SIGKILL.</p></li>
+<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – if True, skip CUDA device init in the worker (no CUDA IPC needed).</p></li>
 </ul>
 </dd>
 </dl>
@@ -296,7 +296,7 @@ NOT recommended for checkpoint workers).</p></li>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest">
 <span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.</span></span><span class="sig-name descname"><span class="pre">AsyncRequest</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">async_fn</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">async_fn_args</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">finalize_fns</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">async_fn_kwargs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">preload_fn</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">is_frozen</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">call_idx</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#AsyncRequest"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.NamedTuple" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">NamedTuple</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.NamedTuple" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">NamedTuple</span></code></a></p>
 <p>Represents an async request that needs to be scheduled for execution.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -310,7 +310,7 @@ These functions will be called synchronously after <cite>async_fn</cite> is done
 <li><p><strong>preload_fn</strong> (<em>Callable</em>) – preload function to stage tensors from GPU to Host.
 This should be self-contained with a proper list of arguments with  <cite>partial</cite>.</p></li>
 <li><p><strong>is_frozen</strong> (<em>Bool</em>) – a flag to indicate this async request can be modified or not.</p></li>
-<li><p><strong>call_idx</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – index variable used to order async requests for synchronization
+<li><p><strong>call_idx</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – index variable used to order async requests for synchronization
 in preloading and writing tensors on the async caller</p></li>
 </ul>
 </dd>
@@ -336,25 +336,25 @@ will be called <em>after</em> existing finalization functions.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn">
-<span class="sig-name descname"><span class="pre">async_fn</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.14)"><span class="pre">Callable</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">async_fn</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.15)"><span class="pre">Callable</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn" title="Link to this definition"></a></dt>
 <dd><p>Alias for field number 0</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn_args">
-<span class="sig-name descname"><span class="pre">async_fn_args</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.14)"><span class="pre">Tuple</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn_args" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">async_fn_args</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Tuple" title="(in Python v3.15)"><span class="pre">Tuple</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn_args" title="Link to this definition"></a></dt>
 <dd><p>Alias for field number 1</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn_kwargs">
-<span class="sig-name descname"><span class="pre">async_fn_kwargs</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Dict" title="(in Python v3.14)"><span class="pre">Dict</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn_kwargs" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">async_fn_kwargs</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Dict" title="(in Python v3.15)"><span class="pre">Dict</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.async_fn_kwargs" title="Link to this definition"></a></dt>
 <dd><p>Alias for field number 3</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.call_idx">
-<span class="sig-name descname"><span class="pre">call_idx</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.call_idx" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">call_idx</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.call_idx" title="Link to this definition"></a></dt>
 <dd><p>Alias for field number 6</p>
 </dd></dl>
 
@@ -364,7 +364,7 @@ will be called <em>after</em> existing finalization functions.</p>
 <dd><p>Execute all the finalize functions associated with this async request.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>validate_matching_call_idx</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – Validate that all ranks
+<dd class="field-odd"><p><strong>validate_matching_call_idx</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – Validate that all ranks
 invoke CP finalize on the same call_idx. This is typically useful in
 async CP stages where multiple CP requests can be pending.
 This validation is unnecessary during synchronous CP step.
@@ -394,7 +394,7 @@ ranks is invoked. Default set to True for conservative validation.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.finalize_fns">
-<span class="sig-name descname"><span class="pre">finalize_fns</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.14)"><span class="pre">List</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.14)"><span class="pre">Callable</span></a><span class="p"><span class="pre">]</span></span></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.finalize_fns" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">finalize_fns</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.15)"><span class="pre">List</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.15)"><span class="pre">Callable</span></a><span class="p"><span class="pre">]</span></span></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.finalize_fns" title="Link to this definition"></a></dt>
 <dd><p>Alias for field number 2</p>
 </dd></dl>
 
@@ -418,13 +418,13 @@ ranks is invoked. Default set to True for conservative validation.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.is_frozen">
-<span class="sig-name descname"><span class="pre">is_frozen</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><span class="pre">bool</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.is_frozen" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">is_frozen</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><span class="pre">bool</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.is_frozen" title="Link to this definition"></a></dt>
 <dd><p>Alias for field number 5</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn">
-<span class="sig-name descname"><span class="pre">preload_fn</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.14)"><span class="pre">Callable</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">preload_fn</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.15)"><span class="pre">Callable</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn" title="Link to this definition"></a></dt>
 <dd><p>Alias for field number 4</p>
 </dd></dl>
 
@@ -433,7 +433,7 @@ ranks is invoked. Default set to True for conservative validation.</p>
 <dl class="py class">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.ObjectTracker">
 <span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.core.</span></span><span class="sig-name descname"><span class="pre">ObjectTracker</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bases</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">attrs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#ObjectTracker"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.ObjectTracker" title="Link to this definition"></a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#type" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">type</span></code></a></p>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#type" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">type</span></code></a></p>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.ObjectTracker.get_instances">
 <span class="sig-name descname"><span class="pre">get_instances</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/core.html#ObjectTracker.get_instances"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.ObjectTracker.get_instances" title="Link to this definition"></a></dt>
@@ -450,11 +450,11 @@ ranks is invoked. Default set to True for conservative validation.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>is_daemon</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
-<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
-<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>sigterm_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.14)"><em>float</em></a>)</p></li>
-<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
+<li><p><strong>is_daemon</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>)</p></li>
+<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>)</p></li>
+<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>sigterm_timeout</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>)</p></li>
+<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -466,14 +466,14 @@ In this loop, child processes may be created (For example: to parallelize File I
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>)</p></li>
 <li><p><strong>queue</strong> (<em>JoinableQueue</em>)</p></li>
 <li><p><strong>preload_q</strong> (<em>JoinableQueue</em>)</p></li>
 <li><p><strong>comp_q</strong> (<em>Queue</em>)</p></li>
-<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
-<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
-<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
+<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>)</p></li>
+<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>)</p></li>
+<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -486,14 +486,14 @@ In this loop, child processes may be created (For example: to parallelize File I
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>)</p></li>
 <li><p><strong>queue</strong> (<em>JoinableQueue</em>)</p></li>
 <li><p><strong>preload_q</strong> (<em>JoinableQueue</em>)</p></li>
 <li><p><strong>comp_q</strong> (<em>Queue</em>)</p></li>
-<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
-<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>)</p></li>
-<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>)</p></li>
-<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
+<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>)</p></li>
+<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>)</p></li>
+<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><em>None</em>)</p></li>
+<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -512,22 +512,22 @@ it puts a integer value to <cite>comp_q</cite> to notify the trainer the complet
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – the rank of the trainer where the persistent worker is created.</p></li>
+<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – the rank of the trainer where the persistent worker is created.</p></li>
 <li><p><strong>queue</strong> (<em>mp.JoinableQueue</em>) – the main queue used to receive <cite>AsyncRequest</cite>
 from the training rank</p></li>
 <li><p><strong>preload_q</strong> (<em>mp.JoinableQueue</em>) – a queue to inform trainer that preloading of tensors
 from GPU to Host or dedicated location is completed</p></li>
 <li><p><strong>comp_q</strong> (<em>mp.Queue</em>) – a queue to inform the training rank the completion of scheduled
 async checkpoint request</p></li>
-<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>Optional</em>) – an integer to set log-level in this spawned process
+<li><p><strong>log_level</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em>, </em><em>Optional</em>) – an integer to set log-level in this spawned process
 to get aligned with the training rank’s logging level</p></li>
-<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Nice value for CPU scheduling (0-19, higher = lower priority).
+<li><p><strong>cpu_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Nice value for CPU scheduling (0-19, higher = lower priority).
 Default 10 deprioritizes checkpoint writing vs training.</p></li>
-<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>, </em><em>Optional</em>) – ionice scheduling class (0-3). Default None leaves
+<li><p><strong>io_priority</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em>, </em><em>Optional</em>) – ionice scheduling class (0-3). Default None leaves
 I/O priority unchanged. Use 3 (idle) to deprioritize
 checkpoint I/O. NOTE: class 1 = realtime (highest
 priority — NOT recommended for checkpoint workers).</p></li>
-<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>)</p></li>
+<li><p><strong>cpu_shm_mode</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -548,7 +548,7 @@ to properly release any IPC handles stored in the cache.</p>
 <p>Signals the PersistentAsyncCaller by sending a ‘DONE’ message to make it terminated</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
+<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
 the checkpoint async process needs to be aborted.</p>
 </dd>
 </dl>
@@ -561,12 +561,12 @@ the checkpoint async process needs to be aborted.</p>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cur_idx">
-<span class="sig-name descname"><span class="pre">cur_idx</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cur_idx" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">cur_idx</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cur_idx" title="Link to this definition"></a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cur_item">
-<span class="sig-name descname"><span class="pre">cur_item</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cur_item" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">cur_item</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.cur_item" title="Link to this definition"></a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
@@ -578,10 +578,10 @@ This method must be called on all ranks.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until the call is done
+<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until the call is done
 on all ranks. Otherwise, returns immediately if at least one rank
 is still active. Defaults to False.</p></li>
-<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>Optional</em>) – if True, training ranks simply check its
+<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>Optional</em>) – if True, training ranks simply check its
 asynchronous checkpoint writer without synchronization.</p></li>
 </ul>
 </dd>
@@ -593,7 +593,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)">bool</a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)">bool</a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -605,7 +605,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.process">
-<span class="sig-name descname"><span class="pre">process</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Process" title="(in Python v3.14)"><span class="pre">Process</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.process" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">process</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/multiprocessing.html#multiprocessing.Process" title="(in Python v3.15)"><span class="pre">Process</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.process" title="Link to this definition"></a></dt>
 <dd></dd></dl>
 
 <dl class="py attribute">
@@ -615,7 +615,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.rank">
-<span class="sig-name descname"><span class="pre">rank</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.rank" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">rank</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.rank" title="Link to this definition"></a></dt>
 <dd></dd></dl>
 
 <dl class="py method">
@@ -624,7 +624,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 <dd><p>Register a callable to be invoked when a new worker process is started.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.14)"><em>Callable</em></a>)</p>
+<dd class="field-odd"><p><strong>fn</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.15)"><em>Callable</em></a>)</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p>None</p>
@@ -656,7 +656,7 @@ schedule a checkpointing request</p></li>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.start_time">
-<span class="sig-name descname"><span class="pre">start_time</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.start_time" title="Link to this definition"></a></dt>
+<span class="sig-name descname"><span class="pre">start_time</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><span class="pre">float</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller.start_time" title="Link to this definition"></a></dt>
 <dd></dd></dl>
 
 </dd></dl>
@@ -675,7 +675,7 @@ schedule a checkpointing request</p></li>
 with all its assigned async request completed</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
+<dd class="field-odd"><p><strong>abort</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – Default to False. Needs to be manually set to true when
 the checkpoint async process needs to be aborted.</p>
 </dd>
 </dl>
@@ -690,10 +690,10 @@ This method must be called on all ranks.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until the call is done
+<li><p><strong>blocking</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>optional</em>) – if True, will wait until the call is done
 on all ranks. Otherwise, returns immediately if at least one rank
 is still active. Defaults to False.</p></li>
-<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>Optional</em>) – if True, training ranks simply check its
+<li><p><strong>no_dist</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em>, </em><em>Optional</em>) – if True, training ranks simply check its
 asynchronous checkpoint writer without synchronization.</p></li>
 </ul>
 </dd>
@@ -705,7 +705,7 @@ asynchronous checkpoint writer without synchronization.</p></li>
 </p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.14)">bool</a></p>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)">bool</a></p>
 </dd>
 </dl>
 </dd></dl>
