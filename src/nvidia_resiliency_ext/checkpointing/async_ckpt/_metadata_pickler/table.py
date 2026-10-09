@@ -139,11 +139,6 @@ def encode(results: List[WriteResult]) -> bytes:
     )
 
 
-def is_table(buf) -> bool:
-    """Whether buf (bytes or a uint8 array) starts like a table; a pickle never does."""
-    return len(buf) >= 8 and int(np.frombuffer(buf, dtype="<i8", count=1)[0]) == MAGIC
-
-
 def decode(buf) -> Table:
     """The table in buf (bytes, or a uint8 array possibly padded at the end), without copying."""
     raw = np.frombuffer(buf, dtype=np.uint8)
@@ -168,11 +163,18 @@ def decode(buf) -> Table:
         raise ValueError("write-result table: string id or offset dims out of range")
     if int(ndim[has_size].sum()) != n_offsets:
         raise ValueError("write-result table: offset dims don't match the offsets")
+    if (string_len < 0).any() or int(string_len.sum()) != n_bytes:
+        raise ValueError("write-result table: string lengths don't match the string bytes")
     strings, start = [], 0
     for n in string_len.tolist():
         strings.append(blob[start : start + n].decode("utf-8", "surrogatepass"))
         start += n
     return Table(entry=entry, offsets=offsets, strings=strings)
+
+
+def decode_rows(rows: np.ndarray) -> List[Table]:
+    """The tables in the rows of a 2-D uint8 array, one zero-padded table per row."""
+    return [decode(row) for row in rows]
 
 
 def to_storage_data(tables: List[Table]) -> dict:
@@ -196,3 +198,12 @@ def to_storage_data(tables: List[Table]) -> dict:
                 idx = MetadataIndex(table.strings[fqn], index=index if flags & FLAG_INDEX else None)
             storage_data[idx] = _StorageInfo(table.strings[path], offset, length)
     return storage_data
+
+
+def to_write_results(t: Table) -> List[WriteResult]:
+    """The write results a table holds, as torch's finish takes them. size_in_bytes is the storage
+    length, as torch's writer reports it."""
+    return [
+        WriteResult(index=index, size_in_bytes=info.length, storage_data=info)
+        for index, info in to_storage_data([t]).items()
+    ]

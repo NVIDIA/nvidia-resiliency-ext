@@ -463,19 +463,15 @@ class _MetadataPickler:
             out.append(SETITEMS)
 
 
-def _python_dumps(md: Metadata, storage_tables=None) -> bytes:
+def _python_dumps(md: Metadata, storage_rows=None) -> bytes:
     """The pickle of md, from the Python writer."""
-    return _MetadataPickler().dumps(md, storage_tables)
+    tables = None if storage_rows is None else table.decode_rows(storage_rows)
+    return _MetadataPickler().dumps(md, tables)
 
 
-def _native_dumps(md: Metadata, storage_tables=None) -> bytes:
-    """The pickle of md, from the native writer."""
-    tables = (
-        None
-        if storage_tables is None
-        else [(t.entry, t.offsets, t.strings) for t in storage_tables]
-    )
-    return native.dumps(md, _small_pickle, tables)
+def _native_dumps(md: Metadata, storage_rows=None) -> bytes:
+    """The pickle of md, from the native writer, which reads storage_rows itself."""
+    return native.dumps(md, _small_pickle, storage_rows)
 
 
 def _mode() -> str:
@@ -652,23 +648,25 @@ def writes_tables() -> bool:
     return _tested_torch() and _select_dumps() is not None
 
 
-def dump_metadata(metadata: Metadata, stream: IO[bytes], storage_tables=None) -> None:
+def dump_metadata(metadata: Metadata, stream: IO[bytes], storage_rows=None) -> None:
     """Write metadata to stream as a pickle that ``pickle.load`` reads back as an equal Metadata.
 
-    With storage_tables (decoded write-result tables, see table.py), its storage_data is the one
-    they describe instead of metadata.storage_data.
+    With storage_rows (the gathered write-result tables, a 2-D uint8 array with one zero-padded
+    table per row, see table.py), its storage_data is the one they describe instead of
+    metadata.storage_data.
     """
     dumps = _select_dumps()
     if dumps is not None:
         try:
-            data = dumps(metadata, storage_tables=storage_tables)
+            data = dumps(metadata, storage_rows=storage_rows)
         except Exception:
             logger.warning("fast .metadata pickling failed; using pickle.dump", exc_info=True)
         else:
             stream.write(data)
             return
-    if storage_tables is not None:
-        metadata = dataclasses.replace(metadata, storage_data=table.to_storage_data(storage_tables))
+    if storage_rows is not None:
+        storage_data = table.to_storage_data(table.decode_rows(storage_rows))
+        metadata = dataclasses.replace(metadata, storage_data=storage_data)
     # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
     # Severity: Medium   Confidence: High
     # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
