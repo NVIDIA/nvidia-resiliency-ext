@@ -39,7 +39,7 @@ from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_excepti
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
-from ._metadata_pickler import table
+from ._metadata_pickler import table as _table
 
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
@@ -378,8 +378,8 @@ def _encode_write_results(write_results) -> bytes:
     """This rank's write results for the coordinator: a table if it can, else pickled."""
     if isinstance(write_results, list) and _metadata_pickler.writes_tables():
         try:
-            return table.encode(write_results)
-        except table.Unencodable:
+            return _table.encode(write_results)
+        except _table.Unencodable:
             logger.debug(
                 "write results unencodable as a table; sending them pickled", exc_info=True
             )
@@ -421,13 +421,25 @@ def _gather_payloads(payload: bytes, dist_wrapper: _DistWrapper) -> Optional[np.
 
 def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
     """Which ranks sent a table, and what each other rank pickled: its write results or exception."""
-    is_table = rows[:, :8].copy().view("<i8")[:, 0] == table.MAGIC
+    is_table = rows[:, :8].copy().view("<i8")[:, 0] == _table.MAGIC
     # Unpickles only what this job's ranks pickled, as dist.gather_object does.
     pickled = {
         int(rank): pickle.loads(rows[rank].tobytes())  # nosec B301
         for rank in np.flatnonzero(~is_table)
     }
     return is_table, pickled
+
+
+def _writes_rows(storage_writer) -> bool:
+    """Whether storage_writer can write storage_data from the gathered tables: a fast .metadata
+    writer, and a FileSystemWriterAsync whose finish a subclass doesn't override."""
+    from .filesystem_async import FileSystemWriterAsync
+
+    return (
+        isinstance(storage_writer, FileSystemWriterAsync)
+        and type(storage_writer).finish is FileSystemWriterAsync.finish
+        and _metadata_pickler.writes_tables()
+    )
 
 
 def save_state_dict_async_finalize(
@@ -470,11 +482,11 @@ def save_state_dict_async_finalize(
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
-                if is_table.all() and _metadata_pickler.writes_tables():
-                    storage_writer.finish(global_metadata, [], storage_rows=rows)
+                if is_table.all() and _writes_rows(storage_writer):
+                    storage_writer._finish(global_metadata, [], storage_rows=rows)
                 else:
                     results = [
-                        table.to_write_results(table.decode(row)) if sent_table else pickled[rank]
+                        _table.to_write_results(_table.decode(row)) if sent_table else pickled[rank]
                         for rank, (row, sent_table) in enumerate(zip(rows, is_table))
                     ]
                     storage_writer.finish(global_metadata, results)
