@@ -29,12 +29,12 @@ from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import Metadata, MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table, writer
 
 from .test_metadata_pickler import dcp_saved_metadata, large_metadata, metadatas
 
 DUMPS = [
-    pytest.param(writer._python_dumps, id="python"),
+    pytest.param(pickler.dumps, id="python"),
     pytest.param(
         writer._native_dumps,
         id="native",

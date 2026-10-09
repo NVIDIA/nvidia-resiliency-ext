@@ -34,6 +34,7 @@ from torch.distributed.checkpoint import (
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async, state_dict_saver
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
@@ -260,10 +261,8 @@ class TestAsyncSave:
         monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
         md_writer.fast_metadata_enabled.cache_clear()
         md_writer._select_dumps.cache_clear()
-        native = (
-            md_writer._native_dumps if md_writer.native is not None else md_writer._python_dumps
-        )
-        expected = {'1': native, 'python': md_writer._python_dumps, '0': None}[mode]
+        native = md_writer._native_dumps if md_writer.native is not None else pickler.dumps
+        expected = {'1': native, 'python': pickler.dumps, '0': None}[mode]
         assert md_writer._select_dumps() is expected
 
         Utils.initialize_distributed()
