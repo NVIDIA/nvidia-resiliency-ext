@@ -15,7 +15,7 @@
  * limitations under the License.
 */
 
-// Native version of `writer._MetadataPickler`: writes the standard pickle opcodes for a
+// Native version of `pickler._MetadataPickler`: writes the standard pickle opcodes for a
 // torch DCP `Metadata` directly. Its output is byte-identical to the Python writer. The few small
 // objects (TensorProperties, StorageMeta, ...) are encoded by the Python `small_pickle` callback.
 

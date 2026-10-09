@@ -41,12 +41,12 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, writer
 
 HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo)}  # torch 2.8+
 NEEDS_NATIVE = pytest.mark.skipif(writer.native is None, reason="native extension not built")
 WRITERS = [
-    pytest.param(writer._python_dumps, id="python"),
+    pytest.param(pickler.dumps, id="python"),
     pytest.param(writer._native_dumps, id="native", marks=NEEDS_NATIVE),
 ]
 
@@ -238,7 +238,7 @@ def test_writer_matches_stock_pickle(dumps, md):
 @hypothesis_settings
 @given(metadatas())
 def test_native_matches_python(md):
-    assert writer._native_dumps(md) == writer._python_dumps(md)
+    assert writer._native_dumps(md) == pickler.dumps(md)
 
 
 @pytest.mark.parametrize("dumps", WRITERS)
@@ -251,7 +251,7 @@ def test_writer_matches_stock_pickle_on(dumps, make, tmp_path):
 @pytest.mark.parametrize("make", FIXED_METADATA)
 def test_native_matches_python_on(make, tmp_path):
     md = make(tmp_path)
-    assert writer._native_dumps(md) == writer._python_dumps(md)
+    assert writer._native_dumps(md) == pickler.dumps(md)
 
 
 def _set_index(md, value):
@@ -439,7 +439,7 @@ def test_dump_metadata_raises_or_loads_when_metadata_changes(case):
 )
 def test_str_header(n, header):
     """The str opcode for each length boundary, including BINUNICODE8 past 4 GiB."""
-    assert writer._str_header(n) == header
+    assert pickler._str_header(n) == header
     if n < 2**20:  # small enough to compare with the stdlib pickler
         assert header + b"a" in pickle.dumps("a" * n, protocol=4)
 
@@ -457,9 +457,9 @@ def test_changed_pickled_state_disables_fast_writers(monkeypatch):
 
 
 def test_moved_class_disables_fast_writers(monkeypatch):
-    paths = dict(writer._CLASS_PATHS)
+    paths = dict(pickler.CLASS_PATHS)
     paths[MetadataIndex] = ("torch.distributed.checkpoint.metadata", "MovedMetadataIndex")
-    monkeypatch.setattr(writer, "_CLASS_PATHS", paths)
+    monkeypatch.setattr(pickler, "CLASS_PATHS", paths)
     assert not writer._layout_supported()
 
 
@@ -469,7 +469,7 @@ def test_layout_supported_on_this_torch():
 
 _FIRST, _LAST = writer.TESTED_TORCH_VERSIONS
 _TESTED = f"{_LAST[0]}.{_LAST[1]}.0"  # whatever torch runs the tests
-_FAST = writer._native_dumps if writer.native is not None else writer._python_dumps
+_FAST = writer._native_dumps if writer.native is not None else pickler.dumps
 
 
 @pytest.mark.parametrize(
@@ -477,7 +477,7 @@ _FAST = writer._native_dumps if writer.native is not None else writer._python_du
     [
         (None, _TESTED, _FAST),
         ("1", _TESTED, _FAST),
-        ("python", _TESTED, writer._python_dumps),
+        ("python", _TESTED, pickler.dumps),
         ("0", _TESTED, None),
         ("off", _TESTED, None),
         (None, f"{_FIRST[0]}.{_FIRST[1] - 1}.1", None),
@@ -512,4 +512,4 @@ def test_force_on_incompatible_torch_logs_error(monkeypatch, caplog, version):
 def test_python_writer_without_native(monkeypatch):
     monkeypatch.setattr(torch, "__version__", _TESTED)
     monkeypatch.setattr(writer, "native", None)
-    assert writer._select_dumps() is writer._python_dumps
+    assert writer._select_dumps() is pickler.dumps
