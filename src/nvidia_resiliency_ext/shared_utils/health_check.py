@@ -25,6 +25,7 @@ import sys
 import threading
 import traceback
 from collections import defaultdict, deque
+from enum import Enum
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
@@ -50,6 +51,19 @@ from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_
 logger = logging.getLogger(LogConfig.name)
 
 _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS = 2.0
+_ATTRIBUTION_NONRETRYABLE_GET_STATUSES = frozenset({400, 403, 404, 422})
+
+
+class _AttributionGetOutcome(Enum):
+    """Outcome of one non-blocking poll for a terminal analysis."""
+
+    PENDING = "pending"
+    RETRYABLE_FAILURE = "retryable_failure"
+    CONTINUE = "continue"
+    STOP = "stop"
+    ABANDON_REQUEST = "abandon_request"
+
+
 _DEFAULT_NODE_HEALTH_CHECK_ARGS = (
     "--no-slurm",
     "--group",
@@ -1813,6 +1827,8 @@ class AttributionService:
     """
 
     _RESULT_POLL_INTERVAL_SECONDS = 2.0
+    # Total consecutive failed GET attempts, including the first attempt.
+    _MAX_CONSECUTIVE_FAILED_GET_ATTEMPTS = 3
 
     def __init__(self, endpoint: str, *, enforce_stop: bool = False):
         self.endpoint = endpoint.rstrip("/")
@@ -1829,6 +1845,8 @@ class AttributionService:
         # the latter advances every cycle, while a terminal verdict is only requested for
         # cycles that actually failed and may still be pending when the next cycle starts.
         self._terminal_pending: Optional[str] = None
+        self._terminal_get_failure_count = 0
+        self._suppress_next_progressive_submission = False
         self._stop_latched = False
         # How many STOP verdicts have been observed. In log-only mode this is the
         # number that decides whether the precision is good enough to enforce.
@@ -1939,19 +1957,47 @@ class AttributionService:
             return True
 
         self._start_get_profiling(self._poll_node_id)
-        result = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
-        if result is None:
-            # Analysis still running, or attrsvc is unreachable. Keep polling; the job
-            # keeps running in the meantime.
+        outcome = self._get_results(log_path, timeout=_ATTRIBUTION_REQUEST_TIMEOUT_SECONDS)
+        if outcome is _AttributionGetOutcome.PENDING:
+            # A successful response proves attrsvc still retains the request. Earlier
+            # availability failures were transient rather than one continuous outage.
+            with self._lock:
+                if self._terminal_pending == log_path:
+                    self._terminal_get_failure_count = 0
             return False
+        if outcome is _AttributionGetOutcome.RETRYABLE_FAILURE:
+            with self._lock:
+                if self._terminal_pending != log_path:
+                    return True
+                self._terminal_get_failure_count += 1
+                failure_count = self._terminal_get_failure_count
+            if failure_count < self._MAX_CONSECUTIVE_FAILED_GET_ATTEMPTS:
+                return False
+
+            record_profiling_event(
+                ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
+                node_id=self._poll_node_id,
+            )
+            self._finish_terminal_poll(log_path)
+            logger.warning(
+                "AttributionService GET for %s failed on %s consecutive attempts total; "
+                "abandoning this cycle without a recommendation",
+                log_path,
+                failure_count,
+            )
+            return True
 
         record_profiling_event(
             ProfilingEvent.ATTRIBUTION_GET_COMPLETED,
             node_id=self._poll_node_id,
         )
 
+        if outcome is _AttributionGetOutcome.ABANDON_REQUEST:
+            self._finish_terminal_poll(log_path)
+            return True
+
         with self._lock:
-            if result:
+            if outcome is _AttributionGetOutcome.STOP:
                 self._stop_latched = True
                 self._stop_verdict_count += 1
                 if self._enforce_stop:
@@ -1977,16 +2023,21 @@ class AttributionService:
                 # STOP would silently end all attribution for the rest of the job, which
                 # is the opposite of what this mode is for.
                 if self._terminal_pending == log_path:
-                    self._terminal_pending = None
-                    self._get_started_recorded = False
+                    self._finish_terminal_poll_locked(log_path)
                 return True
-            # Authoritative "keep going" for this log; stop polling it. A later failing
-            # cycle installs a new pending path.
-            if self._terminal_pending == log_path:
-                self._terminal_pending = None
-                self._get_started_recorded = False
-        logger.info("Attribution recommends continuing (analyzed log: %s)", log_path)
+            self._finish_terminal_poll_locked(log_path)
+        logger.info("Attribution does not recommend stopping (analyzed log: %s)", log_path)
         return True
+
+    def _finish_terminal_poll(self, log_path: str) -> None:
+        with self._lock:
+            self._finish_terminal_poll_locked(log_path)
+
+    def _finish_terminal_poll_locked(self, log_path: str) -> None:
+        if self._terminal_pending == log_path:
+            self._terminal_pending = None
+            self._terminal_get_failure_count = 0
+            self._get_started_recorded = False
 
     def _start_get_profiling(self, node_id: Optional[Any]) -> None:
         with self._lock:
@@ -2007,6 +2058,14 @@ class AttributionService:
         an earlier cycle must keep being polled across cycle boundaries.
         """
         self._last_submitted = log_path
+        if self._suppress_next_progressive_submission:
+            self._suppress_next_progressive_submission = False
+            logger.info(
+                "AttributionService progressive POST for %s skipped after the preceding "
+                "terminal POST was not accepted",
+                log_path,
+            )
+            return
         self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_PROGRESSIVE)
 
     def request_terminal_analysis(self) -> None:
@@ -2072,7 +2131,12 @@ class AttributionService:
         # clears the slot, never fills it, so reaching here means the slot was free and is
         # still free. (It can go the other way -- free just after we read it occupied --
         # which is the benign deferral race described above.)
-        if not self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_TERMINAL):
+        # Terminal work is authoritative and always bypasses one-shot progressive
+        # suppression. A new availability failure may arm suppression again below.
+        self._suppress_next_progressive_submission = False
+        accepted = self._do_submit_log(log_path, analysis_intent=ANALYSIS_INTENT_TERMINAL)
+        if not accepted:
+            self._suppress_next_progressive_submission = True
             # Leave the slot free. Installing a path attrsvc never accepted would pin the
             # FCFS slot forever: its GET can never complete, so every later failed cycle
             # would defer behind it and attribution would be dead for the rest of the job.
@@ -2085,6 +2149,7 @@ class AttributionService:
             return
         with self._lock:
             self._terminal_pending = log_path
+            self._terminal_get_failure_count = 0
             self._get_started_recorded = False
 
     def _do_submit_log(
@@ -2093,7 +2158,7 @@ class AttributionService:
         analysis_intent: str = ANALYSIS_INTENT_PROGRESSIVE,
         timeout: float = _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS,
     ) -> bool:
-        """Perform the actual POST request. Returns whether attrsvc accepted it.
+        """Perform one bounded POST and return whether attrsvc accepted it.
 
         Callers that reserve state on the strength of the submission must check this:
         installing a pending terminal analysis that attrsvc never received would pin the
@@ -2128,7 +2193,8 @@ class AttributionService:
         # otherwise look identical to an accepted one.
         status = getattr(resp, "status_code", None)
         if not isinstance(status, int):
-            return True
+            logger.warning("AttributionService POST %s returned no HTTP status", log_path)
+            return False
         if not 200 <= status < 300:
             logger.warning(
                 "AttributionService POST %s (analysis_intent=%s) rejected: HTTP %s",
@@ -2143,41 +2209,50 @@ class AttributionService:
         self,
         log_path: str,
         timeout: float = _ATTRIBUTION_REQUEST_TIMEOUT_SECONDS,
-    ) -> Optional[bool]:
+    ) -> _AttributionGetOutcome:
         """
         Get the stop decision for a previously submitted log file via GET.
 
         Terminal analysis is triggered earlier via POST, so this is a non-blocking probe.
 
-        Returns:
-          - True/False when attrsvc has completed analysis: the normalized stop decision.
-          - None when there is no decision yet, either because analysis is still running
-            or because attrsvc could not be reached.
+        Returns one explicit poll outcome. A successful PENDING response is distinct from
+        a RETRYABLE_FAILURE so only consecutive availability failures consume the bounded
+        client retry budget. ABANDON_REQUEST is definitive and cannot later complete.
         """
         base_url = self._http_base_url()
         if base_url is None:
-            return None
+            return _AttributionGetOutcome.ABANDON_REQUEST
         try:
             with httpx.Client(base_url=base_url, timeout=timeout) as client:
                 resp = get_log_response(client, log_path, wait=False)
                 if resp.status_code == 200:
-                    payload = resp.json() if resp.text else {}
-                    attrsvc_result = parse_attrsvc_response(payload, log_path=log_path)
-                    if attrsvc_result.status.lower() != "completed":
+                    attrsvc_result = parse_attrsvc_response(resp.json(), log_path=log_path)
+                    if not attrsvc_result.is_complete:
                         logger.debug(attrsvc_result.format_log_message())
-                        return None
+                        return _AttributionGetOutcome.PENDING
                     logger.info(attrsvc_result.format_log_message())
-                    return attrsvc_result.should_stop
+                    return (
+                        _AttributionGetOutcome.STOP
+                        if attrsvc_result.should_stop
+                        else _AttributionGetOutcome.CONTINUE
+                    )
+                elif resp.status_code in _ATTRIBUTION_NONRETRYABLE_GET_STATUSES:
+                    logger.warning(
+                        "AttributionService GET for %s rejected: HTTP %d",
+                        log_path,
+                        resp.status_code,
+                    )
+                    return _AttributionGetOutcome.ABANDON_REQUEST
                 else:
                     logger.warning(
                         "AttributionService GET for %s returned %d", log_path, resp.status_code
                     )
-                    return None
+                    return _AttributionGetOutcome.RETRYABLE_FAILURE
         except Exception as e:
             logger.warning(
                 "AttributionService GET %s failed: %s: %s", log_path, type(e).__name__, e
             )
-            return None
+            return _AttributionGetOutcome.RETRYABLE_FAILURE
 
     def _http_base_url(self) -> Optional[str]:
         if self.endpoint.startswith(("http://", "https://")):

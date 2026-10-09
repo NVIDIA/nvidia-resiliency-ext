@@ -40,6 +40,9 @@ source "${SCRIPT_DIR}/../../scripts/common.sh"
 # Configuration (can be overridden via env vars)
 export NVRX_ATTRSVC_HOST="${NVRX_ATTRSVC_HOST:-0.0.0.0}"
 export NVRX_ATTRSVC_PORT="${NVRX_ATTRSVC_PORT:-8000}"
+# The supervisor makes five restart attempts after an unexpected attrsvc exit.
+export NVRX_ATTRSVC_SUPERVISOR_BACKOFF_SECONDS="${NVRX_ATTRSVC_SUPERVISOR_BACKOFF_SECONDS:-1 2 5 10 20}"
+export NVRX_ATTRSVC_SUPERVISOR_STABLE_SECONDS="${NVRX_ATTRSVC_SUPERVISOR_STABLE_SECONDS:-300}"
 
 # Validate required environment
 validate_attrsvc_allowed_root || exit 1
@@ -65,11 +68,6 @@ echo "  Port:     ${NVRX_ATTRSVC_PORT}"
 echo "  URL:      http://${HOSTNAME}:${NVRX_ATTRSVC_PORT}"
 echo "============================================================"
 
-# Cleanup on exit
-cleanup() {
-    echo "Shutting down..."
-}
-trap cleanup EXIT SIGTERM SIGINT SIGUSR1 SIGUSR2
-
-# Run service (foreground)
-nvrx-attrsvc
+# Keep this batch allocation alive across transient attrsvc process exits. The
+# supervisor becomes the batch payload and forwards Slurm shutdown signals.
+exec "${SCRIPT_DIR}/supervise_attrsvc.sh" nvrx-attrsvc

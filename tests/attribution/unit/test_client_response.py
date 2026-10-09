@@ -1,4 +1,10 @@
-from nvidia_resiliency_ext.attribution import AttrSvcResult, parse_attrsvc_response
+import pytest
+
+from nvidia_resiliency_ext.attribution import (
+    AttrSvcResponseValidationError,
+    AttrSvcResult,
+    parse_attrsvc_response,
+)
 
 
 def _item(raw_text, action):
@@ -42,6 +48,7 @@ def test_parse_attrsvc_response_uses_serialized_recommendation():
 def test_parse_attrsvc_response_missing_recommendation_is_unknown():
     parsed = parse_attrsvc_response(
         {
+            "status": "completed",
             "result": {
                 "module": "log_analyzer",
                 "result": [_item("RESTART IMMEDIATE", "RESTART")],
@@ -53,6 +60,38 @@ def test_parse_attrsvc_response_missing_recommendation_is_unknown():
     assert parsed.recommendation.action == "UNKNOWN"
     assert parsed.recommendation.reason == ""
     assert parsed.should_stop is False
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ([], "must be a JSON object"),
+        ({}, "requires a non-empty lifecycle status"),
+        ({"status": None}, "requires a non-empty lifecycle status"),
+        ({"status": ""}, "requires a non-empty lifecycle status"),
+        ({"status": "failed"}, "unsupported lifecycle status"),
+    ],
+)
+def test_parse_attrsvc_response_rejects_invalid_envelope(payload, message):
+    with pytest.raises(AttrSvcResponseValidationError, match=message):
+        parse_attrsvc_response(payload)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_status", "is_complete"),
+    [
+        (" pending ", "pending", False),
+        ("IN_FLIGHT", "in_flight", False),
+        ("COMPLETED", "completed", True),
+    ],
+)
+def test_parse_attrsvc_response_normalizes_valid_lifecycle_status(
+    status, expected_status, is_complete
+):
+    parsed = parse_attrsvc_response({"status": status})
+
+    assert parsed.status == expected_status
+    assert parsed.is_complete is is_complete
 
 
 def test_parse_attrsvc_response_uses_explicit_recommendation_over_inner_result():
