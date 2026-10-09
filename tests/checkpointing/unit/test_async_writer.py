@@ -34,7 +34,7 @@ from torch.distributed.checkpoint import (
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async, state_dict_saver
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
@@ -266,16 +266,20 @@ class TestAsyncSave:
         assert md_writer._select_dumps() is expected
 
         Utils.initialize_distributed()
-        rank = torch.distributed.get_rank()
+        rank, world_size = torch.distributed.get_rank(), torch.distributed.get_world_size()
+        if rank1 != 'same' and world_size < 2:
+            pytest.skip('needs a rank 1')
+        if rank1 == 'fast' and mode == '1':
+            pytest.skip('the same as rank1="same"')
         if rank == 1 and rank1 == 'fast':
             monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', '1')
             md_writer.fast_metadata_enabled.cache_clear()
             md_writer._select_dumps.cache_clear()
-        encode, decode_payloads = state_dict_saver.table.encode, state_dict_saver._decode_payloads
+        encode, decode_payloads = table.encode, state_dict_saver._decode_payloads
 
         def encode_or_fail(results):
             if rank == 1 and rank1 == 'unencodable':
-                raise state_dict_saver.table.Unencodable('a write result the table lacks')
+                raise table.Unencodable('a write result the table lacks')
             return encode(results)
 
         received = []
@@ -285,7 +289,7 @@ class TestAsyncSave:
             received.extend(is_table.tolist())
             return is_table, pickled
 
-        monkeypatch.setattr(state_dict_saver.table, 'encode', encode_or_fail)
+        monkeypatch.setattr(table, 'encode', encode_or_fail)
         monkeypatch.setattr(state_dict_saver, '_decode_payloads', record_decode_payloads)
 
         model = FSDP(Model((1024, 1024), 8))
@@ -301,7 +305,8 @@ class TestAsyncSave:
                 async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
                 if rank == 0:  # whether each rank sent a table
                     rank1_table = rank1 == 'fast' or (rank1 == 'same' and mode != '0')
-                    assert received == [mode != '0', rank1_table]
+                    expected = [rank1_table if r == 1 else mode != '0' for r in range(world_size)]
+                    assert received == expected
 
                 nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
                 torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
