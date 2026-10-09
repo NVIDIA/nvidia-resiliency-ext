@@ -28,7 +28,7 @@ from itertools import chain
 from operator import itemgetter
 from pathlib import Path
 from time import time
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union, cast
 
 import torch
 from torch import multiprocessing as mp
@@ -67,8 +67,10 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
 from . import _metadata_pickler
-from ._metadata_pickler import table
 from .core import PersistentAsyncCaller
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -1279,9 +1281,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             local_plan, storage_data=_StoragePrefix(f"__{torch.distributed.get_rank()}_")
         )
 
-    def finish(
-        self, metadata: Metadata, results: List[List[WriteResult]], storage_rows=None
-    ) -> None:
+    def finish(self, metadata: Metadata, results: List[List[WriteResult]]) -> None:
         """
         Finish the checkpointing process by writing the global metadata file.
 
@@ -1294,17 +1294,26 @@ class FileSystemWriterAsync(FileSystemWriter):
         Args:
             metadata (Metadata): metadata to save
             results (List[List[WriteResult]]): results to save
-            storage_rows (np.ndarray, optional): the ranks' write results as tables, one
-                zero-padded table per row of a 2-D uint8 array (see ``_metadata_pickler.table``),
-                written as storage_data instead of results.
         """
+        self._finish(metadata, results)
+
+    def _finish(
+        self,
+        metadata: Metadata,
+        results: List[List[WriteResult]],
+        storage_rows: Optional["np.ndarray"] = None,
+    ) -> None:
+        """``finish``, or with storage_rows (the ranks' write results as tables, one zero-padded
+        table per row of a 2-D uint8 array, see ``_metadata_pickler.table``), written as
+        storage_data instead of results."""
         fast = _metadata_pickler.fast_metadata_enabled()
         if storage_rows is not None and not fast:
             logger.warning(
                 "write-result tables without the fast .metadata writer; "
                 "converting them to write results"
             )
-            results = [table.to_write_results(t) for t in table.decode_rows(storage_rows)]
+            tables = _metadata_pickler.table.decode_rows(storage_rows)
+            results = [_metadata_pickler.table.to_write_results(t) for t in tables]
             storage_rows = None
         if not fast and not self.use_msc:
             super().finish(metadata, results)

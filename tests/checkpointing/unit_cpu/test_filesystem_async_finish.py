@@ -69,7 +69,7 @@ def finish(writer_cls, path, saved, sync_files=True, as_rows=False, **setup_kwar
     writer.set_up_storage_writer(True, **setup_kwargs)
     if as_rows:
         rows = np.frombuffer(table.encode(results[0]), dtype=np.uint8)[None, :]
-        writer.finish(md, [], storage_rows=rows)
+        writer._finish(md, [], storage_rows=rows)
     else:
         writer.finish(md, results)
     files = sorted(os.listdir(path))
