@@ -75,7 +75,7 @@ jobs:
           elif [[ "${{ matrix.test_type }}" == "fault_tolerance" ]]; then
               "$PYTHON" -m pytest -s -vvv ./tests/fault_tolerance/unit/
           elif [[ "${{ matrix.test_type }}" == "checkpointing_cpu" ]]; then
-              "$PYTHON" -m pytest -s -vvv ./tests/checkpointing/unit_cpu/
+              NVRX_REQUIRE_NATIVE_WRITER=1 "$PYTHON" -m pytest -s -vvv ./tests/checkpointing/unit_cpu/
           else
               echo "Unknown test type: ${{ matrix.test_type }}"
               exit 1

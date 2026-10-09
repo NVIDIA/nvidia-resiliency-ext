@@ -28,7 +28,7 @@ from itertools import chain
 from operator import itemgetter
 from pathlib import Path
 from time import time
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union, cast
 
 import torch
 from torch import multiprocessing as mp
@@ -68,6 +68,9 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from ..utils import _disable_gc
 from . import _metadata_pickler
 from .core import PersistentAsyncCaller
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -1292,7 +1295,26 @@ class FileSystemWriterAsync(FileSystemWriter):
             metadata (Metadata): metadata to save
             results (List[List[WriteResult]]): results to save
         """
+        self._finish(metadata, results)
+
+    def _finish(
+        self,
+        metadata: Metadata,
+        results: List[List[WriteResult]],
+        storage_rows: Optional["np.ndarray"] = None,
+    ) -> None:
+        """``finish``, or with storage_rows (the ranks' write results as tables, one zero-padded
+        table per row of a 2-D uint8 array, see ``_metadata_pickler.table``), written as
+        storage_data instead of results."""
         fast = _metadata_pickler.fast_metadata_enabled()
+        if storage_rows is not None and not fast:
+            logger.warning(
+                "write-result tables without the fast .metadata writer; "
+                "converting them to write results"
+            )
+            tables = _metadata_pickler.table.decode_rows(storage_rows)
+            results = [_metadata_pickler.table.to_write_results(t) for t in tables]
+            storage_rows = None
         if not fast and not self.use_msc:
             super().finish(metadata, results)
             return
@@ -1300,10 +1322,11 @@ class FileSystemWriterAsync(FileSystemWriter):
         if fast and CURRENT_DCP_VERSION is not None:
             metadata.version = CURRENT_DCP_VERSION
 
-        storage_md = {}
-        for wr_list in results:
-            storage_md.update({wr.index: wr.storage_data for wr in wr_list})
-        metadata.storage_data = storage_md
+        if storage_rows is None:
+            storage_md = {}
+            for wr_list in results:
+                storage_md.update({wr.index: wr.storage_data for wr in wr_list})
+            metadata.storage_data = storage_md
 
         # storage_meta was introduced since PyTorch 2.4
         if "storage_meta" in inspect.signature(Metadata).parameters:
@@ -1314,7 +1337,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
             with msc.open(path, "wb") as metadata_file:
-                _metadata_pickler.dump_metadata(metadata, metadata_file)
+                _metadata_pickler.dump_metadata(metadata, metadata_file, storage_rows)
             return
 
         # PyTorch 2.9+ writes one metadata file per rank when collectives are disabled.
@@ -1330,7 +1353,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 metadata_path = self.metadata_path
         tmp_path = cast(Path, self.fs.concat_path(self.path, tmp_filename))
         with self.fs.create_stream(tmp_path, "wb") as metadata_file:
-            _metadata_pickler.dump_metadata(metadata, metadata_file)
+            _metadata_pickler.dump_metadata(metadata, metadata_file, storage_rows)
             if self.sync_files:
                 # Flush Python-level buffers (OS for local files, network for cloud storage) before fsync.
                 metadata_file.flush()
