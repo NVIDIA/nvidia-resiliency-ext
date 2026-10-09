@@ -19,4 +19,5 @@ See :mod:`.writer`, which picks the C++ writer (:mod:`.native`, wrapping the opt
 extension built from ``native_src/native.cpp``) or the Python writer (:mod:`.pickler`).
 """
 
+from . import table
 from .writer import TESTED_TORCH_VERSIONS, dump_metadata, fast_metadata_enabled, writes_tables

@@ -114,6 +114,7 @@ UNENCODABLE = {
     "index is not a MetadataIndex": lambda: _result(idx="w"),
     "fqn is a str subclass": lambda: _result(idx=MetadataIndex(_Str("w"))),
     "offset beyond int64": lambda: _result(info=_StorageInfo("__0_0.distcp", 2**63, 1)),
+    "fqn not UTF-8": lambda: _result(idx=MetadataIndex("w\ud800", torch.Size([0]))),
 }
 if "transform_descriptors" in {f.name for f in dataclasses.fields(_StorageInfo)}:
     UNENCODABLE["transform descriptors"] = lambda: _result(
@@ -127,34 +128,49 @@ def test_unencodable_write_results(make):
         table.encode([make()])
 
 
-def _corrupt(header=None, column=None, value=0):
-    """A table of one write result, with a header slot or its entry's column set to value."""
-    encoded = bytearray(table.encode([_result()]))
-    strings = int(np.frombuffer(bytes(encoded), "<i8", count=table.HEADER)[3])
-    if header is not None:
-        pos = 8 * header
-    elif column == "string_len":
-        pos = 8 * table.HEADER
-    else:
-        pos = 8 * table.HEADER + 8 * strings + 8 * column  # the entry's column
-    encoded[pos : pos + 8] = np.int64(value).tobytes()
-    return np.frombuffer(bytes(encoded), dtype=np.uint8)[None, :]
+def _corrupt(mutate, results=None):
+    """The row of a table of results (one write result by default), after mutate(header,
+    string_len, entry) changes those sections of it in place."""
+    raw = np.frombuffer(bytearray(table.encode(results or [_result()])), dtype=np.uint8)
+    header = raw[: 8 * table.HEADER].view("<i8")
+    n_entries, n_strings = int(header[2]), int(header[3])
+    pos = 8 * table.HEADER
+    string_len = raw[pos : pos + 8 * n_strings].view("<i8")
+    pos += 8 * n_strings
+    entry = raw[pos : pos + 8 * table.COLUMNS * n_entries].view("<i8").reshape(n_entries, -1)
+    mutate(header, string_len, entry)
+    return raw[None, :]
+
+
+def _set(array, index, value):
+    array[index] = value
+
+
+# Offsets that wrap around int64 when summed: 4 * 2**62 + 5 == 5 (mod 2**64), the 5 dims there are.
+_FIVE_DIMS = [_result(idx=MetadataIndex("w", torch.Size([i]))) for i in range(5)]
+
+CORRUPT = {
+    "fqn-id": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.FQN), 5)),
+    "path-id": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.PATH), -1)),
+    "offset-ndim": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.OFFSET_NDIM), 9)),
+    "offset-ndim-wraps": lambda: _corrupt(
+        lambda h, s, e: _set(e, (slice(None), table.OFFSET_NDIM), [2**62] * 4 + [5]), _FIVE_DIMS
+    ),
+    "unknown-flag": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.FLAGS), 0x8 | 0x7)),
+    "size-without-offset": lambda: _corrupt(
+        lambda h, s, e: _set(e, (0, table.FLAGS), table.FLAG_OFFSET_SIZE)
+    ),
+    "string-len": lambda: _corrupt(lambda h, s, e: _set(s, 0, 1000)),
+    "entries-beyond-row": lambda: _corrupt(lambda h, s, e: _set(h, 2, 2**40)),
+    "magic": lambda: _corrupt(lambda h, s, e: _set(h, 0, 1)),
+    "shorter-than-header": lambda: _corrupt(lambda h, s, e: None)[:, :20],
+}
 
 
 @pytest.mark.parametrize("dumps", DUMPS)
-@pytest.mark.parametrize(
-    "corrupt",
-    [
-        dict(column=table.FQN, value=5),
-        dict(column=table.PATH, value=-1),
-        dict(column=table.OFFSET_NDIM, value=9),
-        dict(column="string_len", value=1000),
-        dict(header=2, value=2**40),  # entries beyond the row
-        dict(header=0, value=1),  # magic
-    ],
-    ids=["fqn-id", "path-id", "offset-ndim", "string-len", "entries", "magic"],
-)
+@pytest.mark.parametrize("corrupt", CORRUPT.values(), ids=CORRUPT.keys())
 def test_corrupt_tables_are_rejected(dumps, corrupt):
-    """A corrupt table fails to write, before either writer could read past its row."""
+    """Both writers reject a corrupt table with ValueError, before reading past its row or
+    misplacing a value."""
     with pytest.raises(ValueError):
-        dumps(Metadata(state_dict_metadata={}, storage_data=None), storage_rows=_corrupt(**corrupt))
+        dumps(Metadata(state_dict_metadata={}, storage_data=None), storage_rows=corrupt())

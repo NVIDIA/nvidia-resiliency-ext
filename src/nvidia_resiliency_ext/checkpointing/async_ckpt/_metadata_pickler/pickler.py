@@ -34,7 +34,9 @@ import io
 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
 import pickle  # nosec
 import struct
+from typing import List, Optional
 
+import numpy as np
 import torch
 from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import (
@@ -208,10 +210,10 @@ class _MetadataPickler:
             b = self.props[key] = small_pickle(p)
         return b
 
-    def dumps(self, md: Metadata, storage_tables=None) -> bytes:
+    def dumps(self, md: Metadata, tables: Optional[List[table.WriteResultTable]] = None) -> bytes:
         """The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field.
 
-        With storage_tables (decoded write-result tables, see table.py), storage_data is written
+        With tables (decoded write-result tables, see table.py), storage_data is written
         from them instead of md.storage_data.
         """
         if type(md) is not Metadata:
@@ -224,10 +226,10 @@ class _MetadataPickler:
             if field == "state_dict_metadata":
                 self._state_dict_metadata(value)
             elif field == "storage_data":
-                if storage_tables is None:
+                if tables is None:
                     self._storage_data(value)
                 else:
-                    self._storage_data_tables(storage_tables)
+                    self._storage_data_tables(tables)
             else:
                 out.append(small_pickle(value))
         out.append(SETITEMS + BUILD + STOP)
@@ -415,7 +417,7 @@ class _MetadataPickler:
             out.append(SETITEMS)
 
 
-def dumps(md: Metadata, storage_rows=None) -> bytes:
+def dumps(md: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
     """The pickle of md. With storage_rows (the gathered write-result tables, see table.py),
     storage_data is written from them instead of md.storage_data."""
     tables = None if storage_rows is None else table.decode_rows(storage_rows)

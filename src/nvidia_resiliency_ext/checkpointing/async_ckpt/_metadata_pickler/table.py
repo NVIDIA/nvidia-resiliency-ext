@@ -24,10 +24,17 @@ Layout of an encoded table (little-endian):
     string_len  int64[strings]       byte length of each string (fqns and relative paths)
     entry       int64[entries, 7]    fqn, index, offset_ndim, path, offset, length, flags
     offsets     int64[offset values] all entries' MetadataIndex offsets, concatenated
-    strings     uint8[string bytes]  the strings, UTF-8 (surrogatepass), concatenated
+    strings     uint8[string bytes]  the strings, UTF-8, concatenated
 
 The coordinator receives each rank's table zero-padded to a common width; the padding is ignored.
 See WriteResultTable for what the entries hold.
+
+Tables come from this job's ranks, and both writers check everything that could make them read
+outside a table or misplace a value: counts, string ids, offset dims, string lengths and flags,
+rejecting the same tables with ValueError. They trust one thing: that the string bytes are UTF-8,
+as encode wrote them. The native writer copies them into the pickle unchecked, since checking would
+cost about as much as writing them; corrupt string bytes would make a .metadata that doesn't load.
+decode, which builds Python strings, raises UnicodeDecodeError for them instead.
 """
 
 from dataclasses import dataclass
@@ -39,7 +46,7 @@ from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 
-MAGIC = 0x4E56525854424C31  # "NVRXTBL1"
+MAGIC = int.from_bytes(b"NVRXTBL1", "little")  # reads "NVRXTBL1" on the wire
 VERSION = 1
 HEADER = 8
 COLUMNS = 7
@@ -94,6 +101,12 @@ class WriteResultTable:
       FLAG_OFFSET.
 
     Strings are stored once per table, so an fqn or path shared by several entries has one id.
+
+    Entries with equal indexes (MetadataIndex compares fqn and offset, not index) are all kept: the
+    same chunk written by two ranks, when the save planner doesn't deduplicate it. It is legal, and
+    torch's finish keeps one item, with the first key and the last value. The writers write every
+    entry as an item of storage_data, which unpickles to the same dict, but the .metadata bytes
+    differ from those written from torch's dict.
     ``storage_data`` is a ``_StorageInfo`` without ``transform_descriptors``; ``encode`` raises
     Unencodable for anything else, and that rank's write results are sent pickled.
     """
@@ -124,7 +137,10 @@ def encode(results: List[WriteResult]) -> bytes:
         i = string_ids.get(s)
         if i is None:
             i = string_ids[s] = len(strings)
-            strings.append(s.encode("utf-8", "surrogatepass"))
+            try:
+                strings.append(s.encode("utf-8"))
+            except UnicodeEncodeError as e:  # a lone surrogate: left to the stdlib pickler
+                raise Unencodable(f"string not encodable as UTF-8: {s!r}") from e
         return i
 
     entry = np.zeros((len(results), COLUMNS), dtype="<i8")
@@ -179,35 +195,59 @@ def encode(results: List[WriteResult]) -> bytes:
     )
 
 
+def _bad(what: str) -> ValueError:
+    """The error for a malformed table."""
+    return ValueError(f"write-result table: {what}")
+
+
 def decode(buf) -> WriteResultTable:
-    """The table in buf (bytes, or a uint8 array possibly padded at the end), without copying."""
+    """The table in buf (bytes, or a uint8 array possibly padded at the end), without copying.
+
+    Rejects with ValueError the same malformed tables as the native writer (native_src/native.cpp)
+    does; see the module docstring for the one exception, invalid UTF-8.
+    """
     raw = np.frombuffer(buf, dtype=np.uint8)
-    header = raw[: HEADER * 8].view("<i8")
+    if len(raw) < 8 * HEADER:
+        raise _bad("truncated")
+    header = raw[: 8 * HEADER].view("<i8").tolist()
     if header[0] != MAGIC or header[1] != VERSION:
-        raise ValueError("not a write-result table of this version")
-    n_entries, n_strings, n_bytes, n_offsets = (int(x) for x in header[2:6])
-    pos = HEADER * 8
-    string_len = raw[pos : pos + 8 * n_strings].view("<i8")
-    pos += 8 * n_strings
-    entry = raw[pos : pos + 8 * COLUMNS * n_entries].view("<i8").reshape(n_entries, COLUMNS)
-    pos += 8 * COLUMNS * n_entries
-    offsets = raw[pos : pos + 8 * n_offsets].view("<i8")
-    pos += 8 * n_offsets
-    blob = raw[pos : pos + n_bytes].tobytes()
-    if len(blob) != n_bytes or len(entry) != n_entries:
-        raise ValueError("write-result table is truncated")
+        raise _bad("not a table of this version")
+    pos = 8 * HEADER
+
+    def take(count: int, item_size: int) -> np.ndarray:
+        """The next section, count items of item_size bytes, checked to fit in the row."""
+        nonlocal pos
+        if count < 0 or count > (len(raw) - pos) // item_size:
+            raise _bad("truncated")
+        section = raw[pos : pos + count * item_size]
+        pos += count * item_size
+        return section
+
+    n_entries, n_strings, n_bytes, n_offsets = header[2:6]
+    string_len = take(n_strings, 8).view("<i8")
+    entry = take(n_entries, 8 * COLUMNS).view("<i8").reshape(n_entries, COLUMNS)
+    offsets = take(n_offsets, 8).view("<i8")
+    blob = take(n_bytes, 1).tobytes()
+
+    flags = entry[:, FLAGS]
+    if (flags & ~(FLAG_INDEX | FLAG_OFFSET | FLAG_OFFSET_SIZE)).any():
+        raise _bad("unknown flags")
+    has_size = (flags & FLAG_OFFSET_SIZE) != 0
+    if (has_size & ((flags & FLAG_OFFSET) == 0)).any():
+        raise _bad("an offset size without an offset")
     ids = entry[:, [FQN, PATH]]
-    ndim = entry[:, OFFSET_NDIM]
-    has_size = (entry[:, FLAGS] & FLAG_OFFSET_SIZE) != 0
-    if (ids < 0).any() or (ids >= n_strings).any() or (ndim < 0).any():
-        raise ValueError("write-result table: string id or offset dims out of range")
-    if int(ndim[has_size].sum()) != n_offsets:
-        raise ValueError("write-result table: offset dims don't match the offsets")
-    if (string_len < 0).any() or int(string_len.sum()) != n_bytes:
-        raise ValueError("write-result table: string lengths don't match the string bytes")
+    if (ids < 0).any() or (ids >= n_strings).any():
+        raise _bad("string id out of range")
+    # Summed as Python ints, which can't wrap around.
+    ndim = entry[has_size, OFFSET_NDIM].tolist()
+    if any(n < 0 for n in ndim) or sum(ndim) != n_offsets:
+        raise _bad("offset dims don't match the offsets")
+    lengths = string_len.tolist()
+    if any(n < 0 for n in lengths) or sum(lengths) != n_bytes:
+        raise _bad("string lengths don't match the string bytes")
     strings, start = [], 0
-    for n in string_len.tolist():
-        strings.append(blob[start : start + n].decode("utf-8", "surrogatepass"))
+    for n in lengths:
+        strings.append(blob[start : start + n].decode("utf-8"))
         start += n
     return WriteResultTable(entry=entry, offsets=offsets, strings=strings)
 

@@ -18,12 +18,15 @@
 Importing it raises ImportError if the ``_native`` extension (native_src/native.cpp) isn't built.
 """
 
+from typing import Optional
+
+import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
 
 from . import _native, pickler
 
 
-def dumps(md: Metadata, storage_rows=None) -> bytes:
+def dumps(md: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
     """The pickle of md, byte for byte as pickler.dumps writes it. With storage_rows (the gathered
     write-result tables, see table.py), storage_data is written from them instead of
     md.storage_data; the extension reads the rows itself."""
