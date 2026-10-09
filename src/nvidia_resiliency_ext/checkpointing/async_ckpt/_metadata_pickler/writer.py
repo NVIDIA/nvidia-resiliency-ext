@@ -483,6 +483,21 @@ def _mode() -> str:
     return os.environ.get("NVRX_FAST_METADATA_PICKLE", "1").strip().lower()
 
 
+def _torch_release() -> Optional[tuple]:
+    """torch's (major, minor) version, or None if unparseable."""
+    try:
+        return Version(torch.__version__).release[:2]
+    except InvalidVersion:
+        return None
+
+
+def _tested_torch() -> bool:
+    """Whether torch is one of TESTED_TORCH_VERSIONS (an unparseable version is not)."""
+    first, last = TESTED_TORCH_VERSIONS
+    release = _torch_release()
+    return release is not None and first <= release <= last
+
+
 @functools.cache
 def fast_metadata_enabled() -> bool:
     """Whether nvrx may write ``.metadata`` with its own code instead of torch's.
@@ -496,10 +511,7 @@ def fast_metadata_enabled() -> bool:
     mode = _mode()
     if mode in ("0", "false", "off", "no"):
         return False
-    try:
-        release = Version(torch.__version__).release[:2]
-    except InvalidVersion:  # an unparseable version counts as untested
-        release = None
+    release = _torch_release()
     if release in INCOMPATIBLE_TORCH_VERSIONS:
         if mode == "force":
             logger.error(
@@ -509,8 +521,8 @@ def fast_metadata_enabled() -> bool:
         return False
     if mode == "force":
         return True
-    first, last = TESTED_TORCH_VERSIONS
-    if release is None or not first <= release <= last:
+    if not _tested_torch():
+        first, last = TESTED_TORCH_VERSIONS
         logger.info(
             f"torch {torch.__version__} is outside the versions nvrx's .metadata writer was "
             f"checked against ({first[0]}.{first[1]} to {last[0]}.{last[1]}); "
@@ -632,8 +644,12 @@ def _select_dumps() -> Optional[Callable[[Metadata], bytes]]:
 
 
 def writes_tables() -> bool:
-    """Whether dump_metadata writes storage_data from write-result tables with a fast writer."""
-    return _select_dumps() is not None
+    """Whether to send write results as tables and write storage_data from them.
+
+    Needs a fast writer and, even with ``NVRX_FAST_METADATA_PICKLE=force``, a torch version in
+    ``TESTED_TORCH_VERSIONS``: the table encodes the write results of those versions only.
+    """
+    return _tested_torch() and _select_dumps() is not None
 
 
 def dump_metadata(metadata: Metadata, stream: IO[bytes], storage_tables=None) -> None:

@@ -139,6 +139,11 @@ def encode(results: List[WriteResult]) -> bytes:
     )
 
 
+def is_table(buf) -> bool:
+    """Whether buf (bytes or a uint8 array) starts like a table; a pickle never does."""
+    return len(buf) >= 8 and int(np.frombuffer(buf, dtype="<i8", count=1)[0]) == MAGIC
+
+
 def decode(buf) -> Table:
     """The table in buf (bytes, or a uint8 array possibly padded at the end), without copying."""
     raw = np.frombuffer(buf, dtype=np.uint8)

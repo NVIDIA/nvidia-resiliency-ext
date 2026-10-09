@@ -496,6 +496,8 @@ def test_writer_selection(monkeypatch, mode, version, expected):
     monkeypatch.setattr(torch, "__version__", version)
     assert writer.fast_metadata_enabled() is (expected is not None)
     assert writer._select_dumps() is expected
+    # Tables only on tested versions: the force cases here are all untested.
+    assert writer.writes_tables() is (expected is not None and mode != "force")
 
 
 @pytest.mark.parametrize("version", ["2.3.1", "2.3.0+cu121"])

@@ -88,7 +88,7 @@ sequenceDiagram
 
     Note over C,R: Finalize: maybe_finalize_async_calls (all_reduce of done flags),<br/>then save_state_dict_async_finalize
     R->>C: all_reduce(widest table), gather(write results as tables)
-    Note over C,R: Pickled write results (gather_object) if a rank can't send a table
+    Note over C,R: A rank that can't send a table sends its write results pickled
     C->>S: finish: write .metadata from the tables (temp file, fsync, rename)
     C->>R: broadcast failure flag
 ```
