@@ -94,7 +94,7 @@
     {
       "id": 16,
       "name": "Filesystem I/O error / Lustre or node-local FS / import visibility",
-      "description": "Transient filesystem error on a NON-checkpoint path: Lustre I/O stall (OSError Errno 5), missing dataset cache from filesystem-visibility lag, or ImportError/ModuleNotFoundError where the failing import path lives on a network-mounted code tree. Missing CHECKPOINT paths are cat 22 (STOP).",
+      "description": "Transient filesystem error on a NON-checkpoint path: Lustre I/O stall (OSError Errno 5), missing dataset cache from filesystem-visibility lag, or ImportError/ModuleNotFoundError where the failing import path lives on a network-mounted code tree. Missing CHECKPOINT paths are cat 22.",
       "decision": "RESTART"
     },
     {
@@ -112,7 +112,7 @@
     {
       "id": 19,
       "name": "Checkpoint failure / transient async-write I/O",
-      "description": "Transient I/O failure during the checkpoint async-save path on a checkpoint directory: filesystem_async 'Local process 0 encountered an error', PyTorch inline_container position mismatch, BrokenPipeError Errno 108 from a writer, OSError Errno 5 (Input/output error). Prefer this over cat 16 whenever the failing path is a checkpoint directory and the mechanism is on the write side, even if the surface is generic filesystem I/O. Load-side checkpoint I/O errors that do not fit cat 10 (early/startup timeout) route to cat 16 (Filesystem I/O) instead; they have the same decision (RESTART) but a different labeling story.",
+      "description": "Transient I/O failure during the checkpoint async-save path on a checkpoint directory: filesystem_async 'Local process 0 encountered an error', PyTorch inline_container position mismatch, BrokenPipeError Errno 108 from a writer, OSError Errno 5 (Input/output error). Prefer this over cat 16 whenever the failing path is a checkpoint directory and the mechanism is on the write side, even if the surface is generic filesystem I/O. Load-side checkpoint I/O errors that do not fit cat 10 (early/startup timeout) route to cat 16 (Filesystem I/O) instead.",
       "decision": "RESTART"
     },
     {
@@ -124,7 +124,7 @@
     {
       "id": 21,
       "name": "Post-checkpoint progress-log assertion",
-      "description": "Assertion after checkpoint resume (progress-log bookkeeping); restart from last committed checkpoint is appropriate.",
+      "description": "Assertion after checkpoint resume (progress-log bookkeeping). The last committed checkpoint is intact.",
       "decision": "RESTART"
     },
     {
@@ -154,13 +154,13 @@
     {
       "id": 26,
       "name": "CUDA OOM during checkpoint async-save",
-      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. An unchanged workload will keep hitting the same allocation ceiling on retry, so product policy calls this a STOP.",
+      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. An unchanged workload will keep hitting the same allocation ceiling on retry.",
       "decision": "STOP"
     },
     {
       "id": 27,
       "name": "Bad token / gradient Inf or NaN",
-      "description": "Non-finite gradient/loss from a bad token or transient overflow; external guidance is restart.",
+      "description": "Non-finite gradient/loss from a bad token or transient overflow.",
       "decision": "RESTART"
     },
     {
@@ -184,13 +184,13 @@
     {
       "id": 31,
       "name": "CPU OOM / Linux OOM killer",
-      "description": "Host memory exhausted: bare 'Killed' on one or more ranks corroborated by a slurmstepd 'Detected N oom_kill events ... Some of the step tasks have been OOM Killed' record (the oom_kill line often appears far below the 'Killed' lines). Host memory exhaustion is deterministic for the same job/config: an unchanged retry is expected to hit the same ceiling unless resources or configuration change, so product policy calls this a STOP.",
+      "description": "Host memory exhausted: bare 'Killed' on one or more ranks corroborated by a slurmstepd 'Detected N oom_kill events ... Some of the step tasks have been OOM Killed' record (the oom_kill line often appears far below the 'Killed' lines). Host memory exhaustion is deterministic for the same job/config: an unchanged retry is expected to hit the same ceiling unless resources or configuration change.",
       "decision": "STOP"
     },
     {
       "id": 32,
       "name": "CUDA OOM",
-      "description": "Device OOM at fixed batch/config. A CUDA OOM under an unchanged workload is highly likely to reproduce on the next attempt; product policy calls this a STOP because the retry cost is high and the outcome is stable.",
+      "description": "Device OOM at fixed batch/config. A CUDA OOM under an unchanged workload is highly likely to reproduce on the next attempt, and the outcome is stable across attempts.",
       "decision": "STOP"
     },
     {
@@ -202,7 +202,7 @@
     {
       "id": 34,
       "name": "Segmentation fault / native runtime crash",
-      "description": "SIGSEGV in native code with no accompanying hardware signal and no self-reported corruption guard, usually confined to a single rank. A wild or high faulting address, rather than a near-null offset, points at memory corruption rather than a null dereference; host-side pinned-allocator and dataset-index paths are common sites. A single log cannot separate a library race from host-memory corruption, so this stays retryable.",
+      "description": "SIGSEGV in native code with no accompanying hardware signal and no self-reported corruption guard, usually confined to a single rank. A wild or high faulting address, rather than a near-null offset, points at memory corruption rather than a null dereference; host-side pinned-allocator and dataset-index paths are common sites. A single log cannot separate a library race from host-memory corruption.",
       "decision": "RESTART"
     },
     {
@@ -226,7 +226,7 @@
     {
       "id": 38,
       "name": "Suspected SDC / DP-replica weight-hash mismatch",
-      "description": "DP-replica weight-hash mismatch (suspected silent data corruption); restart from last good checkpoint is plausibly safe.",
+      "description": "DP-replica weight-hash mismatch (suspected silent data corruption). The last good checkpoint predates the mismatch.",
       "decision": "RESTART"
     }
   ]
