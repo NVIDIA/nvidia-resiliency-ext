@@ -36,7 +36,7 @@ from .test_metadata_pickler import dcp_saved_metadata, large_metadata, metadatas
 DUMPS = [
     pytest.param(pickler.dumps, id="python"),
     pytest.param(
-        writer._native_dumps,
+        writer.native.dumps if writer.native else None,
         id="native",
         marks=pytest.mark.skipif(writer.native is None, reason="native writer not built"),
     ),

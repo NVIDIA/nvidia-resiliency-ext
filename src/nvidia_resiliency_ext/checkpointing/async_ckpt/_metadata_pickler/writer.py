@@ -15,9 +15,9 @@
 
 """Writing the ``.metadata`` file of a torch distributed checkpoint, fast.
 
-``dump_metadata`` writes it with the fastest writer that works here: the C++ ``native`` extension
-of this package if it is built, else the Python writer in pickler.py. Both write the same bytes,
-much faster than ``pickle.dump``; see pickler.py.
+``dump_metadata`` writes it with the fastest writer that works here: the C++ writer (native.py)
+if its extension is built, else the Python writer (pickler.py). Both are ``dumps(md,
+storage_rows=None)`` and write the same bytes, much faster than ``pickle.dump``; see pickler.py.
 
 The writers depend on how torch's metadata classes pickle, so they are used only when all of these
 hold, and ``pickle.dump`` is used otherwise:
@@ -73,7 +73,7 @@ from . import pickler, table
 
 try:
     from . import native
-except ImportError:  # not built, or failed to compile
+except ImportError:  # the extension isn't built, or failed to compile
     native = None
 
 logger = logging.getLogger(__name__)
@@ -87,11 +87,6 @@ TESTED_TORCH_VERSIONS = frozenset(
 # NVRX_FAST_METADATA_PICKLE=force; this wins over TESTED_TORCH_VERSIONS. Torch 2.3's
 # FileSystemWriter lacks metadata_path and storage_meta, which FileSystemWriterAsync.finish uses.
 INCOMPATIBLE_TORCH_VERSIONS = frozenset({(2, 3)})
-
-
-def _native_dumps(md: Metadata, storage_rows=None) -> bytes:
-    """The pickle of md, from the native writer, which reads storage_rows itself."""
-    return native.dumps(md, pickler.small_pickle, storage_rows)
 
 
 def _mode() -> str:
@@ -251,8 +246,8 @@ def _select_dumps() -> Optional[Callable[[Metadata], bytes]]:
     if not _layout_supported():
         logger.warning("Unexpected torch DCP metadata classes; writing .metadata with pickle.dump")
         return None
-    if native is not None and _mode() != "python" and _works(_native_dumps):
-        return _native_dumps
+    if native is not None and _mode() != "python" and _works(native.dumps):
+        return native.dumps
     if _works(pickler.dumps):
         return pickler.dumps
     return None
