@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -70,55 +71,111 @@ using Rows = py::array_t<uint8_t, py::array::c_style | py::array::forcecast>;
     throw py::value_error(std::string("write-result table: ") + what);
 }
 
-// One table's sections within its row. Its strings are checked when they are split; entries are
-// checked as they are written.
-struct Table {
-    const uint8_t* string_len;  // int64[n_strings]
-    const uint8_t* entries;     // int64[n_entries][COLUMNS]
-    const uint8_t* offsets;     // int64[n_offsets]
-    const char* blob;           // char[n_bytes]
-    size_t n_strings, n_entries, n_offsets, n_bytes;
-};
-
-// The table in a row of width bytes, its sections checked to lie within the row.
-[[nodiscard]] Table parse_table(const uint8_t* row, size_t width) {
-    if (width < sizeof(int64_t) * HEADER) {
-        bad_table("truncated");
-    }
-    if (load(row) != TABLE_MAGIC || load(row + 8) != TABLE_VERSION) {
-        bad_table("not a table of this version");
-    }
-    size_t pos = sizeof(int64_t) * HEADER;
-    // The next count items of size bytes each; a count is checked against the room left, so the
-    // byte counts cannot overflow.
-    const auto take = [&](size_t header_slot, size_t size, size_t& count) {
-        const int64_t n = load(row + sizeof(int64_t) * header_slot);
-        if (n < 0 || static_cast<uint64_t>(n) > (width - pos) / size) {
+// A write-result table within its row of the gathered buffer. parse checks that its sections lie
+// within the row; the accessors check what its entries refer to.
+class WriteResultTable {
+   public:
+    // The table in a row of width bytes.
+    [[nodiscard]] static WriteResultTable parse(const uint8_t* row, size_t width) {
+        if (width < sizeof(int64_t) * HEADER) {
             bad_table("truncated");
         }
-        count = static_cast<size_t>(n);
-        const uint8_t* const p = row + pos;
-        pos += count * size;
-        return p;
-    };
-    Table t{};
-    t.string_len = take(3, sizeof(int64_t), t.n_strings);
-    t.entries = take(2, sizeof(int64_t) * COLUMNS, t.n_entries);
-    t.offsets = take(5, sizeof(int64_t), t.n_offsets);
-    t.blob = reinterpret_cast<const char*>(take(4, 1, t.n_bytes));
-    return t;
-}
+        if (load(row) != TABLE_MAGIC || load(row + 8) != TABLE_VERSION) {
+            bad_table("not a table of this version");
+        }
+        size_t pos = sizeof(int64_t) * HEADER;
+        // The next count items of size bytes each; a count is checked against the room left, so
+        // the byte counts cannot overflow.
+        const auto take = [&](size_t header_slot, size_t size, size_t& count) {
+            const int64_t n = load(row + sizeof(int64_t) * header_slot);
+            if (n < 0 || static_cast<uint64_t>(n) > (width - pos) / size) {
+                bad_table("truncated");
+            }
+            count = static_cast<size_t>(n);
+            const uint8_t* const p = row + pos;
+            pos += count * size;
+            return p;
+        };
+        size_t n_strings, n_entries, n_offsets, n_bytes;
+        const uint8_t* const string_len = take(3, sizeof(int64_t), n_strings);
+        const uint8_t* const entries = take(2, ENTRY_BYTES, n_entries);
+        const uint8_t* const offsets = take(5, sizeof(int64_t), n_offsets);
+        const uint8_t* const blob = take(4, 1, n_bytes);
+        return WriteResultTable(string_len, entries, offsets, reinterpret_cast<const char*>(blob),
+                                n_strings, n_entries, n_offsets, n_bytes);
+    }
+
+    // The number of entries.
+    [[nodiscard]] size_t entries() const { return n_entries_; }
+
+    // Entry r < entries(): COLUMNS int64s, read with at().
+    [[nodiscard]] const uint8_t* entry(size_t r) const { return entries_ + ENTRY_BYTES * r; }
+
+    // Replace out's contents with the strings, as views into the row.
+    void split_strings(std::vector<std::string_view>& out) const {
+        out.clear();
+        size_t start = 0;
+        for (size_t k = 0; k < n_strings_; ++k) {
+            const int64_t len = load(string_len_ + sizeof(int64_t) * k);
+            if (len < 0 || static_cast<uint64_t>(len) > n_bytes_ - start) {
+                bad_table("string lengths exceed the string bytes");
+            }
+            out.emplace_back(blob_ + start, static_cast<size_t>(len));
+            start += static_cast<size_t>(len);
+        }
+        if (start != n_bytes_) {
+            bad_table("string lengths don't match the string bytes");
+        }
+    }
+
+    // The ndim offset dims from position pos of the offsets, checked to lie within them.
+    [[nodiscard]] const uint8_t* offset_dims(size_t pos, int64_t ndim) const {
+        if (ndim < 0 || static_cast<uint64_t>(ndim) > n_offsets_ - pos) {
+            bad_table("offsets out of range");
+        }
+        return offsets_ + sizeof(int64_t) * pos;
+    }
+
+    // Check that the entries' offsets, used up to position pos, are all of them.
+    void check_offsets_used(size_t pos) const {
+        if (pos != n_offsets_) {
+            bad_table("offset dims don't match the offsets");
+        }
+    }
+
+   private:
+    static constexpr size_t ENTRY_BYTES = sizeof(int64_t) * COLUMNS;
+
+    // The sections parse found.
+    WriteResultTable(const uint8_t* string_len, const uint8_t* entries, const uint8_t* offsets,
+                     const char* blob, size_t n_strings, size_t n_entries, size_t n_offsets,
+                     size_t n_bytes)
+        : string_len_(string_len),
+          entries_(entries),
+          offsets_(offsets),
+          blob_(blob),
+          n_strings_(n_strings),
+          n_entries_(n_entries),
+          n_offsets_(n_offsets),
+          n_bytes_(n_bytes) {}
+
+    const uint8_t* string_len_;  // int64[n_strings_]
+    const uint8_t* entries_;     // int64[n_entries_][COLUMNS]
+    const uint8_t* offsets_;     // int64[n_offsets_]
+    const char* blob_;           // char[n_bytes_]
+    size_t n_strings_, n_entries_, n_offsets_, n_bytes_;
+};
 
 // The tables in the rows of a 2-D uint8 array.
-[[nodiscard]] std::vector<Table> parse_tables(const Rows& rows) {
+[[nodiscard]] std::vector<WriteResultTable> parse_tables(const Rows& rows) {
     if (rows.ndim() != 2) {
         throw py::value_error("expected a 2-D array of write-result tables");
     }
     const size_t width = static_cast<size_t>(rows.shape(1));
-    std::vector<Table> tables;
+    std::vector<WriteResultTable> tables;
     tables.reserve(rows.shape(0));
     for (py::ssize_t r = 0; r < rows.shape(0); ++r) {
-        tables.push_back(parse_table(rows.data() + r * width, width));
+        tables.push_back(WriteResultTable::parse(rows.data() + r * width, width));
     }
     return tables;
 }
@@ -212,12 +269,12 @@ class Writer {
         const py::object fields = instance_dict(md);
         // Holds the rows the tables point into.
         const Rows rows_array = rows.is_none() ? Rows() : rows.cast<Rows>();
-        const std::vector<Table> tables =
-            rows.is_none() ? std::vector<Table>() : parse_tables(rows_array);
+        const std::vector<WriteResultTable> tables =
+            rows.is_none() ? std::vector<WriteResultTable>() : parse_tables(rows_array);
         size_t n_storage = 0;
         if (!rows.is_none()) {
-            for (const Table& t : tables) {
-                n_storage += t.n_entries;
+            for (const WriteResultTable& t : tables) {
+                n_storage += t.entries();
             }
         } else if (PyObject* const storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
                    storage_data && PyDict_Check(storage_data)) {
@@ -291,9 +348,7 @@ class Writer {
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &fqn, &v); ++i) {
             // small() runs Python code, which could change the dict: fqn and v are not used after
             // it, and the dict's size is checked after it.
-            if (i % BATCH == 0) {
-                put(MARK);
-            }
+            begin_item(i);
             string(fqn);
             if (is(v, bytes_cls_) && PyDict_Size(instance_dict(v).ptr()) == 0) {
                 put_get(bytes_ref_);
@@ -321,9 +376,7 @@ class Writer {
                 put(EMPTY_LIST);
                 const Py_ssize_t nc = PyList_GET_SIZE(chunks.ptr());
                 for (Py_ssize_t j = 0; j < nc; ++j) {
-                    if (j % BATCH == 0) {
-                        put(MARK);
-                    }
+                    begin_item(j);
                     PyObject* const c = PyList_GET_ITEM(chunks.ptr(), j);
                     if (!is(c, chunk_cls_)) {
                         small(c);
@@ -341,16 +394,12 @@ class Writer {
                         size(dict_item(chunk.ptr(), a_sizes_.ptr()));
                         put({SETITEMS, BUILD});
                     }
-                    if (j % BATCH == BATCH - 1 || j == nc - 1) {
-                        put(APPENDS);
-                    }
+                    end_item(j, nc, APPENDS);
                 }
                 put({SETITEMS, BUILD});
                 check_size(dict, n);  // after small() of the properties
             }
-            if (i % BATCH == BATCH - 1 || i == n - 1) {
-                put(SETITEMS);
-            }
+            end_item(i, n, SETITEMS);
         }
     }
 
@@ -364,9 +413,7 @@ class Writer {
         Py_ssize_t pos = 0;
         PyObject *idx, *info;
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &idx, &info); ++i) {
-            if (i % BATCH == 0) {
-                put(MARK);
-            }
+            begin_item(i);
             // Owns info while small(idx) runs Python code, which could remove it from the dict.
             py::object keep_info;
             if (!is(idx, index_cls_)) {
@@ -382,16 +429,8 @@ class Writer {
                 if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
                     throw py::type_error("unexpected MetadataIndex attributes");
                 }
-                put_get(index_ref_);
-                put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-                put_get(k_fqn_);
-                string(fqn);
-                put_get(k_index_);
-                if (index == Py_None) {
-                    put(NONE);
-                } else {
-                    put_int(as_int(index));
-                }
+                put_index_start(utf8(fqn), index == Py_None ? std::nullopt
+                                                            : std::optional(as_int(index)));
                 if (offset) {
                     put_get(k_offset_);
                     if (offset == Py_None) {
@@ -415,99 +454,107 @@ class Writer {
                 if (PyDict_Size(state.ptr()) != (transforms ? 4 : 3)) {
                     throw py::type_error("unexpected _StorageInfo attributes");
                 }
-                put_get(info_ref_);
-                put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-                put_get(k_relative_path_);
-                string(dict_item(state.ptr(), a_relative_path_.ptr()));
-                put_get(k_offset_);
-                put_int(as_int(dict_item(state.ptr(), a_offset_.ptr())));
-                put_get(k_length_);
-                put_int(as_int(dict_item(state.ptr(), a_length_.ptr())));
-                put({SETITEMS, BUILD});
+                put_storage_info(utf8(dict_item(state.ptr(), a_relative_path_.ptr())),
+                                 as_int(dict_item(state.ptr(), a_offset_.ptr())),
+                                 as_int(dict_item(state.ptr(), a_length_.ptr())));
             }
-            if (i % BATCH == BATCH - 1 || i == n - 1) {
-                put(SETITEMS);
-            }
+            end_item(i, n, SETITEMS);
         }
     }
 
     // Metadata.storage_data from write-result tables, as dump_storage_data writes the dict that
     // finish builds from the same write results.
-    void dump_storage_tables(const std::vector<Table>& tables) {
+    void dump_storage_tables(const std::vector<WriteResultTable>& tables) {
         put(EMPTY_DICT);
         size_t total = 0;
-        for (const Table& t : tables) {
-            total += t.n_entries;
+        for (const WriteResultTable& t : tables) {
+            total += t.entries();
         }
         size_t i = 0;
-        std::vector<std::string_view> strings;  // the current table's, views into its row
-        for (const Table& t : tables) {
-            strings.clear();
-            size_t start = 0;
-            for (size_t k = 0; k < t.n_strings; ++k) {
-                const int64_t len = load(t.string_len + sizeof(int64_t) * k);
-                if (len < 0 || static_cast<uint64_t>(len) > t.n_bytes - start) {
-                    bad_table("string lengths exceed the string bytes");
-                }
-                strings.emplace_back(t.blob + start, static_cast<size_t>(len));
-                start += static_cast<size_t>(len);
+        std::vector<std::string_view> strings;  // the current table's
+        for (const WriteResultTable& t : tables) {
+            t.split_strings(strings);
+            size_t pos = 0;  // into the table's offsets
+            for (size_t r = 0; r < t.entries(); ++r, ++i) {
+                begin_item(i);
+                dump_table_entry(t, t.entry(r), strings, pos);
+                end_item(i, total, SETITEMS);
             }
-            if (start != t.n_bytes) {
-                bad_table("string lengths don't match the string bytes");
+            t.check_offsets_used(pos);
+        }
+    }
+
+    // One table entry: its MetadataIndex and _StorageInfo. pos is where its offset dims start in
+    // the table's offsets; it moves past them.
+    void dump_table_entry(const WriteResultTable& t, const uint8_t* entry,
+                          const std::vector<std::string_view>& strings, size_t& pos) {
+        const int64_t flags = at(entry, Column::Flags);
+        const std::optional<int64_t> index =
+            flags & FLAG_INDEX ? std::optional(at(entry, Column::Index)) : std::nullopt;
+        put_index_start(string_at(strings, at(entry, Column::Fqn)), index);
+        if (flags & FLAG_OFFSET) {
+            put_get(k_offset_);
+            if (flags & FLAG_OFFSET_SIZE) {
+                const int64_t ndim = at(entry, Column::OffsetNdim);
+                size(t.offset_dims(pos, ndim), static_cast<size_t>(ndim));
+                pos += static_cast<size_t>(ndim);
+            } else {
+                put(NONE);
             }
-            const auto string_at = [&strings](int64_t id) {
-                if (id < 0 || static_cast<size_t>(id) >= strings.size()) {
-                    bad_table("string id out of range");
-                }
-                return strings[id];
-            };
-            size_t pos = 0;  // into the offsets
-            for (size_t r = 0; r < t.n_entries; ++r, ++i) {
-                const uint8_t* const row = t.entries + sizeof(int64_t) * COLUMNS * r;
-                if (i % BATCH == 0) {
-                    put(MARK);
-                }
-                const int64_t flags = at(row, Column::Flags);
-                put_get(index_ref_);
-                put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-                put_get(k_fqn_);
-                string(string_at(at(row, Column::Fqn)));
-                put_get(k_index_);
-                if (flags & FLAG_INDEX) {
-                    put_int(at(row, Column::Index));
-                } else {
-                    put(NONE);
-                }
-                if (flags & FLAG_OFFSET) {
-                    put_get(k_offset_);
-                    if (flags & FLAG_OFFSET_SIZE) {
-                        const int64_t ndim = at(row, Column::OffsetNdim);
-                        if (ndim < 0 || static_cast<uint64_t>(ndim) > t.n_offsets - pos) {
-                            bad_table("offsets out of range");
-                        }
-                        size(t.offsets + sizeof(int64_t) * pos, static_cast<size_t>(ndim));
-                        pos += static_cast<size_t>(ndim);
-                    } else {
-                        put(NONE);
-                    }
-                }
-                put({SETITEMS, BUILD});
-                put_get(info_ref_);
-                put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-                put_get(k_relative_path_);
-                string(string_at(at(row, Column::Path)));
-                put_get(k_offset_);
-                put_int(at(row, Column::Offset));
-                put_get(k_length_);
-                put_int(at(row, Column::Length));
-                put({SETITEMS, BUILD});
-                if (i % BATCH == BATCH - 1 || i == total - 1) {
-                    put(SETITEMS);
-                }
-            }
-            if (pos != t.n_offsets) {
-                bad_table("offset dims don't match the offsets");
-            }
+        }
+        put({SETITEMS, BUILD});
+        put_storage_info(string_at(strings, at(entry, Column::Path)), at(entry, Column::Offset),
+                         at(entry, Column::Length));
+    }
+
+    // String id of a table's strings, checked.
+    [[nodiscard]] static std::string_view string_at(const std::vector<std::string_view>& strings,
+                                                    int64_t id) {
+        if (id < 0 || static_cast<uint64_t>(id) >= strings.size()) {
+            bad_table("string id out of range");
+        }
+        return strings[static_cast<size_t>(id)];
+    }
+
+    // A MetadataIndex up to its offset: the caller writes the offset, if it has one, and closes the
+    // index with put({SETITEMS, BUILD}).
+    void put_index_start(std::string_view fqn, std::optional<int64_t> index) {
+        put_get(index_ref_);
+        put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
+        put_get(k_fqn_);
+        string(fqn);
+        put_get(k_index_);
+        if (index) {
+            put_int(*index);
+        } else {
+            put(NONE);
+        }
+    }
+
+    // A _StorageInfo without transform descriptors.
+    void put_storage_info(std::string_view path, int64_t offset, int64_t length) {
+        put_get(info_ref_);
+        put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
+        put_get(k_relative_path_);
+        string(path);
+        put_get(k_offset_);
+        put_int(offset);
+        put_get(k_length_);
+        put_int(length);
+        put({SETITEMS, BUILD});
+    }
+
+    // Open a batch of up to BATCH items with MARK before item i, as the stdlib pickler batches.
+    void begin_item(size_t i) {
+        if (i % BATCH == 0) {
+            put(MARK);
+        }
+    }
+
+    // Close the batch with op (SETITEMS or APPENDS) after item i, at its end or after item n - 1.
+    void end_item(size_t i, size_t n, char op) {
+        if (i % BATCH == BATCH - 1 || i == n - 1) {
+            put(op);
         }
     }
 
