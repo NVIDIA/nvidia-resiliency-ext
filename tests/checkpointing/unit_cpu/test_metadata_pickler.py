@@ -467,8 +467,9 @@ def test_layout_supported_on_this_torch():
     assert writer._layout_supported()
 
 
-_FIRST, _LAST = writer.TESTED_TORCH_VERSIONS
+_LAST = max(writer.TESTED_TORCH_VERSIONS)
 _TESTED = f"{_LAST[0]}.{_LAST[1]}.0"  # whatever torch runs the tests
+_UNTESTED = f"{_LAST[0]}.{_LAST[1] + 1}.0"
 _FAST = writer._native_dumps if writer.native is not None else pickler.dumps
 
 
@@ -480,14 +481,14 @@ _FAST = writer._native_dumps if writer.native is not None else pickler.dumps
         ("python", _TESTED, pickler.dumps),
         ("0", _TESTED, None),
         ("off", _TESTED, None),
-        (None, f"{_FIRST[0]}.{_FIRST[1] - 1}.1", None),
-        (None, f"{_LAST[0]}.{_LAST[1] + 1}.0", None),
-        ("force", f"{_LAST[0]}.{_LAST[1] + 1}.0", _FAST),
+        (None, "2.2.1", None),
+        (None, _UNTESTED, None),
+        ("force", _UNTESTED, _FAST),
         ("force", "2.3.1", None),  # in INCOMPATIBLE_TORCH_VERSIONS
         (None, "2.7.0_custom", None),  # not PEP 440: untested
         ("force", "2.7.0_custom", _FAST),
         (None, f"{_LAST[0]}.{_LAST[1]}.0a0+git1234567", _FAST),
-        (None, f"{_FIRST[0]}.{_FIRST[1]}.0+cu121", _FAST),
+        (None, "2.4.0+cu121", _FAST),
     ],
 )
 def test_writer_selection(monkeypatch, mode, version, expected):
@@ -498,6 +499,18 @@ def test_writer_selection(monkeypatch, mode, version, expected):
     assert writer._select_dumps() is expected
     # Tables only on tested versions: the force cases here are all untested.
     assert writer.writes_tables() is (expected is not None and mode != "force")
+
+
+@pytest.mark.parametrize("mode", [None, "force"])
+def test_incompatible_wins_over_tested(monkeypatch, mode):
+    """A tested version later found incompatible gets neither the fast writers nor tables."""
+    if mode is not None:
+        monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", mode)
+    monkeypatch.setattr(torch, "__version__", _TESTED)
+    monkeypatch.setattr(writer, "INCOMPATIBLE_TORCH_VERSIONS", frozenset({_LAST}))
+    assert not writer._tested_torch()
+    assert not writer.fast_metadata_enabled()
+    assert not writer.writes_tables()
 
 
 @pytest.mark.parametrize("version", ["2.3.1", "2.3.0+cu121"])
