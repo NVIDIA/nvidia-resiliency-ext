@@ -22,14 +22,18 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#include <algorithm>
+#include <array>
 #include <bit>
+#include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -47,6 +51,7 @@ constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 // Write-result tables, as table.py encodes them: little-endian int64s, header first.
 static_assert(std::endian::native == std::endian::little, "write-result tables are little-endian");
 constexpr int64_t TABLE_MAGIC = 0x4E56525854424C31, TABLE_VERSION = 1;
+enum class Header : uint8_t { Magic, Version, Entries, Strings, StringBytes, Offsets };
 constexpr size_t HEADER = 8;  // int64s
 enum class Column : uint8_t { Fqn, Index, OffsetNdim, Path, Offset, Length, Flags };
 constexpr size_t COLUMNS = 7;
@@ -54,116 +59,125 @@ constexpr int64_t FLAG_INDEX = 0x1, FLAG_OFFSET = 0x2, FLAG_OFFSET_SIZE = 0x4;
 // The gathered tables: one zero-padded table per row.
 using Rows = py::array_t<uint8_t, py::array::c_style | py::array::forcecast>;
 
-// The int64 at p, which need not be aligned.
-[[nodiscard]] int64_t load(const uint8_t* p) {
-    int64_t v;
-    std::memcpy(&v, p, sizeof v);
-    return v;
-}
-
-// Column c of an entry: an entry is COLUMNS int64s.
-[[nodiscard]] int64_t at(const uint8_t* entry, Column c) {
-    return load(entry + sizeof(int64_t) * static_cast<size_t>(c));
-}
-
 // Reject a malformed table, before anything reads past its row.
-[[noreturn]] void bad_table(const char* what) {
-    throw py::value_error(std::string("write-result table: ") + what);
+[[noreturn]] void bad_table(std::string_view what) {
+    throw py::value_error("write-result table: " + std::string(what));
 }
+
+// A run of little-endian int64s in a span of bytes, which need not be aligned.
+class Int64s {
+   public:
+    // The int64s in bytes, whose size is a multiple of 8.
+    explicit Int64s(std::span<const std::byte> bytes) : bytes_(bytes) {}
+
+    // The number of int64s.
+    [[nodiscard]] size_t size() const { return bytes_.size() / sizeof(int64_t); }
+
+    // The i-th int64, i < size(). bit_cast needs an object to read, and there is none at an
+    // arbitrary offset of the row, so the bytes are copied into one; this compiles to one load.
+    [[nodiscard]] int64_t operator[](size_t i) const {
+        std::array<std::byte, sizeof(int64_t)> v;
+        std::ranges::copy(bytes_.subspan(sizeof(int64_t) * i).first<sizeof(int64_t)>(), v.begin());
+        return std::bit_cast<int64_t>(v);
+    }
+
+    // The field of a record (a header or an entry) that an enum names.
+    template <typename Field>
+        requires std::is_enum_v<Field>
+    [[nodiscard]] int64_t operator[](Field field) const {
+        return (*this)[static_cast<size_t>(field)];
+    }
+
+    // The count int64s from pos, pos + count <= size().
+    [[nodiscard]] Int64s subspan(size_t pos, size_t count) const {
+        return Int64s(bytes_.subspan(sizeof(int64_t) * pos, sizeof(int64_t) * count));
+    }
+
+   private:
+    std::span<const std::byte> bytes_;
+};
 
 // A write-result table within its row of the gathered buffer. parse checks that its sections lie
 // within the row; the accessors check what its entries refer to.
 class WriteResultTable {
    public:
-    // The table in a row of width bytes.
-    [[nodiscard]] static WriteResultTable parse(const uint8_t* row, size_t width) {
-        if (width < sizeof(int64_t) * HEADER) {
+    // The table in a row.
+    [[nodiscard]] static WriteResultTable parse(std::span<const std::byte> row) {
+        if (row.size() < sizeof(int64_t) * HEADER) {
             bad_table("truncated");
         }
-        if (load(row) != TABLE_MAGIC || load(row + 8) != TABLE_VERSION) {
+        const Int64s header(row.first(sizeof(int64_t) * HEADER));
+        if (header[Header::Magic] != TABLE_MAGIC || header[Header::Version] != TABLE_VERSION) {
             bad_table("not a table of this version");
         }
-        size_t pos = sizeof(int64_t) * HEADER;
-        // The next count items of size bytes each; a count is checked against the room left, so
-        // the byte counts cannot overflow.
-        const auto take = [&](size_t header_slot, size_t size, size_t& count) {
-            const int64_t n = load(row + sizeof(int64_t) * header_slot);
-            if (n < 0 || static_cast<uint64_t>(n) > (width - pos) / size) {
+        std::span<const std::byte> rest = row.subspan(sizeof(int64_t) * HEADER);
+        // The next section: as many items of item_size bytes as the header's count field says,
+        // checked to fit in the rest of the row (comparing counts, so sizes cannot overflow).
+        const auto take = [&](Header count, size_t item_size) {
+            const int64_t n = header[count];
+            if (n < 0 || static_cast<uint64_t>(n) > rest.size() / item_size) {
                 bad_table("truncated");
             }
-            count = static_cast<size_t>(n);
-            const uint8_t* const p = row + pos;
-            pos += count * size;
-            return p;
+            const auto section = rest.first(static_cast<size_t>(n) * item_size);
+            rest = rest.subspan(section.size());
+            return section;
         };
-        size_t n_strings, n_entries, n_offsets, n_bytes;
-        const uint8_t* const string_len = take(3, sizeof(int64_t), n_strings);
-        const uint8_t* const entries = take(2, ENTRY_BYTES, n_entries);
-        const uint8_t* const offsets = take(5, sizeof(int64_t), n_offsets);
-        const uint8_t* const blob = take(4, 1, n_bytes);
-        return WriteResultTable(string_len, entries, offsets, reinterpret_cast<const char*>(blob),
-                                n_strings, n_entries, n_offsets, n_bytes);
+        const Int64s string_len(take(Header::Strings, sizeof(int64_t)));
+        const Int64s entries(take(Header::Entries, sizeof(int64_t) * COLUMNS));
+        const Int64s offsets(take(Header::Offsets, sizeof(int64_t)));
+        const std::span<const std::byte> blob = take(Header::StringBytes, 1);
+        return WriteResultTable(string_len, entries, offsets,
+                                {reinterpret_cast<const char*>(blob.data()), blob.size()});
     }
 
     // The number of entries.
-    [[nodiscard]] size_t entries() const { return n_entries_; }
+    [[nodiscard]] size_t entries() const { return entries_.size() / COLUMNS; }
 
-    // Entry r < entries(): COLUMNS int64s, read with at().
-    [[nodiscard]] const uint8_t* entry(size_t r) const { return entries_ + ENTRY_BYTES * r; }
+    // Entry r < entries(): its COLUMNS int64s, indexed by Column.
+    [[nodiscard]] Int64s entry(size_t r) const { return entries_.subspan(COLUMNS * r, COLUMNS); }
 
     // Replace out's contents with the strings, as views into the row.
     void split_strings(std::vector<std::string_view>& out) const {
         out.clear();
-        size_t start = 0;
-        for (size_t k = 0; k < n_strings_; ++k) {
-            const int64_t len = load(string_len_ + sizeof(int64_t) * k);
-            if (len < 0 || static_cast<uint64_t>(len) > n_bytes_ - start) {
+        std::string_view rest = blob_;
+        for (size_t k = 0; k < string_len_.size(); ++k) {
+            const int64_t len = string_len_[k];
+            if (len < 0 || static_cast<uint64_t>(len) > rest.size()) {
                 bad_table("string lengths exceed the string bytes");
             }
-            out.emplace_back(blob_ + start, static_cast<size_t>(len));
-            start += static_cast<size_t>(len);
+            out.push_back(rest.substr(0, static_cast<size_t>(len)));
+            rest.remove_prefix(static_cast<size_t>(len));
         }
-        if (start != n_bytes_) {
+        if (!rest.empty()) {
             bad_table("string lengths don't match the string bytes");
         }
     }
 
     // The ndim offset dims from position pos of the offsets, checked to lie within them.
-    [[nodiscard]] const uint8_t* offset_dims(size_t pos, int64_t ndim) const {
-        if (ndim < 0 || static_cast<uint64_t>(ndim) > n_offsets_ - pos) {
+    [[nodiscard]] Int64s offset_dims(size_t pos, int64_t ndim) const {
+        if (ndim < 0 || pos > offsets_.size() ||
+            static_cast<uint64_t>(ndim) > offsets_.size() - pos) {
             bad_table("offsets out of range");
         }
-        return offsets_ + sizeof(int64_t) * pos;
+        return offsets_.subspan(pos, static_cast<size_t>(ndim));
     }
 
     // Check that the entries' offsets, used up to position pos, are all of them.
     void check_offsets_used(size_t pos) const {
-        if (pos != n_offsets_) {
+        if (pos != offsets_.size()) {
             bad_table("offset dims don't match the offsets");
         }
     }
 
    private:
-    static constexpr size_t ENTRY_BYTES = sizeof(int64_t) * COLUMNS;
-
     // The sections parse found.
-    WriteResultTable(const uint8_t* string_len, const uint8_t* entries, const uint8_t* offsets,
-                     const char* blob, size_t n_strings, size_t n_entries, size_t n_offsets,
-                     size_t n_bytes)
-        : string_len_(string_len),
-          entries_(entries),
-          offsets_(offsets),
-          blob_(blob),
-          n_strings_(n_strings),
-          n_entries_(n_entries),
-          n_offsets_(n_offsets),
-          n_bytes_(n_bytes) {}
+    WriteResultTable(Int64s string_len, Int64s entries, Int64s offsets, std::string_view blob)
+        : string_len_(string_len), entries_(entries), offsets_(offsets), blob_(blob) {}
 
-    const uint8_t* string_len_;  // int64[n_strings_]
-    const uint8_t* entries_;     // int64[n_entries_][COLUMNS]
-    const uint8_t* offsets_;     // int64[n_offsets_]
-    const char* blob_;           // char[n_bytes_]
-    size_t n_strings_, n_entries_, n_offsets_, n_bytes_;
+    Int64s string_len_;  // the byte length of each string
+    Int64s entries_;     // entries() rows of COLUMNS
+    Int64s offsets_;     // the entries' offset dims, concatenated
+    std::string_view blob_;  // the strings, concatenated
 };
 
 // The tables in the rows of a 2-D uint8 array.
@@ -172,10 +186,12 @@ class WriteResultTable {
         throw py::value_error("expected a 2-D array of write-result tables");
     }
     const size_t width = static_cast<size_t>(rows.shape(1));
+    const std::span<const std::byte> bytes =
+        std::as_bytes(std::span(rows.data(), static_cast<size_t>(rows.size())));
     std::vector<WriteResultTable> tables;
     tables.reserve(rows.shape(0));
-    for (py::ssize_t r = 0; r < rows.shape(0); ++r) {
-        tables.push_back(WriteResultTable::parse(rows.data() + r * width, width));
+    for (size_t r = 0; r < static_cast<size_t>(rows.shape(0)); ++r) {
+        tables.push_back(WriteResultTable::parse(bytes.subspan(width * r, width)));
     }
     return tables;
 }
@@ -486,25 +502,25 @@ class Writer {
 
     // One table entry: its MetadataIndex and _StorageInfo. pos is where its offset dims start in
     // the table's offsets; it moves past them.
-    void dump_table_entry(const WriteResultTable& t, const uint8_t* entry,
+    void dump_table_entry(const WriteResultTable& t, const Int64s& entry,
                           const std::vector<std::string_view>& strings, size_t& pos) {
-        const int64_t flags = at(entry, Column::Flags);
+        const int64_t flags = entry[Column::Flags];
         const std::optional<int64_t> index =
-            flags & FLAG_INDEX ? std::optional(at(entry, Column::Index)) : std::nullopt;
-        put_index_start(string_at(strings, at(entry, Column::Fqn)), index);
+            flags & FLAG_INDEX ? std::optional(entry[Column::Index]) : std::nullopt;
+        put_index_start(string_at(strings, entry[Column::Fqn]), index);
         if (flags & FLAG_OFFSET) {
             put_get(k_offset_);
             if (flags & FLAG_OFFSET_SIZE) {
-                const int64_t ndim = at(entry, Column::OffsetNdim);
-                size(t.offset_dims(pos, ndim), static_cast<size_t>(ndim));
+                const int64_t ndim = entry[Column::OffsetNdim];
+                size(t.offset_dims(pos, ndim));
                 pos += static_cast<size_t>(ndim);
             } else {
                 put(NONE);
             }
         }
         put({SETITEMS, BUILD});
-        put_storage_info(string_at(strings, at(entry, Column::Path)), at(entry, Column::Offset),
-                         at(entry, Column::Length));
+        put_storage_info(string_at(strings, entry[Column::Path]), entry[Column::Offset],
+                         entry[Column::Length]);
     }
 
     // String id of a table's strings, checked.
@@ -678,8 +694,9 @@ class Writer {
         put({TUPLE1, REDUCE});
     }
 
-    // The same, for n dims from a write-result table.
-    void size(const uint8_t* dims, size_t n) {
+    // The same, for dims from a write-result table.
+    void size(const Int64s& dims) {
+        const size_t n = dims.size();
         put_get(size_ref_);
         if (n == 0) {
             put(EMPTY_TUPLE);
@@ -687,7 +704,7 @@ class Writer {
             if (n > 3) {
                 put(MARK);
             }
-            for (size_t j = 0; j < n; ++j) put_int(load(dims + sizeof(int64_t) * j));
+            for (size_t j = 0; j < n; ++j) put_int(dims[j]);
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
         put({TUPLE1, REDUCE});
