@@ -16,13 +16,13 @@
     {
       "id": 3,
       "name": "Off-file termination / external teardown (cause not in log)",
-      "description": "Healthy training then an external-signal all-thread faulthandler dump (no 'Fatal Python error' / no 'Current thread 0x'), log truncated mid-dump; no in-file CANCELLED / watchdog / IB / Xid / NVRx marker. A real termination occurred but its cause is off-file (most likely a SLURM cancel/preempt/timeout).",
+      "description": "A real termination whose cause appears nowhere in this log. Requires that the log carry no termination signal of its own: no SIGTERM, no slurmstepd CANCELLED marker, no node-failure notice. If any of those is present the cause IS visible - use cat 1 for a scheduler cancellation or cat 2 for node failure. What remains is downstream only: an external-signal faulthandler dump, TCPStore connection resets as surviving ranks notice a peer vanish, \"destroy_process_group() was not called before program exit\" at an abrupt exit, or atexit teardown noise. Completed iterations prove rendezvous already succeeded, so a later store error is a symptom rather than the cause; with no completed iteration and store errors only, use cat 12. Typically a rank was killed or lost and the applog never sees why.",
       "decision": "RESTART"
     },
     {
       "id": 4,
       "name": "No failure observed / clean planned exit",
-      "description": "Whole-file scan finds no failure: the run reached its exit_interval / final iteration, saved the final checkpoint, logged training energy, and only benign teardown (destroy_process_group / CudaIPC cleanup) follows. Includes the reset_opt_norm 'Unexpected keys' benign-WARNING trap and recovered-then-clean runs.",
+      "description": "Whole-file scan finds no failure, and the run demonstrably reached its configured end: the last reported iteration is the schedule's total, or a configured exit_interval was hit. Only benign teardown follows (destroy_process_group / CudaIPC cleanup). Includes the reset_opt_norm 'Unexpected keys' benign-WARNING trap and recovered-then-clean runs. A final checkpoint save, a training-energy summary and teardown warnings also occur when an interrupted run shuts down gracefully, so they are not sufficient on their own: if the last iteration is far short of the total and exit_interval is unset, the run was stopped rather than finished - use cat 3.",
       "decision": "RESTART"
     },
     {
@@ -70,7 +70,7 @@
     {
       "id": 12,
       "name": "Distributed rendezvous / TCPStore socket timeout",
-      "description": "c10d/TCPStore rendezvous or socket failure as the earliest failure surface visible in this log. These errors are frequently secondary: when a rank dies for any reason (CUDA OOM, SIGKILL, node failure, watchdog abort, checkpoint error), the surviving ranks later fail against the store. If an upstream fault appears earlier in this log, pick that category instead. If TCPStore is the only failure surface present, pick this category with reduced confidence rather than declining to classify - including when the initiating rank's own output is absent and only cascade warnings remain, which is the normal shape when the store host died first.",
+      "description": "c10d/TCPStore rendezvous or socket failure during process-group setup, before training progresses: the store never comes up, or it fails while ranks are still joining. When store errors are the only failure surface, pick this with reduced confidence rather than declining to classify, even if the initiating rank's own output is absent. Two exclusions. If an upstream fault appears earlier in the log, pick that category. And if training iterations completed before the store errors began, rendezvous had already succeeded, so the store failed because something else died first - that is cat 3, not this.",
       "decision": "RESTART"
     },
     {
@@ -154,7 +154,7 @@
     {
       "id": 26,
       "name": "CUDA OOM during checkpoint async-save",
-      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. As with cat 32, an unchanged workload will keep hitting the same allocation ceiling on retry, so product policy calls this a STOP.",
+      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. An unchanged workload will keep hitting the same allocation ceiling on retry, so product policy calls this a STOP.",
       "decision": "STOP"
     },
     {
@@ -172,7 +172,7 @@
     {
       "id": 29,
       "name": "Triton cubin / TorchInductor software toolchain error",
-      "description": "Triton autotuner KeyError \"Unknown key: cubin\", or TorchInductor StaticCudaLauncher reporting \"CUDA driver error: file not found\" during JIT warmup. Presents as a clean Python exception rather than a native crash, appears on every node rather than one, and reproduces deterministically for a given container image. That reproducibility is the discriminator: a build or toolchain mismatch, which a retry on the same image cannot clear.",
+      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup; clean Python exceptions, multi-node, deterministic in-container.",
       "decision": "STOP"
     },
     {
@@ -184,8 +184,8 @@
     {
       "id": 31,
       "name": "CPU OOM / Linux OOM killer",
-      "description": "Host memory exhausted (oom_kill). Old STOP rested on a same-job/config recurrence presumption, not on in-log evidence.",
-      "decision": "RESTART"
+      "description": "Host memory exhausted: bare 'Killed' on one or more ranks corroborated by a slurmstepd 'Detected N oom_kill events ... Some of the step tasks have been OOM Killed' record (the oom_kill line often appears far below the 'Killed' lines). Host memory exhaustion is deterministic for the same job/config: an unchanged retry is expected to hit the same ceiling unless resources or configuration change, so product policy calls this a STOP.",
+      "decision": "STOP"
     },
     {
       "id": 32,
