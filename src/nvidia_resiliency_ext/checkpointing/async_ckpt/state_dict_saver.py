@@ -21,6 +21,7 @@ from logging import getLogger
 from time import time
 from typing import TYPE_CHECKING, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.distributed.checkpoint import CheckpointException
@@ -31,7 +32,8 @@ from torch.distributed.checkpoint.utils import _DistWrapper, _get_failure_dict
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
-from . import _metadata_reuse
+from . import _metadata_pickler, _metadata_reuse
+from ._metadata_pickler import table
 
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
@@ -366,6 +368,50 @@ def verify_global_metadata_reuse(
     return reuse
 
 
+def _encode_write_results(write_results, dist_wrapper: _DistWrapper) -> Optional[bytes]:
+    """This rank's write results as a table, or None if it can't send one."""
+    if not dist_wrapper.use_dist or not isinstance(write_results, list):  # or an exception
+        return None
+    if not _metadata_pickler.writes_tables():
+        return None
+    try:
+        return table.encode(write_results)
+    except table.Unencodable:
+        logger.debug("write results unencodable as a table", exc_info=True)
+        return None
+
+
+def _gather_tables(
+    payload: Optional[bytes], dist_wrapper: _DistWrapper
+) -> Tuple[bool, Optional[np.ndarray]]:
+    """Gather the ranks' encoded tables on the coordinator, one zero-padded row per rank.
+
+    Collective. Returns whether they were gathered (False on every rank, without gathering, if any
+    rank can't send a table), and the rows on the coordinator.
+    """
+    device = torch.cuda.current_device()
+    # The widest table, and whether some rank sends none.
+    stats = torch.tensor(
+        [0 if payload is None else len(payload), payload is None], dtype=torch.int64, device=device
+    )
+    torch.distributed.all_reduce(stats, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group)
+    width, missing = stats.tolist()
+    if missing:
+        return False, None
+    row = torch.zeros(width, dtype=torch.uint8)
+    row.numpy()[: len(payload)] = np.frombuffer(payload, dtype=np.uint8)
+    rows = None
+    if dist_wrapper.is_coordinator:
+        rows = torch.empty((dist_wrapper.get_world_size(), width), dtype=torch.uint8, device=device)
+    torch.distributed.gather(
+        row.to(device),
+        list(rows) if rows is not None else None,
+        dst=getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank),
+        group=dist_wrapper.group,
+    )
+    return True, rows.cpu().numpy() if rows is not None else None
+
+
 def save_state_dict_async_finalize(
     storage_writer: "FileSystemWriterAsync",
     global_metadata: Metadata,
@@ -375,7 +421,8 @@ def save_state_dict_async_finalize(
     Finalization of save_state_dict_async_plan.
 
     The input arguments are the same as the save_state_dict_async_plan output,
-    the `write_results` are retrieved from the storage_writer.
+    the `write_results` are retrieved from the storage_writer. Ranks send them to the coordinator
+    as tables (see `_metadata_pickler.table`), or pickled if any rank can't.
 
     Args:
         storage_writer (FileSystemWriterAsync): storage writer used for planning
@@ -385,11 +432,16 @@ def save_state_dict_async_finalize(
     Returns: None
     """
     write_results = storage_writer.retrieve_write_results()
+    payload = _encode_write_results(write_results, dist_wrapper)
 
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.finalize_gather"):
-        all_results = dist_wrapper.gather_object(write_results)
+        as_tables, rows = (
+            _gather_tables(payload, dist_wrapper) if dist_wrapper.use_dist else (False, None)
+        )
+        if not as_tables:
+            all_results = dist_wrapper.gather_object(write_results)
     gather_end = time()
     logger.debug(
         f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end - gather_start}"
@@ -397,14 +449,18 @@ def save_state_dict_async_finalize(
 
     # Store the metadata on coordinator rank
     if dist_wrapper.is_coordinator:
-        node_failures = _get_failure_dict(all_results)
+        node_failures = {} if as_tables else _get_failure_dict(all_results)
         if len(node_failures) == 0:
             assert global_metadata is not None
             with telemetry.span(
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
-                storage_writer.finish(global_metadata, all_results)
+                if as_tables:
+                    tables = [table.decode(row) for row in rows]
+                    storage_writer.finish(global_metadata, [], storage_tables=tables)
+                else:
+                    storage_writer.finish(global_metadata, all_results)
                 write_end = time()
                 logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
     else:

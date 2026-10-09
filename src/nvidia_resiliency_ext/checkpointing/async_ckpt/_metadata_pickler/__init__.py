@@ -19,4 +19,4 @@ See :mod:`.writer`. ``native`` is the optional C++ extension built from
 ``native_src/native.cpp``.
 """
 
-from .writer import TESTED_TORCH_VERSIONS, dump_metadata, fast_metadata_enabled
+from .writer import TESTED_TORCH_VERSIONS, dump_metadata, fast_metadata_enabled, writes_tables

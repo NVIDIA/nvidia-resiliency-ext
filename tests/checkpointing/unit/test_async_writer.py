@@ -33,7 +33,7 @@ from torch.distributed.checkpoint import (
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async
+from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async, state_dict_saver
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
@@ -246,11 +246,15 @@ class TestAsyncSave:
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
 
+    @pytest.mark.parametrize('unencodable_rank', [None, 1])
     @pytest.mark.parametrize('mode', ['1', 'python', '0'])
-    def test_metadata_matches_torch(self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode):
+    def test_metadata_matches_torch(
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode, unencodable_rank
+    ):
         """FileSystemWriterAsync writes the same .metadata as torch's FileSystemWriter.
 
-        Covers the native writer, the Python writer and, with mode '0', torch's own.
+        Covers the native writer, the Python writer and, with mode '0', torch's own. The write
+        results reach the coordinator as tables, or pickled if a rank can't encode its table.
         """
         monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
         md_writer.fast_metadata_enabled.cache_clear()
@@ -262,6 +266,23 @@ class TestAsyncSave:
         assert md_writer._select_dumps() is expected
 
         Utils.initialize_distributed()
+        encode, gather_tables = state_dict_saver.table.encode, state_dict_saver._gather_tables
+
+        def encode_or_fail(results):
+            if torch.distributed.get_rank() == unencodable_rank:
+                raise state_dict_saver.table.Unencodable('a write result the table lacks')
+            return encode(results)
+
+        gathered_tables = []
+
+        def record_gather_tables(*args):
+            as_tables, rows = gather_tables(*args)
+            gathered_tables.append(as_tables)
+            return as_tables, rows
+
+        monkeypatch.setattr(state_dict_saver.table, 'encode', encode_or_fail)
+        monkeypatch.setattr(state_dict_saver, '_gather_tables', record_gather_tables)
+
         model = FSDP(Model((1024, 1024), 8))
         state_dict = model.state_dict()
         planner = DefaultSavePlanner()
@@ -273,6 +294,7 @@ class TestAsyncSave:
                 self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
                 self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
                 async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                assert gathered_tables == [mode != '0' and unencodable_rank is None]
 
                 nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
                 torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
