@@ -239,11 +239,11 @@ def decode(buf) -> WriteResultTable:
     if (ids < 0).any() or (ids >= n_strings).any():
         raise _bad("string id out of range")
     # Summed as Python ints, which can't wrap around.
-    ndim = entry[has_size, OFFSET_NDIM].tolist()
-    if any(n < 0 for n in ndim) or sum(ndim) != n_offsets:
+    ndim = entry[has_size, OFFSET_NDIM]
+    if (ndim < 0).any() or sum(ndim.tolist()) != n_offsets:
         raise _bad("offset dims don't match the offsets")
     lengths = string_len.tolist()
-    if any(n < 0 for n in lengths) or sum(lengths) != n_bytes:
+    if (string_len < 0).any() or sum(lengths) != n_bytes:
         raise _bad("string lengths don't match the string bytes")
     strings, start = [], 0
     for n in lengths:
