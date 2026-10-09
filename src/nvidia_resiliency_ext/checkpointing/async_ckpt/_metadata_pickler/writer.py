@@ -77,6 +77,8 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
+from . import table
+
 try:
     from . import native
 except ImportError:  # not built, or failed to compile
@@ -224,7 +226,10 @@ class _MetadataPickler:
         """A torch.Size, as pickle reduces it: torch.Size(tuple_of_ints). Encoded once per value."""
         if type(dims) is not torch.Size:
             raise TypeError(f"expected torch.Size, got {type(dims).__name__}")
-        key = tuple(dims)
+        return self.size_of(tuple(dims))
+
+    def size_of(self, key: tuple) -> bytes:
+        """A torch.Size with the given dims (a tuple of ints). Encoded once per value."""
         b = self.sizes.get(key)
         if b is None:
             ints = b"".join(self.int(d) for d in key)
@@ -248,8 +253,12 @@ class _MetadataPickler:
             b = self.props[key] = _small_pickle(p)
         return b
 
-    def dumps(self, md: Metadata) -> bytes:
-        """The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field."""
+    def dumps(self, md: Metadata, storage_tables=None) -> bytes:
+        """The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field.
+
+        With storage_tables (decoded write-result tables, see table.py), storage_data is written
+        from them instead of md.storage_data.
+        """
         if type(md) is not Metadata:
             raise TypeError(f"expected Metadata, got {type(md).__name__}")
         self._prelude()
@@ -260,7 +269,10 @@ class _MetadataPickler:
             if field == "state_dict_metadata":
                 self._state_dict_metadata(value)
             elif field == "storage_data":
-                self._storage_data(value)
+                if storage_tables is None:
+                    self._storage_data(value)
+                else:
+                    self._storage_data_tables(storage_tables)
             else:
                 out.append(_small_pickle(value))
         out.append(SETITEMS + BUILD + STOP)
@@ -406,10 +418,51 @@ class _MetadataPickler:
                 )
             out.append(SETITEMS)
 
+    def _storage_data_tables(self, tables) -> None:
+        """Metadata.storage_data from write-result tables, encoded as _storage_data encodes the
+        dict finish builds from the same write results."""
+        out, k, string, int_ = self.out, self.k, self.string, self.int
+        INDEX_START, K_INDEX, K_OFFSET = self.INDEX_START, k["index"], k["offset"]
+        INFO_START, K_LENGTH = self.INFO_START, k["length"]
+        out.append(EMPTY_DICT)
+        count = 0
+        for t in tables:
+            strings, offsets, pos = t.strings, t.offsets.tolist(), 0
+            for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
+                if count % _BATCH == 0:
+                    if count:
+                        out.append(SETITEMS)
+                    out.append(MARK)
+                count += 1
+                if flags & table.FLAG_OFFSET_SIZE:
+                    off = K_OFFSET + self.size_of(tuple(offsets[pos : pos + ndim]))
+                    pos += ndim
+                elif flags & table.FLAG_OFFSET:
+                    off = K_OFFSET + NONE
+                else:
+                    off = b""
+                out.append(
+                    INDEX_START
+                    + string(strings[fqn])
+                    + K_INDEX
+                    + (int_(index) if flags & table.FLAG_INDEX else NONE)
+                    + off
+                    + END
+                    + INFO_START
+                    + string(strings[path])
+                    + K_OFFSET
+                    + int_(offset)
+                    + K_LENGTH
+                    + int_(length)
+                    + END
+                )
+        if count:
+            out.append(SETITEMS)
 
-def _python_dumps(md: Metadata) -> bytes:
+
+def _python_dumps(md: Metadata, storage_tables=None) -> bytes:
     """The pickle of md, from the Python writer."""
-    return _MetadataPickler().dumps(md)
+    return _MetadataPickler().dumps(md, storage_tables)
 
 
 def _native_dumps(md: Metadata) -> bytes:
