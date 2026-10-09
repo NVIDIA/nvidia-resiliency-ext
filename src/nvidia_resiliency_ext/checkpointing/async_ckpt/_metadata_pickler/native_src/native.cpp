@@ -42,14 +42,22 @@ constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
 // Columns and flags of a write-result table's entries, as in table.py.
-enum Column { FQN, INDEX, OFFSET_NDIM, PATH, OFFSET, LENGTH, FLAGS, COLUMNS };
-constexpr int64_t FLAG_INDEX = 1, FLAG_OFFSET = 2, FLAG_OFFSET_SIZE = 4;
+enum class Column : uint8_t { Fqn, Index, OffsetNdim, Path, Offset, Length, Flags };
+constexpr size_t COLUMNS = 7;
+constexpr int64_t FLAG_INDEX = 0x1, FLAG_OFFSET = 0x2, FLAG_OFFSET_SIZE = 0x4;
 using Int64Array = py::array_t<int64_t, py::array::c_style | py::array::forcecast>;
+
+// Column c of an entry: an entry is a row of COLUMNS int64s.
+[[nodiscard]] constexpr int64_t at(const int64_t* entry, Column c) {
+    return entry[static_cast<size_t>(c)];
+}
 
 // New reference to obj.name, throwing on error.
 [[nodiscard]] py::object getattr(PyObject* obj, PyObject* name) {
     PyObject* const r = PyObject_GetAttr(obj, name);
-    if (!r) throw py::error_already_set();
+    if (!r) {
+        throw py::error_already_set();
+    }
     return py::reinterpret_steal<py::object>(r);
 }
 
@@ -57,30 +65,40 @@ using Int64Array = py::array_t<int64_t, py::array::c_style | py::array::forcecas
 [[nodiscard]] py::object instance_dict(PyObject* obj) {
     static PyObject* const name = PyUnicode_InternFromString("__dict__");
     const py::object d = getattr(obj, name);
-    if (!PyDict_CheckExact(d.ptr())) throw py::type_error("expected a __dict__");
+    if (!PyDict_CheckExact(d.ptr())) {
+        throw py::type_error("expected a __dict__");
+    }
     return d;
 }
 
 // Borrowed reference to dict[key], or nullptr if key is missing.
 [[nodiscard]] PyObject* dict_get(PyObject* dict, PyObject* key) {
     PyObject* const r = PyDict_GetItemWithError(dict, key);
-    if (!r && PyErr_Occurred()) throw py::error_already_set();
+    if (!r && PyErr_Occurred()) {
+        throw py::error_already_set();
+    }
     return r;
 }
 
 // Borrowed reference to dict[key], throwing if key is missing.
 [[nodiscard]] PyObject* dict_item(PyObject* dict, PyObject* key) {
     PyObject* const r = dict_get(dict, key);
-    if (!r) throw py::type_error("missing attribute");
+    if (!r) {
+        throw py::type_error("missing attribute");
+    }
     return r;
 }
 
 // UTF-8 view of a str's characters, valid while s is alive.
 [[nodiscard]] std::string_view utf8(PyObject* s) {
-    if (!PyUnicode_CheckExact(s)) throw py::type_error("expected str");
+    if (!PyUnicode_CheckExact(s)) {
+        throw py::type_error("expected str");
+    }
     Py_ssize_t n;
     const char* const p = PyUnicode_AsUTF8AndSize(s, &n);
-    if (!p) throw py::error_already_set();
+    if (!p) {
+        throw py::error_already_set();
+    }
     return {p, static_cast<size_t>(n)};
 }
 
@@ -88,9 +106,13 @@ using Int64Array = py::array_t<int64_t, py::array::c_style | py::array::forcecas
 // anything else (a bool, a tuple for a torch.Size, ...) would unpickle as a different type, so it
 // raises and the caller falls back to pickle.dump.
 [[nodiscard]] int64_t as_int(PyObject* o) {
-    if (!PyLong_CheckExact(o)) throw py::type_error("expected int");
+    if (!PyLong_CheckExact(o)) {
+        throw py::type_error("expected int");
+    }
     const long long v = PyLong_AsLongLong(o);
-    if (v == -1 && PyErr_Occurred()) throw py::error_already_set();
+    if (v == -1 && PyErr_Occurred()) {
+        throw py::error_already_set();
+    }
     return v;
 }
 
@@ -113,7 +135,9 @@ class Writer {
     // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field. With tables
     // (write-result tables: (entry, offsets, strings) each), storage_data is written from them.
     [[nodiscard]] py::bytes dumps(PyObject* md, const py::object& tables) {
-        if (!is(md, metadata_cls_)) throw py::type_error("expected Metadata");
+        if (!is(md, metadata_cls_)) {
+            throw py::type_error("expected Metadata");
+        }
         const py::object fields = instance_dict(md);
         size_t n_storage = 0;
         if (!tables.is_none()) {
@@ -133,7 +157,9 @@ class Writer {
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
         // A snapshot, which holds the fields while small() runs Python code that could change them.
         const auto items = py::reinterpret_steal<py::list>(PyDict_Items(fields.ptr()));
-        if (!items) throw py::error_already_set();
+        if (!items) {
+            throw py::error_already_set();
+        }
         for (const py::handle item : items) {
             const std::string_view field = utf8(PyTuple_GET_ITEM(item.ptr(), 0));
             PyObject* const value = PyTuple_GET_ITEM(item.ptr(), 1);
@@ -141,7 +167,11 @@ class Writer {
             if (field == "state_dict_metadata") {
                 dump_state_dict_metadata(value);
             } else if (field == "storage_data") {
-                if (tables.is_none()) dump_storage_data(value); else dump_storage_tables(tables);
+                if (tables.is_none()) {
+                    dump_storage_data(value);
+                } else {
+                    dump_storage_tables(tables);
+                }
             } else {
                 small(value);
             }
@@ -176,7 +206,9 @@ class Writer {
 
     // Metadata.state_dict_metadata: fqn -> TensorStorageMetadata or BytesStorageMetadata.
     void dump_state_dict_metadata(PyObject* dict) {
-        if (!PyDict_CheckExact(dict)) throw py::type_error("expected dict");
+        if (!PyDict_CheckExact(dict)) {
+            throw py::type_error("expected dict");
+        }
         put(EMPTY_DICT);
         const Py_ssize_t n = PyDict_Size(dict);
         Py_ssize_t pos = 0;
@@ -184,7 +216,9 @@ class Writer {
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &fqn, &v); ++i) {
             // small() runs Python code, which could change the dict: fqn and v are not used after
             // it, and the dict's size is checked after it.
-            if (i % BATCH == 0) put(MARK);
+            if (i % BATCH == 0) {
+                put(MARK);
+            }
             string(fqn);
             if (is(v, bytes_cls_) && PyDict_Size(instance_dict(v).ptr()) == 0) {
                 put_get(bytes_ref_);
@@ -212,7 +246,9 @@ class Writer {
                 put(EMPTY_LIST);
                 const Py_ssize_t nc = PyList_GET_SIZE(chunks.ptr());
                 for (Py_ssize_t j = 0; j < nc; ++j) {
-                    if (j % BATCH == 0) put(MARK);
+                    if (j % BATCH == 0) {
+                        put(MARK);
+                    }
                     PyObject* const c = PyList_GET_ITEM(chunks.ptr(), j);
                     if (!is(c, chunk_cls_)) {
                         small(c);
@@ -230,24 +266,32 @@ class Writer {
                         size(dict_item(chunk.ptr(), a_sizes_.ptr()));
                         put({SETITEMS, BUILD});
                     }
-                    if (j % BATCH == BATCH - 1 || j == nc - 1) put(APPENDS);
+                    if (j % BATCH == BATCH - 1 || j == nc - 1) {
+                        put(APPENDS);
+                    }
                 }
                 put({SETITEMS, BUILD});
                 check_size(dict, n);  // after small() of the properties
             }
-            if (i % BATCH == BATCH - 1 || i == n - 1) put(SETITEMS);
+            if (i % BATCH == BATCH - 1 || i == n - 1) {
+                put(SETITEMS);
+            }
         }
     }
 
     // Metadata.storage_data: MetadataIndex -> _StorageInfo.
     void dump_storage_data(PyObject* dict) {
-        if (!PyDict_CheckExact(dict)) throw py::type_error("expected dict");
+        if (!PyDict_CheckExact(dict)) {
+            throw py::type_error("expected dict");
+        }
         put(EMPTY_DICT);
         const Py_ssize_t n = PyDict_Size(dict);
         Py_ssize_t pos = 0;
         PyObject *idx, *info;
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &idx, &info); ++i) {
-            if (i % BATCH == 0) put(MARK);
+            if (i % BATCH == 0) {
+                put(MARK);
+            }
             // Owns info while small(idx) runs Python code, which could remove it from the dict.
             py::object keep_info;
             if (!is(idx, index_cls_)) {
@@ -268,10 +312,18 @@ class Writer {
                 put_get(k_fqn_);
                 string(fqn);
                 put_get(k_index_);
-                if (index == Py_None) put(NONE); else put_int(as_int(index));
+                if (index == Py_None) {
+                    put(NONE);
+                } else {
+                    put_int(as_int(index));
+                }
                 if (offset) {
                     put_get(k_offset_);
-                    if (offset == Py_None) put(NONE); else size(offset);
+                    if (offset == Py_None) {
+                        put(NONE);
+                    } else {
+                        size(offset);
+                    }
                 }
                 put({SETITEMS, BUILD});
             }
@@ -298,7 +350,9 @@ class Writer {
                 put_int(as_int(dict_item(state.ptr(), a_length_.ptr())));
                 put({SETITEMS, BUILD});
             }
-            if (i % BATCH == BATCH - 1 || i == n - 1) put(SETITEMS);
+            if (i % BATCH == BATCH - 1 || i == n - 1) {
+                put(SETITEMS);
+            }
         }
     }
 
@@ -324,8 +378,7 @@ class Writer {
             std::vector<std::string_view> strings;
             strings.reserve(strings_list.size());
             for (const py::handle str : strings_list) strings.push_back(utf8(str.ptr()));
-            const auto e = entry.unchecked<2>();
-            const int64_t* const dims = offsets.data();
+                        const int64_t* const dims = offsets.data();
             const size_t n_dims = static_cast<size_t>(offsets.shape(0));
             size_t pos = 0;
             const auto string_at = [&strings](int64_t id) {
@@ -334,19 +387,27 @@ class Writer {
                 }
                 return strings[id];
             };
-            for (py::ssize_t row = 0; row < e.shape(0); ++row, ++i) {
-                if (i % BATCH == 0) put(MARK);
-                const int64_t flags = e(row, FLAGS);
+            const int64_t* const entries = entry.data();
+            for (py::ssize_t r = 0; r < entry.shape(0); ++r, ++i) {
+                const int64_t* const row = entries + r * COLUMNS;
+                if (i % BATCH == 0) {
+                    put(MARK);
+                }
+                const int64_t flags = at(row, Column::Flags);
                 put_get(index_ref_);
                 put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                 put_get(k_fqn_);
-                string(string_at(e(row, FQN)));
+                string(string_at(at(row, Column::Fqn)));
                 put_get(k_index_);
-                if (flags & FLAG_INDEX) put_int(e(row, INDEX)); else put(NONE);
+                if (flags & FLAG_INDEX) {
+                    put_int(at(row, Column::Index));
+                } else {
+                    put(NONE);
+                }
                 if (flags & FLAG_OFFSET) {
                     put_get(k_offset_);
                     if (flags & FLAG_OFFSET_SIZE) {
-                        const int64_t ndim = e(row, OFFSET_NDIM);
+                        const int64_t ndim = at(row, Column::OffsetNdim);
                         if (ndim < 0 || pos + static_cast<size_t>(ndim) > n_dims) {
                             throw py::value_error("write-result table: offsets out of range");
                         }
@@ -360,13 +421,15 @@ class Writer {
                 put_get(info_ref_);
                 put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                 put_get(k_relative_path_);
-                string(string_at(e(row, PATH)));
+                string(string_at(at(row, Column::Path)));
                 put_get(k_offset_);
-                put_int(e(row, OFFSET));
+                put_int(at(row, Column::Offset));
                 put_get(k_length_);
-                put_int(e(row, LENGTH));
+                put_int(at(row, Column::Length));
                 put({SETITEMS, BUILD});
-                if (i % BATCH == BATCH - 1 || i == total - 1) put(SETITEMS);
+                if (i % BATCH == BATCH - 1 || i == total - 1) {
+                    put(SETITEMS);
+                }
             }
         }
     }
@@ -474,13 +537,17 @@ class Writer {
 
     // A torch.Size, as pickle reduces it: torch.Size(tuple_of_ints).
     void size(PyObject* dims) {
-        if (!is(dims, size_cls_)) throw py::type_error("expected torch.Size");
+        if (!is(dims, size_cls_)) {
+            throw py::type_error("expected torch.Size");
+        }
         put_get(size_ref_);
         const Py_ssize_t n = PyTuple_GET_SIZE(dims);
         if (n == 0) {
             put(EMPTY_TUPLE);
         } else {
-            if (n > 3) put(MARK);
+            if (n > 3) {
+                put(MARK);
+            }
             for (Py_ssize_t j = 0; j < n; ++j) put_int(as_int(PyTuple_GET_ITEM(dims, j)));
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
@@ -493,7 +560,9 @@ class Writer {
         if (n == 0) {
             put(EMPTY_TUPLE);
         } else {
-            if (n > 3) put(MARK);
+            if (n > 3) {
+                put(MARK);
+            }
             for (size_t j = 0; j < n; ++j) put_int(dims[j]);
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
@@ -505,7 +574,9 @@ class Writer {
         const py::object b = small_pickle_(py::handle(obj));
         char* p;
         Py_ssize_t n;
-        if (PyBytes_AsStringAndSize(b.ptr(), &p, &n) != 0) throw py::error_already_set();
+        if (PyBytes_AsStringAndSize(b.ptr(), &p, &n) != 0) {
+            throw py::error_already_set();
+        }
         out_.append(p, n);
     }
 
