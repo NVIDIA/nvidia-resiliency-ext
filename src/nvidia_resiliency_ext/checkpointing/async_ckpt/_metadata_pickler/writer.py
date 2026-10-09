@@ -51,6 +51,7 @@ writes ``.metadata``; changing it later in the process has no effect.
 """
 
 import copyreg
+import dataclasses
 import functools
 import importlib
 import io
@@ -630,17 +631,28 @@ def _select_dumps() -> Optional[Callable[[Metadata], bytes]]:
     return None
 
 
-def dump_metadata(metadata: Metadata, stream: IO[bytes]) -> None:
-    """Write metadata to stream as a pickle that ``pickle.load`` reads back as an equal Metadata."""
+def writes_tables() -> bool:
+    """Whether dump_metadata writes storage_data from write-result tables with a fast writer."""
+    return _select_dumps() is not None
+
+
+def dump_metadata(metadata: Metadata, stream: IO[bytes], storage_tables=None) -> None:
+    """Write metadata to stream as a pickle that ``pickle.load`` reads back as an equal Metadata.
+
+    With storage_tables (decoded write-result tables, see table.py), its storage_data is the one
+    they describe instead of metadata.storage_data.
+    """
     dumps = _select_dumps()
     if dumps is not None:
         try:
-            data = dumps(metadata)
+            data = dumps(metadata, storage_tables=storage_tables)
         except Exception:
             logger.warning("fast .metadata pickling failed; using pickle.dump", exc_info=True)
         else:
             stream.write(data)
             return
+    if storage_tables is not None:
+        metadata = dataclasses.replace(metadata, storage_data=table.to_storage_data(storage_tables))
     # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
     # Severity: Medium   Confidence: High
     # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
