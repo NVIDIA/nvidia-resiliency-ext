@@ -124,7 +124,7 @@
     {
       "id": 21,
       "name": "Post-checkpoint progress-log assertion",
-      "description": "Assertion after checkpoint resume (progress-log bookkeeping). The last committed checkpoint is intact.",
+      "description": "Assertion after checkpoint resume (progress-log bookkeeping); restart from last committed checkpoint is appropriate.",
       "decision": "RESTART"
     },
     {
@@ -226,7 +226,7 @@
     {
       "id": 38,
       "name": "Suspected SDC / DP-replica weight-hash mismatch",
-      "description": "DP-replica weight-hash mismatch (suspected silent data corruption). The last good checkpoint predates the mismatch.",
+      "description": "DP-replica weight-hash mismatch (suspected silent data corruption); restart from last good checkpoint is plausibly safe.",
       "decision": "RESTART"
     }
   ]
