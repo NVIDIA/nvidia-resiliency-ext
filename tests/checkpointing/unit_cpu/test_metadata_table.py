@@ -21,6 +21,7 @@ finish builds out of the same write results, rank by rank.
 
 import dataclasses
 
+import numpy as np
 import pytest
 import torch
 from hypothesis import HealthCheck, assume, given, settings
@@ -32,7 +33,14 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import tab
 
 from .test_metadata_pickler import dcp_saved_metadata, large_metadata, metadatas
 
-DUMPS = [pytest.param(writer._python_dumps, id="python")]
+DUMPS = [
+    pytest.param(writer._python_dumps, id="python"),
+    pytest.param(
+        writer._native_dumps,
+        id="native",
+        marks=pytest.mark.skipif(writer.native is None, reason="native writer not built"),
+    ),
+]
 
 
 def split_into_ranks(md: Metadata, ranks: int):
@@ -115,3 +123,16 @@ if "transform_descriptors" in {f.name for f in dataclasses.fields(_StorageInfo)}
 def test_unencodable_write_results(make):
     with pytest.raises(table.Unencodable):
         table.encode([make()])
+
+
+@pytest.mark.parametrize(
+    "column, value", [(table.FQN, 5), (table.PATH, -1), (table.OFFSET_NDIM, 9)]
+)
+def test_decode_rejects_out_of_range_entries(column, value):
+    """A corrupt table fails to decode, before any writer could index past its strings or offsets."""
+    encoded = bytearray(table.encode([_result()]))
+    strings = int(np.frombuffer(bytes(encoded), "<i8", count=table.HEADER)[3])
+    pos = 8 * table.HEADER + 8 * strings + 8 * column  # the first entry's column
+    encoded[pos : pos + 8] = np.int64(value).tobytes()
+    with pytest.raises(ValueError):
+        table.decode(bytes(encoded))

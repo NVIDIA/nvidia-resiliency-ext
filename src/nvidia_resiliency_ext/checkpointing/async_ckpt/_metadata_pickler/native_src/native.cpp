@@ -19,6 +19,7 @@
 // torch DCP `Metadata` directly. Its output is byte-identical to the Python writer. The few small
 // objects (TensorProperties, StorageMeta, ...) are encoded by the Python `small_pickle` callback.
 
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
 #include <cstdint>
@@ -27,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -38,6 +40,11 @@ constexpr char SETITEMS = 'u', APPENDS = 'e', BUILD = 'b', NEWOBJ = '\x81', REDU
 constexpr char STACK_GLOBAL = '\x93', MEMOIZE = '\x94', NONE = 'N';
 constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
+
+// Columns and flags of a write-result table's entries, as in table.py.
+enum Column { FQN, INDEX, OFFSET_NDIM, PATH, OFFSET, LENGTH, FLAGS, COLUMNS };
+constexpr int64_t FLAG_INDEX = 1, FLAG_OFFSET = 2, FLAG_OFFSET_SIZE = 4;
+using Int64Array = py::array_t<int64_t, py::array::c_style | py::array::forcecast>;
 
 // New reference to obj.name, throwing on error.
 [[nodiscard]] py::object getattr(PyObject* obj, PyObject* name) {
@@ -103,15 +110,22 @@ class Writer {
         size_cls_ = py::module_::import("torch").attr("Size");
     }
 
-    // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field.
-    [[nodiscard]] py::bytes dumps(PyObject* md) {
+    // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field. With tables
+    // (write-result tables: (entry, offsets, strings) each), storage_data is written from them.
+    [[nodiscard]] py::bytes dumps(PyObject* md, const py::object& tables) {
         if (!is(md, metadata_cls_)) throw py::type_error("expected Metadata");
         const py::object fields = instance_dict(md);
+        size_t n_storage = 0;
+        if (!tables.is_none()) {
+            for (const py::handle t : tables) {
+                n_storage += t.cast<py::tuple>()[0].cast<Int64Array>().shape(0);
+            }
+        } else if (PyObject* const storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
+                   storage_data && PyDict_Check(storage_data)) {
+            n_storage = PyDict_Size(storage_data);
+        }
         // About 98 bytes per storage entry: its MetadataIndex and
         // _StorageInfo, plus the matching chunk in state_dict_metadata.
-        PyObject* const storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
-        const size_t n_storage =
-            storage_data && PyDict_Check(storage_data) ? PyDict_Size(storage_data) : 0;
         out_.reserve(4096 + 100 * n_storage);
 
         prelude();
@@ -127,7 +141,7 @@ class Writer {
             if (field == "state_dict_metadata") {
                 dump_state_dict_metadata(value);
             } else if (field == "storage_data") {
-                dump_storage_data(value);
+                if (tables.is_none()) dump_storage_data(value); else dump_storage_tables(tables);
             } else {
                 small(value);
             }
@@ -288,6 +302,75 @@ class Writer {
         }
     }
 
+    // Metadata.storage_data from write-result tables, as dump_storage_data writes the dict that
+    // finish builds from the same write results.
+    void dump_storage_tables(const py::object& tables) {
+        put(EMPTY_DICT);
+        size_t total = 0;
+        std::vector<py::tuple> parts;
+        for (const py::handle t : tables) {
+            parts.push_back(t.cast<py::tuple>());
+            total += parts.back()[0].cast<Int64Array>().shape(0);
+        }
+        size_t i = 0;
+        for (const py::tuple& part : parts) {
+            const Int64Array entry = part[0].cast<Int64Array>();
+            const Int64Array offsets = part[1].cast<Int64Array>();
+            const py::list strings_list = part[2].cast<py::list>();
+            if (entry.ndim() != 2 || entry.shape(1) != COLUMNS || offsets.ndim() != 1) {
+                throw py::value_error("malformed write-result table");
+            }
+            // Views of the strs' UTF-8 buffers: strings_list holds the strs while they are used.
+            std::vector<std::string_view> strings;
+            strings.reserve(strings_list.size());
+            for (const py::handle str : strings_list) strings.push_back(utf8(str.ptr()));
+            const auto e = entry.unchecked<2>();
+            const int64_t* const dims = offsets.data();
+            const size_t n_dims = static_cast<size_t>(offsets.shape(0));
+            size_t pos = 0;
+            const auto string_at = [&strings](int64_t id) {
+                if (id < 0 || static_cast<size_t>(id) >= strings.size()) {
+                    throw py::value_error("write-result table: string id out of range");
+                }
+                return strings[id];
+            };
+            for (py::ssize_t row = 0; row < e.shape(0); ++row, ++i) {
+                if (i % BATCH == 0) put(MARK);
+                const int64_t flags = e(row, FLAGS);
+                put_get(index_ref_);
+                put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
+                put_get(k_fqn_);
+                string(string_at(e(row, FQN)));
+                put_get(k_index_);
+                if (flags & FLAG_INDEX) put_int(e(row, INDEX)); else put(NONE);
+                if (flags & FLAG_OFFSET) {
+                    put_get(k_offset_);
+                    if (flags & FLAG_OFFSET_SIZE) {
+                        const int64_t ndim = e(row, OFFSET_NDIM);
+                        if (ndim < 0 || pos + static_cast<size_t>(ndim) > n_dims) {
+                            throw py::value_error("write-result table: offsets out of range");
+                        }
+                        size(dims + pos, static_cast<size_t>(ndim));
+                        pos += static_cast<size_t>(ndim);
+                    } else {
+                        put(NONE);
+                    }
+                }
+                put({SETITEMS, BUILD});
+                put_get(info_ref_);
+                put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
+                put_get(k_relative_path_);
+                string(string_at(e(row, PATH)));
+                put_get(k_offset_);
+                put_int(e(row, OFFSET));
+                put_get(k_length_);
+                put_int(e(row, LENGTH));
+                put({SETITEMS, BUILD});
+                if (i % BATCH == BATCH - 1 || i == total - 1) put(SETITEMS);
+            }
+        }
+    }
+
     // Raise if Python code run by small() changed the size of a dict or list being written: the
     // loops would read past its end or skip entries. Stock pickle raises for dicts too.
     static void check_size(PyObject* container, Py_ssize_t n) {
@@ -376,8 +459,10 @@ class Writer {
 
     // First use writes the string and memoizes it; later uses fetch it from the memo. The memo owns
     // a copy of each distinct string and is looked up by view, so lookups do not allocate.
-    void string(PyObject* s) {
-        const std::string_view v = utf8(s);
+    void string(PyObject* s) { string(utf8(s)); }
+
+    // The same, for a string's UTF-8 bytes.
+    void string(std::string_view v) {
         if (const auto it = strings_.find(v); it != strings_.end()) {
             put_get(it->second);
             return;
@@ -397,6 +482,19 @@ class Writer {
         } else {
             if (n > 3) put(MARK);
             for (Py_ssize_t j = 0; j < n; ++j) put_int(as_int(PyTuple_GET_ITEM(dims, j)));
+            put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
+        }
+        put({TUPLE1, REDUCE});
+    }
+
+    // The same, for n dims from a write-result table.
+    void size(const int64_t* dims, size_t n) {
+        put_get(size_ref_);
+        if (n == 0) {
+            put(EMPTY_TUPLE);
+        } else {
+            if (n > 3) put(MARK);
+            for (size_t j = 0; j < n; ++j) put_int(dims[j]);
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
         put({TUPLE1, REDUCE});
@@ -445,9 +543,9 @@ class Writer {
 };
 
 // Return the pickle of md; small_pickle(obj) returns the opcodes for an object the writer leaves to
-// the stdlib pickler.
-[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle) {
-    return Writer(std::move(small_pickle)).dumps(md.ptr());
+// the stdlib pickler. With tables, storage_data is written from them (see Writer::dumps).
+[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle, py::object tables) {
+    return Writer(std::move(small_pickle)).dumps(md.ptr(), tables);
 }
 
 }  // namespace
@@ -455,6 +553,7 @@ class Writer {
 PYBIND11_MODULE(native, m) {
     m.doc() = "Fast pickling of torch.distributed.checkpoint Metadata.";
     m.def("dumps", &dumps, py::arg("metadata"), py::arg("small_pickle"),
+          py::arg("tables") = py::none(),
           "Return the pickle of a torch.distributed.checkpoint Metadata, as standard pickle "
           "bytes.");
 }

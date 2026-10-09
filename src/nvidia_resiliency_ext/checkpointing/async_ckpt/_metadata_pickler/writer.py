@@ -226,7 +226,9 @@ class _MetadataPickler:
         """A torch.Size, as pickle reduces it: torch.Size(tuple_of_ints). Encoded once per value."""
         if type(dims) is not torch.Size:
             raise TypeError(f"expected torch.Size, got {type(dims).__name__}")
-        return self.size_of(tuple(dims))
+        key = tuple(dims)
+        b = self.sizes.get(key)
+        return b if b is not None else self.size_of(key)
 
     def size_of(self, key: tuple) -> bytes:
         """A torch.Size with the given dims (a tuple of ints). Encoded once per value."""
@@ -465,9 +467,14 @@ def _python_dumps(md: Metadata, storage_tables=None) -> bytes:
     return _MetadataPickler().dumps(md, storage_tables)
 
 
-def _native_dumps(md: Metadata) -> bytes:
+def _native_dumps(md: Metadata, storage_tables=None) -> bytes:
     """The pickle of md, from the native writer."""
-    return native.dumps(md, _small_pickle)
+    tables = (
+        None
+        if storage_tables is None
+        else [(t.entry, t.offsets, t.strings) for t in storage_tables]
+    )
+    return native.dumps(md, _small_pickle, tables)
 
 
 def _mode() -> str:
