@@ -246,15 +246,16 @@ class TestAsyncSave:
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
 
-    @pytest.mark.parametrize('unencodable_rank', [None, 1])
+    @pytest.mark.parametrize('rank1', ['same', 'unencodable', 'fast'])
     @pytest.mark.parametrize('mode', ['1', 'python', '0'])
     def test_metadata_matches_torch(
-        self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode, unencodable_rank
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode, rank1
     ):
         """FileSystemWriterAsync writes the same .metadata as torch's FileSystemWriter.
 
-        Covers the native writer, the Python writer and, with mode '0', torch's own. The write
-        results reach the coordinator as tables, or pickled if a rank can't encode its table.
+        Covers the native writer, the Python writer and, with mode '0', torch's own. Each rank
+        sends its write results as a table or pickled: rank 1 as the others, or pickled because it
+        can't encode them ('unencodable'), or as a table with the fast writer on ('fast').
         """
         monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
         md_writer.fast_metadata_enabled.cache_clear()
@@ -266,22 +267,27 @@ class TestAsyncSave:
         assert md_writer._select_dumps() is expected
 
         Utils.initialize_distributed()
-        encode, gather_tables = state_dict_saver.table.encode, state_dict_saver._gather_tables
+        rank = torch.distributed.get_rank()
+        if rank == 1 and rank1 == 'fast':
+            monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', '1')
+            md_writer.fast_metadata_enabled.cache_clear()
+            md_writer._select_dumps.cache_clear()
+        encode, decode_payloads = state_dict_saver.table.encode, state_dict_saver._decode_payloads
 
         def encode_or_fail(results):
-            if torch.distributed.get_rank() == unencodable_rank:
+            if rank == 1 and rank1 == 'unencodable':
                 raise state_dict_saver.table.Unencodable('a write result the table lacks')
             return encode(results)
 
-        gathered_tables = []
+        received = []
 
-        def record_gather_tables(*args):
-            as_tables, rows = gather_tables(*args)
-            gathered_tables.append(as_tables)
-            return as_tables, rows
+        def record_decode_payloads(rows):
+            results = decode_payloads(rows)
+            received.extend(isinstance(r, state_dict_saver.table.Table) for r in results)
+            return results
 
         monkeypatch.setattr(state_dict_saver.table, 'encode', encode_or_fail)
-        monkeypatch.setattr(state_dict_saver, '_gather_tables', record_gather_tables)
+        monkeypatch.setattr(state_dict_saver, '_decode_payloads', record_decode_payloads)
 
         model = FSDP(Model((1024, 1024), 8))
         state_dict = model.state_dict()
@@ -294,7 +300,9 @@ class TestAsyncSave:
                 self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
                 self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
                 async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-                assert gathered_tables == [mode != '0' and unencodable_rank is None]
+                if rank == 0:  # whether each rank sent a table
+                    rank1_table = rank1 == 'fast' or (rank1 == 'same' and mode != '0')
+                    assert received == [mode != '0', rank1_table]
 
                 nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
                 torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()

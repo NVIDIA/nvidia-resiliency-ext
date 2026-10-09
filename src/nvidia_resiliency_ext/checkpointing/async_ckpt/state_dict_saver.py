@@ -16,10 +16,16 @@
 """State dict saver for PyT Distributed format allowing asynchronous save."""
 
 import dataclasses
+
+# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
+# Severity: Low   Confidence: High
+# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
+import pickle  # nosec
 from dataclasses import fields
 from logging import getLogger
 from time import time
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -28,6 +34,7 @@ from torch.distributed.checkpoint import CheckpointException
 from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.metadata import STATE_DICT_TYPE, Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner
+from torch.distributed.checkpoint.storage import WriteResult
 from torch.distributed.checkpoint.utils import _DistWrapper, _get_failure_dict
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
@@ -368,48 +375,56 @@ def verify_global_metadata_reuse(
     return reuse
 
 
-def _encode_write_results(write_results, dist_wrapper: _DistWrapper) -> Optional[bytes]:
-    """This rank's write results as a table, or None if it can't send one."""
-    if not dist_wrapper.use_dist or not isinstance(write_results, list):  # or an exception
-        return None
-    if not _metadata_pickler.writes_tables():
-        return None
-    try:
-        return table.encode(write_results)
-    except table.Unencodable:
-        logger.debug("write results unencodable as a table", exc_info=True)
-        return None
+def _encode_write_results(write_results) -> bytes:
+    """This rank's write results for the coordinator: a table if it can, else pickled."""
+    if isinstance(write_results, list) and _metadata_pickler.writes_tables():
+        try:
+            return table.encode(write_results)
+        except table.Unencodable:
+            logger.debug(
+                "write results unencodable as a table; sending them pickled", exc_info=True
+            )
+        except Exception:
+            logger.warning("encoding the write results as a table failed", exc_info=True)
+    return pickle.dumps(write_results)
 
 
-def _gather_tables(
-    payload: Optional[bytes], dist_wrapper: _DistWrapper
-) -> Tuple[bool, Optional[np.ndarray]]:
-    """Gather the ranks' encoded tables on the coordinator, one zero-padded row per rank.
-
-    Collective. Returns whether they were gathered (False on every rank, without gathering, if any
-    rank can't send a table), and the rows on the coordinator.
-    """
+def _gather_payloads(payload: bytes, dist_wrapper: _DistWrapper) -> Optional[np.ndarray]:
+    """Collective: the ranks' payloads on the coordinator, one zero-padded row per rank."""
     device = torch.cuda.current_device()
-    # The widest table, and whether some rank sends none.
-    stats = torch.tensor(
-        [0 if payload is None else len(payload), payload is None], dtype=torch.int64, device=device
-    )
-    torch.distributed.all_reduce(stats, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group)
-    width, missing = stats.tolist()
-    if missing:
-        return False, None
-    row = torch.zeros(width, dtype=torch.uint8)
+    width = torch.tensor([len(payload)], dtype=torch.int64, device=device)
+    torch.distributed.all_reduce(width, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group)
+    row = torch.zeros(int(width.item()), dtype=torch.uint8)
     row.numpy()[: len(payload)] = np.frombuffer(payload, dtype=np.uint8)
     rows = None
     if dist_wrapper.is_coordinator:
-        rows = torch.empty((dist_wrapper.get_world_size(), width), dtype=torch.uint8, device=device)
+        rows = torch.empty(
+            (dist_wrapper.get_world_size(), len(row)), dtype=torch.uint8, device=device
+        )
     torch.distributed.gather(
         row.to(device),
         list(rows) if rows is not None else None,
         dst=getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank),
         group=dist_wrapper.group,
     )
-    return True, rows.cpu().numpy() if rows is not None else None
+    return rows.cpu().numpy() if rows is not None else None
+
+
+def _decode_payloads(rows: np.ndarray) -> list:
+    """Each rank's write results from its row: a table, a list of WriteResults or an exception."""
+    # Unpickles only what this job's ranks pickled, as dist.gather_object does.
+    return [
+        table.decode(row) if table.is_table(row) else pickle.loads(row.tobytes())  # nosec B301
+        for row in rows
+    ]
+
+
+def _write_results_of(t: table.Table) -> List[WriteResult]:
+    """The write results a table holds (size_in_bytes is the storage length, as torch writes)."""
+    return [
+        WriteResult(index=index, size_in_bytes=info.length, storage_data=info)
+        for index, info in table.to_storage_data([t]).items()
+    ]
 
 
 def save_state_dict_async_finalize(
@@ -421,8 +436,8 @@ def save_state_dict_async_finalize(
     Finalization of save_state_dict_async_plan.
 
     The input arguments are the same as the save_state_dict_async_plan output,
-    the `write_results` are retrieved from the storage_writer. Ranks send them to the coordinator
-    as tables (see `_metadata_pickler.table`), or pickled if any rank can't.
+    the `write_results` are retrieved from the storage_writer. Each rank sends them to the
+    coordinator as a table (see `_metadata_pickler.table`) if it can, else pickled.
 
     Args:
         storage_writer (FileSystemWriterAsync): storage writer used for planning
@@ -432,16 +447,15 @@ def save_state_dict_async_finalize(
     Returns: None
     """
     write_results = storage_writer.retrieve_write_results()
-    payload = _encode_write_results(write_results, dist_wrapper)
 
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.finalize_gather"):
-        as_tables, rows = (
-            _gather_tables(payload, dist_wrapper) if dist_wrapper.use_dist else (False, None)
-        )
-        if not as_tables:
-            all_results = dist_wrapper.gather_object(write_results)
+        if dist_wrapper.use_dist:
+            rows = _gather_payloads(_encode_write_results(write_results), dist_wrapper)
+            all_results = _decode_payloads(rows) if rows is not None else None
+        else:
+            all_results = [write_results]
     gather_end = time()
     logger.debug(
         f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end - gather_start}"
@@ -449,18 +463,23 @@ def save_state_dict_async_finalize(
 
     # Store the metadata on coordinator rank
     if dist_wrapper.is_coordinator:
-        node_failures = {} if as_tables else _get_failure_dict(all_results)
+        node_failures = _get_failure_dict(all_results)
         if len(node_failures) == 0:
             assert global_metadata is not None
             with telemetry.span(
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
-                if as_tables:
-                    tables = [table.decode(row) for row in rows]
-                    storage_writer.finish(global_metadata, [], storage_tables=tables)
+                if _metadata_pickler.writes_tables() and all(
+                    isinstance(r, table.Table) for r in all_results
+                ):
+                    storage_writer.finish(global_metadata, [], storage_tables=all_results)
                 else:
-                    storage_writer.finish(global_metadata, all_results)
+                    results = [
+                        _write_results_of(r) if isinstance(r, table.Table) else r
+                        for r in all_results
+                    ]
+                    storage_writer.finish(global_metadata, results)
                 write_end = time()
                 logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
     else:
