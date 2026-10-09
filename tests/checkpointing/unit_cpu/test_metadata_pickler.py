@@ -22,6 +22,7 @@ tests/checkpointing/unit/test_async_writer.py, on GPUs.
 
 import io
 import logging
+import os
 import pickle
 from collections import OrderedDict
 from dataclasses import fields
@@ -461,6 +462,14 @@ def test_moved_class_disables_fast_writers(monkeypatch):
     paths[MetadataIndex] = ("torch.distributed.checkpoint.metadata", "MovedMetadataIndex")
     monkeypatch.setattr(pickler, "CLASS_PATHS", paths)
     assert not writer._layout_supported()
+
+
+@pytest.mark.skipif(
+    os.environ.get("NVRX_REQUIRE_NATIVE_WRITER") != "1", reason="NVRX_REQUIRE_NATIVE_WRITER unset"
+)
+def test_native_writer_is_built():
+    """In CI, where the native writer's tests would otherwise skip silently if it failed to build."""
+    assert writer.native is not None
 
 
 def test_layout_supported_on_this_torch():
