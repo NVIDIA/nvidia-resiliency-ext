@@ -57,6 +57,7 @@ import os
 import pickle  # nosec
 from typing import IO, Callable, Optional
 
+import numpy as np
 import torch
 from packaging.version import InvalidVersion, Version
 from torch.distributed.checkpoint.filesystem import _StorageInfo
@@ -262,7 +263,9 @@ def writes_tables() -> bool:
     return _tested_torch() and _select_dumps() is not None
 
 
-def dump_metadata(metadata: Metadata, stream: IO[bytes], storage_rows=None) -> None:
+def dump_metadata(
+    metadata: Metadata, stream: IO[bytes], storage_rows: Optional[np.ndarray] = None
+) -> None:
     """Write metadata to stream as a pickle that ``pickle.load`` reads back as an equal Metadata.
 
     With storage_rows (the gathered write-result tables, a 2-D uint8 array with one zero-padded

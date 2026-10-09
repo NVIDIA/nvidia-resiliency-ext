@@ -50,7 +50,8 @@ constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
 // Write-result tables, as table.py encodes them: little-endian int64s, header first.
 static_assert(std::endian::native == std::endian::little, "write-result tables are little-endian");
-constexpr int64_t TABLE_MAGIC = 0x4E56525854424C31, TABLE_VERSION = 1;
+constexpr int64_t TABLE_MAGIC = 0x314C42545852564E;  // the bytes "NVRXTBL1", read little-endian
+constexpr int64_t TABLE_VERSION = 1;
 enum class Header : uint8_t { Magic, Version, Entries, Strings, StringBytes, Offsets };
 constexpr size_t HEADER = 8;  // int64s
 enum class Column : uint8_t { Fqn, Index, OffsetNdim, Path, Offset, Length, Flags };
@@ -136,7 +137,8 @@ class WriteResultTable {
     // Entry r < entries(): its COLUMNS int64s, indexed by Column.
     [[nodiscard]] Int64s entry(size_t r) const { return entries_.subspan(COLUMNS * r, COLUMNS); }
 
-    // Replace out's contents with the strings, as views into the row.
+    // Replace out's contents with the strings, as views into the row. Their bytes are not checked
+    // to be UTF-8: tables come from this job's ranks, which encoded them (see table.py).
     void split_strings(std::vector<std::string_view>& out) const {
         out.clear();
         std::string_view rest = blob_;
@@ -505,6 +507,12 @@ class Writer {
     void dump_table_entry(const WriteResultTable& t, const Int64s& entry,
                           const std::vector<std::string_view>& strings, size_t& pos) {
         const int64_t flags = entry[Column::Flags];
+        if (flags & ~(FLAG_INDEX | FLAG_OFFSET | FLAG_OFFSET_SIZE)) {
+            bad_table("unknown flags");
+        }
+        if ((flags & FLAG_OFFSET_SIZE) && !(flags & FLAG_OFFSET)) {
+            bad_table("an offset size without an offset");
+        }
         const std::optional<int64_t> index =
             flags & FLAG_INDEX ? std::optional(entry[Column::Index]) : std::nullopt;
         put_index_start(string_at(strings, entry[Column::Fqn]), index);
