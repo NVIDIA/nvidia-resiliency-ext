@@ -87,8 +87,9 @@ sequenceDiagram
     W-->>R: write results (results queue)
 
     Note over C,R: Finalize: maybe_finalize_async_calls (all_reduce of done flags),<br/>then save_state_dict_async_finalize
-    R->>C: gather_object(write results)
-    C->>S: finish: write .metadata (temp file, fsync, rename)
+    R->>C: all_reduce(widest table), gather(write results as tables)
+    Note over C,R: A rank that can't send a table sends its write results pickled
+    C->>S: finish: write .metadata from the tables (temp file, fsync, rename)
     C->>R: broadcast failure flag
 ```
 
@@ -125,7 +126,7 @@ sequenceDiagram
         opt previous checkpoint not finalized yet (drain)
             W-->>C: wait for this rank's worker to finish writing
             W-->>R: wait for this rank's worker to finish writing
-            R->>C: gather_object(previous write results)
+            R->>C: gather(previous write results as tables)
             C->>S: write the previous checkpoint's .metadata
             C->>R: broadcast failure flag
         end
