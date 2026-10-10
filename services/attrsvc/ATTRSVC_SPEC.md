@@ -212,7 +212,7 @@ mitigates abuse.
 | GET | /print | First 4KB preview (`log_path`) |
 | GET | /inflight | In-flight analyses |
 | POST | /logs | Register/signal an attempt (`log_path`, `user`, optional `job_id`, `cycle_id`, `analysis_intent`) |
-| GET | /logs | Analyze / return results (`log_path`, optional `file`, `wl_restart`) |
+| GET | /logs | Probe / return a registered attempt result (`log_path`, optional `wait`) |
 
 **GET /healthz**  
 Uses cumulative compute stats (errors + timeouts vs total). Thresholds:
@@ -246,17 +246,16 @@ pending/single/splitlog compatibility view; the direct Restart Agent lifecycle
 is read through `GET /logs` status.
 
 **GET /logs**  
-Returns single-file or splitlog-shaped JSON; optional `file` selects a file in
-splitlog mode; `wl_restart` selects a workload chunk within the analyzed file.
-Optional `wait=false` probes cache/in-flight state without starting or awaiting
-analysis; responses may use `status="in_flight"` or `status="pending"`.
-Exact fields match library serializers — see **`types.py`** and OpenAPI **`/docs`**.
+The direct Restart Agent backend returns the state or result of an attempt that
+was registered by POST. Optional `wait=false` probes the execution registry
+without starting or awaiting analysis; responses may use
+`status="in_flight"` or `status="pending"`. The direct backend does not support
+the legacy `file` or `wl_restart` selectors. Exact fields match library
+serializers — see **`types.py`** and OpenAPI **`/docs`**.
 Responses include a normalized `recommendation` object:
-`{ "action": "STOP" | "RESTART" | "CONTINUE" | "UNKNOWN" | "TIMEOUT",
+`{ "action": "STOP" | "RESTART" | "UNKNOWN", "reason": str,
 "source": str }`. Clients should branch on
 `recommendation.action`; raw backend output remains under `result` for debugging.
-Flight-recorder findings are monitor-only; missing/hanging ranks are exposed in
-FR result fields and dataflow records, not as restart/stop policy.
 
 **6.1 GET /logs — processing flow (implementation)**
 
@@ -323,16 +322,18 @@ contract and **ARCHITECTURE.md §7** for the controller path.
 |-----------|------|------|
 | Path not absolute | 400 | INVALID_PATH |
 | Outside allowed root | 403 | OUTSIDE_ROOT |
-| File not found | 404 | NOT_FOUND |
+| Path preview not found, or GET attempt not registered | 404 | NOT_FOUND |
 | Not readable | 403 | NOT_READABLE |
 | Not a regular file | 400 | NOT_REGULAR |
-| Empty file (GET) | 400 | EMPTY_FILE |
+| Empty file (legacy controller GET) | 400 | EMPTY_FILE |
 | LOGS_DIR not readable | 403 | LOGS_DIR_NOT_READABLE |
 | Job limit | 503 | JOB_LIMIT_REACHED |
 | Internal | 500 | INTERNAL_ERROR |
 
-Analysis failures surface as `LogAnalyzerError` with appropriate codes. Invalid `file=`
-→ NOT_FOUND. Empty file allowed on POST (pending); rejected on GET.
+Request failures surface as `LogAnalyzerError` with appropriate codes. The
+direct backend accepts an expected missing or empty file on POST so terminal
+analysis can produce an explicit log-unavailable result. Its GET returns
+NOT_FOUND only when the attempt was not registered or was lost.
 
 ================================================================================
                              VALIDATION & FLOWS
@@ -346,15 +347,19 @@ Analysis failures surface as `LogAnalyzerError` with appropriate codes. Invalid 
 3. Resolved path must be under `ALLOWED_ROOT` (`commonpath` check).  
 4. Client path string remains the job key; operations use resolved path.
 
-Edge cases: symlinks crossing root → 403; broken symlink → 404; non-regular → 400.
-Small/empty file: POST → pending; GET empty → EMPTY_FILE.
+Edge cases: symlinks crossing root → 403; broken preview path → 404;
+non-regular path → 400. A direct-backend POST may register an expected file
+before it exists; the parent directory must already resolve under
+`ALLOWED_ROOT`.
 
 9. POST FLOW
 --------------------------------------------------------------------------------
 
-Validate path → classify mode (markers, `job_id`, `LOGS_DIR` readability) → register
-or update job → return mode. **Sequence detail:** library **`Analyzer`** + **§6.1**
-diagram.
+Validate path boundary → resolve explicit-or-inferred attempt identity → register
+or update the attempt. Progressive intent optionally schedules L0A pre-work;
+terminal intent starts background analysis. The response retains legacy mode
+fields for wire compatibility. **Sequence detail:** **§6.1** and
+`restart_agent_backend.py`.
 
 10. GET FLOW
 --------------------------------------------------------------------------------
@@ -387,10 +392,11 @@ Algorithms and edge cases — **ARCHITECTURE.md** and orchestration / splitlog m
                             SPLITLOG (CONDENSED)
 ================================================================================
 
-14–17. **Activation:** `job_id` + `LOGS_DIR` readable. **Tracker:** discovers files,
-sorts (cycle / timestamp / mtime per implementation), triggers analysis, coordinates
-with poll thread. **GET:** `file` selects a splitlog file; `wl_restart` selects a
-workload chunk within that file.
+14–17. On the retained legacy controller path, **activation** uses `job_id` plus
+a readable `LOGS_DIR`. Its tracker discovers files, sorts them by cycle,
+timestamp, and mtime, triggers analysis, and coordinates with its poll thread.
+Its GET supports `file` and `wl_restart`; the direct Restart Agent backend does
+not.
 **Full behavior:** **ARCHITECTURE.md**, `orchestration/splitlog.py`,
 `attribution/analyzer/engine.py` (`Analyzer`).
 

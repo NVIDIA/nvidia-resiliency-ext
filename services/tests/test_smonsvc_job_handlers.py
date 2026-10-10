@@ -41,6 +41,7 @@ class _AttrsvcClient:
         kwargs["on_success"](
             _Response(
                 {
+                    "status": "completed",
                     "recommendation": {
                         "action": "RESTART",
                         "reason": "safe to restart",
@@ -69,6 +70,7 @@ def _item(raw_text, reason_code):
 
 def test_log_attribution_result_uses_recommendation_over_raw_state(capsys):
     response = {
+        "status": "completed",
         "recommendation": {
             "action": "RESTART",
             "reason": "safe to restart failed run",
@@ -91,6 +93,7 @@ def test_log_attribution_result_uses_recommendation_over_raw_state(capsys):
 
 def test_log_attribution_result_uses_recommendation_for_timeout(capsys):
     response = {
+        "status": "completed",
         "recommendation": {
             "action": "TIMEOUT",
             "reason": "LLM analysis timed out",
