@@ -59,6 +59,21 @@ convention:
 4. During the next rendezvous, NVRx polls `GET /logs?wait=false` until attrsvc
    reports a completed result or the NVRx-owned decision deadline expires.
 
+Each POST is a single synchronous attempt bounded by the NVRx two-second client
+timeout; the client does not retry POST. A terminal POST must return `2xx` before
+NVRx installs a pollable request. An unaccepted terminal POST therefore drops
+only that cycle's analysis instead of pinning the first-come-first-served slot on
+a request that attrsvc never received.
+
+As a latency optimization, an unaccepted terminal POST also suppresses the
+immediately following optional progressive POST. Cycle-end terminal submission
+and next-cycle progressive submission are adjacent, so this avoids a second
+likely failure and up to another two seconds on the FT path. The suppression is
+one-shot and never suppresses terminal work. A failed progressive POST does not
+prevent the later authoritative terminal POST. Specific HTTP or transport
+failure details remain available in the client log but do not change this
+control flow.
+
 The progressive POST MAY arrive before the file exists. Terminal analysis also
 MUST tolerate a missing or empty file and return the Restart Agent's explicit
 log-unavailable result rather than failing the service request.
@@ -171,8 +186,9 @@ accumulator, never registration or the ability to run terminal analysis.
 
 The backend validates the path boundary, resolves explicit-or-inferred
 identity, and registers the attempt. The parent directory must exist under
-`ALLOWED_ROOT`; the file itself need not exist. It schedules an immediate
-metadata check and L0A-only precomputation when bytes are available. L0B-L4 do
+`ALLOWED_ROOT`; the file itself need not exist. When progressive precomputation
+is enabled, it schedules an immediate metadata check and L0A-only work when
+bytes are available. Otherwise the request remains registration-only. L0B-L4 do
 not run before terminal submission.
 
 ### Terminal POST
@@ -205,6 +221,35 @@ Restart Agent model-route timeout.
 - `completed`: the configured route has completed, or no better result can be
   produced within the Restart Agent analysis deadline. This is a request
   lifecycle status, so terminal execution failure is also `completed`.
+
+If attrsvc returns `404` after NVRx successfully submitted the terminal POST,
+the accepted request is no longer present. For example, cycle 2 may have been
+accepted and then lost when attrsvc restarted because request state is
+process-local. NVRx abandons that cycle without a STOP or RESTART recommendation
+and releases its first-come-first-served pending slot. It does not resubmit the
+old request; a later failed cycle can submit normally.
+Known permanent request errors (`400`, `403`, and `422`) also release the request
+immediately because repeating the same GET cannot repair the request. An
+unsupported non-HTTP endpoint is likewise permanent for the client and releases
+the request immediately. Transport errors, timeouts, malformed responses, and
+all other error statuses are availability failures. This includes transient
+client statuses such as `408`, `425`, and `429`, plus HTTP `5xx`. NVRx abandons
+after three consecutive availability failures total: the first failed GET plus
+two retries. A successful `pending` or `in_flight` response proves that attrsvc
+still owns the request and resets that count. Exhaustion abandons the cycle
+without a recommendation and releases the slot for a later failed cycle.
+
+The response lifecycle is closed: `pending` means registered but not yet
+executing, `in_flight` means analysis is executing, and `completed` means the
+request has finished. NVRx treats both incomplete states identically. Missing
+or unsupported status values are malformed availability failures and consume
+the same bounded GET-attempt budget. The shared attribution client parser owns
+this response-envelope validation; NVRx owns only HTTP outcome handling,
+bounded polling, and mapping a normalized completed result to STOP or continue.
+
+A completed `STOP` recommendation is latched. Every other completed action is
+non-stopping from the NVRx client's perspective; attrsvc retains the complete
+recommendation context for its own reporting.
 
 When execution fails without a valid candidate, the internal registry retains
 `failed` for diagnostics and metrics. The public terminal response projects it
@@ -340,6 +385,9 @@ The integration requires tests for:
 - NVRx ignoring in-flight candidates and consuming only a completed
   recommendation;
 - NVRx releasing its terminal request slot after a completed analysis failure;
+- bounded POST failure handling, one-shot progressive suppression, and terminal
+  submission recovery;
+- bounded GET availability failures and request loss or rejection;
 - missing/empty logs and log-convergence bounds;
 - late route completion updating history;
 - execution-registry eviction and clean shutdown; and
