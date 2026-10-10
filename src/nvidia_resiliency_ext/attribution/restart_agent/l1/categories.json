@@ -4,7 +4,7 @@
     {
       "id": 1,
       "name": "SLURM step cancelled / drain / preemption",
-      "description": "Clean external cancellation by the scheduler (scancel, drain, preemption); no application fault.",
+      "description": "Clean external cancellation by the scheduler - scancel, requeue, drain, preemption or a wall-clock timeout - with no application fault. Either surface is sufficient on its own. (a) A slurmstepd marker, e.g. \"*** STEP <id> ON <node> CANCELLED AT <time> ***\", with or without a stated reason, sometimes as the only content in an otherwise empty log. (b) Healthy iterations to the very end, then SIGTERM across many ranks, after which interpreter teardown emits tracebacks that read like application errors: \"Exception ignored in atexit callback\", weakref finalizer failures, TypeError/AttributeError on None as module globals are destroyed - artifacts of the kill, not its cause. If the stated reason is node failure, use cat 2 instead.",
       "decision": "RESTART"
     },
     {
@@ -16,7 +16,7 @@
     {
       "id": 3,
       "name": "Off-file termination / external teardown (cause not in log)",
-      "description": "Healthy training then an external-signal all-thread faulthandler dump (no 'Fatal Python error' / no 'Current thread 0x'), log truncated mid-dump; no in-file CANCELLED / watchdog / IB / Xid / NVRx marker. A real termination occurred but its cause is off-file (most likely a SLURM cancel/preempt/timeout).",
+      "description": "A real termination whose cause is not in this log. Training progresses normally, then only downstream surfaces appear and no initiating fault: an external-signal faulthandler dump, TCPStore connection resets as surviving ranks notice a peer vanish, \"destroy_process_group() was not called before program exit\" warnings at an abrupt exit, or atexit teardown noise. Completed iterations are the key signal - they prove rendezvous and setup already succeeded, so a later store or teardown error is a symptom rather than the cause. Usually a rank was killed, preempted or lost with its node, and the applog never sees why. If the log carries an explicit scheduler marker or SIGTERM across many ranks, use cat 1; if no iteration ever completed, use cat 12.",
       "decision": "RESTART"
     },
     {
@@ -70,7 +70,7 @@
     {
       "id": 12,
       "name": "Distributed rendezvous / TCPStore socket timeout",
-      "description": "c10d/TCPStore rendezvous socket timeout as the INITIATING failure only. TCPStore socket errors appear as cascade signatures across many other failure modes: when any rank dies for any reason (CUDA OOM, SIGKILL, node failure, mid-training watchdog abort, checkpoint code error, etc.), the surviving ranks eventually time out waiting for the dead peer on the TCPStore, so many logs contain TCPStore timeout lines that are secondary. Pick this category ONLY when TCPStore rendezvous timeout is the primary observable event and there is no earlier crash, OOM, watchdog trigger, or other upstream fault in the log that better explains the failure. Otherwise pick the upstream category.",
+      "description": "c10d/TCPStore rendezvous or socket failure during process-group setup, before training progresses: the store never comes up, or it fails while ranks are still joining. When store errors are the only failure surface, pick this with reduced confidence rather than declining to classify, even if the initiating rank's own output is absent. Two exclusions. If an upstream fault appears earlier in the log, pick that category. And if training iterations completed before the store errors began, rendezvous had already succeeded, so the store failed because something else died first - that is cat 3, not this.",
       "decision": "RESTART"
     },
     {
@@ -94,7 +94,7 @@
     {
       "id": 16,
       "name": "Filesystem I/O error / Lustre or node-local FS / import visibility",
-      "description": "Transient filesystem error on a NON-checkpoint path: Lustre I/O stall (OSError Errno 5), missing dataset cache from filesystem-visibility lag, or ImportError/ModuleNotFoundError where the failing import path lives on a network-mounted code tree. Missing CHECKPOINT paths are cat 22 (STOP).",
+      "description": "Transient filesystem error on a NON-checkpoint path: Lustre I/O stall (OSError Errno 5), missing dataset cache from filesystem-visibility lag, or ImportError/ModuleNotFoundError where the failing import path lives on a network-mounted code tree. Missing CHECKPOINT paths are cat 22.",
       "decision": "RESTART"
     },
     {
@@ -112,7 +112,7 @@
     {
       "id": 19,
       "name": "Checkpoint failure / transient async-write I/O",
-      "description": "Transient I/O failure during the checkpoint async-save path on a checkpoint directory: filesystem_async 'Local process 0 encountered an error', PyTorch inline_container position mismatch, BrokenPipeError Errno 108 from a writer, OSError Errno 5 (Input/output error). Prefer this over cat 16 whenever the failing path is a checkpoint directory and the mechanism is on the write side, even if the surface is generic filesystem I/O. Load-side checkpoint I/O errors that do not fit cat 10 (early/startup timeout) route to cat 16 (Filesystem I/O) instead; they have the same decision (RESTART) but a different labeling story.",
+      "description": "Transient I/O failure during the checkpoint async-save path on a checkpoint directory: filesystem_async 'Local process 0 encountered an error', PyTorch inline_container position mismatch, BrokenPipeError Errno 108 from a writer, OSError Errno 5 (Input/output error). Prefer this over cat 16 whenever the failing path is a checkpoint directory and the mechanism is on the write side, even if the surface is generic filesystem I/O. Load-side checkpoint I/O errors that do not fit cat 10 (early/startup timeout) route to cat 16 (Filesystem I/O) instead.",
       "decision": "RESTART"
     },
     {
@@ -154,19 +154,19 @@
     {
       "id": 26,
       "name": "CUDA OOM during checkpoint async-save",
-      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. An unchanged workload will keep hitting the same allocation ceiling on retry, so product policy calls this a STOP.",
+      "description": "CUDA OOM inside the async checkpoint-save path on a near-full GPU. An unchanged workload will keep hitting the same allocation ceiling on retry.",
       "decision": "STOP"
     },
     {
       "id": 27,
       "name": "Bad token / gradient Inf or NaN",
-      "description": "Non-finite gradient/loss from a bad token or transient overflow; external guidance is restart.",
+      "description": "Non-finite gradient/loss from a bad token or transient overflow.",
       "decision": "RESTART"
     },
     {
       "id": 28,
       "name": "Launch config or workload code deterministic error (TypeError/AttributeError)",
-      "description": "Deterministic runtime error inside already-loaded workload code that will recur on unchanged retry: TypeError/AttributeError on None value threaded through model code (e.g. float(None) in moe_layer postprocess), missing MASTER_ADDR, argparse error, or world-size mismatch. Excludes ModuleNotFoundError / ImportError where the failing import path resolves under Lustre or a mounted network filesystem - those are cat 16 (filesystem visibility), not a workload code fault, even if no adjacent FileNotFoundError is present on the same line.",
+      "description": "Deterministic runtime error inside already-loaded workload code that will recur on unchanged retry: TypeError/AttributeError on None value threaded through model code (e.g. float(None) in moe_layer postprocess), missing MASTER_ADDR, argparse error, or world-size mismatch. Excludes ModuleNotFoundError / ImportError where the failing import path resolves under Lustre or a mounted network filesystem - those are cat 16 (filesystem visibility), not a workload code fault, even if no adjacent FileNotFoundError is present on the same line. Also excludes anything raised during interpreter shutdown - inside \"Exception ignored\" / atexit callbacks, or appearing only after sustained successful iterations. A deterministic code fault recurs on an unchanged retry and so fails early and every time; one that appears only after thousands of iterations, at teardown, is the wake of an external kill (cat 1).",
       "decision": "STOP"
     },
     {
@@ -184,13 +184,13 @@
     {
       "id": 31,
       "name": "CPU OOM / Linux OOM killer",
-      "description": "Host memory exhausted: bare 'Killed' on one or more ranks corroborated by a slurmstepd 'Detected N oom_kill events ... Some of the step tasks have been OOM Killed' record (the oom_kill line often appears far below the 'Killed' lines). Host memory exhaustion is deterministic for the same job/config: an unchanged retry is expected to hit the same ceiling unless resources or configuration change, so product policy calls this a STOP.",
+      "description": "Host memory exhausted: bare 'Killed' on one or more ranks corroborated by a slurmstepd 'Detected N oom_kill events ... Some of the step tasks have been OOM Killed' record (the oom_kill line often appears far below the 'Killed' lines). Host memory exhaustion is deterministic for the same job/config: an unchanged retry is expected to hit the same ceiling unless resources or configuration change.",
       "decision": "STOP"
     },
     {
       "id": 32,
       "name": "CUDA OOM",
-      "description": "Device OOM at fixed batch/config. A CUDA OOM under an unchanged workload is highly likely to reproduce on the next attempt; product policy calls this a STOP because the retry cost is high and the outcome is stable.",
+      "description": "Device OOM at fixed batch/config. A CUDA OOM under an unchanged workload is highly likely to reproduce on the next attempt, and the outcome is stable across attempts.",
       "decision": "STOP"
     },
     {
@@ -202,13 +202,13 @@
     {
       "id": 34,
       "name": "Segmentation fault / native runtime crash",
-      "description": "Single-rank (rank 608) SIGSEGV in torch's pinned host allocator during GPTDataset index load, wild HIGH address (not 0x8), no self-reported corruption guard and no HW signal; a single log genuinely cannot separate a torch race from host-memory corruption.",
+      "description": "SIGSEGV in native code with no accompanying hardware signal and no self-reported corruption guard, usually confined to a single rank. A wild or high faulting address, rather than a near-null offset, points at memory corruption rather than a null dereference; host-side pinned-allocator and dataset-index paths are common sites. A single log cannot separate a library race from host-memory corruption.",
       "decision": "RESTART"
     },
     {
       "id": 35,
       "name": "Node-local native SIGBUS (Triton/TE native kernel)",
-      "description": "Native SIGBUS confined to one node/tray, two forms: (a) during Triton JIT .so dlopen/mmap at kernel load (driver.py compile_module_from_src -> create_module; zero iterations); (b) mid-training in the TE/Triton MoE permutation forward (permutation.py; one node's 4 ranks after ckpt 27600 while thousands of peers keep running). Node-local hardware/memory fault.",
+      "description": "Native SIGBUS confined to one node or tray, in two forms: during Triton JIT .so dlopen/mmap at kernel load, before any iteration completes; or mid-training inside a TE/Triton native kernel, where only that node's ranks die while thousands of peers keep running. The node-local blast radius is the discriminator, and points at a node-local hardware or memory fault rather than a workload bug.",
       "decision": "RESTART"
     },
     {
