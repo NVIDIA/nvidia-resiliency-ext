@@ -45,13 +45,21 @@ _GROUPS = frozenset(
         semconv.SPAN_GROUP_FT,
         semconv.SPAN_GROUP_CKPT,
         semconv.SPAN_GROUP_CKPT_PHASES,
+        semconv.SPAN_GROUP_CKPT_PROFILING,
     ]
 )
 _PRESETS = {
     "default": frozenset(
         [semconv.SPAN_GROUP_STARTUP, semconv.SPAN_GROUP_FT, semconv.SPAN_GROUP_CKPT]
     ),
-    "per_step": _GROUPS,
+    "per_step": frozenset(
+        [
+            semconv.SPAN_GROUP_STARTUP,
+            semconv.SPAN_GROUP_FT,
+            semconv.SPAN_GROUP_CKPT,
+            semconv.SPAN_GROUP_CKPT_PHASES,
+        ]
+    ),
     "profiling": _GROUPS,
 }
 
@@ -154,7 +162,7 @@ def setup_telemetry(
     if not _AVAILABLE:
         return _NoOpHandle()
     try:
-        config = _NemoLensConfig.from_env()
+        config = _NemoLensConfig.from_env(prefix="NVRX_OTEL", fallback_prefix="NEMO_LENS")
         config.service_name = service_name
         attributes = {"service.instance.id": instance_id} if instance_id else {}
         attributes.update(resource_attributes or {})
