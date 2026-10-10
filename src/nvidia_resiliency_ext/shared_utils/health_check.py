@@ -1524,8 +1524,9 @@ class NodeHealthCheck:
         Behavior:
           - If gRPC/protos are unavailable, or UDS socket is missing, return True (non-fatal/optional check).
           - On gRPC connectivity errors, return True.
-          - A success=false response marks the node unhealthy.
-          - For successful responses, JSON output with a non-empty failed_checks list marks the node unhealthy.
+          - Response success and exit code describe health check execution, not node health.
+          - JSON output with a non-empty failed_checks list marks the node unhealthy.
+          - Missing, incomplete, or unusable JSON output fails open.
         """
         # Use pre-validated target computed during initialization
         target = self._channel_target
@@ -1544,13 +1545,13 @@ class NodeHealthCheck:
 
                 if not response.success:
                     msg = (
-                        f"Node health check failed (exit_code={response.exit_code}). "
+                        f"Node health check execution failed (exit_code={response.exit_code}); "
+                        "evaluating output for explicit failed checks. "
                         f"Output: {response.output}"
                     )
                     if response.error:
                         msg += f" Error: {response.error}"
                     logger.warning(msg)
-                    return False
 
                 # Parse JSON output and check actionable failures.
                 try:
@@ -1579,7 +1580,7 @@ class NodeHealthCheck:
                     return True
 
                 logger.debug(
-                    f"Node health check: success (fail_count={result.get('fail_count')}, "
+                    f"Node health check: no actionable failures (fail_count={result.get('fail_count')}, "
                     f"failed_checks={failed_checks})"
                 )
                 return True

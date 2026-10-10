@@ -707,7 +707,7 @@ class TestNodeHealthCheck(unittest.TestCase):
 
         self.assertTrue(result)
 
-    def test_perform_health_check_fails_on_success_false_without_positive_fail_count(self):
+    def test_perform_health_check_ignores_success_false_with_non_json_output(self):
         checker, _ = self._checker_with_mocked_grpc(
             success=False,
             output="health check wrapper exited nonzero before returning JSON",
@@ -717,9 +717,9 @@ class TestNodeHealthCheck(unittest.TestCase):
 
         result = checker._perform_health_check()
 
-        self.assertFalse(result)
+        self.assertTrue(result)
 
-    def test_perform_health_check_fails_on_success_false_with_positive_fail_count(self):
+    def test_perform_health_check_fails_on_success_false_with_nonempty_failed_checks(self):
         checker, _ = self._checker_with_mocked_grpc(
             success=False,
             output='{"fail_count": 1, "failed_checks": ["bcm_healthcheck"]}',
@@ -730,6 +730,31 @@ class TestNodeHealthCheck(unittest.TestCase):
         result = checker._perform_health_check()
 
         self.assertFalse(result)
+
+    def test_perform_health_check_ignores_success_false_with_passing_json_output(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            success=False,
+            output=(
+                '{"summary": "All checks passed (46/46)", "fail_count": 0, '
+                '"failed_checks": [], "execution_metadata": {"full_runtime": 31.176}}'
+            ),
+            exit_code=-1,
+        )
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
+
+    def test_perform_health_check_ignores_success_false_with_truncated_json_output(self):
+        checker, _ = self._checker_with_mocked_grpc(
+            success=False,
+            output='{"fail_count": 1, "failed_checks": [',
+            exit_code=-1,
+        )
+
+        result = checker._perform_health_check()
+
+        self.assertTrue(result)
 
 
 class TestAttributionService(unittest.TestCase):
