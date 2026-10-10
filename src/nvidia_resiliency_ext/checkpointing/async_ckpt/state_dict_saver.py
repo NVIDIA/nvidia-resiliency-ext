@@ -374,9 +374,11 @@ def verify_global_metadata_reuse(
     return reuse
 
 
-def _encode_write_results(write_results) -> bytes:
-    """This rank's write results for the coordinator: a table if it can, else pickled."""
-    if isinstance(write_results, list) and _metadata_pickler.writes_tables():
+def _encode_write_results(write_results, storage_writer) -> bytes:
+    """This rank's write results for the coordinator: a table if it can and its storage writer
+    writes from tables (see _writes_rows), else pickled. A storage writer whose finish a subclass
+    overrides thus gets the write results from every rank that has the same writer as they are."""
+    if isinstance(write_results, list) and _writes_rows(storage_writer):
         try:
             return _table.encode(write_results)
         except _table.Unencodable:
@@ -466,7 +468,7 @@ def save_state_dict_async_finalize(
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.finalize_gather"):
-        rows = _gather_payloads(_encode_write_results(write_results), dist_wrapper)
+        rows = _gather_payloads(_encode_write_results(write_results, storage_writer), dist_wrapper)
     gather_end = time()
     logger.debug(
         f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end - gather_start}"

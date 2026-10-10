@@ -20,16 +20,19 @@ finish builds out of the same write results, rank by rank.
 """
 
 import dataclasses
+import io
 
 import numpy as np
 import pytest
 import torch
 from hypothesis import HealthCheck, assume, given, settings
+from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import Metadata, MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 
 from .test_metadata_pickler import dcp_saved_metadata, large_metadata, metadatas
 
@@ -104,6 +107,48 @@ def _result(idx=None, info=None):
         size_in_bytes=1,
         storage_data=_StorageInfo("__0_0.distcp", 0, 1) if info is None else info,
     )
+
+
+def _fields(results):
+    """Everything in each write result, index.index too, which MetadataIndex equality ignores."""
+    return [(vars(r.index), r.size_in_bytes, vars(r.storage_data)) for r in results]
+
+
+def test_to_write_results_gives_them_back():
+    """Each write result, in order, also two with equal indexes (from one rank, as a planner that
+    doesn't deduplicate may give)."""
+    results = [
+        _result(),
+        _result(
+            idx=MetadataIndex("w", torch.Size([0]), 3), info=_StorageInfo("__0_1.distcp", 5, 1)
+        ),
+        _result(idx=MetadataIndex("b")),
+    ]
+    assert _fields(table.to_write_results(table.decode(table.encode(results)))) == _fields(results)
+
+
+def test_torch_write_results_fit_the_table(tmp_path):
+    """What the table assumes of torch: the write results of FileSystemWriterAsync's write path
+    (torch's _write_item) have no transform descriptors, and size_in_bytes is the storage length,
+    so they come back from a table unchanged. Check it passes on a torch release before adding it
+    to TESTED_TORCH_VERSIONS."""
+    state_dict = {"t": torch.arange(12.0).reshape(3, 4), "b": io.BytesIO(b"bytes"), "n": 7}
+    planner = DefaultSavePlanner()
+    planner.set_up_planner(state_dict, is_coordinator=True)
+    plan = planner.create_local_plan()
+    items = [(item, planner.resolve_data(item)) for item in plan.items]
+    tensors = [(item, data) for item, data in items if isinstance(data, torch.Tensor)]
+    others = [(item, data) for item, data in items if not isinstance(data, torch.Tensor)]
+    writer = FileSystemWriterAsync(tmp_path)
+    results = FileSystemWriterAsync._write_bucket_to_storage(
+        [writer.transforms] if hasattr(writer, "transforms") else [],
+        open,
+        (str(tmp_path / "__0_0.distcp"), "__0_0.distcp", (others, tensors)),
+        False,
+        False,
+    )
+    assert len(results) == 3
+    assert _fields(table.to_write_results(table.decode(table.encode(results)))) == _fields(results)
 
 
 class _Str(str):

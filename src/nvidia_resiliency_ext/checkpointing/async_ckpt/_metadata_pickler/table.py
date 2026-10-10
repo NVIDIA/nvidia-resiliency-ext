@@ -38,7 +38,7 @@ decode, which builds Python strings, raises UnicodeDecodeError for them instead.
 """
 
 from dataclasses import dataclass
-from typing import List
+from typing import Iterator, List, Tuple
 
 import numpy as np
 import torch
@@ -257,33 +257,35 @@ def decode_rows(rows: np.ndarray) -> List[WriteResultTable]:
     return [decode(row) for row in rows]
 
 
+def _items(t: WriteResultTable) -> Iterator[Tuple[MetadataIndex, _StorageInfo]]:
+    """Each entry's index and storage info, in order."""
+    offsets = t.offsets.tolist()
+    pos = 0
+    for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
+        if flags & FLAG_OFFSET_SIZE:
+            idx = MetadataIndex(
+                t.strings[fqn],
+                torch.Size(offsets[pos : pos + ndim]),
+                index if flags & FLAG_INDEX else None,
+            )
+            pos += ndim
+        elif flags & FLAG_OFFSET:
+            idx = MetadataIndex(t.strings[fqn], None, index if flags & FLAG_INDEX else None)
+            idx.__dict__["offset"] = None
+        else:
+            idx = MetadataIndex(t.strings[fqn], index=index if flags & FLAG_INDEX else None)
+        yield idx, _StorageInfo(t.strings[path], offset, length)
+
+
 def to_storage_data(tables: List[WriteResultTable]) -> dict:
     """The storage_data dict the tables describe, as finish builds it from write results."""
-    storage_data = {}
-    for table in tables:
-        offsets = table.offsets.tolist()
-        pos = 0
-        for fqn, index, ndim, path, offset, length, flags in table.entry.tolist():
-            if flags & FLAG_OFFSET_SIZE:
-                idx = MetadataIndex(
-                    table.strings[fqn],
-                    torch.Size(offsets[pos : pos + ndim]),
-                    index if flags & FLAG_INDEX else None,
-                )
-                pos += ndim
-            elif flags & FLAG_OFFSET:
-                idx = MetadataIndex(table.strings[fqn], None, index if flags & FLAG_INDEX else None)
-                idx.__dict__["offset"] = None
-            else:
-                idx = MetadataIndex(table.strings[fqn], index=index if flags & FLAG_INDEX else None)
-            storage_data[idx] = _StorageInfo(table.strings[path], offset, length)
-    return storage_data
+    return {idx: info for t in tables for idx, info in _items(t)}
 
 
 def to_write_results(t: WriteResultTable) -> List[WriteResult]:
-    """The write results a table holds, as torch's finish takes them. size_in_bytes is the storage
-    length, as torch's writer reports it."""
+    """The write results a table holds, one per entry, in order. size_in_bytes is the storage
+    length, as torch's _write_item reports it."""
     return [
-        WriteResult(index=index, size_in_bytes=info.length, storage_data=info)
-        for index, info in to_storage_data([t]).items()
+        WriteResult(index=idx, size_in_bytes=info.length, storage_data=info)
+        for idx, info in _items(t)
     ]

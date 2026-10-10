@@ -29,6 +29,7 @@ from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_excepti
 from nvidia_resiliency_ext.checkpointing.async_ckpt import state_dict_saver
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
+    FileSystemWriterAsync,
     _wrap_exception_for_gather,
 )
 
@@ -45,9 +46,9 @@ def results(rank: int, n: int = 3):
     ]
 
 
-def test_without_process_group():
+def test_without_process_group(tmp_path):
     """Without a process group, the rank's own payload is the one row, padded to 8 bytes."""
-    payload = state_dict_saver._encode_write_results(results(0))
+    payload = state_dict_saver._encode_write_results(results(0), FileSystemWriterAsync(tmp_path))
     rows = state_dict_saver._gather_payloads(payload, _DistWrapper(None, False, 0))
     assert rows.shape[0] == 1 and rows.shape[1] % 8 == 0 and rows.shape[1] >= len(payload)
     assert rows[0, : len(payload)].tobytes() == payload
@@ -78,3 +79,28 @@ def test_coordinator_tells_tables_from_pickles():
     assert pickled[1] == results(1) and pickled[3] == []
     assert _is_wrapped_exception(pickled[2])
     assert table.to_write_results(table.decode(rows[0])) == results(0)
+
+
+class _OwnFinish(FileSystemWriterAsync):
+    """A storage writer whose subclass has its own finish."""
+
+    def finish(self, metadata, results):
+        super().finish(metadata, results)
+
+
+def test_overridden_finish_gets_the_write_results(tmp_path):
+    """A rank whose storage writer overrides finish sends its write results pickled, as they are,
+    so that finish gets them unchanged; one that doesn't sends a table if tables are on."""
+    duplicate = WriteResult(
+        index=MetadataIndex("r0.w", torch.Size([0, 0]), 7),
+        size_in_bytes=4,
+        storage_data=_StorageInfo("__0_1.distcp", 0, 4),
+    )
+    rank_results = results(0) + [duplicate]
+    payload = state_dict_saver._encode_write_results(rank_results, _OwnFinish(tmp_path))
+    sent = pickle.loads(payload)
+    assert [(vars(r.index), r.size_in_bytes, r.storage_data) for r in sent] == [
+        (vars(r.index), r.size_in_bytes, r.storage_data) for r in rank_results
+    ]
+    payload = state_dict_saver._encode_write_results(rank_results, FileSystemWriterAsync(tmp_path))
+    assert (payload[:8] == table.MAGIC.to_bytes(8, "little")) == writer.writes_tables()
