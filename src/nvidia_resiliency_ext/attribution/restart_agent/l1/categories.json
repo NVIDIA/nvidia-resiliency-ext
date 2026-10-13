@@ -124,7 +124,7 @@
     {
       "id": 21,
       "name": "Post-checkpoint progress-log assertion",
-      "description": "Assertion after checkpoint resume (progress-log bookkeeping); restart from last committed checkpoint is appropriate.",
+      "description": "Assertion raised by progress-log bookkeeping after a checkpoint resume: the iteration or sample counts recorded in the progress log disagree with the state of the checkpoint being resumed. Bookkeeping is what failed, not the configuration or the model code, and the last committed checkpoint is intact, so restart from it is appropriate. Not for assertions that check a configuration value - global batch size divisibility, world size, parallelism dimensions - which fail identically on an unchanged retry and belong in cat 28, even when they first fire after a resume.",
       "decision": "RESTART"
     },
     {
