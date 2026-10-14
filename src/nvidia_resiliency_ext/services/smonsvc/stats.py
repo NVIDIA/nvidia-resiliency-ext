@@ -19,7 +19,8 @@ def get_stats_dict(
     Build stats dictionary for HTTP endpoint.
 
     "jobs" is a snapshot of the current in-memory job set. All other sections
-    (job_totals, slurm, path_errors, http_errors) are cumulative since process start.
+    (job_totals, slurm, path_errors, http_errors, log_paths) are cumulative
+    since process start.
 
     Args:
         state: MonitorState with job and counter data
@@ -27,6 +28,7 @@ def get_stats_dict(
 
     Returns:
         Stats dictionary with jobs, job_totals, slurm, path_errors, http_errors
+        and log_paths
     """
     with lock:
         jobs = state.jobs
@@ -38,7 +40,7 @@ def get_stats_dict(
         has_path = sum(1 for j in jobs.values() if j.stdout_path)
         total = len(jobs)
 
-        return {
+        stats = {
             "jobs": {
                 "total": total,
                 "running": running,
@@ -73,7 +75,15 @@ def get_stats_dict(
             "http_errors": {
                 "rate_limited": state.http_rate_limited,
             },
+            "log_paths": {
+                "claimed": len(state.submitted_log_paths),
+                "duplicates_skipped": state.duplicate_log_paths,
+                "analyzed": len(state.analyzed_log_paths),
+                "duplicate_analyses": state.duplicate_analyses,
+                "no_app_log_skipped": state.jobs_without_app_log,
+            },
         }
+        return stats
 
 
 def get_jobs_list(
