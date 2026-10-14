@@ -40,6 +40,9 @@ def _item(primary_issues, explanation="checkpoint corrupted"):
 
 def _response(action="STOP", items=None, reason="terminal failure"):
     return {
+        # attrsvc always reports a lifecycle status and parse_attrsvc_response
+        # now requires one; omitting it here only ever reflected the fixture.
+        "status": "completed",
         "recommendation": {"action": action, "reason": reason, "source": "log_analyzer"},
         "result": {
             "module": "log_analyzer",
@@ -311,6 +314,7 @@ def test_stats_as_dict_exposes_all_counters(monkeypatch):
 def _restart_agent_response(action="STOP"):
     """Shape produced by the direct Restart Agent backend: no module, no item list."""
     return {
+        "status": "completed",
         "result": {
             "decision": action,
             "decision_basis": "concrete_confirmation_retry_exhausted",
@@ -341,6 +345,7 @@ def test_restart_agent_response_reaches_slack(monkeypatch):
 
 def _restart_agent_payload():
     return {
+        "status": "completed",
         "result": {
             "decision": "STOP",
             "decision_basis": "concrete_confirmation_retry_exhausted",
@@ -1116,7 +1121,11 @@ def test_no_reply_when_there_is_no_detail(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
     bare = parse_attrsvc_response(
-        {"result": {}, "recommendation": {"action": "STOP", "reason": "", "source": ""}},
+        {
+            "status": "completed",
+            "result": {},
+            "recommendation": {"action": "STOP", "reason": "", "source": ""},
+        },
         log_path="/x.log",
     )
 
