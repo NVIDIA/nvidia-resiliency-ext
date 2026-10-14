@@ -1236,3 +1236,34 @@ def test_headline_falls_back_to_the_policy_without_a_category():
 
 def test_headline_is_empty_without_a_decision():
     assert slack_mod.decision_rationale({}).headline() == ""
+
+
+# ─── naming the owner without tagging them ───
+
+
+def test_job_line_names_the_owner():
+    line = slack_mod.AnalysisIdentity(
+        job_id="4234179", user="dnarayanan", run_name="rollback_34k", cycle_id=3
+    ).as_line()
+
+    assert "*Owner:* `dnarayanan`" in line
+    assert "<@" not in line  # named, not tagged
+
+
+def test_owner_is_named_even_with_no_mention_domain(monkeypatch):
+    # The two are independent: who launched the job is useful to every reader,
+    # while tagging decides who gets interrupted.
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client, email_domain="")
+
+    notifier.notify(_job(user="rwaleffe"), _parsed())
+    text = client.summaries[0]["text"]
+
+    assert "*Owner:* `rwaleffe`" in text
+    assert "<@" not in text
+
+
+def test_placeholder_owners_are_omitted():
+    for placeholder in ("", "unknown", "UNKNOWN", "none", "  "):
+        line = slack_mod.AnalysisIdentity(job_id="1", user=placeholder).as_line()
+        assert "Owner" not in line, placeholder

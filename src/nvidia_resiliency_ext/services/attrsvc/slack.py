@@ -26,7 +26,7 @@ settings:
 ``NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN``
     Domain used to turn a job owner into an email address for an ``@`` mention,
     e.g. ``example.com``. Unset means no mention is attempted; the owner is
-    still named in the message.
+    still named in the job line either way.
 
 ``slack-sdk`` is a regular dependency. Without a token and channel the notifier
 reports itself disabled and attribution behaves exactly as before; the import is
@@ -589,6 +589,12 @@ class AnalysisIdentity:
             parts.append(f"*Job Name:* `{self.run_name}`")
         if self.cycle_id is not None:
             parts.append(f"*Cycle:* {self.cycle_id}")
+        # Named as plain text, independently of whether an @-mention is
+        # configured: who launched a job is useful to every reader, while
+        # tagging is a decision about who gets interrupted.
+        owner = (self.user or "").strip()
+        if owner and owner.lower() not in ("unknown", "none"):
+            parts.append(f"*Owner:* `{owner}`")
         return " | ".join(parts)
 
 
