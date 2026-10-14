@@ -1,6 +1,6 @@
 Straggler
 =========
 
-.. automodule:: nvidia_resiliency_ext.straggler.straggler
+.. automodule:: nvidia_resiliency_ext.attribution.straggler.straggler
    :members:
    :show-inheritance:

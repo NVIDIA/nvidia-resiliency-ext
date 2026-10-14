@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import os
+from unittest import mock
+from urllib.parse import unquote
+
+import pytest
+
+from nvidia_resiliency_ext.checkpointing.async_ckpt import core
+
+
+def _parse(carrier):
+    return {
+        segment.split("=", 1)[0]: unquote(segment.split("=", 1)[1])
+        for segment in carrier.split(",")
+        if "=" in segment
+    }
+
+
+def _start_worker(carrier, start_error=None, observed=None):
+    observed = {} if observed is None else observed
+
+    class FakeProcess:
+        def __init__(self, **kwargs):
+            observed["process_args"] = kwargs["args"]
+
+        def start(self):
+            observed["carrier"] = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
+            if start_error is not None:
+                raise start_error
+
+    fake_context = mock.Mock()
+    fake_context.Process = FakeProcess
+    with (
+        mock.patch.dict("os.environ", {}, clear=False),
+        mock.patch.object(core.mp, "get_context", return_value=fake_context),
+        mock.patch.object(core.PersistentAsyncCaller, "_worker_restart_callbacks", []),
+    ):
+        caller = core.PersistentAsyncCaller()
+        try:
+            if carrier is None:
+                os.environ.pop("OTEL_RESOURCE_ATTRIBUTES", None)
+            else:
+                os.environ["OTEL_RESOURCE_ATTRIBUTES"] = carrier
+            caller._start_worker(3)
+        finally:
+            observed["restored"] = os.environ.get("OTEL_RESOURCE_ATTRIBUTES")
+            caller.process = None
+    return observed
+
+
+@pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")
+@pytest.mark.parametrize("trainer_rank", ["7", ""])
+def test_worker_start_uses_live_trainer_resource_and_preserves_rank(trainer_rank):
+    trainer = (
+        f"example.attribute=trainer-value,nv.dl.job.uuid=job-1,nv.dl.rank={trainer_rank},"
+        "nv.dl.role=trainer,service.instance.id=trainer-7"
+    )
+    observed = _start_worker(trainer)
+    worker = _parse(observed["carrier"])
+
+    assert worker["example.attribute"] == "trainer-value"
+    assert worker["nv.dl.job.uuid"] == "job-1"
+    assert worker["nv.dl.rank"] == trainer_rank
+    assert worker["nv.dl.role"] == "ckpt_worker"
+    assert worker["service.instance.id"] == "nvrx-ckpt3"
+    assert observed["process_args"][0] == 3
+    assert observed["restored"] == trainer
+
+
+@pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")
+@pytest.mark.parametrize(
+    "trainer, fail",
+    [
+        (None, False),
+        ("", False),
+        (None, True),
+        ("", True),
+        ("example.attribute=trainer-value,nv.dl.rank=3,nv.dl.role=trainer", True),
+    ],
+)
+def test_worker_start_restores_trainer_environment(trainer, fail):
+    observed = {}
+    if fail:
+        with pytest.raises(RuntimeError, match="Process.start failed"):
+            _start_worker(trainer, RuntimeError("Process.start failed"), observed)
+    else:
+        _start_worker(trainer, observed=observed)
+    assert _parse(observed["carrier"])["nv.dl.rank"] == "3"
+    assert observed["restored"] == trainer
+
+
+@pytest.mark.skipif(not core.telemetry._AVAILABLE, reason="nemo-lens is not installed")
+def test_exported_worker_resource_restores_types_from_spawn_carrier():
+    import json
+    import subprocess
+    import sys
+
+    trainer = (
+        "example.attribute=trainer-value,nv.dl.job.uuid=job-1,nv.dl.rank=7,"
+        "nv.dl.role=trainer,service.instance.id=trainer-7,software.version=001"
+    )
+    observed = _start_worker(trainer)
+    code = r"""
+import json
+from functools import partial
+from nvidia_resiliency_ext.shared_utils import telemetry
+from nemo.lens import setup_telemetry
+from opentelemetry import trace
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+exporter = InMemorySpanExporter()
+telemetry._setup_telemetry = partial(setup_telemetry, span_exporter=exporter)
+handle = telemetry.setup_telemetry('nvrx.ckpt_worker')
+with trace.get_tracer('worker-test').start_as_current_span('worker'):
+    pass
+trace.get_tracer_provider().force_flush()
+print(json.dumps(dict(exporter.get_finished_spans()[0].resource.attributes)))
+handle.shutdown()
+"""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("NEMO_LENS_", "OTEL_"))
+    }
+    env.update(
+        OTEL_RESOURCE_ATTRIBUTES=observed["carrier"],
+        OTEL_TRACES_SAMPLER="always_on",
+        NEMO_LENS_ENABLED="true",
+        NEMO_LENS_METRICS_ENABLED="false",
+        NEMO_LENS_LOGS_ENABLED="false",
+        NEMO_LENS_TRACES_ENABLED="true",
+        NEMO_LENS_GPU_PROBE="false",
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    resource = json.loads(result.stdout)
+    assert type(resource["nv.dl.rank"]) is int
+    assert resource["nv.dl.rank"] == 7
+    assert resource["example.attribute"] == "trainer-value"
+    assert resource["nv.dl.job.uuid"] == "job-1"
+    assert resource["nv.dl.role"] == "ckpt_worker"
+    assert resource["service.instance.id"] == "nvrx-ckpt3"
+    assert resource["service.name"] == "nvrx.ckpt_worker"
+    assert resource["software.version"] == "001"
+    assert observed["restored"] == trainer

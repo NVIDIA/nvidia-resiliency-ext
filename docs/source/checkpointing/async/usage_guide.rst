@@ -161,7 +161,7 @@ The MSC URL scheme is ``msc://<profile-name>/<path>``. The example below shows h
 Example: Saving and Loading Checkpoints with MSC
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The following code demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integrations. The `FileSystemWriter example`_ also provides an ``enable_msc`` option to use MSC for checkpoint saving and loading.
+The following code demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integrations. The :doc:`FileSystemWriter example <examples/writer_example>` also provides an ``enable_msc`` option to use MSC for checkpoint saving and loading.
 
 .. code-block:: python
 
