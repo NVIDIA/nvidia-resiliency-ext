@@ -50,6 +50,7 @@ from .test_metadata_pickler import (
     FIXED_METADATA,
     NEEDS_FAST,
     NEEDS_NATIVE,
+    SETTABLE_FIELD,
     _Metadata,
     _metadata_changed_while_pickled,
     _rename_first,
@@ -350,9 +351,9 @@ def test_with_fields():
     """Fields set on a table are written as if set on the Metadata; one the table doesn't have yet
     comes last. Names that aren't fields a save sets are refused."""
     metadata = writer._sample_metadata()
-    del metadata.version
-    table = StateDictTable.from_metadata(metadata).with_fields(version="9.9")
-    metadata.version = "9.9"
+    delattr(metadata, SETTABLE_FIELD)
+    table = StateDictTable.from_metadata(metadata).with_fields(**{SETTABLE_FIELD: "9.9"})
+    setattr(metadata, SETTABLE_FIELD, "9.9")
     buf = io.BytesIO()
     writer.dump_metadata(table, buf, storage_data=metadata.storage_data)
     assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(metadata))
@@ -457,18 +458,20 @@ def test_writing_a_table_matches_writing_the_metadata(metadata, data):
 
 @hypothesis_settings
 @given(metadatas(), st.none() | texts)
-def test_table_round_trips(metadata, version):
+def test_table_round_trips(metadata, value):
     """to_metadata gives the metadata back, with the fields with_fields set, as stock pickle
     round-trips it; MetadataTemplate does in both its forms."""
     expected = stock_round_trip(metadata)
-    expected.version, expected.storage_data = version, None
-    state_dict_table = StateDictTable.from_metadata(metadata).with_fields(version=version)
+    setattr(expected, SETTABLE_FIELD, value)
+    expected.storage_data = None
+    fields = {SETTABLE_FIELD: value}
+    state_dict_table = StateDictTable.from_metadata(metadata).with_fields(**fields)
     assert_identical(state_dict_table.to_metadata(), expected)
-    as_table = MetadataTemplate(StateDictTable.from_metadata(metadata)).with_fields(version=version)
+    as_table = MetadataTemplate(StateDictTable.from_metadata(metadata)).with_fields(**fields)
     assert_identical(as_table.to_metadata(), expected)
     as_metadata = MetadataTemplate(dataclasses.replace(metadata, storage_data=None))
-    back = as_metadata.with_fields(version=version).to_metadata()
-    assert back == dataclasses.replace(metadata, version=version, storage_data=None)
+    back = as_metadata.with_fields(**fields).to_metadata()
+    assert back == dataclasses.replace(metadata, **fields, storage_data=None)
     buf = io.BytesIO()
     as_table.dump(buf, storage_data=metadata.storage_data)
     expected.storage_data = stock_round_trip(metadata).storage_data

@@ -24,7 +24,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
-from .test_metadata_pickler import NEEDS_FAST, assert_identical, stock_round_trip
+from .test_metadata_pickler import NEEDS_FAST, SETTABLE_FIELD, assert_identical, stock_round_trip
 
 
 @pytest.fixture(params=[pytest.param("fast", marks=NEEDS_FAST), "off"])
@@ -72,8 +72,8 @@ def test_with_fields_leaves_the_original_alone(fast):
     metadata = writer._sample_metadata()
     metadata_template = MetadataTemplate.from_metadata(metadata)
     before = pickle.dumps(metadata_template.to_metadata())
-    changed = metadata_template.with_fields(version="9.9")
-    assert changed.to_metadata().version == "9.9"
+    changed = metadata_template.with_fields(**{SETTABLE_FIELD: "9.9"})
+    assert getattr(changed.to_metadata(), SETTABLE_FIELD) == "9.9"
     assert pickle.dumps(metadata_template.to_metadata()) == before
 
 
