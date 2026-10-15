@@ -14,7 +14,7 @@
 #
 # Build from repo root to include nvidia_resiliency_ext library
 
-FROM python:3.11-slim
+FROM python:3.12-slim-bookworm
 
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -26,14 +26,23 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy and install the root package, which owns both service entry points.
+# Install the standalone service dependencies independently from the root
+# package's workload-side dependency set.
+COPY services/attrsvc/deploy/requirements.txt ./services/attrsvc/deploy/requirements.txt
+RUN pip install --no-cache-dir -r services/attrsvc/deploy/requirements.txt
+
+# Install the root package code without pulling workload-side dependencies.
 COPY pyproject.toml README.md build.py ./
 COPY src/ ./src/
 ENV STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1
-RUN pip install --no-cache-dir .
+ARG NVRX_PACKAGE_VERSION=0.0.0
+RUN POETRY_DYNAMIC_VERSIONING_BYPASS="${NVRX_PACKAGE_VERSION}" \
+    pip install --no-cache-dir --no-deps .
 
-# Verify commands are available
-RUN command -v nvrx-attrsvc && command -v nvrx-smonsvc
+# Verify the service command and its import graph without PyTorch.
+RUN command -v nvrx-attrsvc && \
+    python -c "import nvidia_resiliency_ext.services.attrsvc.app" && \
+    python -c "import importlib.util; assert importlib.util.find_spec('torch') is None"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
@@ -45,5 +54,4 @@ ENV NVRX_ATTRSVC_PORT=8000
 
 EXPOSE 8000
 
-# Default to attribution service; override with nvrx-smonsvc for monitor
 CMD ["nvrx-attrsvc"]

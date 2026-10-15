@@ -279,6 +279,7 @@ asyncio.run(main())
 | `deploy/supervise_attrsvc.sh` | Restart an attrsvc Slurm child after transient exits |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |
+| `deploy/requirements.txt` | Standalone attrsvc image dependencies; excludes workload-side PyTorch/CUDA |
 | `deploy/kubernetes.yaml` | Kubernetes deployment manifest |
 | `deploy/slurm.sbatch` | SLURM batch script |
 
