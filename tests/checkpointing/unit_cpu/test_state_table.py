@@ -26,9 +26,11 @@ from collections import OrderedDict
 import numpy as np
 import pytest
 import torch
-from hypothesis import given
+from hypothesis import assume, given
+from hypothesis import strategies as st
 from torch.distributed.checkpoint.storage import WriteResult
 
+from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
     pickler,
     state_table,
@@ -42,6 +44,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_tabl
     TENSOR,
     StateDictTable,
 )
+from nvidia_resiliency_ext.checkpointing.async_ckpt.global_metadata import GlobalMetadata
 
 from .test_metadata_pickler import (
     FIXED_METADATA,
@@ -53,11 +56,13 @@ from .test_metadata_pickler import (
     _Str,
     assert_identical,
     hypothesis_settings,
+    int64s,
     large_metadata,
     metadatas,
     properties_of_equal_values,
     stock_round_trip,
     subclassed_metadata,
+    texts,
 )
 
 
@@ -407,3 +412,123 @@ def test_dump_metadata_of_table_without_a_writer(monkeypatch):
     writer.dump_metadata(table, buf, storage_data=metadata.storage_data)
     back = pickle.loads(buf.getvalue())
     assert back == metadata and list(vars(back)) == list(vars(metadata))
+
+
+# Properties over random metadata, next to the directed tests above.
+
+WRITER_MODULES = [pickler, *([writer.native] if writer.native else [])]
+
+
+def _random_rows(metadata, data):
+    """metadata.storage_data as write-result tables of a random number of ranks, each a contiguous
+    run of its items, so that the rows list the items in the dict's order; None if an item doesn't
+    fit a table."""
+    items = list(metadata.storage_data.items())
+    cuts = sorted(data.draw(st.lists(st.integers(0, len(items)), max_size=4)))
+    parts = [items[a:b] for a, b in zip([0, *cuts], [*cuts, len(items)])]
+    try:
+        payloads = [
+            table.encode([WriteResult(index, info.length, info) for index, info in part])
+            for part in parts
+        ]
+    except table.Unencodable:
+        return None
+    width = -(-max(map(len, payloads)) // 8) * 8
+    rows = np.zeros((len(payloads), width), dtype=np.uint8)
+    for rank, payload in enumerate(payloads):
+        rows[rank, : len(payload)] = np.frombuffer(payload, dtype=np.uint8)
+    return rows
+
+
+@hypothesis_settings
+@given(metadatas(), st.data())
+def test_writing_a_table_matches_writing_the_metadata(metadata, data):
+    """Both writers write a table, with storage_data or with rows of it, as the metadata."""
+    state_dict_table = StateDictTable.from_metadata(metadata)
+    expected = pickler.dumps(metadata)
+    rows = _random_rows(metadata, data)
+    for module in WRITER_MODULES:
+        assert module.dumps_table(state_dict_table, metadata.storage_data) == expected
+        if rows is not None:
+            assert module.dumps_table(state_dict_table, storage_rows=rows) == expected
+
+
+@hypothesis_settings
+@given(metadatas(), st.none() | texts)
+def test_table_round_trips(metadata, version):
+    """to_metadata gives the metadata back, with the fields with_fields set, as stock pickle
+    round-trips it; GlobalMetadata does in both its forms."""
+    expected = stock_round_trip(metadata)
+    expected.version, expected.storage_data = version, None
+    state_dict_table = StateDictTable.from_metadata(metadata).with_fields(version=version)
+    assert_identical(state_dict_table.to_metadata(), expected)
+    as_table = GlobalMetadata(StateDictTable.from_metadata(metadata)).with_fields(version=version)
+    assert_identical(as_table.to_metadata(), expected)
+    as_metadata = GlobalMetadata(dataclasses.replace(metadata, storage_data=None))
+    back = as_metadata.with_fields(version=version).to_metadata()
+    assert back == dataclasses.replace(metadata, version=version, storage_data=None)
+    buf = io.BytesIO()
+    as_table.dump(buf, storage_data=metadata.storage_data)
+    expected.storage_data = stock_round_trip(metadata).storage_data
+    assert_identical(pickle.loads(buf.getvalue()), expected)
+
+
+def _chunks(chunks):
+    return [(tuple(offsets), tuple(sizes)) for offsets, sizes in chunks]
+
+
+@hypothesis_settings
+@given(metadatas(), st.data())
+def test_the_reuse_views_agree(metadata, data):
+    """The reuse check reads the same entries from a Metadata and from its table."""
+    objects = _metadata_reuse.ObjectEntries(metadata)
+    tables = _metadata_reuse.TableEntries(StateDictTable.from_metadata(metadata))
+    assert len(objects) == len(tables) and objects.counts() == tables.counts()
+    assert objects.planner_data == tables.planner_data
+    for i, count in enumerate(objects.counts()):
+        assert objects.fqn(i) == tables.fqn(i) and objects.is_tensor(i) == tables.is_tensor(i)
+        if objects.is_tensor(i):
+            lo = data.draw(st.integers(0, count))
+            hi = data.draw(st.integers(lo, count))
+            assert _chunks(objects.chunks(i, lo, hi)) == _chunks(tables.chunks(i, lo, hi))
+    missing = data.draw(texts.filter(lambda fqn: fqn not in metadata.state_dict_metadata))
+    for fqn in [*metadata.state_dict_metadata, missing]:
+        expected, got = objects.tensor(fqn), tables.tensor(fqn)
+        assert (
+            (expected == got)
+            if isinstance(expected, str)
+            else (
+                not isinstance(got, str)
+                and tuple(expected[0]) == tuple(got[0])
+                and expected[1] == got[1]
+            )
+        )
+
+
+@NEEDS_NATIVE
+@hypothesis_settings
+@given(metadatas(), st.data())
+def test_both_writers_treat_a_corrupted_table_alike(metadata, data):
+    """Change one value of one array of a valid table: either a StateDictTable refuses to be it
+    and the C++ writer refuses to read it, or both writers write the same bytes."""
+    state_dict_table = StateDictTable.from_metadata(metadata)
+    name = data.draw(st.sampled_from(state_table._ARRAYS))
+    array = getattr(state_dict_table, name).copy()
+    assume(len(array) > 0)
+    i = data.draw(st.integers(0, len(array) - 1))
+    if array.dtype == np.uint8:
+        array[i] = data.draw(st.integers(0, 255))
+    else:
+        array[i] = data.draw(st.integers(-3, 20) | int64s)
+    attributes = _attributes(state_dict_table, **{name: array})
+    try:
+        python = StateDictTable(**attributes)
+    except ValueError:
+        python = None
+    try:
+        native = writer.native.dumps_table(types.SimpleNamespace(**attributes))
+    except ValueError:
+        native = None
+    assert (python is None) == (native is None)
+    if python is not None:
+        assert pickler.dumps_table(python) == native
