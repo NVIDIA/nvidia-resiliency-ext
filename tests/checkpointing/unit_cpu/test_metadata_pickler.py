@@ -86,8 +86,8 @@ def assert_written_like_stock(dumps, md: Metadata) -> None:
 # native writer is limited to; fqns and paths have no lone surrogates, which it cannot encode.
 # Both cases are tested as fallbacks below.
 int64s = st.integers(min_value=-(2**63), max_value=2**63 - 1)
-dims = st.integers(min_value=0, max_value=2**63 - 1)
-sizes = st.lists(dims, max_size=6).map(torch.Size)
+dims_values = st.integers(min_value=0, max_value=2**63 - 1)
+sizes = st.lists(dims_values, max_size=6).map(torch.Size)
 texts = st.text(max_size=300)
 properties = st.builds(
     TensorProperties,
@@ -95,6 +95,15 @@ properties = st.builds(
     requires_grad=st.sampled_from([True, False, 1, 0]),  # equal values, different pickles
 )
 chunks = st.builds(ChunkStorageMetadata, offsets=sizes, sizes=sizes)
+
+
+@st.composite
+def consistent_tensors(draw):
+    """A tensor entry whose size and chunks all have the same number of dims, as in a checkpoint."""
+    ndim = draw(st.integers(0, 4))
+    dims = st.lists(dims_values, min_size=ndim, max_size=ndim).map(torch.Size)
+    chunk = st.builds(ChunkStorageMetadata, offsets=dims, sizes=dims)
+    return TensorStorageMetadata(draw(properties), draw(dims), draw(st.lists(chunk, max_size=5)))
 
 
 @st.composite
@@ -108,9 +117,19 @@ def metadatas(draw):
         size=sizes,
         chunks=st.lists(chunks, max_size=5),
     )
-    state_dict_metadata = draw(
-        st.dictionaries(st.sampled_from(fqns), st.one_of(tensor, st.builds(BytesStorageMetadata)))
+    # Unusual entries, which the writers leave to the stdlib pickler: an object of a subclass, a
+    # tuple of chunks. (Chunks whose number of dims differs from the size's come from tensor.)
+    unusual = st.one_of(
+        st.builds(_Tensor, properties=properties, size=sizes, chunks=st.lists(chunks, max_size=3)),
+        st.builds(
+            TensorStorageMetadata,
+            properties=properties,
+            size=sizes,
+            chunks=st.lists(chunks, max_size=3).map(tuple),
+        ),
     )
+    entry = st.one_of(consistent_tensors(), tensor, st.builds(BytesStorageMetadata), unusual)
+    state_dict_metadata = draw(st.dictionaries(st.sampled_from(fqns), entry))
     index = st.builds(
         MetadataIndex,
         fqn=st.sampled_from(fqns),
