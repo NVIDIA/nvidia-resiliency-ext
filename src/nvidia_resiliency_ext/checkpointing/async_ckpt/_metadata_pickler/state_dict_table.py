@@ -117,9 +117,9 @@ class StateDictTable:
 
     @classmethod
     def from_metadata(cls, metadata: Metadata) -> "StateDictTable":
-        """metadata without its storage_data, as a table.
+        """Convert metadata, without its storage_data, to a table.
 
-        Raises TypeError for what the writers can't write from a table: a subclass of Metadata, a
+        Raise TypeError for what the writers can't write from a table: a subclass of Metadata, a
         state_dict_metadata that isn't a dict, or an fqn that isn't a str.
         """
         if type(metadata) is not Metadata:
@@ -176,9 +176,10 @@ class StateDictTable:
         )
 
     def to_metadata(self, storage_data: Optional[dict] = None) -> Metadata:
-        """A new Metadata equal to the one this table was converted from, with this storage_data.
+        """Build a new Metadata equal to the one this table was converted from.
 
-        Its fields are set in the order the original had them, so it pickles alike.
+        Its storage_data is the one given, and its fields are set in the order the original had
+        them, so that it pickles alike.
         """
         metadata = Metadata.__new__(Metadata)
         for name, opcodes in self.fields:
@@ -194,9 +195,12 @@ class StateDictTable:
         return metadata
 
     def with_fields(self, **values) -> "StateDictTable":
-        """This table with these Metadata fields (e.g. version) set to these values, sharing its
-        arrays. A field the table doesn't have yet is added last, as setting it on the Metadata
-        would. Raises TypeError for a name that isn't a field of Metadata."""
+        """Return a copy of this table with these Metadata fields (e.g. version) set.
+
+        The copy shares the table's arrays. A field the table doesn't have yet is added last, as
+        setting it on the Metadata would. Raise TypeError for a name that isn't a field of Metadata
+        a save sets.
+        """
         known = {f.name for f in dataclasses.fields(Metadata)} - {STATE_DICT_METADATA, STORAGE_DATA}
         unknown = set(values) - known
         if unknown:
@@ -217,22 +221,22 @@ class StateDictTable:
         return sum(getattr(self, name).nbytes for name in self.ARRAYS)
 
     def chunk_count(self, i: int) -> int:
-        """The number of chunks of entry i (0 unless a tensor)."""
+        """Return the number of chunks of entry i (0 unless a tensor)."""
         return int(self.chunk_start[i + 1] - self.chunk_start[i])
 
     def size(self, i: int) -> np.ndarray:
-        """Entry i's size (empty unless a tensor)."""
+        """Return entry i's size (empty unless a tensor)."""
         start = self.dims_start[i]
         return self.dims[start : start + self.ndim[i]]
 
     def chunks_dims(self, i: int) -> np.ndarray:
-        """Entry i's chunks as rows: a chunk's offsets, then its sizes."""
+        """Return entry i's chunks as rows: a chunk's offsets, then its sizes."""
         ndim = int(self.ndim[i])
         start = self.dims_start[i] + ndim
         return self.dims[start : self.dims_start[i + 1]].reshape(self.chunk_count(i), 2 * ndim)
 
     def entry(self, i: int):
-        """Entry i as an object, equal to the one it was converted from."""
+        """Build entry i as an object, equal to the one it was converted from."""
         kind = self.kind[i]
         if kind == BYTES:
             return BytesStorageMetadata()

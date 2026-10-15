@@ -66,7 +66,7 @@ def _fqn_hash(fqn: str, kind: bytes) -> "blake2b":
 
 
 def _tensor_chunk_hash(fqn_hash: "blake2b", offsets: Sequence[int], sizes: Sequence[int]) -> int:
-    """Hash of one tensor chunk: its fqn, offsets and sizes."""
+    """Hash one tensor chunk: its fqn, offsets and sizes."""
     h = fqn_hash.copy()
     h.update(struct.pack(f"<Q{len(offsets)}q{len(sizes)}q", len(offsets), *offsets, *sizes))
     return int.from_bytes(h.digest(), "little")
@@ -107,7 +107,7 @@ class ObjectEntries:
         return self._fqns[i]
 
     def counts(self) -> List[int]:
-        """Each entry's number of chunks, 1 for an entry that isn't a tensor."""
+        """Return each entry's number of chunks, 1 for an entry that isn't a tensor."""
         return [
             len(entry.chunks) if isinstance(entry, TensorStorageMetadata) else 1
             for entry in self._entries.values()
@@ -117,13 +117,14 @@ class ObjectEntries:
         return isinstance(self._entries[self._fqns[i]], TensorStorageMetadata)
 
     def chunks(self, i: int, lo: int, hi: int) -> Iterable[Chunk]:
-        """Chunks lo up to hi of tensor entry i."""
+        """Return chunks lo up to hi of tensor entry i, as (offsets, sizes)."""
         return [
             (chunk.offsets, chunk.sizes) for chunk in self._entries[self._fqns[i]].chunks[lo:hi]
         ]
 
     def tensor(self, fqn: str) -> Union[Tuple[torch.Size, Any], str]:
-        """The global size and properties of fqn's entry if it is a tensor, else what it is."""
+        """Return the global size and properties of fqn's entry if it is a tensor, else what it
+        is."""
         entry = self._entries.get(fqn)
         if not isinstance(entry, TensorStorageMetadata):
             return type(entry).__name__
@@ -131,8 +132,8 @@ class ObjectEntries:
 
 
 class TableEntries:
-    """The entries of a state dict table, as the check reads them. An entry the table keeps pickled is
-    unpickled when the check reads it."""
+    """The entries of a state dict table, as the check reads them. An entry the table keeps
+    pickled is unpickled when the check reads it."""
 
     def __init__(self, table: StateDictTable):
         self._table = table
@@ -153,7 +154,7 @@ class TableEntries:
         return self._objects[i]
 
     def counts(self) -> List[int]:
-        """Each entry's number of chunks, 1 for an entry that isn't a tensor."""
+        """Return each entry's number of chunks, 1 for an entry that isn't a tensor."""
         table = self._table
         counts = (table.chunk_start[1:] - table.chunk_start[:-1]).tolist()
         for i, kind in enumerate(table.kind.tolist()):
@@ -171,14 +172,15 @@ class TableEntries:
         )
 
     def chunks(self, i: int, lo: int, hi: int) -> Iterable[Chunk]:
-        """Chunks lo up to hi of tensor entry i."""
+        """Return chunks lo up to hi of tensor entry i, as (offsets, sizes)."""
         if self._table.kind[i] == OTHER:
             return [(chunk.offsets, chunk.sizes) for chunk in self._object(i).chunks[lo:hi]]
         ndim = int(self._table.ndim[i])
         return [(row[:ndim], row[ndim:]) for row in self._table.chunks_dims(i)[lo:hi].tolist()]
 
     def tensor(self, fqn: str) -> Union[Tuple[torch.Size, Any], str]:
-        """The global size and properties of fqn's entry if it is a tensor, else what it is."""
+        """Return the global size and properties of fqn's entry if it is a tensor, else what it
+        is."""
         table = self._table
         i = table.index.get(fqn)
         if i is None:
@@ -201,7 +203,9 @@ Entries = Union[ObjectEntries, TableEntries]
 
 
 def metadata_share_hash(entries: Entries, rank: int, world_size: int) -> int:
-    """Sum of the hashes of this rank's contiguous 1/N slice of the metadata's chunks, mod 2^128."""
+    """Return the sum of the hashes of this rank's contiguous 1/N slice of the metadata's chunks,
+    mod 2^128.
+    """
     counts = entries.counts()
     n_chunks = sum(counts)
     lo, hi = n_chunks * rank // world_size, n_chunks * (rank + 1) // world_size
@@ -222,7 +226,7 @@ def metadata_share_hash(entries: Entries, rank: int, world_size: int) -> int:
 
 
 def mismatch(plan: SavePlan, entries: Entries) -> str:
-    """Why this rank's plan can't reuse the metadata, judged locally; empty if it may."""
+    """Return why this rank's plan can't reuse the metadata, judged locally; empty if it may."""
     chunk_fields = [f.name for f in fields(ChunkStorageMetadata)]
     if chunk_fields != ["offsets", "sizes"]:
         return f"unknown ChunkStorageMetadata fields {chunk_fields}"
@@ -246,7 +250,7 @@ def mismatch(plan: SavePlan, entries: Entries) -> str:
 
 
 def votes(plan: SavePlan, entries: Entries, rank: int, world_size: int) -> List[int]:
-    """This rank's contribution to the reuse all_reduce (sum): [failures, hash lanes...].
+    """Return this rank's contribution to the reuse all_reduce (sum): [failures, hash lanes...].
 
     The hash difference is split into 32-bit lanes, so the sum fits in int64 for any world size
     below 2^31 and no lane relies on overflow. Reuse is possible if, after summing over all ranks,

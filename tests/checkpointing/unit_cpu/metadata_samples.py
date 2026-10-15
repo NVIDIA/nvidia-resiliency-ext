@@ -41,8 +41,9 @@ SETTABLE_FIELD = "version" if "version" in {f.name for f in fields(Metadata)} el
 
 
 def large_metadata() -> Metadata:
-    """Crosses the writers' size boundaries: batches of 1000 items, memo indices past 255,
-    strings longer than 255 bytes, and integers of every width."""
+    """Return metadata that crosses the writers' size boundaries: batches of 1000 items, memo
+    indices past 255, strings longer than 255 bytes, and integers of every width.
+    """
     props = TensorProperties(dtype=torch.bfloat16)
     many_chunks = [
         ChunkStorageMetadata(torch.Size([i, 0]), torch.Size([1, 2**40])) for i in range(2500)
@@ -62,7 +63,7 @@ def large_metadata() -> Metadata:
 
 
 def dcp_saved_metadata(tmp_path) -> Metadata:
-    """Metadata as torch writes it for a state dict of tensors and objects."""
+    """Save a state dict of tensors and objects with torch, and return the Metadata it wrote."""
     state_dict = {
         "scalar": torch.tensor(3.0),
         "weight": torch.randn(4, 5, dtype=torch.bfloat16),
@@ -76,7 +77,9 @@ def dcp_saved_metadata(tmp_path) -> Metadata:
 
 
 def subclassed_metadata() -> Metadata:
-    """Objects of subclasses of the metadata classes, which must keep their class."""
+    """Return metadata with objects of subclasses of the metadata classes, which must keep their
+    class.
+    """
 
     md = writer._sample_metadata()
     w = md.state_dict_metadata["w"]
@@ -109,7 +112,9 @@ class SubclassedInfo(_StorageInfo):
 
 
 def properties_of_equal_values() -> Metadata:
-    """TensorProperties whose values are equal but of different types: True and 1."""
+    """Return metadata with TensorProperties whose values are equal but of different types: True
+    and 1.
+    """
     md = writer._sample_metadata()
     w = md.state_dict_metadata["w"]
     md.state_dict_metadata["w1"] = TensorStorageMetadata(

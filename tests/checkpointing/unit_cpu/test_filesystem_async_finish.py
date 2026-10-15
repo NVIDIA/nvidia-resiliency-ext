@@ -63,8 +63,8 @@ def finish(
     writer_cls, path, saved, sync_files=True, as_rows=False, metadata_template=False, **setup_kwargs
 ):
     """Run writer_cls.finish into path, given the write results or (as_rows) their table, and a
-    Metadata or (metadata_template, nvrx's writer only) a MetadataTemplate; return the files it wrote
-    and their loaded contents."""
+    Metadata or (metadata_template, nvrx's writer only) a MetadataTemplate; return the files it
+    wrote and their loaded contents."""
     md, results = saved
     md = pickle.loads(pickle.dumps(md))
     path.mkdir(exist_ok=True)  # as prepare_local_plan does before a save

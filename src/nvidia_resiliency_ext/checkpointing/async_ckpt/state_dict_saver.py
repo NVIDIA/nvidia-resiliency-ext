@@ -163,8 +163,9 @@ class PendingSave:
     # to the version that passes it whole) are no longer supported.
     @deprecated(_UNPACKING_DEPRECATED)
     def __iter__(self):
-        """The (storage_writer, metadata_template, dist_wrapper) tuple that
-        save_state_dict_async_plan used to return."""
+        """Return an iterator over the (storage_writer, metadata_template, dist_wrapper) tuple
+        that save_state_dict_async_plan used to return.
+        """
         return iter((self.storage_writer, self.metadata_template, self.dist_wrapper))
 
 
@@ -475,14 +476,19 @@ def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
 
 
 def _storage_writer_writes_rows(storage_writer) -> bool:
-    """Whether storage_writer can write storage_data from the gathered tables: a fast .metadata
-    writer, and a FileSystemWriterAsync whose finish a subclass doesn't override."""
+    """Return whether storage_writer can write storage_data from the gathered tables.
+
+    That needs a fast .metadata writer, and a FileSystemWriterAsync whose finish a subclass doesn't
+    override.
+    """
     return _storage_writer_finish_is_nvrx(storage_writer) and _metadata_pickler.writes_tables()
 
 
 def _storage_writer_finish_is_nvrx(storage_writer) -> bool:
-    """Whether storage_writer's finish is FileSystemWriterAsync's, which _finish implements: then
-    _finish writes a MetadataTemplate as it is, and other storage writers get a Metadata."""
+    """Return whether storage_writer's finish is FileSystemWriterAsync's, which _finish implements.
+
+    Then _finish writes a MetadataTemplate as it is; other storage writers get a Metadata.
+    """
     from .filesystem_async import FileSystemWriterAsync
 
     return (
@@ -507,10 +513,10 @@ def save_state_dict_async_finalize(
 
 def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     """
-    Finalization of save_state_dict_async_plan.
+    Finalize the save that save_state_dict_async_plan planned and staged.
 
-    The `write_results` are retrieved from the plan's storage_writer. Each rank sends them to the
-    coordinator as a table (see `_metadata_pickler.table`) if it can, else pickled.
+    The `write_results` are retrieved from the pending save's storage_writer. Each rank sends them
+    to the coordinator as a table (see `_metadata_pickler.table`) if it can, else pickled.
 
     Args:
         pending (PendingSave): the save planned and staged by `save_state_dict_async_plan`.

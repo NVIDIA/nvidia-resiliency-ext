@@ -32,7 +32,8 @@ NEEDS_FAST = pytest.mark.skipif(not _FAST_HERE, reason="no fast .metadata writer
 
 
 def assert_identical(a, b, path="metadata"):
-    """a and b are equal, have the same types throughout, and their dicts the same order."""
+    """Assert that a and b are equal, have the same types throughout, and their dicts the same
+    order."""
     assert type(a) is type(b), f"{path}: {type(a).__name__} != {type(b).__name__}"
     if isinstance(a, dict):
         assert len(a) == len(b), f"{path}: {len(a)} != {len(b)} items"
@@ -54,5 +55,5 @@ def stock_round_trip(md: Metadata) -> Metadata:
 
 
 def assert_written_like_stock(dumps, md: Metadata) -> None:
-    """dumps(md) unpickles exactly as stock pickle round-trips md."""
+    """Assert that dumps(md) unpickles exactly as stock pickle round-trips md."""
     assert_identical(pickle.loads(dumps(md)), stock_round_trip(md))

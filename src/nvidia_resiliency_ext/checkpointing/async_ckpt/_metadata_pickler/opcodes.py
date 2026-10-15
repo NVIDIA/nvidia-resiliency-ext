@@ -30,7 +30,7 @@ import pickle  # nosec
 
 
 def small_pickle(obj) -> bytes:
-    """Opcodes for a small object, from the stdlib pickler without memo, to splice into the stream.
+    """Return the stdlib pickler's opcodes for a small object, to splice into a stream.
 
     Protocol 3 emits no FRAME opcodes, and fast mode emits no memo PUT/GET, so the body can be
     embedded anywhere without disturbing the writer's memo numbering.
@@ -45,5 +45,5 @@ def small_pickle(obj) -> bytes:
 
 
 def small_unpickle(opcodes: bytes):
-    """The object small_pickle wrote opcodes for."""
+    """Return the object small_pickle wrote these opcodes for."""
     return pickle.loads(b"\x80\x03" + opcodes + b".")  # nosec - our own bytes

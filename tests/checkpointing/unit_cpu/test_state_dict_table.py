@@ -62,7 +62,7 @@ from .metadata_strategies import hypothesis_settings, int64s, metadatas, texts
 
 
 def assert_consistent(table: state_dict_table.StateDictTable) -> None:
-    """The arrays describe len(table) entries and use exactly the dims they hold."""
+    """Assert that the arrays describe len(table) entries and use exactly the dims they hold."""
     n = len(table)
     assert len(table.kind) == len(table.ref) == len(table.ndim) == n
     for starts in (table.chunk_start, table.dims_start):
@@ -76,8 +76,9 @@ def assert_consistent(table: state_dict_table.StateDictTable) -> None:
 
 
 def assert_converted(metadata) -> state_dict_table.StateDictTable:
-    """metadata converts to a consistent table whose entries and fields are metadata's as stock pickle
-    round-trips them."""
+    """Convert metadata, assert that the table is consistent and that its entries and fields are
+    metadata's as stock pickle round-trips them, and return the table.
+    """
     table = StateDictTable.from_metadata(metadata)
     metadata = stock_round_trip(metadata)
     assert_consistent(table)
@@ -194,7 +195,7 @@ def test_few_objects_for_the_gc():
 def assert_same_tables(
     a: state_dict_table.StateDictTable, b: state_dict_table.StateDictTable
 ) -> None:
-    """a and b hold the same values, in arrays of the same types."""
+    """Assert that a and b hold the same values, in arrays of the same types."""
     for f in dataclasses.fields(state_dict_table.StateDictTable):
         va, vb = getattr(a, f.name), getattr(b, f.name)
         if isinstance(va, np.ndarray):
@@ -252,7 +253,7 @@ def _bump(a: np.ndarray, i: int, by: int) -> np.ndarray:
 
 
 def _attributes(table: StateDictTable, **changes) -> dict:
-    """A table's attributes, with these changed."""
+    """Return a table's attributes, with these changed."""
     return {**{f.name: getattr(table, f.name) for f in dataclasses.fields(table)}, **changes}
 
 
@@ -315,7 +316,8 @@ def test_tables_are_immutable():
 
 
 def _storage_rows(metadata) -> np.ndarray:
-    """metadata.storage_data as gathered write-result tables: one rank's table, in one row."""
+    """Encode metadata.storage_data as gathered write-result tables: one rank's table, in one
+    row."""
     payload = table.encode(
         [WriteResult(index, info.length, info) for index, info in metadata.storage_data.items()]
     )
@@ -419,9 +421,11 @@ WRITER_MODULES = [pickler, *([writer.native] if writer.native else [])]
 
 
 def _random_rows(metadata, data):
-    """metadata.storage_data as write-result tables of a random number of ranks, each a contiguous
-    run of its items, so that the rows list the items in the dict's order; None if an item doesn't
-    fit a table."""
+    """Encode metadata.storage_data as write-result tables of a random number of ranks.
+
+    Each rank's table is a contiguous run of its items, so that the rows list the items in the
+    dict's order. Return None if an item doesn't fit a table.
+    """
     items = list(metadata.storage_data.items())
     cuts = sorted(data.draw(st.lists(st.integers(0, len(items)), max_size=4)))
     parts = [items[a:b] for a, b in zip([0, *cuts], [*cuts, len(items)])]

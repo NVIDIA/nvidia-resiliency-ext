@@ -21,7 +21,8 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import Pend
 
 
 def test_unpacking_is_deprecated():
-    """Callers that unpack the PendingSave into finalize's old arguments still get them, with a warning.
+    """Callers that unpack the PendingSave into finalize's old arguments still get them, with a
+    warning.
 
     TODO: remove with the deprecated PendingSave.__iter__.
     """
