@@ -24,7 +24,8 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
-from .test_metadata_pickler import NEEDS_FAST, SETTABLE_FIELD, assert_identical, stock_round_trip
+from .metadata_assertions import NEEDS_FAST, assert_identical, stock_round_trip
+from .metadata_samples import SETTABLE_FIELD
 
 
 @pytest.fixture(params=[pytest.param("fast", marks=NEEDS_FAST), "off"])
