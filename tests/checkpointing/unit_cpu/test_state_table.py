@@ -34,6 +34,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
     table,
     writer,
 )
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.opcodes import small_unpickle
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_table import (
     BYTES,
     OTHER,
@@ -88,7 +89,7 @@ def assert_converted(md) -> state_table.StateDictTable:
         if name in (state_table.STATE_DICT_METADATA, state_table.STORAGE_DATA):
             assert opcodes is None
         else:
-            assert_identical(state_table.small_unpickle(opcodes), getattr(md, name), name)
+            assert_identical(small_unpickle(opcodes), getattr(md, name), name)
     return t
 
 

@@ -24,7 +24,8 @@ import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
 
 from . import _native
-from .state_table import StateDictTable, small_pickle
+from .opcodes import small_pickle
+from .state_table import StateDictTable
 
 
 def from_metadata(md: Metadata) -> StateDictTable:
