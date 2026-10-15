@@ -15,10 +15,11 @@
  * limitations under the License.
 */
 
-// Native versions of `state_table.from_metadata` and `pickler._MetadataPickler`: converts a torch DCP
-// `Metadata` into a `state_table.StateDictTable`, and writes the standard pickle opcodes for the
-// Metadata from that table directly. Both give exactly what the Python versions give. The few small
-// objects (TensorProperties, StorageMeta, ...) are encoded by the Python `small_pickle` callback.
+// The C++ versions of `StateDictTable.from_metadata` and of `pickler._MetadataPickler`. The first
+// converts a torch DCP `Metadata` into a `StateDictTable`. The second writes the standard pickle
+// opcodes of the Metadata from that table. Both give exactly what the Python versions give. The
+// few small objects (TensorProperties, StorageMeta, ...) are left to the Python `small_pickle`
+// callback.
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -26,6 +27,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -271,14 +273,19 @@ class WriteResultTable {
 
 // Kinds of state_dict_metadata entries, numbered as in state_table.py.
 enum class Kind : uint8_t { Bytes = 0, Tensor = 1, Other = 2 };
-constexpr std::string_view STATE_DICT_METADATA = "state_dict_metadata", STORAGE_DATA = "storage_data";
+constexpr std::string_view STATE_DICT_METADATA = "state_dict_metadata";
+constexpr std::string_view STORAGE_DATA = "storage_data";
 
 // Reject a malformed state table, before anything reads outside its arrays.
 [[noreturn]] void bad_state_table(std::string_view what) {
     throw py::value_error("state table: " + std::string(what));
 }
 
+// The element types of a state table's arrays.
 template <typename T>
+concept TableValue = std::same_as<T, uint8_t> || std::same_as<T, int64_t>;
+
+template <TableValue T>
 using Array = py::array_t<T, py::array::c_style>;
 
 // A tuple attribute of t, of exactly the type tuple: a StateDictTable's sequences are tuples.
@@ -291,7 +298,7 @@ using Array = py::array_t<T, py::array::c_style>;
 }
 
 // A 1-D, C-contiguous array attribute of t, of exactly the element type T.
-template <typename T>
+template <TableValue T>
 [[nodiscard]] Array<T> array_attr(py::handle t, const char* name) {
     py::object v = t.attr(name);
     if (!Array<T>::check_(v) || py::reinterpret_borrow<py::array>(v).ndim() != 1) {
@@ -301,7 +308,7 @@ template <typename T>
 }
 
 // The values of a 1-D array, valid while the array is held.
-template <typename T>
+template <TableValue T>
 [[nodiscard]] std::span<const T> values(const Array<T>& a) {
     return {a.data(), static_cast<size_t>(a.size())};
 }
@@ -313,7 +320,7 @@ template <typename T>
 
 // A state_table.StateDictTable, checked as state_table.check checks it, so that the writer can
 // read its arrays without further checks.
-class TableView {
+class StateDictTableView {
    public:
     // A field of the Metadata: its name, and its opcodes (None for the fields written from the
     // table or the write results).
@@ -322,7 +329,7 @@ class TableView {
         py::object opcodes;
     };
 
-    explicit TableView(py::handle t)
+    explicit StateDictTableView(py::handle t)
         : fqns_(tuple_attr(t, "fqns")),
           properties_(tuple_attr(t, "properties")),
           others_(tuple_attr(t, "others")),
@@ -449,7 +456,7 @@ class TableView {
 };
 
 // A numpy array that owns v's values, without copying them.
-template <typename T>
+template <TableValue T>
 [[nodiscard]] py::array_t<T> to_array(std::vector<T>&& v) {
     auto owned = std::make_unique<std::vector<T>>(std::move(v));
     const py::capsule owner(owned.get(),
@@ -459,10 +466,11 @@ template <typename T>
 }
 
 // Converts a Metadata into a state_table.StateDictTable, exactly as state_table.from_metadata does.
-class TableBuilder {
+class StateDictTableBuilder {
    public:
     // Look up the metadata classes the conversion checks objects against.
-    explicit TableBuilder(py::object small_pickle) : small_pickle_(std::move(small_pickle)) {
+    explicit StateDictTableBuilder(py::object small_pickle)
+        : small_pickle_(std::move(small_pickle)) {
         py::module_ meta = py::module_::import("torch.distributed.checkpoint.metadata");
         metadata_cls_ = meta.attr("Metadata");
         tensor_cls_ = meta.attr("TensorStorageMetadata");
@@ -472,7 +480,8 @@ class TableBuilder {
     }
 
     // The table of md, an instance of table_cls (state_table.StateDictTable).
-    [[nodiscard]] py::object build(py::handle md, const py::object& table_cls) {
+    // Use once, on a temporary builder: it moves its arrays and lists into the table.
+    [[nodiscard]] py::object build(py::handle md, const py::object& table_cls) && {
         if (!is(md.ptr(), metadata_cls_)) {
             throw py::type_error("expected Metadata, got " + type_name(md.ptr()));
         }
@@ -511,7 +520,8 @@ class TableBuilder {
             fqns[i] = py::handle(fqn);
             index[py::handle(fqn)] = py::int_(i);
             size_t ndim = 0, chunks = 0;
-            if (const std::optional<Tensor> t = is(v, tensor_cls_) ? tensor(v) : std::nullopt) {
+            if (const std::optional<TensorEntry> t =
+                    is(v, tensor_cls_) ? tensor_entry(v) : std::nullopt) {
                 // After the chunks are counted: small_pickle runs Python code.
                 py::bytes opcodes = pickled(t->properties.ptr());
                 const auto [it, added] = property_ids_.try_emplace(
@@ -542,13 +552,14 @@ class TableBuilder {
                          py::arg("chunk_start") = to_array(std::move(chunk_start_)),
                          py::arg("dims_start") = to_array(std::move(dims_start_)),
                          py::arg("dims") = to_array(std::move(dims_)),
-                         py::arg("properties") = properties_, py::arg("others") = others_,
+                         py::arg("properties") = std::move(properties_),
+                         py::arg("others") = std::move(others_),
                          py::arg("index") = index);
     }
 
    private:
     // A TENSOR entry's properties and number of chunks.
-    struct Tensor {
+    struct TensorEntry {
         py::object properties;
         size_t ndim;
         size_t chunks;
@@ -556,7 +567,7 @@ class TableBuilder {
 
     // Append a TENSOR entry's size and chunks to dims_ and return its properties and numbers of
     // dims and chunks; nullopt, with nothing appended, if it isn't one (see state_table._tensor).
-    [[nodiscard]] std::optional<Tensor> tensor(PyObject* v) {
+    [[nodiscard]] std::optional<TensorEntry> tensor_entry(PyObject* v) {
         const py::object state = instance_dict(v);
         PyObject* const properties = dict_get(state.ptr(), a_properties_.ptr());
         PyObject* const size = dict_get(state.ptr(), a_size_.ptr());
@@ -583,7 +594,8 @@ class TableBuilder {
             append_dims(offsets, dims_);
             append_dims(sizes, dims_);
         }
-        return Tensor{py::reinterpret_borrow<py::object>(properties), static_cast<size_t>(ndim),
+        return TensorEntry{py::reinterpret_borrow<py::object>(properties),
+                           static_cast<size_t>(ndim),
                       static_cast<size_t>(nc)};
     }
 
@@ -647,7 +659,7 @@ class Writer {
     // The pickle of the Metadata t was converted from: a NEWOBJ of Metadata built from its fields,
     // in order. storage_data is written from rows (the gathered write-result tables) if given,
     // else from the storage_data dict, else as None.
-    [[nodiscard]] py::bytes dumps(const TableView& t, py::handle storage_data,
+    [[nodiscard]] py::bytes dumps(const StateDictTableView& t, py::handle storage_data,
                                   const py::object& rows) {
         // Holds the rows the tables point into.
         const Rows rows_array = rows.is_none() ? Rows() : rows.cast<Rows>();
@@ -668,7 +680,7 @@ class Writer {
         prelude();
         put_get(metadata_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-        for (const TableView::Field& f : t.fields()) {
+        for (const StateDictTableView::Field& f : t.fields()) {
             put_str(f.name);
             if (f.name == STATE_DICT_METADATA) {
                 dump_state_dict_metadata(t);
@@ -711,7 +723,7 @@ class Writer {
     }
 
     // Metadata.state_dict_metadata, from the table's entries in order.
-    void dump_state_dict_metadata(const TableView& t) {
+    void dump_state_dict_metadata(const StateDictTableView& t) {
         put(EMPTY_DICT);
         const size_t n = t.entries();
         for (size_t i = 0; i < n; ++i) {
@@ -1116,7 +1128,7 @@ PYBIND11_MODULE(_native, m) {
     m.def(
         "from_metadata",
         [](py::handle md, py::object small_pickle, const py::object& table_cls) {
-            return TableBuilder(std::move(small_pickle)).build(md, table_cls);
+            return StateDictTableBuilder(std::move(small_pickle)).build(md, table_cls);
         },
         py::arg("metadata"), py::arg("small_pickle"), py::arg("table_cls"),
         "Return the metadata without storage_data as a table_cls (state_table.StateDictTable).");
@@ -1124,7 +1136,8 @@ PYBIND11_MODULE(_native, m) {
         "dumps_table",
         [](py::handle table, py::object small_pickle, py::handle storage_data,
            const py::object& storage_rows) {
-            return Writer(std::move(small_pickle)).dumps(TableView(table), storage_data, storage_rows);
+            return Writer(std::move(small_pickle))
+                .dumps(StateDictTableView(table), storage_data, storage_rows);
         },
         py::arg("table"), py::arg("small_pickle"), py::arg("storage_data") = py::none(),
         py::arg("storage_rows") = py::none(),
