@@ -92,7 +92,7 @@ def metadata_of(plans):
 
 VIEWS = {
     "objects": _metadata_reuse.ObjectEntries,
-    "table": lambda md: _metadata_reuse.TableEntries(state_table.from_metadata(md)),
+    "table": lambda md: _metadata_reuse.TableEntries(state_table.StateDictTable.from_metadata(md)),
 }
 entries_of = VIEWS["objects"]  # the view the checks below read the metadata through
 

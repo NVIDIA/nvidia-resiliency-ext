@@ -23,28 +23,32 @@ from typing import Optional
 import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
 
-from . import _native
+from . import _native, state_table
 from .opcodes import small_pickle
-from .state_table import StateDictTable
 
 
-def from_metadata(md: Metadata) -> StateDictTable:
-    """md without its storage_data as a table, exactly as state_table.from_metadata converts it."""
-    return _native.from_metadata(md, small_pickle, StateDictTable)
+class StateDictTable(state_table.StateDictTable):
+    """state_table.StateDictTable, converted from a Metadata by the C++ producer, which gives
+    exactly the table the Python producer gives."""
+
+    @classmethod
+    def from_metadata(cls, metadata: Metadata) -> "StateDictTable":
+        """metadata without its storage_data, as a table."""
+        return _native.from_metadata(metadata, small_pickle, cls)
 
 
 def dumps_table(
-    t: StateDictTable,
+    table: state_table.StateDictTable,
     storage_data: Optional[dict] = None,
     storage_rows: Optional[np.ndarray] = None,
 ) -> bytes:
-    """The pickle of the Metadata t was converted from, byte for byte as pickler.dumps_table writes
-    it; the extension reads the storage rows itself."""
-    return _native.dumps_table(t, small_pickle, storage_data, storage_rows)
+    """The pickle of the Metadata table was converted from, byte for byte as pickler.dumps_table
+    writes it; the extension reads the storage rows itself."""
+    return _native.dumps_table(table, small_pickle, storage_data, storage_rows)
 
 
-def dumps(md: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
-    """The pickle of md, byte for byte as pickler.dumps writes it. With storage_rows (the gathered
-    write-result tables, see table.py), storage_data is written from them instead of
-    md.storage_data."""
-    return dumps_table(from_metadata(md), md.storage_data, storage_rows)
+def dumps(metadata: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
+    """The pickle of metadata, byte for byte as pickler.dumps writes it. With storage_rows (the
+    gathered write-result tables, see table.py), storage_data is written from them instead of
+    metadata.storage_data."""
+    return dumps_table(StateDictTable.from_metadata(metadata), metadata.storage_data, storage_rows)

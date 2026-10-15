@@ -281,13 +281,13 @@ constexpr std::string_view STATE_DICT_METADATA = "state_dict_metadata", STORAGE_
 template <typename T>
 using Array = py::array_t<T, py::array::c_style>;
 
-// A list attribute of t, of exactly the type list.
-[[nodiscard]] py::list list_attr(py::handle t, const char* name) {
+// A tuple attribute of t, of exactly the type tuple: a StateDictTable's sequences are tuples.
+[[nodiscard]] py::tuple tuple_attr(py::handle t, const char* name) {
     py::object v = t.attr(name);
-    if (!PyList_CheckExact(v.ptr())) {
-        bad_state_table(std::string(name) + " is not a list");
+    if (!PyTuple_CheckExact(v.ptr())) {
+        bad_state_table(std::string(name) + " is not a tuple");
     }
-    return py::reinterpret_steal<py::list>(v.release());
+    return py::reinterpret_steal<py::tuple>(v.release());
 }
 
 // A 1-D, C-contiguous array attribute of t, of exactly the element type T.
@@ -323,9 +323,9 @@ class TableView {
     };
 
     explicit TableView(py::handle t)
-        : fqns_(list_attr(t, "fqns")),
-          properties_(list_attr(t, "properties")),
-          others_(list_attr(t, "others")),
+        : fqns_(tuple_attr(t, "fqns")),
+          properties_(tuple_attr(t, "properties")),
+          others_(tuple_attr(t, "others")),
           kind_array_(array_attr<uint8_t>(t, "kind")),
           ref_array_(array_attr<int64_t>(t, "ref")),
           ndim_array_(array_attr<int64_t>(t, "ndim")),
@@ -338,7 +338,7 @@ class TableView {
           chunk_start_(values(chunk_start_array_)),
           dims_start_(values(dims_start_array_)),
           dims_(values(dims_array_)) {
-        const py::list fields = list_attr(t, "fields");
+        const py::tuple fields = tuple_attr(t, "fields");
         for (const py::handle f : fields) {
             if (!PyTuple_CheckExact(f.ptr()) || PyTuple_GET_SIZE(f.ptr()) != 2) {
                 bad_state_table("a field is not a (name, opcodes) tuple");
@@ -357,13 +357,13 @@ class TableView {
 
     [[nodiscard]] size_t entries() const { return kind_.size(); }
     [[nodiscard]] const std::vector<Field>& fields() const { return fields_; }
-    [[nodiscard]] PyObject* fqn(size_t i) const { return PyList_GET_ITEM(fqns_.ptr(), i); }
+    [[nodiscard]] PyObject* fqn(size_t i) const { return PyTuple_GET_ITEM(fqns_.ptr(), i); }
     [[nodiscard]] Kind kind(size_t i) const { return static_cast<Kind>(kind_[i]); }
     [[nodiscard]] std::string_view properties(size_t i) const {
-        return bytes_view(PyList_GET_ITEM(properties_.ptr(), ref_[i]));
+        return bytes_view(PyTuple_GET_ITEM(properties_.ptr(), ref_[i]));
     }
     [[nodiscard]] std::string_view other(size_t i) const {
-        return bytes_view(PyList_GET_ITEM(others_.ptr(), ref_[i]));
+        return bytes_view(PyTuple_GET_ITEM(others_.ptr(), ref_[i]));
     }
     [[nodiscard]] size_t ndim(size_t i) const { return static_cast<size_t>(ndim_[i]); }
     [[nodiscard]] std::span<const int64_t> size(size_t i) const {
@@ -383,7 +383,7 @@ class TableView {
     // Check that the arrays describe entries() entries consistently; see state_table.check.
     void check() const {
         const size_t n = entries();
-        if (static_cast<size_t>(PyList_GET_SIZE(fqns_.ptr())) != n || ref_.size() != n ||
+        if (static_cast<size_t>(PyTuple_GET_SIZE(fqns_.ptr())) != n || ref_.size() != n ||
             ndim_.size() != n) {
             bad_state_table("arrays of different lengths");
         }
@@ -397,9 +397,9 @@ class TableView {
         };
         check_starts(chunk_start_, std::nullopt);
         check_starts(dims_start_, dims_.size());
-        const auto in = [](int64_t ref, const py::list& list) {
-            return ref >= 0 && ref < PyList_GET_SIZE(list.ptr()) &&
-                   PyBytes_CheckExact(PyList_GET_ITEM(list.ptr(), ref));
+        const auto in = [](int64_t ref, const py::tuple& pickles) {
+            return ref >= 0 && ref < PyTuple_GET_SIZE(pickles.ptr()) &&
+                   PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
         };
         for (size_t i = 0; i < n; ++i) {
             const int64_t ndim = ndim_[i];
@@ -440,7 +440,7 @@ class TableView {
         return values % ndim == 0 && per_dim % 2 == 1 && per_dim / 2 == nc;
     }
 
-    py::list fqns_, properties_, others_;
+    py::tuple fqns_, properties_, others_;
     Array<uint8_t> kind_array_;
     Array<int64_t> ref_array_, ndim_array_, chunk_start_array_, dims_start_array_, dims_array_;
     std::span<const uint8_t> kind_;
