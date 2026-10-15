@@ -22,6 +22,8 @@ from typing import IO, Optional, Union
 import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
 
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
+
 from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import StateDictTable, state_table
 
@@ -50,7 +52,10 @@ class GlobalMetadata:
         state_dict_metadata, which must then not be modified.
         """
         metadata = dataclasses.replace(metadata, storage_data=None)
-        table = _metadata_pickler.to_table(metadata)
+        with telemetry.span(
+            semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_to_table"
+        ):
+            table = _metadata_pickler.to_table(metadata)
         return cls(table if table is not None else metadata)
 
     @property

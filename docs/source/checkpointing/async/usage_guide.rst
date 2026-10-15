@@ -195,7 +195,7 @@ The following code demonstrates a complete workflow for saving and loading check
         planner = DefaultSavePlanner()
         
         # Plan the save operation
-        save_state_dict_ret = save_state_dict_async_plan(
+        pending = save_state_dict_async_plan(
             state_dict, writer, None, coordinator_rank, planner=planner
         )
         
@@ -204,7 +204,7 @@ The following code demonstrates a complete workflow for saving and loading check
         
         def finalize_fn():
             """Finalizes async checkpointing and synchronizes processes."""
-            save_state_dict_async_finalize(*save_state_dict_ret)
+            save_state_dict_async_finalize(pending)
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
         
@@ -277,6 +277,16 @@ reuses metadata instead, kept between saves in a
   and no planner data.
 * Later saves reuse the previous save's plans and metadata without communicating. The checkpoint
   structure must not change between them: a rank whose local plan changed raises an error.
+
+With the fast ``.metadata`` writer, the cache keeps the metadata as a few arrays rather than a
+Python object per chunk, so that it doesn't slow down garbage collections. It keeps none of the
+objects of the metadata passed to ``set_cached_global_metadata``, so the caller can free that
+metadata afterwards.
+
+``save_state_dict_async_plan`` returns a
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave`, to pass
+to ``save_state_dict_async_finalize`` as it is. Unpacking it into the three arguments
+``save_state_dict_async_finalize`` used to take still works, but is deprecated.
 
 
 Best Practices
