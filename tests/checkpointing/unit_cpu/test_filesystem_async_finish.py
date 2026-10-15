@@ -32,6 +32,7 @@ from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+from nvidia_resiliency_ext.checkpointing.async_ckpt.global_metadata import GlobalMetadata
 
 # FileSystemWriter.set_up_storage_writer takes rank and use_collectives from PyTorch 2.9.
 HAS_PER_RANK_METADATA = (
@@ -58,20 +59,28 @@ def saved(tmp_path_factory):
     return md, results
 
 
-def finish(writer_cls, path, saved, sync_files=True, as_rows=False, **setup_kwargs):
-    """Run writer_cls.finish into path, given the write results or (as_rows) their table; return
-    the files it wrote and their loaded contents."""
+def finish(
+    writer_cls, path, saved, sync_files=True, as_rows=False, global_metadata=False, **setup_kwargs
+):
+    """Run writer_cls.finish into path, given the write results or (as_rows) their table, and a
+    Metadata or (global_metadata, nvrx's writer only) a GlobalMetadata; return the files it wrote
+    and their loaded contents."""
     md, results = saved
     md = pickle.loads(pickle.dumps(md))
     path.mkdir(exist_ok=True)  # as prepare_local_plan does before a save
     md.storage_data = None
     writer = writer_cls(path, sync_files=sync_files)
     writer.set_up_storage_writer(True, **setup_kwargs)
-    if as_rows:
-        rows = np.frombuffer(table.encode(results[0]), dtype=np.uint8)[None, :]
-        writer._finish(md, [], storage_rows=rows)
+    if global_metadata and writer_cls is FileSystemWriterAsync:
+        md = GlobalMetadata.from_metadata(md)
+        before = pickle.dumps(md.to_metadata())
+    rows = np.frombuffer(table.encode(results[0]), dtype=np.uint8)[None, :] if as_rows else None
+    if as_rows or isinstance(md, GlobalMetadata):
+        writer._finish(md, [] if as_rows else results, storage_rows=rows)
     else:
         writer.finish(md, results)
+    if isinstance(md, GlobalMetadata):
+        assert pickle.dumps(md.to_metadata()) == before, "finish modified the global metadata"
     files = sorted(os.listdir(path))
     return files, (
         [FileSystemReader(path).read_metadata()]
@@ -91,15 +100,26 @@ def assert_same_as_torch(tmp_path, saved, **kwargs):
     return nvrx_mds
 
 
+GLOBAL_METADATA = pytest.mark.parametrize(
+    "global_metadata", [False, True], ids=["metadata", "global-metadata"]
+)
+
+
+@GLOBAL_METADATA
 @pytest.mark.parametrize("sync_files", [True, False])
-def test_finish_writes_what_torch_writes(tmp_path, saved, sync_files):
-    (md,) = assert_same_as_torch(tmp_path, saved, sync_files=sync_files)
+def test_finish_writes_what_torch_writes(tmp_path, saved, sync_files, global_metadata):
+    (md,) = assert_same_as_torch(
+        tmp_path, saved, sync_files=sync_files, global_metadata=global_metadata
+    )
     assert md.storage_data == saved[0].storage_data
 
 
+@GLOBAL_METADATA
 @pytest.mark.skipif(not HAS_PER_RANK_METADATA, reason="per-rank metadata needs PyTorch 2.9+")
-def test_finish_writes_per_rank_metadata(tmp_path, saved):
-    assert_same_as_torch(tmp_path, saved, rank=3, use_collectives=False)
+def test_finish_writes_per_rank_metadata(tmp_path, saved, global_metadata):
+    assert_same_as_torch(
+        tmp_path, saved, rank=3, use_collectives=False, global_metadata=global_metadata
+    )
 
 
 @pytest.mark.parametrize(
@@ -115,8 +135,11 @@ def test_finish_writes_per_rank_metadata(tmp_path, saved):
         ("force", "2.3.1", True),  # in INCOMPATIBLE_TORCH_VERSIONS
     ],
 )
+@GLOBAL_METADATA
 @pytest.mark.parametrize("as_rows", [False, True], ids=["results", "rows"])
-def test_finish_defers_to_torch(monkeypatch, tmp_path, saved, mode, version, defers, as_rows):
+def test_finish_defers_to_torch(
+    monkeypatch, tmp_path, saved, mode, version, defers, as_rows, global_metadata
+):
     """finish writes with torch's writer if nvrx's is off, also given tables, which it converts."""
     if mode is not None:
         monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", mode)
@@ -127,6 +150,8 @@ def test_finish_defers_to_torch(monkeypatch, tmp_path, saved, mode, version, def
     monkeypatch.setattr(
         FileSystemWriter, "finish", lambda self, *args: calls.append(1) or torch_finish(self, *args)
     )
-    files, (md,) = finish(FileSystemWriterAsync, tmp_path, saved, as_rows=as_rows)
+    files, (md,) = finish(
+        FileSystemWriterAsync, tmp_path, saved, as_rows=as_rows, global_metadata=global_metadata
+    )
     assert bool(calls) is defers
     assert md.storage_data == saved[0].storage_data
