@@ -57,13 +57,6 @@ state_dict_metadata and storage_data, which the writers write themselves.
 """
 
 import dataclasses
-import io
-
-# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
-# Severity: Low   Confidence: High
-# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
-# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
-import pickle  # nosec
 from array import array
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -77,29 +70,11 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
+from .opcodes import small_pickle, small_unpickle
+
 BYTES, TENSOR, OTHER = 0, 1, 2
 # The fields the writers write themselves; fields holds None for them.
 STATE_DICT_METADATA, STORAGE_DATA = "state_dict_metadata", "storage_data"
-
-
-def small_pickle(obj) -> bytes:
-    """Opcodes for a small object, from the stdlib pickler without memo, to splice into the stream.
-
-    Protocol 3 emits no FRAME opcodes, and fast mode emits no memo PUT/GET, so the body can be
-    embedded anywhere without disturbing the writer's memo numbering.
-    """
-    buf = io.BytesIO()
-    p = pickle.Pickler(buf, protocol=3)
-    p.fast = True
-    p.dump(obj)
-    data = buf.getvalue()
-    assert data[:2] == b"\x80\x03" and data[-1:] == b"."
-    return data[2:-1]
-
-
-def small_unpickle(opcodes: bytes):
-    """The object small_pickle wrote opcodes for."""
-    return pickle.loads(b"\x80\x03" + opcodes + b".")  # nosec - our own bytes
 
 
 @dataclass

@@ -47,7 +47,7 @@ from torch.distributed.checkpoint.metadata import (
 )
 from torch.distributed.checkpoint.planner import SavePlan, WriteItemType
 
-from ._metadata_pickler import state_table
+from ._metadata_pickler.opcodes import small_unpickle
 from ._metadata_pickler.state_table import OTHER, TENSOR, StateDictTable
 
 logger = getLogger(__name__)
@@ -137,9 +137,7 @@ class TableEntries:
         self._objects = {}  # entry -> object, for entries kept pickled
         self._properties = {}  # properties id -> TensorProperties
         planner_data = dict(t.fields).get("planner_data")
-        self.planner_data = (
-            None if planner_data is None else state_table.small_unpickle(planner_data)
-        )
+        self.planner_data = None if planner_data is None else small_unpickle(planner_data)
 
     def __len__(self) -> int:
         return len(self._t)
@@ -192,7 +190,7 @@ class TableEntries:
             return "BytesStorageMetadata"
         ref = int(t.ref[i])
         if ref not in self._properties:
-            self._properties[ref] = state_table.small_unpickle(t.properties[ref])
+            self._properties[ref] = small_unpickle(t.properties[ref])
         size = torch.Size(t.size(i).tolist())
         return size, self._properties[ref]
 

@@ -71,6 +71,7 @@ from torch.distributed.checkpoint.metadata import (
 )
 
 from . import pickler, state_table, table
+from .opcodes import small_unpickle
 from .state_table import StateDictTable
 
 try:
@@ -299,7 +300,7 @@ def to_metadata(t: StateDictTable, storage_data: Optional[dict] = None) -> Metad
             if name == state_table.STATE_DICT_METADATA:
                 value = {fqn: t.entry(i) for i, fqn in enumerate(t.fqns)}
             else:
-                value = None if opcodes is None else state_table.small_unpickle(opcodes)
+                value = None if opcodes is None else small_unpickle(opcodes)
             setattr(md, name, value)
     md.storage_data = storage_data
     return md

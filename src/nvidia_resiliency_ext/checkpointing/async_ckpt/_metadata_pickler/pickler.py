@@ -46,7 +46,8 @@ from torch.distributed.checkpoint.metadata import (
 )
 
 from . import state_table, table
-from .state_table import BYTES, OTHER, from_metadata, small_pickle  # noqa: F401
+from .opcodes import small_pickle
+from .state_table import BYTES, OTHER, from_metadata  # noqa: F401
 
 PROTO, STOP, MARK, POP = b"\x80", b".", b"(", b"0"
 EMPTY_DICT, EMPTY_LIST, EMPTY_TUPLE = b"}", b"]", b")"
