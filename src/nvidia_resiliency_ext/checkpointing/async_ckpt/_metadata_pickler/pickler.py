@@ -186,20 +186,20 @@ class _MetadataPickler:
 
     def dumps(
         self,
-        t: StateDictTable,
+        state_dict_table: StateDictTable,
         storage_data: Optional[dict] = None,
         tables: Optional[List[table.WriteResultTable]] = None,
     ) -> bytes:
-        """The pickle of the Metadata t was converted from: a NEWOBJ of Metadata built from its
+        """The pickle of the Metadata state_dict_table was converted from: a NEWOBJ of Metadata built from its
         fields, in order. storage_data is written from tables (decoded write-result tables, see
         table.py) if given, else from the storage_data dict, else as None."""
         self._prelude()
         out = self.out
         out.append(self.METADATA + EMPTY_TUPLE + NEWOBJ + EMPTY_DICT + MARK)
-        for field, opcodes in t.fields:
+        for field, opcodes in state_dict_table.fields:
             out.append(_str(field))
             if field == STATE_DICT_METADATA:
-                self._state_dict_metadata(t)
+                self._state_dict_metadata(state_dict_table)
             elif field == STORAGE_DATA:
                 if tables is not None:
                     self._storage_data_tables(tables)
@@ -244,31 +244,38 @@ class _MetadataPickler:
         self.INDEX_START = self.INDEX + start + k["fqn"]
         self.INFO_START = self.INFO + start + k["relative_path"]
 
-    def _state_dict_metadata(self, t: StateDictTable) -> None:
+    def _state_dict_metadata(self, state_dict_table: StateDictTable) -> None:
         """Metadata.state_dict_metadata, from the table's entries in order."""
         out, size_of, string = self.out, self.size_of, self.string
         BYTES_OBJ = self.BYTES + EMPTY_TUPLE + NEWOBJ
         TENSOR_START, K_SIZE, TENSOR_CHUNKS = self.TENSOR_START, self.k["size"], self.TENSOR_CHUNKS
         CHUNK_START, K_SIZES = self.CHUNK_START, self.k["sizes"]
-        kinds, refs, ndims = t.kind.tolist(), t.ref.tolist(), t.ndim.tolist()
-        chunk_start, dims_start = t.chunk_start.tolist(), t.dims_start.tolist()
+        kinds, refs, ndims = (
+            state_dict_table.kind.tolist(),
+            state_dict_table.ref.tolist(),
+            state_dict_table.ndim.tolist(),
+        )
+        chunk_start, dims_start = (
+            state_dict_table.chunk_start.tolist(),
+            state_dict_table.dims_start.tolist(),
+        )
         out.append(EMPTY_DICT)
-        for start in range(0, len(t), _BATCH):
+        for start in range(0, len(state_dict_table), _BATCH):
             out.append(MARK)
-            for i in range(start, min(start + _BATCH, len(t))):
-                out.append(string(t.fqns[i]))
+            for i in range(start, min(start + _BATCH, len(state_dict_table))):
+                out.append(string(state_dict_table.fqns[i]))
                 if kinds[i] == BYTES:
                     out.append(BYTES_OBJ)
                     continue
                 if kinds[i] == OTHER:
-                    out.append(t.others[refs[i]])
+                    out.append(state_dict_table.others[refs[i]])
                     continue
                 # The size, then each chunk's offsets and sizes.
                 ndim = ndims[i]
-                dims = t.dims[dims_start[i] : dims_start[i + 1]].tolist()
+                dims = state_dict_table.dims[dims_start[i] : dims_start[i + 1]].tolist()
                 out.append(
                     TENSOR_START
-                    + t.properties[refs[i]]
+                    + state_dict_table.properties[refs[i]]
                     + K_SIZE
                     + size_of(tuple(dims[:ndim]))
                     + TENSOR_CHUNKS

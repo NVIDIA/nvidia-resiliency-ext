@@ -109,8 +109,8 @@ class ObjectEntries:
     def counts(self) -> List[int]:
         """Each entry's number of chunks, 1 for an entry that isn't a tensor."""
         return [
-            len(e.chunks) if isinstance(e, TensorStorageMetadata) else 1
-            for e in self._entries.values()
+            len(entry.chunks) if isinstance(entry, TensorStorageMetadata) else 1
+            for entry in self._entries.values()
         ]
 
     def is_tensor(self, i: int) -> bool:
@@ -118,7 +118,9 @@ class ObjectEntries:
 
     def chunks(self, i: int, lo: int, hi: int) -> Iterable[Chunk]:
         """Chunks lo up to hi of tensor entry i."""
-        return [(c.offsets, c.sizes) for c in self._entries[self._fqns[i]].chunks[lo:hi]]
+        return [
+            (chunk.offsets, chunk.sizes) for chunk in self._entries[self._fqns[i]].chunks[lo:hi]
+        ]
 
     def tensor(self, fqn: str) -> Union[Tuple[torch.Size, Any], str]:
         """The global size and properties of fqn's entry if it is a tensor, else what it is."""
@@ -132,66 +134,66 @@ class TableEntries:
     """The entries of a state table, as the check reads them. An entry the table keeps pickled is
     unpickled when the check reads it."""
 
-    def __init__(self, t: StateDictTable):
-        self._t = t
+    def __init__(self, table: StateDictTable):
+        self._table = table
         self._objects = {}  # entry -> object, for entries kept pickled
         self._properties = {}  # properties id -> TensorProperties
-        planner_data = dict(t.fields).get("planner_data")
+        planner_data = dict(table.fields).get("planner_data")
         self.planner_data = None if planner_data is None else small_unpickle(planner_data)
 
     def __len__(self) -> int:
-        return len(self._t)
+        return len(self._table)
 
     def fqn(self, i: int) -> str:
-        return self._t.fqns[i]
+        return self._table.fqns[i]
 
     def _object(self, i: int):
         if i not in self._objects:
-            self._objects[i] = self._t.entry(i)
+            self._objects[i] = self._table.entry(i)
         return self._objects[i]
 
     def counts(self) -> List[int]:
         """Each entry's number of chunks, 1 for an entry that isn't a tensor."""
-        t = self._t
-        counts = (t.chunk_start[1:] - t.chunk_start[:-1]).tolist()
-        for i, kind in enumerate(t.kind.tolist()):
+        table = self._table
+        counts = (table.chunk_start[1:] - table.chunk_start[:-1]).tolist()
+        for i, kind in enumerate(table.kind.tolist()):
             if kind == OTHER:
-                e = self._object(i)
-                counts[i] = len(e.chunks) if isinstance(e, TensorStorageMetadata) else 1
+                entry = self._object(i)
+                counts[i] = len(entry.chunks) if isinstance(entry, TensorStorageMetadata) else 1
             elif kind != TENSOR:
                 counts[i] = 1
         return counts
 
     def is_tensor(self, i: int) -> bool:
-        kind = self._t.kind[i]
+        kind = self._table.kind[i]
         return kind == TENSOR or (
             kind == OTHER and isinstance(self._object(i), TensorStorageMetadata)
         )
 
     def chunks(self, i: int, lo: int, hi: int) -> Iterable[Chunk]:
         """Chunks lo up to hi of tensor entry i."""
-        if self._t.kind[i] == OTHER:
-            return [(c.offsets, c.sizes) for c in self._object(i).chunks[lo:hi]]
-        ndim = int(self._t.ndim[i])
-        return [(row[:ndim], row[ndim:]) for row in self._t.chunks_dims(i)[lo:hi].tolist()]
+        if self._table.kind[i] == OTHER:
+            return [(chunk.offsets, chunk.sizes) for chunk in self._object(i).chunks[lo:hi]]
+        ndim = int(self._table.ndim[i])
+        return [(row[:ndim], row[ndim:]) for row in self._table.chunks_dims(i)[lo:hi].tolist()]
 
     def tensor(self, fqn: str) -> Union[Tuple[torch.Size, Any], str]:
         """The global size and properties of fqn's entry if it is a tensor, else what it is."""
-        t = self._t
-        i = t.index.get(fqn)
+        table = self._table
+        i = table.index.get(fqn)
         if i is None:
             return "NoneType"
-        if t.kind[i] == OTHER:
-            e = self._object(i)
-            if not isinstance(e, TensorStorageMetadata):
-                return type(e).__name__
-            return e.size, e.properties
-        if t.kind[i] != TENSOR:
+        if table.kind[i] == OTHER:
+            entry = self._object(i)
+            if not isinstance(entry, TensorStorageMetadata):
+                return type(entry).__name__
+            return entry.size, entry.properties
+        if table.kind[i] != TENSOR:
             return "BytesStorageMetadata"
-        ref = int(t.ref[i])
+        ref = int(table.ref[i])
         if ref not in self._properties:
-            self._properties[ref] = small_unpickle(t.properties[ref])
-        size = torch.Size(t.size(i).tolist())
+            self._properties[ref] = small_unpickle(table.properties[ref])
+        size = torch.Size(table.size(i).tolist())
         return size, self._properties[ref]
 
 

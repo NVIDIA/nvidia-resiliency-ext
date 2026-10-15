@@ -252,18 +252,18 @@ class StateDictTable:
 
         arrays = {"kind": np.uint8, **{name: np.int64 for name in _ARRAYS if name != "kind"}}
         for name, dtype in arrays.items():
-            a = getattr(self, name)
+            array = getattr(self, name)
             if (
-                type(a) is not np.ndarray
-                or a.dtype != dtype
-                or a.ndim != 1
-                or not a.flags.c_contiguous
+                type(array) is not np.ndarray
+                or array.dtype != dtype
+                or array.ndim != 1
+                or not array.flags.c_contiguous
             ):
                 raise bad(f"{name} is not a 1-D array of the expected type")
-        for f in self.fields:
-            if type(f) is not tuple or len(f) != 2:
+        for field in self.fields:
+            if type(field) is not tuple or len(field) != 2:
                 raise bad("a field is not a (name, opcodes) tuple")
-            name, opcodes = f
+            name, opcodes = field
             if type(name) is not str:
                 raise TypeError(f"expected str field name, got {type(name).__name__}")
             written_here = name in (STATE_DICT_METADATA, STORAGE_DATA)
@@ -295,8 +295,8 @@ class StateDictTable:
             raise bad("a negative number of dims")
         # Python ints: no overflow.
         if any(
-            v != a * (1 + 2 * c)
-            for v, a, c in zip(
+            count != dims * (1 + 2 * chunk_count)
+            for count, dims, chunk_count in zip(
                 values[tensor].tolist(), ndim[tensor].tolist(), chunks[tensor].tolist()
             )
         ) or not refers(self.properties, tensor):

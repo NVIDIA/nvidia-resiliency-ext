@@ -61,43 +61,43 @@ from .test_metadata_pickler import (
 )
 
 
-def assert_consistent(t: state_table.StateDictTable) -> None:
-    """The arrays describe len(t) entries and use exactly the dims they hold."""
-    n = len(t)
-    assert len(t.kind) == len(t.ref) == len(t.ndim) == n
-    for starts in (t.chunk_start, t.dims_start):
+def assert_consistent(table: state_table.StateDictTable) -> None:
+    """The arrays describe len(table) entries and use exactly the dims they hold."""
+    n = len(table)
+    assert len(table.kind) == len(table.ref) == len(table.ndim) == n
+    for starts in (table.chunk_start, table.dims_start):
         assert len(starts) == n + 1 and starts[0] == 0 and (starts[1:] >= starts[:-1]).all()
-    assert t.dims_start[-1] == len(t.dims)
+    assert table.dims_start[-1] == len(table.dims)
     for i in range(n):
-        values = t.dims_start[i + 1] - t.dims_start[i]
-        assert values == t.ndim[i] * (1 + 2 * t.chunk_count(i))
-        if t.kind[i] != TENSOR:
-            assert t.ndim[i] == 0 and t.chunk_count(i) == 0
+        values = table.dims_start[i + 1] - table.dims_start[i]
+        assert values == table.ndim[i] * (1 + 2 * table.chunk_count(i))
+        if table.kind[i] != TENSOR:
+            assert table.ndim[i] == 0 and table.chunk_count(i) == 0
 
 
-def assert_converted(md) -> state_table.StateDictTable:
-    """md converts to a consistent table whose entries and fields are md's as stock pickle
+def assert_converted(metadata) -> state_table.StateDictTable:
+    """metadata converts to a consistent table whose entries and fields are metadata's as stock pickle
     round-trips them."""
-    t = StateDictTable.from_metadata(md)
-    md = stock_round_trip(md)
-    assert_consistent(t)
-    assert list(t.fqns) == list(md.state_dict_metadata)
-    assert t.index == {fqn: i for i, fqn in enumerate(t.fqns)}
-    for i, (fqn, entry) in enumerate(md.state_dict_metadata.items()):
-        assert_identical(t.entry(i), entry, fqn)
-    assert [name for name, _ in t.fields] == list(vars(md))
-    for name, opcodes in t.fields:
+    table = StateDictTable.from_metadata(metadata)
+    metadata = stock_round_trip(metadata)
+    assert_consistent(table)
+    assert list(table.fqns) == list(metadata.state_dict_metadata)
+    assert table.index == {fqn: i for i, fqn in enumerate(table.fqns)}
+    for i, (fqn, entry) in enumerate(metadata.state_dict_metadata.items()):
+        assert_identical(table.entry(i), entry, fqn)
+    assert [name for name, _ in table.fields] == list(vars(metadata))
+    for name, opcodes in table.fields:
         if name in (state_table.STATE_DICT_METADATA, state_table.STORAGE_DATA):
             assert opcodes is None
         else:
-            assert_identical(small_unpickle(opcodes), getattr(md, name), name)
-    return t
+            assert_identical(small_unpickle(opcodes), getattr(metadata, name), name)
+    return table
 
 
 @hypothesis_settings
 @given(metadatas())
-def test_converts(md):
-    assert_converted(md)
+def test_converts(metadata):
+    assert_converted(metadata)
 
 
 @pytest.mark.parametrize("make", FIXED_METADATA)
@@ -106,9 +106,9 @@ def test_converts_on(make, tmp_path):
 
 
 def test_kinds():
-    md = subclassed_metadata()
-    t = assert_converted(md)
-    kinds = dict(zip(t.fqns, t.kind.tolist()))
+    metadata = subclassed_metadata()
+    table = assert_converted(metadata)
+    kinds = dict(zip(table.fqns, table.kind.tolist()))
     assert kinds["w"] == kinds["s"] == TENSOR
     assert kinds["w2"] == OTHER  # a subclass
     assert kinds["obj.0/shard_0"] == BYTES
@@ -128,62 +128,66 @@ def test_kinds():
 )
 def test_unusual_tensors_are_kept_as_pickles(mutate):
     """A tensor entry the arrays don't describe exactly is kept as the stdlib pickler's opcodes."""
-    md = writer._sample_metadata()
-    mutate(md.state_dict_metadata["w"])
-    t = assert_converted(md)
-    assert t.kind[t.index["w"]] == OTHER and t.kind[t.index["s"]] == TENSOR
+    metadata = writer._sample_metadata()
+    mutate(metadata.state_dict_metadata["w"])
+    table = assert_converted(metadata)
+    assert table.kind[table.index["w"]] == OTHER and table.kind[table.index["s"]] == TENSOR
 
 
 def test_properties_are_kept_once_per_pickle():
     """Equal properties are kept once; equal values of different types (True, 1) are not equal."""
-    md = properties_of_equal_values()
-    t = assert_converted(md)
-    ref = dict(zip(t.fqns, t.ref.tolist()))
+    metadata = properties_of_equal_values()
+    table = assert_converted(metadata)
+    ref = dict(zip(table.fqns, table.ref.tolist()))
     assert ref["w1"] != ref["w2"]
-    assert len(t.properties) == len(set(t.properties)) == 4  # w, s, w1, w2
+    assert len(table.properties) == len(set(table.properties)) == 4  # w, s, w1, w2
 
 
 @pytest.mark.parametrize(
     "mutate",
     [
-        pytest.param(lambda md: setattr(md, "__class__", _Metadata), id="metadata-subclass"),
         pytest.param(
-            lambda md: setattr(md, "state_dict_metadata", OrderedDict(md.state_dict_metadata)),
+            lambda metadata: setattr(metadata, "__class__", _Metadata), id="metadata-subclass"
+        ),
+        pytest.param(
+            lambda metadata: setattr(
+                metadata, "state_dict_metadata", OrderedDict(metadata.state_dict_metadata)
+            ),
             id="ordered-dict",
         ),
-        pytest.param(lambda md: _rename_first(md, _Str), id="str-subclass"),
+        pytest.param(lambda metadata: _rename_first(metadata, _Str), id="str-subclass"),
     ],
 )
 def test_rejects(mutate):
-    md = writer._sample_metadata()
-    mutate(md)
+    metadata = writer._sample_metadata()
+    mutate(metadata)
     with pytest.raises(TypeError):
-        StateDictTable.from_metadata(md)
+        StateDictTable.from_metadata(metadata)
 
 
 @pytest.mark.parametrize("case", ["chunk-list-emptied", "chunk-list-replaced", "entries-deleted"])
 def test_metadata_changed_while_converted(case):
     """Python code run during the conversion can change the metadata: the conversion raises, or
     returns a consistent table."""
-    md = _metadata_changed_while_pickled(case)
+    metadata = _metadata_changed_while_pickled(case)
     try:
-        t = StateDictTable.from_metadata(md)
+        table = StateDictTable.from_metadata(metadata)
     except RuntimeError:
         return
-    assert_consistent(t)
+    assert_consistent(table)
 
 
 def test_few_objects_for_the_gc():
     """However large the metadata, the table holds a handful of objects the garbage collector
     visits: its arrays, lists and fields, not one per entry or chunk."""
-    t = StateDictTable.from_metadata(large_metadata())
-    seen, stack = {id(t)}, [t]
+    table = StateDictTable.from_metadata(large_metadata())
+    seen, stack = {id(table)}, [table]
     while stack:
         for r in gc.get_referents(stack.pop()):
             if gc.is_tracked(r) and id(r) not in seen and not isinstance(r, type):
                 seen.add(id(r))
                 stack.append(r)
-    assert len(t) == 1501 and len(seen) < 40
+    assert len(table) == 1501 and len(seen) < 40
 
 
 def assert_same_tables(a: state_table.StateDictTable, b: state_table.StateDictTable) -> None:
@@ -199,18 +203,18 @@ def assert_same_tables(a: state_table.StateDictTable, b: state_table.StateDictTa
 @NEEDS_NATIVE
 @hypothesis_settings
 @given(metadatas())
-def test_native_converts_like_python(md):
+def test_native_converts_like_python(metadata):
     assert_same_tables(
-        writer.native.StateDictTable.from_metadata(md), StateDictTable.from_metadata(md)
+        writer.native.StateDictTable.from_metadata(metadata), StateDictTable.from_metadata(metadata)
     )
 
 
 @NEEDS_NATIVE
 @pytest.mark.parametrize("make", FIXED_METADATA)
 def test_native_converts_like_python_on(make, tmp_path):
-    md = make(tmp_path)
+    metadata = make(tmp_path)
     assert_same_tables(
-        writer.native.StateDictTable.from_metadata(md), StateDictTable.from_metadata(md)
+        writer.native.StateDictTable.from_metadata(metadata), StateDictTable.from_metadata(metadata)
     )
 
 
@@ -218,19 +222,23 @@ def test_native_converts_like_python_on(make, tmp_path):
 @pytest.mark.parametrize(
     "mutate",
     [
-        pytest.param(lambda md: setattr(md, "__class__", _Metadata), id="metadata-subclass"),
         pytest.param(
-            lambda md: setattr(md, "state_dict_metadata", OrderedDict(md.state_dict_metadata)),
+            lambda metadata: setattr(metadata, "__class__", _Metadata), id="metadata-subclass"
+        ),
+        pytest.param(
+            lambda metadata: setattr(
+                metadata, "state_dict_metadata", OrderedDict(metadata.state_dict_metadata)
+            ),
             id="ordered-dict",
         ),
-        pytest.param(lambda md: _rename_first(md, _Str), id="str-subclass"),
+        pytest.param(lambda metadata: _rename_first(metadata, _Str), id="str-subclass"),
     ],
 )
 def test_native_rejects(mutate):
-    md = writer._sample_metadata()
-    mutate(md)
+    metadata = writer._sample_metadata()
+    mutate(metadata)
     with pytest.raises(TypeError):
-        writer.native.StateDictTable.from_metadata(md)
+        writer.native.StateDictTable.from_metadata(metadata)
 
 
 def _bump(a: np.ndarray, i: int, by: int) -> np.ndarray:
@@ -246,23 +254,23 @@ def _attributes(table: StateDictTable, **changes) -> dict:
 
 # Malformed tables, which a StateDictTable refuses to be and the C++ writer refuses to read.
 MALFORMED = [
-    pytest.param(lambda t: dict(kind=t.kind.astype(np.int64)), id="kind-dtype"),
-    pytest.param(lambda t: dict(dims=t.dims[::2]), id="not-contiguous"),
-    pytest.param(lambda t: dict(ref=t.ref[:-1]), id="short-ref"),
-    pytest.param(lambda t: dict(fqns=t.fqns[:-1]), id="short-fqns"),
-    pytest.param(lambda t: dict(ndim=t.ndim[:-1]), id="short-ndim"),
-    pytest.param(lambda t: dict(dims_start=_bump(t.dims_start, -1, 1)), id="dims-range"),
-    pytest.param(lambda t: dict(dims_start=_bump(t.dims_start, 1, -1)), id="dims-mismatch"),
-    pytest.param(lambda t: dict(ndim=_bump(t.ndim, 0, 1)), id="ndim-mismatch"),
-    pytest.param(lambda t: dict(ndim=_bump(t.ndim, 0, -5)), id="negative-ndim"),
-    pytest.param(lambda t: dict(chunk_start=_bump(t.chunk_start, 1, 1)), id="chunk-count"),
-    pytest.param(lambda t: dict(kind=_bump(t.kind, 0, 7)), id="unknown-kind"),
-    pytest.param(lambda t: dict(ref=_bump(t.ref, 0, 99)), id="ref-out-of-range"),
-    pytest.param(lambda t: dict(properties=(1, *t.properties[1:])), id="properties-type"),
-    pytest.param(lambda t: dict(fields=(*t.fields, ("x", None))), id="field-opcodes"),
-    pytest.param(lambda t: dict(fields=(["x", b"N"],)), id="field-not-tuple"),
+    pytest.param(lambda table: dict(kind=table.kind.astype(np.int64)), id="kind-dtype"),
+    pytest.param(lambda table: dict(dims=table.dims[::2]), id="not-contiguous"),
+    pytest.param(lambda table: dict(ref=table.ref[:-1]), id="short-ref"),
+    pytest.param(lambda table: dict(fqns=table.fqns[:-1]), id="short-fqns"),
+    pytest.param(lambda table: dict(ndim=table.ndim[:-1]), id="short-ndim"),
+    pytest.param(lambda table: dict(dims_start=_bump(table.dims_start, -1, 1)), id="dims-range"),
+    pytest.param(lambda table: dict(dims_start=_bump(table.dims_start, 1, -1)), id="dims-mismatch"),
+    pytest.param(lambda table: dict(ndim=_bump(table.ndim, 0, 1)), id="ndim-mismatch"),
+    pytest.param(lambda table: dict(ndim=_bump(table.ndim, 0, -5)), id="negative-ndim"),
+    pytest.param(lambda table: dict(chunk_start=_bump(table.chunk_start, 1, 1)), id="chunk-count"),
+    pytest.param(lambda table: dict(kind=_bump(table.kind, 0, 7)), id="unknown-kind"),
+    pytest.param(lambda table: dict(ref=_bump(table.ref, 0, 99)), id="ref-out-of-range"),
+    pytest.param(lambda table: dict(properties=(1, *table.properties[1:])), id="properties-type"),
+    pytest.param(lambda table: dict(fields=(*table.fields, ("x", None))), id="field-opcodes"),
+    pytest.param(lambda table: dict(fields=(["x", b"N"],)), id="field-not-tuple"),
     pytest.param(
-        lambda t: dict(kind=np.where(t.kind == TENSOR, BYTES, t.kind).astype(np.uint8)),
+        lambda table: dict(kind=np.where(table.kind == TENSOR, BYTES, table.kind).astype(np.uint8)),
         id="bytes-with-dims",
     ),
 ]
@@ -302,10 +310,10 @@ def test_tables_are_immutable():
     assert all(type(getattr(table, name)) is tuple for name in ("fields", "fqns", "others"))
 
 
-def _storage_rows(md) -> np.ndarray:
-    """md.storage_data as gathered write-result tables: one rank's table, in one row."""
+def _storage_rows(metadata) -> np.ndarray:
+    """metadata.storage_data as gathered write-result tables: one rank's table, in one row."""
     payload = table.encode(
-        [WriteResult(index, info.length, info) for index, info in md.storage_data.items()]
+        [WriteResult(index, info.length, info) for index, info in metadata.storage_data.items()]
     )
     return np.frombuffer(payload + bytes(-len(payload) % 8), dtype=np.uint8)[None, :]
 
@@ -313,55 +321,55 @@ def _storage_rows(md) -> np.ndarray:
 @pytest.mark.parametrize("make", FIXED_METADATA)
 def test_dump_metadata_of_table(make, tmp_path):
     """A table is written as its Metadata, with the storage_data given, or None."""
-    md = make(tmp_path)
-    t = StateDictTable.from_metadata(md)
-    for storage_data in (md.storage_data, None):
+    metadata = make(tmp_path)
+    table = StateDictTable.from_metadata(metadata)
+    for storage_data in (metadata.storage_data, None):
         buf = io.BytesIO()
-        writer.dump_metadata(t, buf, storage_data=storage_data)
-        expected = dataclasses.replace(md, storage_data=storage_data)
+        writer.dump_metadata(table, buf, storage_data=storage_data)
+        expected = dataclasses.replace(metadata, storage_data=storage_data)
         assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(expected))
 
 
 def test_dump_metadata_of_table_with_rows():
-    md = writer._sample_metadata()
-    rows = _storage_rows(md)
+    metadata = writer._sample_metadata()
+    rows = _storage_rows(metadata)
     a, b = io.BytesIO(), io.BytesIO()
-    writer.dump_metadata(StateDictTable.from_metadata(md), a, storage_rows=rows)
-    writer.dump_metadata(md, b, storage_rows=rows)
+    writer.dump_metadata(StateDictTable.from_metadata(metadata), a, storage_rows=rows)
+    writer.dump_metadata(metadata, b, storage_rows=rows)
     assert a.getvalue() == b.getvalue()
 
 
 def test_with_fields():
     """Fields set on a table are written as if set on the Metadata; one the table doesn't have yet
     comes last. Names that aren't fields a save sets are refused."""
-    md = writer._sample_metadata()
-    del md.version
-    table = StateDictTable.from_metadata(md).with_fields(version="9.9")
-    md.version = "9.9"
+    metadata = writer._sample_metadata()
+    del metadata.version
+    table = StateDictTable.from_metadata(metadata).with_fields(version="9.9")
+    metadata.version = "9.9"
     buf = io.BytesIO()
-    writer.dump_metadata(table, buf, storage_data=md.storage_data)
-    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
+    writer.dump_metadata(table, buf, storage_data=metadata.storage_data)
+    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(metadata))
     for name in ("extra", "storage_data", "state_dict_metadata"):
         with pytest.raises(TypeError):
             table.with_fields(**{name: None})
 
 
 def test_to_metadata():
-    md = writer._sample_metadata()
-    back = StateDictTable.from_metadata(md).to_metadata(md.storage_data)
-    assert back.storage_data is md.storage_data
+    metadata = writer._sample_metadata()
+    back = StateDictTable.from_metadata(metadata).to_metadata(metadata.storage_data)
+    assert back.storage_data is metadata.storage_data
     assert_identical(
         dataclasses.replace(back, storage_data=None),
-        stock_round_trip(dataclasses.replace(md, storage_data=None)),
+        stock_round_trip(dataclasses.replace(metadata, storage_data=None)),
     )
 
 
 @NEEDS_FAST
 def test_state_dict_table_if_fast_warns_and_returns_none(caplog):
-    md = writer._sample_metadata()
-    md.__class__ = _Metadata
+    metadata = writer._sample_metadata()
+    metadata.__class__ = _Metadata
     with caplog.at_level(logging.WARNING, logger=writer.__name__):
-        assert writer.state_dict_table_if_fast(md) is None
+        assert writer.state_dict_table_if_fast(metadata) is None
     assert "can't convert" in caplog.text
 
 
@@ -374,20 +382,20 @@ def test_no_table_without_the_fast_writers(monkeypatch):
 @NEEDS_NATIVE
 def test_dump_metadata_of_table_falls_back_to_python(caplog):
     """A table the native writer can't write (a lone surrogate) is written by the Python one."""
-    md = writer._sample_metadata()
-    _rename_first(md, lambda s: s + "\ud800")
-    t = writer.native.StateDictTable.from_metadata(md)
+    metadata = writer._sample_metadata()
+    _rename_first(metadata, lambda s: s + "\ud800")
+    table = writer.native.StateDictTable.from_metadata(metadata)
     buf = io.BytesIO()
     with caplog.at_level(logging.WARNING, logger=writer.__name__):
-        writer.dump_metadata(t, buf, storage_data=md.storage_data)
+        writer.dump_metadata(table, buf, storage_data=metadata.storage_data)
     assert "failed to write" in caplog.text
-    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
+    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(metadata))
 
 
 def test_dump_metadata_of_table_without_a_writer(monkeypatch):
     """dump_metadata writes the Metadata built from the table when no writer can write it."""
-    md = writer._sample_metadata()
-    table = StateDictTable.from_metadata(md)
+    metadata = writer._sample_metadata()
+    table = StateDictTable.from_metadata(metadata)
 
     def fail(*args, **kwargs):
         raise RuntimeError("no")
@@ -396,6 +404,6 @@ def test_dump_metadata_of_table_without_a_writer(monkeypatch):
     if writer.native:
         monkeypatch.setattr(writer.native, "dumps_table", fail)
     buf = io.BytesIO()
-    writer.dump_metadata(table, buf, storage_data=md.storage_data)
+    writer.dump_metadata(table, buf, storage_data=metadata.storage_data)
     back = pickle.loads(buf.getvalue())
-    assert back == md and list(vars(back)) == list(vars(md))
+    assert back == metadata and list(vars(back)) == list(vars(metadata))

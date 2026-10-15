@@ -36,49 +36,49 @@ def fast(request, monkeypatch):
 
 
 def test_kept_as_a_table_with_the_fast_writers(fast):
-    gm = GlobalMetadata.from_metadata(writer._sample_metadata())
-    assert (gm.table is not None) is fast
+    global_metadata = GlobalMetadata.from_metadata(writer._sample_metadata())
+    assert (global_metadata.table is not None) is fast
     expected = _metadata_reuse.TableEntries if fast else _metadata_reuse.ObjectEntries
-    assert isinstance(gm.entries(), expected)
+    assert isinstance(global_metadata.entries(), expected)
 
 
 def test_to_metadata(fast):
-    md = writer._sample_metadata()
-    gm = GlobalMetadata.from_metadata(md)
-    back = gm.to_metadata(md.storage_data)
-    assert back.storage_data is md.storage_data
-    assert back == md
-    assert gm.to_metadata().storage_data is None
+    metadata = writer._sample_metadata()
+    global_metadata = GlobalMetadata.from_metadata(metadata)
+    back = global_metadata.to_metadata(metadata.storage_data)
+    assert back.storage_data is metadata.storage_data
+    assert back == metadata
+    assert global_metadata.to_metadata().storage_data is None
 
 
 @NEEDS_FAST
 def test_a_table_is_independent_of_its_metadata():
-    md = writer._sample_metadata()
-    gm = GlobalMetadata.from_metadata(md)
-    before = pickle.dumps(gm.to_metadata())
-    md.state_dict_metadata["w"].chunks.clear()
-    del md.state_dict_metadata["s"]
-    assert pickle.dumps(gm.to_metadata()) == before
+    metadata = writer._sample_metadata()
+    global_metadata = GlobalMetadata.from_metadata(metadata)
+    before = pickle.dumps(global_metadata.to_metadata())
+    metadata.state_dict_metadata["w"].chunks.clear()
+    del metadata.state_dict_metadata["s"]
+    assert pickle.dumps(global_metadata.to_metadata()) == before
 
 
 def test_with_fields_refuses_unknown_fields(fast):
-    gm = GlobalMetadata.from_metadata(writer._sample_metadata())
+    global_metadata = GlobalMetadata.from_metadata(writer._sample_metadata())
     for name in ("extra", "storage_data", "state_dict_metadata"):
         with pytest.raises(TypeError):
-            gm.with_fields(**{name: None})
+            global_metadata.with_fields(**{name: None})
 
 
 def test_with_fields_leaves_the_original_alone(fast):
-    md = writer._sample_metadata()
-    gm = GlobalMetadata.from_metadata(md)
-    before = pickle.dumps(gm.to_metadata())
-    changed = gm.with_fields(version="9.9")
+    metadata = writer._sample_metadata()
+    global_metadata = GlobalMetadata.from_metadata(metadata)
+    before = pickle.dumps(global_metadata.to_metadata())
+    changed = global_metadata.with_fields(version="9.9")
     assert changed.to_metadata().version == "9.9"
-    assert pickle.dumps(gm.to_metadata()) == before
+    assert pickle.dumps(global_metadata.to_metadata()) == before
 
 
 def test_dump(fast):
-    md = writer._sample_metadata()
+    metadata = writer._sample_metadata()
     buf = io.BytesIO()
-    GlobalMetadata.from_metadata(md).dump(buf, storage_data=md.storage_data)
-    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
+    GlobalMetadata.from_metadata(metadata).dump(buf, storage_data=metadata.storage_data)
+    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(metadata))
