@@ -27,7 +27,7 @@ from dataclasses import fields
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.default_planner import (
@@ -43,7 +43,7 @@ from torch.distributed.checkpoint.planner import SavePlan, TensorWriteData, Writ
 from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import state_table, writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 
@@ -87,9 +87,23 @@ def metadata_of(plans):
     return pickle.loads(pickle.dumps(metadata))
 
 
+VIEWS = {
+    "objects": _metadata_reuse.ObjectEntries,
+    "table": lambda md: _metadata_reuse.TableEntries(state_table.from_metadata(md)),
+}
+entries_of = VIEWS["objects"]  # the view the checks below read the metadata through
+
+
+@pytest.fixture(autouse=True, params=VIEWS)
+def view(request, monkeypatch):
+    """Every reuse check reads the metadata through each view."""
+    monkeypatch.setitem(globals(), "entries_of", VIEWS[request.param])
+
+
 def reusable(plans, metadata):
     """Whether the simulated ranks' summed votes allow reuse."""
-    votes = [_metadata_reuse.votes(p, metadata, r, len(plans)) for r, p in enumerate(plans)]
+    entries = entries_of(metadata)
+    votes = [_metadata_reuse.votes(p, entries, r, len(plans)) for r, p in enumerate(plans)]
     return _metadata_reuse.can_reuse([sum(column) for column in zip(*votes)])
 
 
@@ -233,7 +247,7 @@ def test_unreadable_metadata_votes_against_reuse():
     plans = sample_plans()
     metadata = metadata_of(plans)
     metadata.state_dict_metadata["experts"].chunks = None
-    votes = _metadata_reuse.votes(plans[0], metadata, 0, len(plans))
+    votes = _metadata_reuse.votes(plans[0], entries_of(metadata), 0, len(plans))
     assert votes[0] == 1
 
 
@@ -266,7 +280,9 @@ def all_items(tensors):
     ]
 
 
-@settings(max_examples=50, deadline=None)
+@settings(
+    max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 @given(tensors=chunked_tensors(), data=st.data())
 def test_any_distribution_of_the_same_chunks_reuses(tensors, data):
     items = all_items(tensors)
@@ -284,7 +300,9 @@ def test_any_distribution_of_the_same_chunks_reuses(tensors, data):
     assert reusable(new_plans, metadata_of(old_plans))
 
 
-@settings(max_examples=50, deadline=None)
+@settings(
+    max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 @given(tensors=chunked_tensors(), data=st.data())
 def test_any_missing_chunk_doesnt_reuse(tensors, data):
     items = all_items(tensors)
