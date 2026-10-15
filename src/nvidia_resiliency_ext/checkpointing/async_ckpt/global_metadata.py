@@ -43,15 +43,15 @@ class GlobalMetadata:
 
     @classmethod
     def from_metadata(cls, metadata: Metadata) -> "GlobalMetadata":
-        """The global metadata of metadata, without its storage_data.
+        """The global metadata of metadata, without its storage_data, and with only Metadata's
+        fields (not e.g. the local plans older versions attach).
 
         As a table, it holds no reference to metadata's objects. Otherwise it shares its
         state_dict_metadata, which must then not be modified.
         """
+        metadata = dataclasses.replace(metadata, storage_data=None)
         table = _metadata_pickler.to_table(metadata)
-        if table is not None:
-            return cls(table)
-        return cls(dataclasses.replace(metadata, storage_data=None))
+        return cls(table if table is not None else metadata)
 
     @property
     def table(self) -> Optional[StateDictTable]:

@@ -15,7 +15,6 @@
 
 """State dict saver for PyT Distributed format allowing asynchronous save."""
 
-import dataclasses
 
 # Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
 # Severity: Low   Confidence: High
@@ -40,6 +39,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import table as _table
+from .global_metadata import GlobalMetadata
 
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
@@ -61,22 +61,32 @@ class CheckpointMetadataCache:
       `enable_cache` promises that the checkpoint structure does not change. Each rank still
       creates its local plan and raises if it differs from the previous one.
 
-    The coordinator writes a shallow copy of the cached metadata on every save, so the cache never
-    holds a save's storage_data and never modifies the metadata it was given.
+    The metadata is kept as a `GlobalMetadata`, without storage_data: with the fast ``.metadata``
+    writers, a state table that the garbage collector doesn't visit and that refers to none of
+    the objects of the Metadata it was made from. The cache never modifies it, nor the Metadata
+    it was given.
 
     Attributes:
-        global_metadata (Metadata): The global metadata to reuse: the loaded checkpoint's, without
-            its storage_data, on every rank until the first save, the previous save's on the
-            coordinator afterwards.
+        global_metadata (Metadata): The global metadata to reuse, as a new Metadata made on each
+            access (which, as a table, takes a while): the loaded checkpoint's, without its
+            storage_data, on every rank until the first save, the previous save's on the
+            coordinator afterwards; None if there is none.
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
         central_plan (SavePlan): This rank's global plan of the previous save.
     """
 
     def __init__(self):
-        self.global_metadata: Optional[Metadata] = None
+        self._global_metadata: Optional[GlobalMetadata] = None
         self.local_plan: Optional[SavePlan] = None
         self.central_plan: Optional[SavePlan] = None
+
+    @property
+    def global_metadata(self) -> Optional[Metadata]:
+        """See the class docstring."""
+        if self._global_metadata is None:
+            return None
+        return self._global_metadata.to_metadata()
 
     def set_cached_global_metadata(self, cached_global_metadata: Optional[Metadata]):
         """
@@ -84,14 +94,14 @@ class CheckpointMetadataCache:
 
         Every rank must set it. The next save checks whether all ranks' local plans write exactly
         the chunks this metadata lists, and if so reuses it instead of gathering the plans and
-        building the global metadata again. The metadata is not modified.
+        building the global metadata again. The metadata is not modified, and with the fast
+        ``.metadata`` writers the cache keeps none of its objects, so the caller can free it.
 
         Args:
             cached_global_metadata (Metadata): The global metadata from a previous checkpoint.
         """
-        # Without the loaded storage_data: no save needs it, as finish rebuilds it every save.
-        self.global_metadata = (
-            dataclasses.replace(cached_global_metadata, storage_data=None)
+        self._global_metadata = (
+            GlobalMetadata.from_metadata(cached_global_metadata)
             if cached_global_metadata is not None
             else None
         )
@@ -105,23 +115,21 @@ class CheckpointMetadataCache:
         global_metadata: Optional[Metadata],
         reused: bool,
         is_coordinator: bool,
-    ) -> Optional[Metadata]:
+    ) -> Optional[GlobalMetadata]:
         """Record a planned save; return the global metadata the coordinator writes for it."""
         self.local_plan = local_plan
         self.central_plan = central_plan
         if not is_coordinator:
-            self.global_metadata = None
+            self._global_metadata = None
             return None
         if not reused:
-            self.global_metadata = global_metadata
-        elif self.global_metadata is None:
+            self._global_metadata = GlobalMetadata.from_metadata(global_metadata)
+        elif self._global_metadata is None:
             raise RuntimeError(
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
-        # `finish` populates `storage_data` in the `Metadata` object it's given. Create a fresh copy
-        # so that the `storage_data` does not persist in memory after `finish`.
-        return dataclasses.replace(self.global_metadata)
+        return self._global_metadata
 
 
 _checkpoint_metadata_cache = None
@@ -184,7 +192,7 @@ def save_state_dict_async_plan(
         tuple: Contains:
 
             - storage writer (the one passed as input)
-            - global metadata to write (on the coordinator; None on other ranks)
+            - global metadata to write, a GlobalMetadata (on the coordinator; None on other ranks)
             - distributed wrapper used for planning
 
     The return value of this function should be passed as an input to
@@ -243,7 +251,7 @@ def save_state_dict_async_plan(
         if metadata_cache is not None:
             # The first save in this process: every rank takes part, with or without metadata.
             reused = verify_global_metadata_reuse(
-                metadata_cache.global_metadata, local_plan, dist_wrapper
+                metadata_cache._global_metadata, local_plan, dist_wrapper
             )
 
         if not reused:
@@ -288,6 +296,8 @@ def save_state_dict_async_plan(
         global_metadata = metadata_cache._update(
             local_plan, central_plan, global_metadata, reused, dist_wrapper.is_coordinator
         )
+    elif global_metadata is not None:
+        global_metadata = GlobalMetadata.from_metadata(global_metadata)
     return storage_writer, global_metadata, dist_wrapper
 
 
@@ -333,7 +343,7 @@ def _check_plan_unchanged(previous: SavePlan, current: SavePlan, rank: int) -> N
     semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.verify_global_metadata_reuse"
 )
 def verify_global_metadata_reuse(
-    loaded_metadata: Optional[Metadata],
+    loaded_metadata: Optional[GlobalMetadata],
     local_plan: SavePlan,
     dist_wrapper: _DistWrapper,
 ) -> bool:
@@ -345,7 +355,7 @@ def verify_global_metadata_reuse(
     planning group must call it, also ranks without loaded metadata, which vote against reuse.
 
     Args:
-        loaded_metadata (Metadata, optional): The global metadata of the loaded checkpoint.
+        loaded_metadata (GlobalMetadata, optional): The global metadata of the loaded checkpoint.
         local_plan (SavePlan): This rank's local save plan.
         dist_wrapper (_DistWrapper): distributed wrapper created during planning
 
@@ -356,8 +366,7 @@ def verify_global_metadata_reuse(
     if loaded_metadata is None:
         votes = [1] + [0] * _metadata_reuse.LANES
     else:
-        entries = _metadata_reuse.ObjectEntries(loaded_metadata)
-        votes = _metadata_reuse.votes(local_plan, entries, rank, world_size)
+        votes = _metadata_reuse.votes(local_plan, loaded_metadata.entries(), rank, world_size)
     summed = torch.tensor(votes, dtype=torch.int64, device=torch.cuda.current_device())
     with telemetry.span(
         semconv.SPAN_GROUP_CKPT_PROFILING,
@@ -436,18 +445,23 @@ def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
 def _writes_rows(storage_writer) -> bool:
     """Whether storage_writer can write storage_data from the gathered tables: a fast .metadata
     writer, and a FileSystemWriterAsync whose finish a subclass doesn't override."""
+    return _finishes_as_nvrx(storage_writer) and _metadata_pickler.writes_tables()
+
+
+def _finishes_as_nvrx(storage_writer) -> bool:
+    """Whether storage_writer's finish is FileSystemWriterAsync's, which _finish implements: then
+    _finish writes a GlobalMetadata as it is, and other storage writers get a Metadata."""
     from .filesystem_async import FileSystemWriterAsync
 
     return (
         isinstance(storage_writer, FileSystemWriterAsync)
         and type(storage_writer).finish is FileSystemWriterAsync.finish
-        and _metadata_pickler.writes_tables()
     )
 
 
 def save_state_dict_async_finalize(
     storage_writer: "FileSystemWriterAsync",
-    global_metadata: Metadata,
+    global_metadata: Optional[GlobalMetadata],
     dist_wrapper: _DistWrapper,
 ) -> None:
     """
@@ -459,7 +473,8 @@ def save_state_dict_async_finalize(
 
     Args:
         storage_writer (FileSystemWriterAsync): storage writer used for planning
-        global_metadata (Metadata): metadata created during planning
+        global_metadata (GlobalMetadata): global metadata created during planning (on the
+            coordinator; None on other ranks)
         dist_wrapper (_DistWrapper): distributed wrapper created during planning
 
     Returns: None
@@ -492,7 +507,10 @@ def save_state_dict_async_finalize(
                         _table.to_write_results(_table.decode(row)) if sent_table else pickled[rank]
                         for rank, (row, sent_table) in enumerate(zip(rows, is_table))
                     ]
-                    storage_writer.finish(global_metadata, results)
+                    if _finishes_as_nvrx(storage_writer):
+                        storage_writer._finish(global_metadata, results)
+                    else:
+                        storage_writer.finish(global_metadata.to_metadata(), results)
                 write_end = time()
                 logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
     else:
