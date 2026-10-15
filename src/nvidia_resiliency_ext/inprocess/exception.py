@@ -29,9 +29,19 @@ class RestartAbort(BaseException):
     A terminal Python :py:exc:`BaseException` indicating that the
     :py:class:`inprocess.Wrapper` should be aborted immediately, bypassing any
     further restart attempts.
+
+    This exception uses exit code 130 (SIGINT-like) to signal a clean abort
+    that should not trigger process restart in auto_restart.py.
+
+    The wrapper code now manually handles exit code 130 when this exception
+    is caught, so the custom exception hook is no longer needed.
     '''
 
-    pass
+    CLEAN_EXIT_CODE = 130  # SIGINT-like exit code for clean abort
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.exit_code = self.CLEAN_EXIT_CODE
 
 
 class HealthCheckError(RestartError):
