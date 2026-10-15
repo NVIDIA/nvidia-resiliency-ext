@@ -42,6 +42,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_tabl
 
 from .test_metadata_pickler import (
     FIXED_METADATA,
+    NEEDS_FAST,
     NEEDS_NATIVE,
     _Metadata,
     _metadata_changed_while_pickled,
@@ -284,8 +285,7 @@ def _storage_rows(md) -> np.ndarray:
 def test_dump_metadata_of_table(make, tmp_path):
     """A table is written as its Metadata, with the storage_data given, or None."""
     md = make(tmp_path)
-    t = writer.to_table(md)
-    assert isinstance(t, state_table.StateDictTable)
+    t = state_table.from_metadata(md)
     for storage_data in (md.storage_data, None):
         buf = io.BytesIO()
         writer.dump_metadata(t, buf, storage_data=storage_data)
@@ -297,7 +297,7 @@ def test_dump_metadata_of_table_with_rows():
     md = writer._sample_metadata()
     rows = _storage_rows(md)
     a, b = io.BytesIO(), io.BytesIO()
-    writer.dump_metadata(writer.to_table(md), a, storage_rows=rows)
+    writer.dump_metadata(state_table.from_metadata(md), a, storage_rows=rows)
     writer.dump_metadata(md, b, storage_rows=rows)
     assert a.getvalue() == b.getvalue()
 
@@ -305,7 +305,7 @@ def test_dump_metadata_of_table_with_rows():
 def test_with_fields():
     """Fields set on a table are written as if set on the Metadata; a new one comes last."""
     md = writer._sample_metadata()
-    t = state_table.with_fields(writer.to_table(md), version="9.9", extra=[1, 2])
+    t = state_table.with_fields(state_table.from_metadata(md), version="9.9", extra=[1, 2])
     md.version, md.extra = "9.9", [1, 2]
     buf = io.BytesIO()
     writer.dump_metadata(t, buf, storage_data=md.storage_data)
@@ -316,7 +316,7 @@ def test_with_fields():
 
 def test_to_metadata():
     md = writer._sample_metadata()
-    back = writer.to_metadata(writer.to_table(md), md.storage_data)
+    back = writer.to_metadata(state_table.from_metadata(md), md.storage_data)
     assert back.storage_data is md.storage_data
     assert_identical(
         dataclasses.replace(back, storage_data=None),
@@ -324,6 +324,7 @@ def test_to_metadata():
     )
 
 
+@NEEDS_FAST
 def test_to_table_warns_and_returns_none(caplog):
     md = writer._sample_metadata()
     md.__class__ = _Metadata
@@ -337,6 +338,7 @@ def test_no_table_without_the_fast_writers(monkeypatch):
     assert writer.to_table(writer._sample_metadata()) is None
 
 
+@NEEDS_FAST
 @NEEDS_NATIVE
 def test_dump_metadata_of_table_falls_back_to_python(caplog):
     """A table the native writer can't write (a lone surrogate) is written by the Python one."""
@@ -353,7 +355,7 @@ def test_dump_metadata_of_table_falls_back_to_python(caplog):
 def test_to_metadata_without_a_writer(monkeypatch):
     """to_metadata builds the metadata itself when no writer can write the table."""
     md = writer._sample_metadata()
-    t = writer.to_table(md)
+    t = state_table.from_metadata(md)
 
     def fail(*args, **kwargs):
         raise RuntimeError("no")

@@ -24,10 +24,10 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.global_metadata import GlobalMetadata
 
-from .test_metadata_pickler import assert_identical, stock_round_trip
+from .test_metadata_pickler import NEEDS_FAST, assert_identical, stock_round_trip
 
 
-@pytest.fixture(params=["fast", "off"])
+@pytest.fixture(params=[pytest.param("fast", marks=NEEDS_FAST), "off"])
 def fast(request, monkeypatch):
     """With the fast .metadata writers, and with NVRX_FAST_METADATA_PICKLE=0."""
     if request.param == "off":
@@ -51,6 +51,7 @@ def test_to_metadata(fast):
     assert gm.to_metadata().storage_data is None
 
 
+@NEEDS_FAST
 def test_a_table_is_independent_of_its_metadata():
     md = writer._sample_metadata()
     gm = GlobalMetadata.from_metadata(md)

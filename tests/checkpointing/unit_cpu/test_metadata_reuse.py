@@ -48,6 +48,8 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import sta
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 
+from .test_metadata_pickler import NEEDS_FAST
+
 
 def tensor_item(fqn, offsets, sizes, size, dtype=torch.float32, requires_grad=False):
     """Write item of one chunk of a tensor."""
@@ -343,6 +345,7 @@ def test_the_cache_holds_no_storage_data(reused):
         assert cache.global_metadata == dataclasses.replace(built, storage_data=None)
 
 
+@NEEDS_FAST
 def test_the_cache_keeps_no_reference_to_the_loaded_metadata():
     """With the fast .metadata writers, the caller can free the loaded metadata after handing it
     to the cache: the cache keeps a table of it, not its objects."""
