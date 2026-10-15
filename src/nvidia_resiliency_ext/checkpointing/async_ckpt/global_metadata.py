@@ -25,7 +25,7 @@ from torch.distributed.checkpoint.metadata import Metadata
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
-from ._metadata_pickler import StateDictTable, state_table
+from ._metadata_pickler import StateDictTable
 
 
 class GlobalMetadata:
@@ -55,7 +55,7 @@ class GlobalMetadata:
         with telemetry.span(
             semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_to_table"
         ):
-            table = _metadata_pickler.to_table(metadata)
+            table = _metadata_pickler.state_dict_table_if_fast(metadata)
         return cls(table if table is not None else metadata)
 
     @property
@@ -66,7 +66,7 @@ class GlobalMetadata:
     def to_metadata(self, storage_data: Optional[dict] = None) -> Metadata:
         """A new Metadata, with this storage_data."""
         if isinstance(self._content, StateDictTable):
-            return _metadata_pickler.to_metadata(self._content, storage_data)
+            return self._content.to_metadata(storage_data)
         metadata = copy.copy(self._content)
         metadata.storage_data = storage_data
         return metadata
@@ -74,7 +74,7 @@ class GlobalMetadata:
     def with_fields(self, **values) -> "GlobalMetadata":
         """This global metadata with these Metadata fields (e.g. version) set to these values."""
         if isinstance(self._content, StateDictTable):
-            return GlobalMetadata(state_table.with_fields(self._content, **values))
+            return GlobalMetadata(self._content.with_fields(**values))
         metadata = copy.copy(self._content)
         for name, value in values.items():
             setattr(metadata, name, value)

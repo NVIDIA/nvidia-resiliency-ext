@@ -70,8 +70,7 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from . import pickler, state_table, table
-from .opcodes import small_unpickle
+from . import pickler, table
 from .state_table import StateDictTable
 
 try:
@@ -273,37 +272,20 @@ def _selected_writer():
     return native if native is not None and dumps is native.dumps else pickler
 
 
-def to_table(md: Metadata) -> Optional[StateDictTable]:
-    """md without its storage_data as a table, converted by the selected writer's producer; None
-    if the fast writers are not used here, or, with a warning, if md can't be converted."""
-    w = _selected_writer()
-    if w is None:
+def state_dict_table_if_fast(metadata: Metadata) -> Optional[StateDictTable]:
+    """metadata without its storage_data as a table, converted by the selected writer module's
+    StateDictTable; None if the fast writers are not used here, or, with a warning, if metadata
+    can't be converted."""
+    writer_module = _selected_writer()
+    if writer_module is None:
         return None
     try:
-        return w.from_metadata(md)
+        return writer_module.StateDictTable.from_metadata(metadata)
     except Exception:
         logger.warning(
             "can't convert the metadata to a table; keeping it as Python objects", exc_info=True
         )
         return None
-
-
-def to_metadata(t: StateDictTable, storage_data: Optional[dict] = None) -> Metadata:
-    """The Metadata t was converted from, with this storage_data."""
-    try:
-        w = _selected_writer() or pickler
-        md = pickle.loads(w.dumps_table(t))  # nosec - our own bytes
-    except Exception:
-        logger.warning("fast .metadata pickling failed; building the metadata", exc_info=True)
-        md = Metadata.__new__(Metadata)
-        for name, opcodes in t.fields:
-            if name == state_table.STATE_DICT_METADATA:
-                value = {fqn: t.entry(i) for i, fqn in enumerate(t.fqns)}
-            else:
-                value = None if opcodes is None else small_unpickle(opcodes)
-            setattr(md, name, value)
-    md.storage_data = storage_data
-    return md
 
 
 def dump_metadata(
@@ -340,19 +322,21 @@ def dump_metadata(
     pickle.dump(metadata, stream)  # nosec
 
 
-def _dump_table(t: StateDictTable, stream, storage_rows, storage_data) -> None:
+def _dump_table(state_dict_table: StateDictTable, stream, storage_rows, storage_data) -> None:
     """dump_metadata of a table: by the selected writer, or if the native one fails, the Python one;
     else pickle.dump of the Metadata the table was converted from."""
     selected = _selected_writer()
     writers = [] if selected is None else [selected, pickler] if selected is native else [pickler]
-    for w in writers:
+    for writer_module in writers:
         try:
-            data = w.dumps_table(t, storage_data, storage_rows)
+            data = writer_module.dumps_table(state_dict_table, storage_data, storage_rows)
         except Exception:
-            logger.warning(f"{w.__name__} failed to write the .metadata table", exc_info=True)
+            logger.warning(
+                f"{writer_module.__name__} failed to write the .metadata table", exc_info=True
+            )
         else:
             stream.write(data)
             return
     if storage_rows is not None:
         storage_data = table.to_storage_data(table.decode_rows(storage_rows))
-    pickle.dump(to_metadata(t, storage_data), stream)  # nosec
+    pickle.dump(state_dict_table.to_metadata(storage_data), stream)  # nosec

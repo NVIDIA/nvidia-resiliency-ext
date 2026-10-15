@@ -59,7 +59,8 @@ state_dict_metadata and storage_data, which the writers write themselves.
 import dataclasses
 from array import array
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from types import MappingProxyType
+from typing import Dict, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -77,21 +78,132 @@ BYTES, TENSOR, OTHER = 0, 1, 2
 STATE_DICT_METADATA, STORAGE_DATA = "state_dict_metadata", "storage_data"
 
 
-@dataclass
+@dataclass(frozen=True, eq=False)
 class StateDictTable:
-    """A Metadata without storage_data, as arrays; see the module docstring for the layout."""
+    """A Metadata without storage_data, as arrays; see the module docstring for the layout.
 
-    fields: List[Tuple[str, Optional[bytes]]]
-    fqns: List[str]
+    Create it with from_metadata. It is immutable and checked when created: its sequences are
+    tuples, its index a read-only mapping and its arrays read-only, so a writer can read it
+    without further checks.
+    """
+
+    fields: Tuple[Tuple[str, Optional[bytes]], ...]
+    fqns: Tuple[str, ...]
     kind: np.ndarray
     ref: np.ndarray
     ndim: np.ndarray
     chunk_start: np.ndarray
     dims_start: np.ndarray
     dims: np.ndarray
-    properties: List[bytes]
-    others: List[bytes]
-    index: Dict[str, int]  # fqn -> entry
+    properties: Tuple[bytes, ...]
+    others: Tuple[bytes, ...]
+    index: Mapping[str, int]  # fqn -> entry
+
+    def __post_init__(self):
+        """Freeze what the fields hold, then check them."""
+        for name in ("fields", "fqns", "properties", "others"):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        object.__setattr__(self, "index", MappingProxyType(dict(self.index)))
+        for name in _ARRAYS:
+            value = getattr(self, name)
+            if isinstance(value, np.ndarray):
+                value = value.view()
+                value.flags.writeable = False
+                object.__setattr__(self, name, value)
+        self._check()
+
+    @classmethod
+    def from_metadata(cls, metadata: Metadata) -> "StateDictTable":
+        """metadata without its storage_data, as a table.
+
+        Raises TypeError for what the writers can't write from a table: a subclass of Metadata, a
+        state_dict_metadata that isn't a dict, or an fqn that isn't a str.
+        """
+        if type(metadata) is not Metadata:
+            raise TypeError(f"expected Metadata, got {type(metadata).__name__}")
+        entries = metadata.state_dict_metadata
+        if type(entries) is not dict:
+            raise TypeError(f"expected dict for state_dict_metadata, got {type(entries).__name__}")
+        fields = [
+            (name, None if name in (STATE_DICT_METADATA, STORAGE_DATA) else small_pickle(value))
+            for name, value in vars(metadata).items()
+        ]
+        fqns, kind, ref, ndims = [], array("B"), array("q"), array("q")
+        chunk_start, dims_start, dims = array("q", [0]), array("q", [0]), array("q")
+        properties, others = [], []
+        property_ids: Dict[bytes, int] = {}  # by their opcodes
+        for fqn, entry in entries.items():
+            if type(fqn) is not str:
+                raise TypeError(f"expected str fqn, got {type(fqn).__name__}")
+            fqns.append(fqn)
+            # Counted before small_pickle runs Python code, which could change the chunks.
+            counts = _tensor_entry(entry, dims) if type(entry) is TensorStorageMetadata else None
+            ndim, chunks = counts if counts is not None else (0, 0)
+            if counts is not None:
+                opcodes = small_pickle(entry.properties)
+                property_id = property_ids.setdefault(opcodes, len(properties))
+                if property_id == len(properties):
+                    properties.append(opcodes)
+                kind.append(TENSOR)
+                ref.append(property_id)
+            elif type(entry) is BytesStorageMetadata and not vars(entry):
+                kind.append(BYTES)
+                ref.append(0)
+            else:
+                kind.append(OTHER)
+                ref.append(len(others))
+                others.append(small_pickle(entry))
+            ndims.append(ndim)
+            chunk_start.append(chunk_start[-1] + chunks)
+            dims_start.append(len(dims))
+        if len(fqns) != len(entries):
+            raise RuntimeError("state_dict_metadata changed size while being converted")
+        return cls(
+            fields=fields,
+            fqns=fqns,
+            kind=np.frombuffer(kind, dtype=np.uint8),
+            ref=np.frombuffer(ref, dtype=np.int64),
+            ndim=np.frombuffer(ndims, dtype=np.int64),
+            chunk_start=np.frombuffer(chunk_start, dtype=np.int64),
+            dims_start=np.frombuffer(dims_start, dtype=np.int64),
+            dims=np.frombuffer(dims, dtype=np.int64),
+            properties=properties,
+            others=others,
+            index={fqn: i for i, fqn in enumerate(fqns)},
+        )
+
+    def to_metadata(self, storage_data: Optional[dict] = None) -> Metadata:
+        """A new Metadata equal to the one this table was converted from, with this storage_data.
+
+        Its fields are set in the order the original had them, so it pickles alike.
+        """
+        metadata = Metadata.__new__(Metadata)
+        for name, opcodes in self.fields:
+            if name == STATE_DICT_METADATA:
+                value = {fqn: self.entry(i) for i, fqn in enumerate(self.fqns)}
+            elif name == STORAGE_DATA:
+                value = storage_data
+            else:
+                value = small_unpickle(opcodes)
+            setattr(metadata, name, value)
+        if STORAGE_DATA not in dict(self.fields):
+            metadata.storage_data = storage_data
+        return metadata
+
+    def with_fields(self, **values) -> "StateDictTable":
+        """This table with these Metadata fields (e.g. version) set to these values, sharing its
+        arrays. A field the table doesn't have yet is added last, as setting it on the Metadata
+        would. Raises TypeError for a name that isn't a field of Metadata."""
+        known = {f.name for f in dataclasses.fields(Metadata)} - {STATE_DICT_METADATA, STORAGE_DATA}
+        unknown = set(values) - known
+        if unknown:
+            raise TypeError(f"not fields of Metadata that a save sets: {sorted(unknown)}")
+        fields = [
+            (name, small_pickle(values.pop(name)) if name in values else opcodes)
+            for name, opcodes in self.fields
+        ]
+        fields.extend((name, small_pickle(value)) for name, value in values.items())
+        return dataclasses.replace(self, fields=fields)
 
     def __len__(self) -> int:
         return len(self.fqns)
@@ -99,8 +211,7 @@ class StateDictTable:
     @property
     def nbytes(self) -> int:
         """Bytes held by the arrays."""
-        arrays = (self.kind, self.ref, self.ndim, self.chunk_start, self.dims_start, self.dims)
-        return sum(a.nbytes for a in arrays)
+        return sum(getattr(self, name).nbytes for name in _ARRAYS)
 
     def chunk_count(self, i: int) -> int:
         """The number of chunks of entry i (0 unless a tensor)."""
@@ -132,89 +243,78 @@ class StateDictTable:
         size = torch.Size(self.size(i).tolist())
         return TensorStorageMetadata(small_unpickle(self.properties[self.ref[i]]), size, chunks)
 
+    def _check(self) -> None:
+        """Raise ValueError unless the arrays describe the entries consistently. The C++ writer
+        checks the same before reading a table (StateDictTableView)."""
 
-def with_fields(t: StateDictTable, **values) -> StateDictTable:
-    """t with these Metadata fields set to these values, sharing t's arrays. A field t doesn't have
-    is added last, as setting a new attribute on the Metadata would add it."""
-    for name in values:
-        if name in (STATE_DICT_METADATA, STORAGE_DATA):
-            raise ValueError(f"{name} is written by the writers, not set as a field")
-    fields = [
-        (name, small_pickle(values.pop(name)) if name in values else opcodes)
-        for name, opcodes in t.fields
-    ]
-    fields.extend((name, small_pickle(value)) for name, value in values.items())
-    return dataclasses.replace(t, fields=fields)
+        def bad(what: str):
+            return ValueError(f"state table: {what}")
 
+        arrays = {"kind": np.uint8, **{name: np.int64 for name in _ARRAYS if name != "kind"}}
+        for name, dtype in arrays.items():
+            a = getattr(self, name)
+            if (
+                type(a) is not np.ndarray
+                or a.dtype != dtype
+                or a.ndim != 1
+                or not a.flags.c_contiguous
+            ):
+                raise bad(f"{name} is not a 1-D array of the expected type")
+        for f in self.fields:
+            if type(f) is not tuple or len(f) != 2:
+                raise bad("a field is not a (name, opcodes) tuple")
+            name, opcodes = f
+            if type(name) is not str:
+                raise TypeError(f"expected str field name, got {type(name).__name__}")
+            written_here = name in (STATE_DICT_METADATA, STORAGE_DATA)
+            if opcodes is not None if written_here else type(opcodes) is not bytes:
+                raise bad(f"unexpected opcodes of field {name}")
+        n = len(self.kind)
+        if len(self.fqns) != n or len(self.ref) != n or len(self.ndim) != n:
+            raise bad("arrays of different lengths")
+        for starts, pool in ((self.chunk_start, None), (self.dims_start, len(self.dims))):
+            if (
+                len(starts) != n + 1
+                or starts[0] != 0
+                or (starts[1:] < starts[:-1]).any()
+                or (pool is not None and starts[-1] != pool)
+            ):
+                raise bad("start offsets out of order or range")
+        ndim, chunks, values = self.ndim, np.diff(self.chunk_start), np.diff(self.dims_start)
+        kind, ref = self.kind, self.ref
 
-def check(t: StateDictTable) -> None:
-    """Raise ValueError unless t's arrays describe its entries consistently, so that a writer can
-    read them without further checks. The native writer checks the same."""
+        def refers(pickles, mask):
+            return all(
+                0 <= r < len(pickles) and type(pickles[r]) is bytes for r in ref[mask].tolist()
+            )
 
-    def bad(what: str):
-        return ValueError(f"state table: {what}")
-
-    arrays = {
-        "kind": (t.kind, np.uint8),
-        "ref": (t.ref, np.int64),
-        "ndim": (t.ndim, np.int64),
-        "chunk_start": (t.chunk_start, np.int64),
-        "dims_start": (t.dims_start, np.int64),
-        "dims": (t.dims, np.int64),
-    }
-    for name, (a, dtype) in arrays.items():
-        if type(a) is not np.ndarray or a.dtype != dtype or a.ndim != 1 or not a.flags.c_contiguous:
-            raise bad(f"{name} is not a 1-D array of the expected type")
-    for name in ("fqns", "properties", "others", "fields"):
-        if type(getattr(t, name)) is not list:
-            raise bad(f"{name} is not a list")
-    for f in t.fields:
-        if type(f) is not tuple or len(f) != 2:
-            raise bad("a field is not a (name, opcodes) tuple")
-        name, opcodes = f
-        if type(name) is not str:
-            raise TypeError(f"expected str field name, got {type(name).__name__}")
-        written_here = name in (STATE_DICT_METADATA, STORAGE_DATA)
-        if opcodes is not None if written_here else type(opcodes) is not bytes:
-            raise bad(f"unexpected opcodes of field {name}")
-    n = len(t.kind)
-    if len(t.fqns) != n or len(t.ref) != n or len(t.ndim) != n:
-        raise bad("arrays of different lengths")
-    for starts, pool in ((t.chunk_start, None), (t.dims_start, len(t.dims))):
-        if (
-            len(starts) != n + 1
-            or starts[0] != 0
-            or (starts[1:] < starts[:-1]).any()
-            or (pool is not None and starts[-1] != pool)
-        ):
-            raise bad("start offsets out of order or range")
-    ndim, chunks, values = t.ndim, np.diff(t.chunk_start), np.diff(t.dims_start)
-    kind, ref = t.kind, t.ref
-
-    def refers(lists, mask):
-        return all(0 <= r < len(lists) and type(lists[r]) is bytes for r in ref[mask].tolist())
-
-    tensor, other = kind == TENSOR, kind == OTHER
-    if not np.isin(kind, (BYTES, TENSOR, OTHER)).all():
-        raise bad("unknown entry kind")
-    if (ndim < 0).any():
-        raise bad("a negative number of dims")
-    # Python ints: no overflow.
-    if any(
-        v != a * (1 + 2 * c)
-        for v, a, c in zip(values[tensor].tolist(), ndim[tensor].tolist(), chunks[tensor].tolist())
-    ) or not refers(t.properties, tensor):
-        raise bad("a tensor entry's dims don't match its chunks")
-    if not refers(t.others, other):
-        raise bad("an entry refers to no pickle")
-    if (ndim[~tensor] != 0).any() or (chunks[~tensor] != 0).any() or (values[~tensor] != 0).any():
-        raise bad("a non-tensor entry has dims")
+        tensor, other = kind == TENSOR, kind == OTHER
+        if not np.isin(kind, (BYTES, TENSOR, OTHER)).all():
+            raise bad("unknown entry kind")
+        if (ndim < 0).any():
+            raise bad("a negative number of dims")
+        # Python ints: no overflow.
+        if any(
+            v != a * (1 + 2 * c)
+            for v, a, c in zip(
+                values[tensor].tolist(), ndim[tensor].tolist(), chunks[tensor].tolist()
+            )
+        ) or not refers(self.properties, tensor):
+            raise bad("a tensor entry's dims don't match its chunks")
+        if not refers(self.others, other):
+            raise bad("an entry refers to no pickle")
+        non_tensor = ~tensor
+        if (ndim[non_tensor] | chunks[non_tensor] | values[non_tensor]).any():
+            raise bad("a non-tensor entry has dims")
 
 
-def _tensor(v, dims: array) -> Optional[Tuple[int, int]]:
+_ARRAYS = ("kind", "ref", "ndim", "chunk_start", "dims_start", "dims")
+
+
+def _tensor_entry(entry, dims: array) -> Optional[Tuple[int, int]]:
     """Append a TENSOR entry's values to dims and return its number of dims and of chunks; None,
     with nothing appended, if it isn't one."""
-    state = vars(v)
+    state = vars(entry)
     size, chunks = state.get("size"), state.get("chunks")
     if (
         len(state) != 3
@@ -225,13 +325,13 @@ def _tensor(v, dims: array) -> Optional[Tuple[int, int]]:
         return None
     ndim = len(size)
     values = array("q", size)
-    for c in chunks:
-        if type(c) is not ChunkStorageMetadata:
+    for chunk in chunks:
+        if type(chunk) is not ChunkStorageMetadata:
             return None
-        cstate = vars(c)
-        offsets, sizes = cstate.get("offsets"), cstate.get("sizes")
+        chunk_state = vars(chunk)
+        offsets, sizes = chunk_state.get("offsets"), chunk_state.get("sizes")
         if (
-            len(cstate) != 2
+            len(chunk_state) != 2
             or type(offsets) is not torch.Size
             or type(sizes) is not torch.Size
             or len(offsets) != ndim
@@ -242,63 +342,3 @@ def _tensor(v, dims: array) -> Optional[Tuple[int, int]]:
         values.extend(sizes)
     dims.extend(values)
     return ndim, len(chunks)
-
-
-def from_metadata(md: Metadata) -> StateDictTable:
-    """md without its storage_data, as a table.
-
-    Raises TypeError for what the writers can't write from a table: md of a subclass of Metadata,
-    a state_dict_metadata that isn't a dict, or an fqn that isn't a str.
-    """
-    if type(md) is not Metadata:
-        raise TypeError(f"expected Metadata, got {type(md).__name__}")
-    entries = md.state_dict_metadata
-    if type(entries) is not dict:
-        raise TypeError(f"expected dict for state_dict_metadata, got {type(entries).__name__}")
-    fields = [
-        (name, None if name in (STATE_DICT_METADATA, STORAGE_DATA) else small_pickle(value))
-        for name, value in vars(md).items()
-    ]
-    fqns, kind, ref, ndims = [], array("B"), array("q"), array("q")
-    chunk_start, dims_start, dims = array("q", [0]), array("q", [0]), array("q")
-    properties, others = [], []
-    property_ids: Dict[bytes, int] = {}  # by their opcodes
-    for fqn, v in entries.items():
-        if type(fqn) is not str:
-            raise TypeError(f"expected str fqn, got {type(fqn).__name__}")
-        fqns.append(fqn)
-        # Counted before small_pickle runs Python code, which could change the chunks.
-        counts = _tensor(v, dims) if type(v) is TensorStorageMetadata else None
-        ndim, chunks = counts if counts is not None else (0, 0)
-        if counts is not None:
-            opcodes = small_pickle(v.properties)
-            pid = property_ids.setdefault(opcodes, len(properties))
-            if pid == len(properties):
-                properties.append(opcodes)
-            kind.append(TENSOR)
-            ref.append(pid)
-        elif type(v) is BytesStorageMetadata and not vars(v):
-            kind.append(BYTES)
-            ref.append(0)
-        else:
-            kind.append(OTHER)
-            ref.append(len(others))
-            others.append(small_pickle(v))
-        ndims.append(ndim)
-        chunk_start.append(chunk_start[-1] + chunks)
-        dims_start.append(len(dims))
-    if len(fqns) != len(entries):
-        raise RuntimeError("state_dict_metadata changed size while being converted")
-    return StateDictTable(
-        fields=fields,
-        fqns=fqns,
-        kind=np.frombuffer(kind, dtype=np.uint8),
-        ref=np.frombuffer(ref, dtype=np.int64),
-        ndim=np.frombuffer(ndims, dtype=np.int64),
-        chunk_start=np.frombuffer(chunk_start, dtype=np.int64),
-        dims_start=np.frombuffer(dims_start, dtype=np.int64),
-        dims=np.frombuffer(dims, dtype=np.int64),
-        properties=properties,
-        others=others,
-        index={fqn: i for i, fqn in enumerate(fqns)},
-    )

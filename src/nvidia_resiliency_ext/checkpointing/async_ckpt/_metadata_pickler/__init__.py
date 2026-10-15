@@ -25,7 +25,6 @@ from .writer import (
     TESTED_TORCH_VERSIONS,
     dump_metadata,
     fast_metadata_enabled,
-    to_metadata,
-    to_table,
+    state_dict_table_if_fast,
     writes_tables,
 )
