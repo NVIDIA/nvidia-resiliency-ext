@@ -41,7 +41,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import table as _table
-from .global_metadata import GlobalMetadata
+from .metadata_template import MetadataTemplate
 
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
@@ -63,7 +63,7 @@ class CheckpointMetadataCache:
       `enable_cache` promises that the checkpoint structure does not change. Each rank still
       creates its local plan and raises if it differs from the previous one.
 
-    The metadata is kept as a `GlobalMetadata`, without storage_data: with the fast ``.metadata``
+    The metadata is kept as a `MetadataTemplate`, without storage_data: with the fast ``.metadata``
     writers, a state table that the garbage collector doesn't visit and that refers to none of
     the objects of the Metadata it was made from. The cache never modifies it, nor the Metadata
     it was given.
@@ -79,16 +79,16 @@ class CheckpointMetadataCache:
     """
 
     def __init__(self):
-        self._global_metadata: Optional[GlobalMetadata] = None
+        self._metadata_template: Optional[MetadataTemplate] = None
         self.local_plan: Optional[SavePlan] = None
         self.central_plan: Optional[SavePlan] = None
 
     @property
     def global_metadata(self) -> Optional[Metadata]:
         """See the class docstring."""
-        if self._global_metadata is None:
+        if self._metadata_template is None:
             return None
-        return self._global_metadata.to_metadata()
+        return self._metadata_template.to_metadata()
 
     def set_cached_global_metadata(self, cached_global_metadata: Optional[Metadata]):
         """
@@ -102,8 +102,8 @@ class CheckpointMetadataCache:
         Args:
             cached_global_metadata (Metadata): The global metadata from a previous checkpoint.
         """
-        self._global_metadata = (
-            GlobalMetadata.from_metadata(cached_global_metadata)
+        self._metadata_template = (
+            MetadataTemplate.from_metadata(cached_global_metadata)
             if cached_global_metadata is not None
             else None
         )
@@ -117,21 +117,21 @@ class CheckpointMetadataCache:
         global_metadata: Optional[Metadata],
         reused: bool,
         is_coordinator: bool,
-    ) -> Optional[GlobalMetadata]:
+    ) -> Optional[MetadataTemplate]:
         """Record a planned save; return the global metadata the coordinator writes for it."""
         self.local_plan = local_plan
         self.central_plan = central_plan
         if not is_coordinator:
-            self._global_metadata = None
+            self._metadata_template = None
             return None
         if not reused:
-            self._global_metadata = GlobalMetadata.from_metadata(global_metadata)
-        elif self._global_metadata is None:
+            self._metadata_template = MetadataTemplate.from_metadata(global_metadata)
+        elif self._metadata_template is None:
             raise RuntimeError(
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
-        return self._global_metadata
+        return self._metadata_template
 
 
 _UNPACKING_DEPRECATED = (
@@ -150,22 +150,22 @@ class PendingSave:
 
     Attributes:
         storage_writer (FileSystemWriterAsync): The storage writer the save was planned with.
-        global_metadata (GlobalMetadata, optional): The global metadata to write, on the
-            coordinator; None on other ranks.
+        metadata_template (MetadataTemplate, optional): The global metadata to write, without
+            this save's storage_data, on the coordinator; None on other ranks.
         dist_wrapper (_DistWrapper): The distributed wrapper used for planning.
     """
 
     storage_writer: "FileSystemWriterAsync"
-    global_metadata: Optional[GlobalMetadata]
+    metadata_template: Optional[MetadataTemplate]
     dist_wrapper: _DistWrapper
 
     # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save, up
     # to the version that passes it whole) are no longer supported.
     @deprecated(_UNPACKING_DEPRECATED)
     def __iter__(self):
-        """The (storage_writer, global_metadata, dist_wrapper) tuple that
+        """The (storage_writer, metadata_template, dist_wrapper) tuple that
         save_state_dict_async_plan used to return."""
-        return iter((self.storage_writer, self.global_metadata, self.dist_wrapper))
+        return iter((self.storage_writer, self.metadata_template, self.dist_wrapper))
 
 
 _checkpoint_metadata_cache = None
@@ -280,7 +280,7 @@ def save_state_dict_async_plan(
         if metadata_cache is not None:
             # The first save in this process: every rank takes part, with or without metadata.
             reused = verify_global_metadata_reuse(
-                metadata_cache._global_metadata, local_plan, dist_wrapper
+                metadata_cache._metadata_template, local_plan, dist_wrapper
             )
 
         if not reused:
@@ -322,12 +322,14 @@ def save_state_dict_async_plan(
     end = time()
     logger.debug(f"{time()} rank: {rank}, write(async) time: {end - start}")
     if metadata_cache is not None:
-        global_metadata = metadata_cache._update(
+        metadata_template = metadata_cache._update(
             local_plan, central_plan, global_metadata, reused, dist_wrapper.is_coordinator
         )
     elif global_metadata is not None:
-        global_metadata = GlobalMetadata.from_metadata(global_metadata)
-    return PendingSave(storage_writer, global_metadata, dist_wrapper)
+        metadata_template = MetadataTemplate.from_metadata(global_metadata)
+    else:
+        metadata_template = None
+    return PendingSave(storage_writer, metadata_template, dist_wrapper)
 
 
 @telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.check_plan_unchanged")
@@ -372,7 +374,7 @@ def _check_plan_unchanged(previous: SavePlan, current: SavePlan, rank: int) -> N
     semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.verify_global_metadata_reuse"
 )
 def verify_global_metadata_reuse(
-    loaded_metadata: Optional[GlobalMetadata],
+    loaded_metadata: Optional[MetadataTemplate],
     local_plan: SavePlan,
     dist_wrapper: _DistWrapper,
 ) -> bool:
@@ -384,7 +386,7 @@ def verify_global_metadata_reuse(
     planning group must call it, also ranks without loaded metadata, which vote against reuse.
 
     Args:
-        loaded_metadata (GlobalMetadata, optional): The global metadata of the loaded checkpoint.
+        loaded_metadata (MetadataTemplate, optional): The global metadata of the loaded checkpoint.
         local_plan (SavePlan): This rank's local save plan.
         dist_wrapper (_DistWrapper): distributed wrapper created during planning
 
@@ -480,7 +482,7 @@ def _storage_writer_writes_rows(storage_writer) -> bool:
 
 def _storage_writer_finish_is_nvrx(storage_writer) -> bool:
     """Whether storage_writer's finish is FileSystemWriterAsync's, which _finish implements: then
-    _finish writes a GlobalMetadata as it is, and other storage writers get a Metadata."""
+    _finish writes a MetadataTemplate as it is, and other storage writers get a Metadata."""
     from .filesystem_async import FileSystemWriterAsync
 
     return (
@@ -498,7 +500,7 @@ def save_state_dict_async_finalize(pending: PendingSave) -> None: ...
 @deprecated(_LEGACY_FINALIZE_DEPRECATED)
 def save_state_dict_async_finalize(
     storage_writer: "FileSystemWriterAsync",
-    global_metadata: Optional[GlobalMetadata],
+    global_metadata: Optional[MetadataTemplate],
     dist_wrapper: _DistWrapper,
 ) -> None: ...
 
@@ -523,9 +525,9 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
         # up to the version that passes it whole) are no longer supported.
         warnings.warn(_LEGACY_FINALIZE_DEPRECATED, DeprecationWarning, stacklevel=2)
         pending = PendingSave(pending, *legacy_args)
-    storage_writer, global_metadata, dist_wrapper = (
+    storage_writer, metadata_template, dist_wrapper = (
         pending.storage_writer,
-        pending.global_metadata,
+        pending.metadata_template,
         pending.dist_wrapper,
     )
     write_results = storage_writer.retrieve_write_results()
@@ -544,22 +546,22 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
         is_table, pickled = _decode_payloads(rows)
         node_failures = {rank: r for rank, r in pickled.items() if _is_wrapped_exception(r)}
         if len(node_failures) == 0:
-            assert global_metadata is not None
+            assert metadata_template is not None
             with telemetry.span(
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
                 if is_table.all() and _storage_writer_writes_rows(storage_writer):
-                    storage_writer._finish(global_metadata, [], storage_rows=rows)
+                    storage_writer._finish(metadata_template, [], storage_rows=rows)
                 else:
                     results = [
                         _table.to_write_results(_table.decode(row)) if sent_table else pickled[rank]
                         for rank, (row, sent_table) in enumerate(zip(rows, is_table))
                     ]
                     if _storage_writer_finish_is_nvrx(storage_writer):
-                        storage_writer._finish(global_metadata, results)
+                        storage_writer._finish(metadata_template, results)
                     else:
-                        storage_writer.finish(global_metadata.to_metadata(), results)
+                        storage_writer.finish(metadata_template.to_metadata(), results)
                 write_end = time()
                 logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
     else:

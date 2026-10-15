@@ -23,6 +23,7 @@ A DCP `Metadata` holds a Python object per chunk, each with a `torch.Size` of of
 | Async worker       | The persistent process per rank that writes the files. In CPU shared-memory mode it never initializes CUDA.                                                                                                                |
 | Fast writers       | nvrx's `.metadata` writers (C++, else Python), used on tested torch versions (`_metadata_pickler/writer.py`).                                                                                                              |
 | State table        | A `Metadata` without `storage_data` as arrays (`StateDictTable`), kept between saves.                                                                                                                                      |
+| Metadata template  | A save's global metadata without the parts each save sets (`storage_data`, `version`, `storage_meta`): a `MetadataTemplate`, kept between saves and completed by each write.                                     |
 | Write-result table | One rank's write results as a table, gathered to the coordinator. A string table names fqns by string, an index table by their entry in the fqn list.                                                                      |
 | fqn list           | The fqns of the coordinator's state table, in entry order.                                                                                                                                                                 |
 
@@ -108,7 +109,7 @@ classDiagram
 classDiagram
     direction LR
     class CheckpointMetadataCache {
-        _global_metadata : GlobalMetadata or None
+        _global_metadata : MetadataTemplate or None
         fqns : list of str
         fqn_index : dict, fqn to int
         local_plan : SavePlan
@@ -116,14 +117,14 @@ classDiagram
     }
     class PendingSave {
         storage_writer : FileSystemWriterAsync
-        global_metadata : GlobalMetadata or None
+        global_metadata : MetadataTemplate or None
         dist_wrapper : _DistWrapper
     }
-    class GlobalMetadata {
+    class MetadataTemplate {
         content : StateDictTable or Metadata
-        from_metadata(metadata : Metadata)$ GlobalMetadata
+        from_metadata(metadata : Metadata)$ MetadataTemplate
         to_metadata(storage_data : dict or None) Metadata
-        with_fields(fields a save sets) GlobalMetadata
+        with_fields(fields a save sets) MetadataTemplate
         dump(stream, storage_rows : rows or None, storage_data : dict or None)
     }
     class StateDictTable {
@@ -153,11 +154,11 @@ classDiagram
         offsets : int64 array
         strings : list of str, paths and in string tables fqns
     }
-    CheckpointMetadataCache o-- GlobalMetadata
-    PendingSave o-- GlobalMetadata
-    GlobalMetadata o-- StateDictTable : content, fast writers
-    GlobalMetadata o-- Metadata : content, fallback
-    GlobalMetadata ..> Metadata : to_metadata builds a new one
+    CheckpointMetadataCache o-- MetadataTemplate
+    PendingSave o-- MetadataTemplate
+    MetadataTemplate o-- StateDictTable : content, fast writers
+    MetadataTemplate o-- Metadata : content, fallback
+    MetadataTemplate ..> Metadata : to_metadata builds a new one
     StateDictTable ..> Metadata : converted from, to_metadata builds
     StateDictTable <|-- NativeStateDictTable : C++ producer
     WriteResultTable ..> WriteResult : one rank's
@@ -166,7 +167,7 @@ classDiagram
 
 `fqns` and `fqn_index`: the coordinator's fqn list, replicated on every rank (see the protocol below). A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
 
-A `GlobalMetadata`'s `content` is either a state table or a `Metadata`. It is a state table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets fields a save sets (`version`, `storage_meta`), and raises `TypeError` for any other name. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
+A `MetadataTemplate`'s `content` is either a state table or a `Metadata`. It is a state table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets fields a save sets (`version`, `storage_meta`), and raises `TypeError` for any other name. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
 
 ## Table schemas
 
@@ -220,12 +221,12 @@ The header's fqn mode (string or index table) and fqn list fingerprint are new; 
 
 | State                                     | Rank        | When                                                                    |
 | ----------------------------------------- | ----------- | ----------------------------------------------------------------------- |
-| `GlobalMetadata` of the loaded checkpoint | all ranks   | From `set_cached_global_metadata` until the first save.                 |
-| `GlobalMetadata` of the previous save     | coordinator | After a save, built or reused.                                          |
+| `MetadataTemplate` of the loaded checkpoint | all ranks   | From `set_cached_global_metadata` until the first save.                 |
+| `MetadataTemplate` of the previous save     | coordinator | After a save, built or reused.                                          |
 | fqn list (`fqns`, `fqn_index`)            | all ranks   | From `set_cached_global_metadata`; replaced by the finalize of a build. |
 | `local_plan`, `central_plan`              | all ranks   | This rank's local and global plan of the previous save.                 |
 
-A `GlobalMetadata` is never modified: `finish` writes it with the save's `storage_data`, `version` and `storage_meta`, which are not kept. The caller can free the `Metadata` it hands to `set_cached_global_metadata`: as a state table, the cache keeps none of its objects.
+A `MetadataTemplate` is never modified: `finish` writes it with the save's `storage_data`, `version` and `storage_meta`, which are not kept. The caller can free the `Metadata` it hands to `set_cached_global_metadata`: as a state table, the cache keeps none of its objects.
 
 Staging buffers, keyed by a hash of the rank's tensor write items:
 
@@ -433,7 +434,7 @@ Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save
    - `set_cached_global_metadata` is called on every rank with the same loaded checkpoint.
 2. **A broken invariant fails the save, it never writes a wrong `.metadata`.** An index table carries the fingerprint of the list it was encoded against; the coordinator raises on a mismatch, which every rank receives as a `CheckpointException` through the failure broadcast.
 3. **The collectives are the same on every rank.** A rank chooses between strings and indices in finalize, when it encodes, not when the save is planned: it sends indices if its cache holds the fqn list. Every rank holds the list by then, or none does: saves are finalized in order on every rank, a save that built the metadata delivers its list at the end of its finalize, and the finalize of a save runs on all ranks or none (the done-flags all_reduce, or the drain, which every rank reaches in the same save). So a save planned before the previous one was finalized (case 2, drain) still encodes against the right list. The list travels in collectives that run every save.
-4. **Nothing is modified in place.** `GlobalMetadata` and state tables are never changed; a save's `storage_data`, `version` and `storage_meta` are added when writing. The `Metadata` passed to `set_cached_global_metadata` is not modified.
+4. **Nothing is modified in place.** `MetadataTemplate` and state tables are never changed; a save's `storage_data`, `version` and `storage_meta` are added when writing. The `Metadata` passed to `set_cached_global_metadata` is not modified.
 
 ## Other transfer path
 
@@ -448,7 +449,7 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 | Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                                  |
 | Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                               |
 | Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                       |
-| Cached global metadata                        | `global_metadata.py`: `GlobalMetadata`                                                                                                                   |
+| Cached metadata template                      | `metadata_template.py`: `MetadataTemplate`                                                                                                                   |
 | Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                           |
 | State table and its Python producer           | `_metadata_pickler/state_table.py`                                                                                                                       |
 | Write-result tables                           | `_metadata_pickler/table.py`                                                                                                                             |

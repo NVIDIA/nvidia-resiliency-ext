@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests of GlobalMetadata, the global metadata the metadata cache keeps (CPU only)."""
+"""Unit tests of MetadataTemplate, the metadata the metadata cache keeps (CPU only)."""
 
 import io
 import pickle
@@ -22,7 +22,7 @@ import pytest
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
-from nvidia_resiliency_ext.checkpointing.async_ckpt.global_metadata import GlobalMetadata
+from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
 from .test_metadata_pickler import NEEDS_FAST, assert_identical, stock_round_trip
 
@@ -36,49 +36,49 @@ def fast(request, monkeypatch):
 
 
 def test_kept_as_a_table_with_the_fast_writers(fast):
-    global_metadata = GlobalMetadata.from_metadata(writer._sample_metadata())
-    assert (global_metadata.table is not None) is fast
+    metadata_template = MetadataTemplate.from_metadata(writer._sample_metadata())
+    assert (metadata_template.table is not None) is fast
     expected = _metadata_reuse.TableEntries if fast else _metadata_reuse.ObjectEntries
-    assert isinstance(global_metadata.entries(), expected)
+    assert isinstance(metadata_template.entries(), expected)
 
 
 def test_to_metadata(fast):
     metadata = writer._sample_metadata()
-    global_metadata = GlobalMetadata.from_metadata(metadata)
-    back = global_metadata.to_metadata(metadata.storage_data)
+    metadata_template = MetadataTemplate.from_metadata(metadata)
+    back = metadata_template.to_metadata(metadata.storage_data)
     assert back.storage_data is metadata.storage_data
     assert back == metadata
-    assert global_metadata.to_metadata().storage_data is None
+    assert metadata_template.to_metadata().storage_data is None
 
 
 @NEEDS_FAST
 def test_a_table_is_independent_of_its_metadata():
     metadata = writer._sample_metadata()
-    global_metadata = GlobalMetadata.from_metadata(metadata)
-    before = pickle.dumps(global_metadata.to_metadata())
+    metadata_template = MetadataTemplate.from_metadata(metadata)
+    before = pickle.dumps(metadata_template.to_metadata())
     metadata.state_dict_metadata["w"].chunks.clear()
     del metadata.state_dict_metadata["s"]
-    assert pickle.dumps(global_metadata.to_metadata()) == before
+    assert pickle.dumps(metadata_template.to_metadata()) == before
 
 
 def test_with_fields_refuses_unknown_fields(fast):
-    global_metadata = GlobalMetadata.from_metadata(writer._sample_metadata())
+    metadata_template = MetadataTemplate.from_metadata(writer._sample_metadata())
     for name in ("extra", "storage_data", "state_dict_metadata"):
         with pytest.raises(TypeError):
-            global_metadata.with_fields(**{name: None})
+            metadata_template.with_fields(**{name: None})
 
 
 def test_with_fields_leaves_the_original_alone(fast):
     metadata = writer._sample_metadata()
-    global_metadata = GlobalMetadata.from_metadata(metadata)
-    before = pickle.dumps(global_metadata.to_metadata())
-    changed = global_metadata.with_fields(version="9.9")
+    metadata_template = MetadataTemplate.from_metadata(metadata)
+    before = pickle.dumps(metadata_template.to_metadata())
+    changed = metadata_template.with_fields(version="9.9")
     assert changed.to_metadata().version == "9.9"
-    assert pickle.dumps(global_metadata.to_metadata()) == before
+    assert pickle.dumps(metadata_template.to_metadata()) == before
 
 
 def test_dump(fast):
     metadata = writer._sample_metadata()
     buf = io.BytesIO()
-    GlobalMetadata.from_metadata(metadata).dump(buf, storage_data=metadata.storage_data)
+    MetadataTemplate.from_metadata(metadata).dump(buf, storage_data=metadata.storage_data)
     assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(metadata))

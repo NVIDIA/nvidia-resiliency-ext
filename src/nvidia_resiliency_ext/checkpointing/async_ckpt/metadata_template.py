@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The global metadata of a save, as the metadata cache keeps it and the coordinator writes it."""
+"""The part of a save's global metadata that every save shares, as the metadata cache keeps it and
+the coordinator writes it."""
 
 import dataclasses
 from typing import IO, Optional, Union
@@ -27,9 +28,9 @@ from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import StateDictTable
 
 
-class GlobalMetadata:
-    """A save's global metadata, without its storage_data, which is written from each save's write
-    results.
+class MetadataTemplate:
+    """A save's global metadata without the parts each save sets: storage_data, written from the
+    save's write results, and version and storage_meta, set when writing (see with_fields).
 
     With the fast ``.metadata`` writers (see ``_metadata_pickler.writer``), it is a state table
     (see ``_metadata_pickler.state_table``): a few arrays, which the garbage collector does not
@@ -43,7 +44,7 @@ class GlobalMetadata:
         self._content = content
 
     @classmethod
-    def from_metadata(cls, metadata: Metadata) -> "GlobalMetadata":
+    def from_metadata(cls, metadata: Metadata) -> "MetadataTemplate":
         """The global metadata of metadata, without its storage_data, and with only Metadata's
         fields (not e.g. the local plans older versions attach).
 
@@ -68,15 +69,15 @@ class GlobalMetadata:
             return self._content.to_metadata(storage_data)
         return dataclasses.replace(self._content, storage_data=storage_data)
 
-    def with_fields(self, **values) -> "GlobalMetadata":
+    def with_fields(self, **values) -> "MetadataTemplate":
         """This global metadata with these Metadata fields (e.g. version) set to these values.
         Raises TypeError for a name that isn't a field of Metadata a save sets."""
         if isinstance(self._content, StateDictTable):
-            return GlobalMetadata(self._content.with_fields(**values))
+            return MetadataTemplate(self._content.with_fields(**values))
         written = {"state_dict_metadata", "storage_data"} & set(values)
         if written:
             raise TypeError(f"not fields of Metadata that a save sets: {sorted(written)}")
-        return GlobalMetadata(dataclasses.replace(self._content, **values))
+        return MetadataTemplate(dataclasses.replace(self._content, **values))
 
     def entries(self) -> _metadata_reuse.Entries:
         """Its entries, as the reuse check reads them."""
