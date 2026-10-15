@@ -22,10 +22,10 @@ A DCP `Metadata` holds a Python object per chunk, each with a `torch.Size` of of
 | Shm tensor         | A CPU tensor in shared memory (`share_memory_()`), one per tensor the rank saves, holding the values being written.                                                                                                        |
 | Async worker       | The persistent process per rank that writes the files. In CPU shared-memory mode it never initializes CUDA.                                                                                                                |
 | Fast writers       | nvrx's `.metadata` writers (C++, else Python), used on tested torch versions (`_metadata_pickler/writer.py`).                                                                                                              |
-| State table        | A `Metadata` without `storage_data` as arrays (`StateDictTable`), kept between saves.                                                                                                                                      |
+| State dict table        | A `Metadata` without `storage_data` as arrays (`StateDictTable`), kept between saves.                                                                                                                                      |
 | Metadata template  | A save's global metadata without the parts each save sets (`storage_data`, `version`, `storage_meta`): a `MetadataTemplate`, kept between saves and completed by each write.                                     |
 | Write-result table | One rank's write results as a table, gathered to the coordinator. A string table names fqns by string, an index table by their entry in the fqn list.                                                                      |
-| fqn list           | The fqns of the coordinator's state table, in entry order.                                                                                                                                                                 |
+| fqn list           | The fqns of the coordinator's state dict table, in entry order.                                                                                                                                                                 |
 
 ## Phases of a save
 
@@ -167,11 +167,11 @@ classDiagram
 
 `fqns` and `fqn_index`: the coordinator's fqn list, replicated on every rank (see the protocol below). A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
 
-A `MetadataTemplate`'s `content` is either a state table or a `Metadata`. It is a state table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets fields a save sets (`version`, `storage_meta`), and raises `TypeError` for any other name. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
+A `MetadataTemplate`'s `content` is either a state dict table or a `Metadata`. It is a state dict table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets fields a save sets (`version`, `storage_meta`), and raises `TypeError` for any other name. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
 
 ## Table schemas
 
-### State table
+### State dict table
 
 Entries are in `state_dict_metadata`'s order; entry `i` is one fqn, of one of three kinds:
 
@@ -226,7 +226,7 @@ The header's fqn mode (string or index table) and fqn list fingerprint are new; 
 | fqn list (`fqns`, `fqn_index`)            | all ranks   | From `set_cached_global_metadata`; replaced by the finalize of a build. |
 | `local_plan`, `central_plan`              | all ranks   | This rank's local and global plan of the previous save.                 |
 
-A `MetadataTemplate` is never modified: `finish` writes it with the save's `storage_data`, `version` and `storage_meta`, which are not kept. The caller can free the `Metadata` it hands to `set_cached_global_metadata`: as a state table, the cache keeps none of its objects.
+A `MetadataTemplate` is never modified: `finish` writes it with the save's `storage_data`, `version` and `storage_meta`, which are not kept. The caller can free the `Metadata` it hands to `set_cached_global_metadata`: as a state dict table, the cache keeps none of its objects.
 
 Staging buffers, keyed by a hash of the rank's tensor write items:
 
@@ -256,11 +256,11 @@ sequenceDiagram
     R<<->>C: verify_global_metadata_reuse: all_reduce(SUM) of 5 int64,<br/>no metadata, so every rank votes against reuse
     R->>C: gather_object(local plan)
     C->>C: unpickle all plans, create_global_plan: dedup, build metadata, validate
-    C->>C: convert the metadata to a state table, drop the Metadata
+    C->>C: convert the metadata to a state dict table, drop the Metadata
     Note over R: Other ranks don't wait for this: they go on,<br/>and wait for the coordinator at the next collective
     R->>R: decentralized global plan, finish_plan
     R->>R: prepare_write_data: allocate shm tensors, copy GPU to shm<br/>(synchronize every 8 copies)
-    Note over R,C: Cached: plans and shm tensors, on the coordinator the state table
+    Note over R,C: Cached: plans and shm tensors, on the coordinator the state dict table
     end
 
     rect rgba(70, 180, 110, 0.12)
@@ -277,7 +277,7 @@ sequenceDiagram
     R->>R: save_state_dict_async_finalize: encode its write results as a string table
     R<<->>C: all_reduce(MAX) of [table width, fqn list bytes],<br/>the coordinator contributes its fqn list's byte length
     R->>C: gather(string tables, or pickled write results)
-    C->>S: write .metadata from the state table and the rows<br/>(temp file, fsync, rename)
+    C->>S: write .metadata from the state dict table and the rows<br/>(temp file, fsync, rename)
     C->>R: broadcast(failure flag and the fqn list)
     R->>R: keep the fqn list: later saves send index tables
     end
@@ -310,7 +310,7 @@ sequenceDiagram
             R<<->>C: finalize the previous checkpoint: the collectives of Finalize below
         end
         R->>R: prepare_write_data: copy GPU to the cached shm tensors
-        Note over R,C: Cached: the coordinator's state table, reused as it is
+        Note over R,C: Cached: the coordinator's state dict table, reused as it is
     end
     end
 
@@ -329,14 +329,14 @@ sequenceDiagram
     R<<->>C: all_reduce(MAX) of [table width, fqn list bytes],<br/>the coordinator contributes 0: no list to deliver
     R->>C: gather(index tables, or pickled write results)
     C->>C: check each index table's fqn list fingerprint, else raise
-    C->>S: write .metadata from the state table and the rows<br/>(temp file, fsync, rename)
+    C->>S: write .metadata from the state dict table and the rows<br/>(temp file, fsync, rename)
     C->>R: broadcast(failure flag)
     end
 ```
 
 ## 3. First checkpoint after a restart
 
-Every rank reads `.metadata` when loading the checkpoint, and the caller passes it to `set_cached_global_metadata` on every rank, which converts it to a state table and keeps its fqn list; the caller can then free it. The first save checks whether the new local plans write exactly the chunks this metadata lists. That decides with one `all_reduce` whether the gather and `create_global_plan` can be skipped; nothing beyond the ordinary `.metadata` is stored for it. The staging caches are empty in the new processes, so the shm tensors are allocated and sent as in case 1.
+Every rank reads `.metadata` when loading the checkpoint, and the caller passes it to `set_cached_global_metadata` on every rank, which converts it to a state dict table and keeps its fqn list; the caller can then free it. The first save checks whether the new local plans write exactly the chunks this metadata lists. That decides with one `all_reduce` whether the gather and `create_global_plan` can be skipped; nothing beyond the ordinary `.metadata` is stored for it. The staging caches are empty in the new processes, so the shm tensors are allocated and sent as in case 1.
 
 ```mermaid
 sequenceDiagram
@@ -349,19 +349,19 @@ sequenceDiagram
     rect rgba(150, 150, 150, 0.12)
     Note over R,S: Load (Megatron-LM: TorchDistLoadShardedStrategy)
     S->>R: read .metadata
-    R->>R: new CheckpointMetadataCache, set_cached_global_metadata:<br/>convert to a state table, keep its fqn list
+    R->>R: new CheckpointMetadataCache, set_cached_global_metadata:<br/>convert to a state dict table, keep its fqn list
     R->>R: the caller frees the loaded Metadata
     end
 
     rect rgba(70, 130, 220, 0.12)
     Note over R,C: Plan and stage: first save in this process
-    R->>R: local_step, then votes: own items vs the state table,<br/>hash sum of own chunks minus a 1/N slice of the table's
+    R->>R: local_step, then votes: own items vs the state dict table,<br/>hash sum of own chunks minus a 1/N slice of the table's
     R<<->>C: verify_global_metadata_reuse: all_reduce(SUM) of 5 int64
     alt sum is zero: same chunks, sizes and properties
-        Note over R,C: Kept: the coordinator's loaded state table, every rank's fqn list.<br/>Other ranks drop their state table
+        Note over R,C: Kept: the coordinator's loaded state dict table, every rank's fqn list.<br/>Other ranks drop their state dict table
     else plans differ (e.g. world size or parallelism changed)
         R->>C: gather_object(local plan)
-        C->>C: create_global_plan, convert to a state table, as in case 1
+        C->>C: create_global_plan, convert to a state dict table, as in case 1
     end
     R->>R: decentralized global plan, finish_plan
     R->>R: prepare_write_data: allocate shm tensors, copy GPU to shm
@@ -382,13 +382,13 @@ sequenceDiagram
         R<<->>C: all_reduce(MAX) of [table width, fqn list bytes], coordinator: 0
         R->>C: gather(index tables, or pickled write results)
         C->>C: check each index table's fqn list fingerprint, else raise
-        C->>S: write .metadata from the loaded state table and the rows
+        C->>S: write .metadata from the loaded state dict table and the rows
         C->>R: broadcast(failure flag)
     else metadata built
         R->>R: encode its write results as a string table
         R<<->>C: all_reduce(MAX) of [table width, fqn list bytes],<br/>coordinator: its fqn list's byte length
         R->>C: gather(string tables, or pickled write results)
-        C->>S: write .metadata from the new state table and the rows
+        C->>S: write .metadata from the new state dict table and the rows
         C->>R: broadcast(failure flag and the fqn list)
         R->>R: keep the fqn list
     end
@@ -411,8 +411,8 @@ F: fast writers usable. D: decentralized planning (`can_run_decentralized_global
 
 | F   | D   | C   | Kept between saves    | Reuse of a loaded checkpoint | Write results       | fqns in write results                  | `.metadata` written from |
 | --- | --- | --- | --------------------- | ---------------------------- | ------------------- | -------------------------------------- | ------------------------ |
-| yes | yes | yes | state table, fqn list | checked with one all_reduce  | write-result tables | indices, strings in a save that builds | state table and rows     |
-| yes | no  | yes | state table, fqn list | no, cached from the 2nd save | write-result tables | indices, strings in a save that builds | state table and rows     |
+| yes | yes | yes | state dict table, fqn list | checked with one all_reduce  | write-result tables | indices, strings in a save that builds | state dict table and rows     |
+| yes | no  | yes | state dict table, fqn list | no, cached from the 2nd save | write-result tables | indices, strings in a save that builds | state dict table and rows     |
 | yes | any | no  | nothing               | no                           | write-result tables | strings                                | `Metadata` and rows      |
 | no  | any | any | `Metadata`, as before | as before                    | pickled             | strings                                | torch's `finish`         |
 
@@ -427,14 +427,14 @@ Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save
 ## Invariants
 
 1. **The fqn list a rank encodes against is the coordinator's.** It holds by construction, not by agreement at run time:
-   - after a reuse, every rank holds the loaded checkpoint's state table, which is the coordinator's metadata;
+   - after a reuse, every rank holds the loaded checkpoint's state dict table, which is the coordinator's metadata;
    - after a build, the save's finalize delivers the coordinator's list to every rank;
    - a save's finalize runs before the next save's finalize encodes anything: the next save finalizes the previous one before staging overwrites its shared memory (case 2);
    - with `enable_cache`, the coordinator rank and the checkpoint structure stay the same between saves; a rank that breaks this raises (`_update`, `_check_plan_unchanged`);
    - `set_cached_global_metadata` is called on every rank with the same loaded checkpoint.
 2. **A broken invariant fails the save, it never writes a wrong `.metadata`.** An index table carries the fingerprint of the list it was encoded against; the coordinator raises on a mismatch, which every rank receives as a `CheckpointException` through the failure broadcast.
 3. **The collectives are the same on every rank.** A rank chooses between strings and indices in finalize, when it encodes, not when the save is planned: it sends indices if its cache holds the fqn list. Every rank holds the list by then, or none does: saves are finalized in order on every rank, a save that built the metadata delivers its list at the end of its finalize, and the finalize of a save runs on all ranks or none (the done-flags all_reduce, or the drain, which every rank reaches in the same save). So a save planned before the previous one was finalized (case 2, drain) still encodes against the right list. The list travels in collectives that run every save.
-4. **Nothing is modified in place.** `MetadataTemplate` and state tables are never changed; a save's `storage_data`, `version` and `storage_meta` are added when writing. The `Metadata` passed to `set_cached_global_metadata` is not modified.
+4. **Nothing is modified in place.** `MetadataTemplate` and state dict tables are never changed; a save's `storage_data`, `version` and `storage_meta` are added when writing. The `Metadata` passed to `set_cached_global_metadata` is not modified.
 
 ## Other transfer path
 
@@ -445,13 +445,13 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 | What                                          | Where (`src/nvidia_resiliency_ext/checkpointing/async_ckpt/`)                                                                                            |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Planning, cache, reuse decision               | `state_dict_saver.py`: `save_state_dict_async_plan`, `PendingSave`, `CheckpointMetadataCache`, `verify_global_metadata_reuse`, `_check_plan_unchanged` |
-| Reuse check against loaded metadata           | `_metadata_reuse.py`, reading a state table through `TableEntries`                                                                                       |
+| Reuse check against loaded metadata           | `_metadata_reuse.py`, reading a state dict table through `TableEntries`                                                                                       |
 | Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                                  |
 | Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                               |
 | Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                       |
 | Cached metadata template                      | `metadata_template.py`: `MetadataTemplate`                                                                                                                   |
 | Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                           |
-| State table and its Python producer           | `_metadata_pickler/state_table.py`                                                                                                                       |
+| State dict table and its Python producer           | `_metadata_pickler/state_dict_table.py`                                                                                                                       |
 | Write-result tables                           | `_metadata_pickler/table.py`                                                                                                                             |
 | `.metadata` writers                           | `_metadata_pickler/`: `writer.py` (selection), `native.py` and `native_src/native.cpp` (C++), `pickler.py` (Python)                                      |
 | Async workers, finalize scheduling, shm drain | `core.py`: `AsyncCallsQueue`, `PersistentAsyncCaller`                                                                                                    |

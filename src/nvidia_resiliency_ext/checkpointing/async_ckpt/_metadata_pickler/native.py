@@ -23,12 +23,12 @@ from typing import Optional
 import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
 
-from . import _native, state_table
+from . import _native, state_dict_table
 from .opcodes import small_pickle
 
 
-class StateDictTable(state_table.StateDictTable):
-    """state_table.StateDictTable, converted from a Metadata by the C++ producer, which gives
+class StateDictTable(state_dict_table.StateDictTable):
+    """state_dict_table.StateDictTable, converted from a Metadata by the C++ producer, which gives
     exactly the table the Python producer gives."""
 
     @classmethod
@@ -38,7 +38,7 @@ class StateDictTable(state_table.StateDictTable):
 
 
 def dumps_table(
-    table: state_table.StateDictTable,
+    table: state_dict_table.StateDictTable,
     storage_data: Optional[dict] = None,
     storage_rows: Optional[np.ndarray] = None,
 ) -> bytes:

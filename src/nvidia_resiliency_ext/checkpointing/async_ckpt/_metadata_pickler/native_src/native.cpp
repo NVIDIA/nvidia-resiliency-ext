@@ -271,17 +271,17 @@ class WriteResultTable {
     return v;
 }
 
-// Kinds of state_dict_metadata entries, numbered as in state_table.py.
+// Kinds of state_dict_metadata entries, numbered as in state_dict_table.py.
 enum class Kind : uint8_t { Bytes = 0, Tensor = 1, Other = 2 };
 constexpr std::string_view STATE_DICT_METADATA = "state_dict_metadata";
 constexpr std::string_view STORAGE_DATA = "storage_data";
 
-// Reject a malformed state table, before anything reads outside its arrays.
-[[noreturn]] void bad_state_table(std::string_view what) {
-    throw py::value_error("state table: " + std::string(what));
+// Reject a malformed state dict table, before anything reads outside its arrays.
+[[noreturn]] void bad_state_dict_table(std::string_view what) {
+    throw py::value_error("state dict table: " + std::string(what));
 }
 
-// The element types of a state table's arrays.
+// The element types of a state dict table's arrays.
 template <typename T>
 concept TableValue = std::same_as<T, uint8_t> || std::same_as<T, int64_t>;
 
@@ -292,7 +292,7 @@ using Array = py::array_t<T, py::array::c_style>;
 [[nodiscard]] py::tuple tuple_attr(py::handle table, const char* name) {
     py::object value = table.attr(name);
     if (!PyTuple_CheckExact(value.ptr())) {
-        bad_state_table(std::string(name) + " is not a tuple");
+        bad_state_dict_table(std::string(name) + " is not a tuple");
     }
     return py::reinterpret_steal<py::tuple>(value.release());
 }
@@ -302,7 +302,7 @@ template <TableValue T>
 [[nodiscard]] Array<T> array_attr(py::handle table, const char* name) {
     py::object value = table.attr(name);
     if (!Array<T>::check_(value) || py::reinterpret_borrow<py::array>(value).ndim() != 1) {
-        bad_state_table(std::string(name) + " is not a 1-D array of the expected type");
+        bad_state_dict_table(std::string(name) + " is not a 1-D array of the expected type");
     }
     return py::reinterpret_steal<Array<T>>(value.release());
 }
@@ -318,7 +318,7 @@ template <TableValue T>
     return {PyBytes_AS_STRING(b), static_cast<size_t>(PyBytes_GET_SIZE(b))};
 }
 
-// A state_table.StateDictTable, checked as state_table.check checks it, so that the writer can
+// A state_dict_table.StateDictTable, checked as state_dict_table.check checks it, so that the writer can
 // read its arrays without further checks.
 class StateDictTableView {
    public:
@@ -348,7 +348,7 @@ class StateDictTableView {
         const py::tuple fields = tuple_attr(table, "fields");
         for (const py::handle field : fields) {
             if (!PyTuple_CheckExact(field.ptr()) || PyTuple_GET_SIZE(field.ptr()) != 2) {
-                bad_state_table("a field is not a (name, opcodes) tuple");
+                bad_state_dict_table("a field is not a (name, opcodes) tuple");
             }
             PyObject* const name = PyTuple_GET_ITEM(field.ptr(), 0);
             PyObject* const opcodes = PyTuple_GET_ITEM(field.ptr(), 1);
@@ -356,7 +356,7 @@ class StateDictTableView {
             const bool written_here =
                 field_name == STATE_DICT_METADATA || field_name == STORAGE_DATA;
             if (written_here ? opcodes != Py_None : !PyBytes_CheckExact(opcodes)) {
-                bad_state_table("unexpected opcodes of field " + std::string(field_name));
+                bad_state_dict_table("unexpected opcodes of field " + std::string(field_name));
             }
             fields_.push_back(
                 {std::string(field_name), py::reinterpret_borrow<py::object>(opcodes)});
@@ -389,19 +389,19 @@ class StateDictTableView {
     [[nodiscard]] size_t dims_size() const { return dims_.size(); }
 
    private:
-    // Check that the arrays describe entries() entries consistently; see state_table.check.
+    // Check that the arrays describe entries() entries consistently; see state_dict_table.check.
     void check() const {
         const size_t n = entries();
         if (static_cast<size_t>(PyTuple_GET_SIZE(fqns_.ptr())) != n || ref_.size() != n ||
             ndim_.size() != n) {
-            bad_state_table("arrays of different lengths");
+            bad_state_dict_table("arrays of different lengths");
         }
         const auto check_starts = [n](std::span<const int64_t> starts,
                                       std::optional<size_t> pool) {
             if (starts.size() != n + 1 || starts[0] != 0 ||
                 !std::ranges::is_sorted(starts) ||
                 (pool && static_cast<uint64_t>(starts[n]) != *pool)) {
-                bad_state_table("start offsets out of order or range");
+                bad_state_dict_table("start offsets out of order or range");
             }
         };
         check_starts(chunk_start_, std::nullopt);
@@ -415,26 +415,26 @@ class StateDictTableView {
             const int64_t chunk_count = chunk_start_[i + 1] - chunk_start_[i];
             const int64_t values = dims_start_[i + 1] - dims_start_[i];
             if (ndim < 0) {
-                bad_state_table("a negative number of dims");
+                bad_state_dict_table("a negative number of dims");
             }
             switch (kind_[i]) {
                 case static_cast<uint8_t>(Kind::Tensor):
                     if (!in(ref_[i], properties_) || !holds_chunks(values, ndim, chunk_count)) {
-                        bad_state_table("a tensor entry's dims don't match its chunks");
+                        bad_state_dict_table("a tensor entry's dims don't match its chunks");
                     }
                     break;
                 case static_cast<uint8_t>(Kind::Other):
                     if (!in(ref_[i], others_)) {
-                        bad_state_table("an entry refers to no pickle");
+                        bad_state_dict_table("an entry refers to no pickle");
                     }
                     [[fallthrough]];
                 case static_cast<uint8_t>(Kind::Bytes):
                     if (ndim != 0 || chunk_count != 0 || values != 0) {
-                        bad_state_table("a non-tensor entry has dims");
+                        bad_state_dict_table("a non-tensor entry has dims");
                     }
                     break;
                 default:
-                    bad_state_table("unknown entry kind");
+                    bad_state_dict_table("unknown entry kind");
             }
         }
     }
@@ -468,7 +468,7 @@ template <TableValue T>
     return py::array_t<T>({values.size()}, {sizeof(T)}, values.data(), owner);
 }
 
-// Converts a Metadata into a state_table.StateDictTable, exactly as state_table.from_metadata does.
+// Converts a Metadata into a state_dict_table.StateDictTable, exactly as state_dict_table.from_metadata does.
 class StateDictTableBuilder {
    public:
     // Look up the metadata classes the conversion checks objects against.
@@ -571,7 +571,7 @@ class StateDictTableBuilder {
     };
 
     // Append a TENSOR entry's size and chunks to dims_ and return its properties and numbers of
-    // dims and chunks; nullopt, with nothing appended, if it isn't one (see state_table._tensor).
+    // dims and chunks; nullopt, with nothing appended, if it isn't one (see state_dict_table._tensor).
     [[nodiscard]] std::optional<TensorEntry> tensor_entry(PyObject* entry) {
         const py::object state = instance_dict(entry);
         PyObject* const properties = dict_get(state.ptr(), a_properties_.ptr());
@@ -1056,7 +1056,7 @@ class Writer {
         put({TUPLE1, REDUCE});
     }
 
-    // The same, for dims from a state table.
+    // The same, for dims from a state dict table.
     void size(std::span<const int64_t> dims) {
         const size_t n = dims.size();
         put_get(size_ref_);
@@ -1139,7 +1139,7 @@ PYBIND11_MODULE(_native, m) {
             return StateDictTableBuilder(std::move(small_pickle)).build(metadata, table_cls);
         },
         py::arg("metadata"), py::arg("small_pickle"), py::arg("table_cls"),
-        "Return the metadata without storage_data as a table_cls (state_table.StateDictTable).");
+        "Return the metadata without storage_data as a table_cls (state_dict_table.StateDictTable).");
     m.def(
         "dumps_table",
         [](py::handle table, py::object small_pickle, py::handle storage_data,
@@ -1149,6 +1149,6 @@ PYBIND11_MODULE(_native, m) {
         },
         py::arg("table"), py::arg("small_pickle"), py::arg("storage_data") = py::none(),
         py::arg("storage_rows") = py::none(),
-        "Return the pickle of the Metadata a state table was converted from, as standard pickle "
+        "Return the pickle of the Metadata a state dict table was converted from, as standard pickle "
         "bytes.");
 }

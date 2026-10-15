@@ -33,12 +33,12 @@ from torch.distributed.checkpoint.storage import WriteResult
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
     pickler,
-    state_table,
+    state_dict_table,
     table,
     writer,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.opcodes import small_unpickle
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_table import (
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_dict_table import (
     BYTES,
     OTHER,
     TENSOR,
@@ -66,7 +66,7 @@ from .test_metadata_pickler import (
 )
 
 
-def assert_consistent(table: state_table.StateDictTable) -> None:
+def assert_consistent(table: state_dict_table.StateDictTable) -> None:
     """The arrays describe len(table) entries and use exactly the dims they hold."""
     n = len(table)
     assert len(table.kind) == len(table.ref) == len(table.ndim) == n
@@ -80,7 +80,7 @@ def assert_consistent(table: state_table.StateDictTable) -> None:
             assert table.ndim[i] == 0 and table.chunk_count(i) == 0
 
 
-def assert_converted(metadata) -> state_table.StateDictTable:
+def assert_converted(metadata) -> state_dict_table.StateDictTable:
     """metadata converts to a consistent table whose entries and fields are metadata's as stock pickle
     round-trips them."""
     table = StateDictTable.from_metadata(metadata)
@@ -92,7 +92,7 @@ def assert_converted(metadata) -> state_table.StateDictTable:
         assert_identical(table.entry(i), entry, fqn)
     assert [name for name, _ in table.fields] == list(vars(metadata))
     for name, opcodes in table.fields:
-        if name in (state_table.STATE_DICT_METADATA, state_table.STORAGE_DATA):
+        if name in (state_dict_table.STATE_DICT_METADATA, state_dict_table.STORAGE_DATA):
             assert opcodes is None
         else:
             assert_identical(small_unpickle(opcodes), getattr(metadata, name), name)
@@ -195,9 +195,11 @@ def test_few_objects_for_the_gc():
     assert len(table) == 1501 and len(seen) < 40
 
 
-def assert_same_tables(a: state_table.StateDictTable, b: state_table.StateDictTable) -> None:
+def assert_same_tables(
+    a: state_dict_table.StateDictTable, b: state_dict_table.StateDictTable
+) -> None:
     """a and b hold the same values, in arrays of the same types."""
-    for f in dataclasses.fields(state_table.StateDictTable):
+    for f in dataclasses.fields(state_dict_table.StateDictTable):
         va, vb = getattr(a, f.name), getattr(b, f.name)
         if isinstance(va, np.ndarray):
             assert va.dtype == vb.dtype and np.array_equal(va, vb), f.name
@@ -512,7 +514,7 @@ def test_both_writers_treat_a_corrupted_table_alike(metadata, data):
     """Change one value of one array of a valid table: either a StateDictTable refuses to be it
     and the C++ writer refuses to read it, or both writers write the same bytes."""
     state_dict_table = StateDictTable.from_metadata(metadata)
-    name = data.draw(st.sampled_from(state_table._ARRAYS))
+    name = data.draw(st.sampled_from(StateDictTable.ARRAYS))
     array = getattr(state_dict_table, name).copy()
     assume(len(array) > 0)
     i = data.draw(st.integers(0, len(array) - 1))
