@@ -51,6 +51,7 @@ Tool versions: `black==24.10.0`, `isort==5.13.2`, `ruff==0.6.9`. Line length is 
 pytest -s -vvv ./tests/fault_tolerance/unit/
 pytest -s -vvv ./tests/inprocess/
 pytest -s -vvv ./tests/checkpointing/unit/
+pytest -s -vvv ./tests/checkpointing/unit_cpu/
 pytest -s -vvv ./tests/ptl_resiliency/unit/
 pytest -s -vvv ./tests/straggler/unit/
 
