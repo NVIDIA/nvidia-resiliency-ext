@@ -46,6 +46,9 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pic
 
 HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo)}  # torch 2.8+
 NEEDS_NATIVE = pytest.mark.skipif(writer.native is None, reason="native extension not built")
+_FAST_HERE = writer.fast_metadata_enabled()
+writer.fast_metadata_enabled.cache_clear()
+NEEDS_FAST = pytest.mark.skipif(not _FAST_HERE, reason="no fast .metadata writer on this torch")
 WRITERS = [
     pytest.param(pickler.dumps, id="python"),
     pytest.param(writer.native.dumps if writer.native else None, id="native", marks=NEEDS_NATIVE),
