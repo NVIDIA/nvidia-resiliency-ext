@@ -46,25 +46,19 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_dict
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
-from .test_metadata_pickler import (
+from .metadata_assertions import NEEDS_FAST, NEEDS_NATIVE, assert_identical, stock_round_trip
+from .metadata_samples import (
     FIXED_METADATA,
-    NEEDS_FAST,
-    NEEDS_NATIVE,
     SETTABLE_FIELD,
-    _Metadata,
-    _metadata_changed_while_pickled,
-    _rename_first,
-    _Str,
-    assert_identical,
-    hypothesis_settings,
-    int64s,
+    SubclassedMetadata,
+    SubclassedStr,
     large_metadata,
-    metadatas,
+    metadata_changed_while_pickled,
     properties_of_equal_values,
-    stock_round_trip,
+    rename_first,
     subclassed_metadata,
-    texts,
 )
+from .metadata_strategies import hypothesis_settings, int64s, metadatas, texts
 
 
 def assert_consistent(table: state_dict_table.StateDictTable) -> None:
@@ -153,7 +147,8 @@ def test_properties_are_kept_once_per_pickle():
     "mutate",
     [
         pytest.param(
-            lambda metadata: setattr(metadata, "__class__", _Metadata), id="metadata-subclass"
+            lambda metadata: setattr(metadata, "__class__", SubclassedMetadata),
+            id="metadata-subclass",
         ),
         pytest.param(
             lambda metadata: setattr(
@@ -161,7 +156,7 @@ def test_properties_are_kept_once_per_pickle():
             ),
             id="ordered-dict",
         ),
-        pytest.param(lambda metadata: _rename_first(metadata, _Str), id="str-subclass"),
+        pytest.param(lambda metadata: rename_first(metadata, SubclassedStr), id="str-subclass"),
     ],
 )
 def test_rejects(mutate):
@@ -175,7 +170,7 @@ def test_rejects(mutate):
 def test_metadata_changed_while_converted(case):
     """Python code run during the conversion can change the metadata: the conversion raises, or
     returns a consistent table."""
-    metadata = _metadata_changed_while_pickled(case)
+    metadata = metadata_changed_while_pickled(case)
     try:
         table = StateDictTable.from_metadata(metadata)
     except RuntimeError:
@@ -231,7 +226,8 @@ def test_native_converts_like_python_on(make, tmp_path):
     "mutate",
     [
         pytest.param(
-            lambda metadata: setattr(metadata, "__class__", _Metadata), id="metadata-subclass"
+            lambda metadata: setattr(metadata, "__class__", SubclassedMetadata),
+            id="metadata-subclass",
         ),
         pytest.param(
             lambda metadata: setattr(
@@ -239,7 +235,7 @@ def test_native_converts_like_python_on(make, tmp_path):
             ),
             id="ordered-dict",
         ),
-        pytest.param(lambda metadata: _rename_first(metadata, _Str), id="str-subclass"),
+        pytest.param(lambda metadata: rename_first(metadata, SubclassedStr), id="str-subclass"),
     ],
 )
 def test_native_rejects(mutate):
@@ -375,7 +371,7 @@ def test_to_metadata():
 @NEEDS_FAST
 def test_state_dict_table_if_fast_warns_and_returns_none(caplog):
     metadata = writer._sample_metadata()
-    metadata.__class__ = _Metadata
+    metadata.__class__ = SubclassedMetadata
     with caplog.at_level(logging.WARNING, logger=writer.__name__):
         assert writer.state_dict_table_if_fast(metadata) is None
     assert "can't convert" in caplog.text
@@ -391,7 +387,7 @@ def test_no_table_without_the_fast_writers(monkeypatch):
 def test_dump_metadata_of_table_falls_back_to_python(caplog):
     """A table the native writer can't write (a lone surrogate) is written by the Python one."""
     metadata = writer._sample_metadata()
-    _rename_first(metadata, lambda s: s + "\ud800")
+    rename_first(metadata, lambda s: s + "\ud800")
     table = writer.native.StateDictTable.from_metadata(metadata)
     buf = io.BytesIO()
     with caplog.at_level(logging.WARNING, logger=writer.__name__):

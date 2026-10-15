@@ -34,7 +34,8 @@ from torch.distributed.checkpoint.storage import WriteResult
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table, writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 
-from .test_metadata_pickler import dcp_saved_metadata, large_metadata, metadatas
+from .metadata_samples import dcp_saved_metadata, large_metadata
+from .metadata_strategies import metadatas
 
 DUMPS = [
     pytest.param(pickler.dumps, id="python"),
@@ -151,13 +152,13 @@ def test_torch_write_results_fit_the_table(tmp_path):
     assert _fields(table.to_write_results(table.decode(table.encode(results)))) == _fields(results)
 
 
-class _Str(str):
+class SubclassedStr(str):
     pass
 
 
 UNENCODABLE = {
     "index is not a MetadataIndex": lambda: _result(idx="w"),
-    "fqn is a str subclass": lambda: _result(idx=MetadataIndex(_Str("w"))),
+    "fqn is a str subclass": lambda: _result(idx=MetadataIndex(SubclassedStr("w"))),
     "offset beyond int64": lambda: _result(info=_StorageInfo("__0_0.distcp", 2**63, 1)),
     "fqn not UTF-8": lambda: _result(idx=MetadataIndex("w\ud800", torch.Size([0]))),
 }

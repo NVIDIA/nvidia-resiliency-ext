@@ -51,7 +51,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 
-from .test_metadata_pickler import NEEDS_FAST
+from .metadata_assertions import NEEDS_FAST
 
 
 def tensor_item(fqn, offsets, sizes, size, dtype=torch.float32, requires_grad=False):
