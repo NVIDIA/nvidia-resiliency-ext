@@ -68,6 +68,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from ..utils import _disable_gc
 from . import _metadata_pickler
 from .core import PersistentAsyncCaller
+from .global_metadata import GlobalMetadata
 
 if TYPE_CHECKING:
     import numpy as np
@@ -1299,13 +1300,13 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     def _finish(
         self,
-        metadata: Metadata,
+        metadata: Union[Metadata, "GlobalMetadata"],
         results: List[List[WriteResult]],
         storage_rows: Optional["np.ndarray"] = None,
     ) -> None:
-        """``finish``, or with storage_rows (the ranks' write results as tables, one zero-padded
-        table per row of a 2-D uint8 array, see ``_metadata_pickler.table``), written as
-        storage_data instead of results."""
+        """``finish``, also of a GlobalMetadata, which it doesn't modify; or with storage_rows (the
+        ranks' write results as tables, one zero-padded table per row of a 2-D uint8 array, see
+        ``_metadata_pickler.table``), written as storage_data instead of results."""
         fast = _metadata_pickler.fast_metadata_enabled()
         if storage_rows is not None and not fast:
             logger.warning(
@@ -1316,28 +1317,47 @@ class FileSystemWriterAsync(FileSystemWriter):
             results = [_metadata_pickler.table.to_write_results(t) for t in tables]
             storage_rows = None
         if not fast and not self.use_msc:
+            if isinstance(metadata, GlobalMetadata):
+                metadata = metadata.to_metadata()
             super().finish(metadata, results)
             return
 
+        fields = {}
         if fast and CURRENT_DCP_VERSION is not None:
-            metadata.version = CURRENT_DCP_VERSION
-
+            fields["version"] = CURRENT_DCP_VERSION
+        # storage_meta was introduced since PyTorch 2.4
+        if "storage_meta" in inspect.signature(Metadata).parameters:
+            fields["storage_meta"] = self.storage_meta()
+        storage_md = None
         if storage_rows is None:
             storage_md = {}
             for wr_list in results:
                 storage_md.update({wr.index: wr.storage_data for wr in wr_list})
-            metadata.storage_data = storage_md
 
-        # storage_meta was introduced since PyTorch 2.4
-        if "storage_meta" in inspect.signature(Metadata).parameters:
-            metadata.storage_meta = self.storage_meta()
+        if isinstance(metadata, GlobalMetadata):
+            metadata = metadata.with_fields(**fields)
+
+            def dump(stream) -> None:
+                metadata.dump(stream, storage_rows, storage_md)
+
+        else:
+            # As torch's finish does: on the Metadata given, which torch's save returns.
+            if "version" in fields:
+                metadata.version = fields["version"]
+            if storage_md is not None:
+                metadata.storage_data = storage_md
+            if "storage_meta" in fields:
+                metadata.storage_meta = fields["storage_meta"]
+
+            def dump(stream) -> None:
+                _metadata_pickler.dump_metadata(metadata, stream, storage_rows)
 
         if self.use_msc:
             import multistorageclient as msc
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
             with msc.open(path, "wb") as metadata_file:
-                _metadata_pickler.dump_metadata(metadata, metadata_file, storage_rows)
+                dump(metadata_file)
             return
 
         # PyTorch 2.9+ writes one metadata file per rank when collectives are disabled.
@@ -1353,7 +1373,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 metadata_path = self.metadata_path
         tmp_path = cast(Path, self.fs.concat_path(self.path, tmp_filename))
         with self.fs.create_stream(tmp_path, "wb") as metadata_file:
-            _metadata_pickler.dump_metadata(metadata, metadata_file, storage_rows)
+            dump(metadata_file)
             if self.sync_files:
                 # Flush Python-level buffers (OS for local files, network for cloud storage) before fsync.
                 metadata_file.flush()
