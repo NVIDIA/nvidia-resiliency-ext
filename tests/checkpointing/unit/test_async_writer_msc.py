@@ -37,13 +37,13 @@ from .test_utilities import Model, Utils
 
 class TestAsyncSaveWithMSC:
 
-    def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
+    def get_async_save_request(self, writer, pending) -> AsyncRequest:
         """Creates an async save request with a finalization step."""
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
 
         def finalize_fn():
             """Finalizes async checkpointing and synchronizes processes."""
-            save_state_dict_async_finalize(*save_state_dict_ret)
+            save_state_dict_async_finalize(pending)
             torch.distributed.barrier()
 
         return AsyncRequest(
@@ -57,10 +57,10 @@ class TestAsyncSaveWithMSC:
         writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count, use_msc=True)
         coordinator_rank = 0
 
-        save_state_dict_ret = save_state_dict_async_plan(
+        pending = save_state_dict_async_plan(
             state_dict, writer, None, coordinator_rank, planner=planner
         )
-        async_request = self.get_async_save_request(writer, save_state_dict_ret)
+        async_request = self.get_async_save_request(writer, pending)
         async_queue.schedule_async_request(async_request)
 
     def sync_save_checkpoint(self, checkpoint_dir, state_dict, planner):
