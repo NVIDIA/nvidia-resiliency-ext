@@ -44,7 +44,10 @@ from torch.distributed.checkpoint.planner import SavePlan, TensorWriteData, Writ
 from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import state_table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
+    state_dict_table,
+    writer,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 
@@ -92,7 +95,9 @@ def metadata_of(plans):
 
 VIEWS = {
     "objects": _metadata_reuse.ObjectEntries,
-    "table": lambda md: _metadata_reuse.TableEntries(state_table.StateDictTable.from_metadata(md)),
+    "table": lambda md: _metadata_reuse.TableEntries(
+        state_dict_table.StateDictTable.from_metadata(md)
+    ),
 }
 entries_of = VIEWS["objects"]  # the view the checks below read the metadata through
 

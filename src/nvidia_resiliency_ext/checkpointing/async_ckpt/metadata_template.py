@@ -32,15 +32,15 @@ class MetadataTemplate:
     """A save's global metadata without the parts each save sets: storage_data, written from the
     save's write results, and version and storage_meta, set when writing (see with_fields).
 
-    With the fast ``.metadata`` writers (see ``_metadata_pickler.writer``), it is a state table
-    (see ``_metadata_pickler.state_table``): a few arrays, which the garbage collector does not
+    With the fast ``.metadata`` writers (see ``_metadata_pickler.writer``), it is a state dict table
+    (see ``_metadata_pickler.state_dict_table``): a few arrays, which the garbage collector does not
     visit, instead of a Python object per chunk. Otherwise it is a ``Metadata``, as before.
 
     It is never modified: ``with_fields`` returns a new one.
     """
 
     def __init__(self, content: Union[StateDictTable, Metadata]):
-        """Use from_metadata. content: a state table, or a Metadata without storage_data."""
+        """Use from_metadata. content: a state dict table, or a Metadata without storage_data."""
         self._content = content
 
     @classmethod
@@ -60,7 +60,7 @@ class MetadataTemplate:
 
     @property
     def table(self) -> Optional[StateDictTable]:
-        """The state table, or None if this is held as a Metadata."""
+        """The state dict table, or None if this is held as a Metadata."""
         return self._content if isinstance(self._content, StateDictTable) else None
 
     def to_metadata(self, storage_data: Optional[dict] = None) -> Metadata:

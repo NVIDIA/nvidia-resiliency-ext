@@ -71,7 +71,7 @@ from torch.distributed.checkpoint.metadata import (
 )
 
 from . import pickler, table
-from .state_table import StateDictTable
+from .state_dict_table import StateDictTable
 
 try:
     from . import native
@@ -296,7 +296,7 @@ def dump_metadata(
 ) -> None:
     """Write metadata to stream as a pickle that ``pickle.load`` reads back as an equal Metadata.
 
-    metadata is a Metadata, or a table of one (see state_table.py) with this storage_data. With
+    metadata is a Metadata, or a table of one (see state_dict_table.py) with this storage_data. With
     storage_rows (the gathered write-result tables, a 2-D uint8 array with one zero-padded table
     per row, see table.py), storage_data is the one they describe instead.
     """

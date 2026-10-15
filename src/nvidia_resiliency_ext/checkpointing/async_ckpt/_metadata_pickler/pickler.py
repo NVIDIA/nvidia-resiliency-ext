@@ -47,7 +47,7 @@ from torch.distributed.checkpoint.metadata import (
 
 from . import table
 from .opcodes import small_pickle
-from .state_table import BYTES, OTHER, STATE_DICT_METADATA, STORAGE_DATA, StateDictTable
+from .state_dict_table import BYTES, OTHER, STATE_DICT_METADATA, STORAGE_DATA, StateDictTable
 
 PROTO, STOP, MARK, POP = b"\x80", b".", b"(", b"0"
 EMPTY_DICT, EMPTY_LIST, EMPTY_TUPLE = b"}", b"]", b")"

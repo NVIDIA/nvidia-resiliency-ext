@@ -290,7 +290,7 @@ def _rename_first(md, rename):
     md.state_dict_metadata[rename(fqn)] = md.state_dict_metadata.pop(fqn)
 
 
-# State-dict entries the table keeps as the stdlib pickler's opcodes (see state_table.py), which
+# State-dict entries the table keeps as the stdlib pickler's opcodes (see state_dict_table.py), which
 # both writers write exactly as stock pickle does.
 KEPT_AS_PICKLES = pytest.mark.parametrize(
     "mutate",

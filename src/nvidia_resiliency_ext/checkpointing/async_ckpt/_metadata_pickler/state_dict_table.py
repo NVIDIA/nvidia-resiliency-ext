@@ -60,7 +60,7 @@ import dataclasses
 from array import array
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Dict, Mapping, Optional, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 import torch
@@ -87,6 +87,9 @@ class StateDictTable:
     without further checks.
     """
 
+    # The names of the array fields.
+    ARRAYS: ClassVar[Tuple[str, ...]] = ("kind", "ref", "ndim", "chunk_start", "dims_start", "dims")
+
     fields: Tuple[Tuple[str, Optional[bytes]], ...]
     fqns: Tuple[str, ...]
     kind: np.ndarray
@@ -104,7 +107,7 @@ class StateDictTable:
         for name in ("fields", "fqns", "properties", "others"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         object.__setattr__(self, "index", MappingProxyType(dict(self.index)))
-        for name in _ARRAYS:
+        for name in self.ARRAYS:
             value = getattr(self, name)
             if isinstance(value, np.ndarray):
                 value = value.view()
@@ -211,7 +214,7 @@ class StateDictTable:
     @property
     def nbytes(self) -> int:
         """Bytes held by the arrays."""
-        return sum(getattr(self, name).nbytes for name in _ARRAYS)
+        return sum(getattr(self, name).nbytes for name in self.ARRAYS)
 
     def chunk_count(self, i: int) -> int:
         """The number of chunks of entry i (0 unless a tensor)."""
@@ -248,9 +251,9 @@ class StateDictTable:
         checks the same before reading a table (StateDictTableView)."""
 
         def bad(what: str):
-            return ValueError(f"state table: {what}")
+            return ValueError(f"state dict table: {what}")
 
-        arrays = {"kind": np.uint8, **{name: np.int64 for name in _ARRAYS if name != "kind"}}
+        arrays = {"kind": np.uint8, **{name: np.int64 for name in self.ARRAYS if name != "kind"}}
         for name, dtype in arrays.items():
             array = getattr(self, name)
             if (
@@ -306,9 +309,6 @@ class StateDictTable:
         non_tensor = ~tensor
         if (ndim[non_tensor] | chunks[non_tensor] | values[non_tensor]).any():
             raise bad("a non-tensor entry has dims")
-
-
-_ARRAYS = ("kind", "ref", "ndim", "chunk_start", "dims_start", "dims")
 
 
 def _tensor_entry(entry, dims: array) -> Optional[Tuple[int, int]]:

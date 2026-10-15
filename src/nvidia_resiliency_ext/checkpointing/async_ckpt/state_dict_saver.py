@@ -64,7 +64,7 @@ class CheckpointMetadataCache:
       creates its local plan and raises if it differs from the previous one.
 
     The metadata is kept as a `MetadataTemplate`, without storage_data: with the fast ``.metadata``
-    writers, a state table that the garbage collector doesn't visit and that refers to none of
+    writers, a state dict table that the garbage collector doesn't visit and that refers to none of
     the objects of the Metadata it was made from. The cache never modifies it, nor the Metadata
     it was given.
 

@@ -19,8 +19,8 @@ See :mod:`.writer`, which picks the C++ writer (:mod:`.native`, wrapping the opt
 extension built from ``native_src/native.cpp``) or the Python writer (:mod:`.pickler`).
 """
 
-from . import state_table, table
-from .state_table import StateDictTable
+from . import state_dict_table, table
+from .state_dict_table import StateDictTable
 from .writer import (
     TESTED_TORCH_VERSIONS,
     dump_metadata,

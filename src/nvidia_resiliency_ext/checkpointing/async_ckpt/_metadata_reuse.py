@@ -30,7 +30,7 @@ Which rank writes a chunk does not matter: the metadata does not record it, and 
 is rebuilt from this save's write results.
 
 The check reads the metadata's entries through a view: ObjectEntries for a Metadata, TableEntries
-for a state table (see _metadata_pickler.state_table).
+for a state dict table (see _metadata_pickler.state_dict_table).
 """
 
 import struct
@@ -48,7 +48,7 @@ from torch.distributed.checkpoint.metadata import (
 from torch.distributed.checkpoint.planner import SavePlan, WriteItemType
 
 from ._metadata_pickler.opcodes import small_unpickle
-from ._metadata_pickler.state_table import OTHER, TENSOR, StateDictTable
+from ._metadata_pickler.state_dict_table import OTHER, TENSOR, StateDictTable
 
 logger = getLogger(__name__)
 
@@ -131,7 +131,7 @@ class ObjectEntries:
 
 
 class TableEntries:
-    """The entries of a state table, as the check reads them. An entry the table keeps pickled is
+    """The entries of a state dict table, as the check reads them. An entry the table keeps pickled is
     unpickled when the check reads it."""
 
     def __init__(self, table: StateDictTable):
