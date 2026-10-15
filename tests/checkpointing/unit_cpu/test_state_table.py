@@ -17,16 +17,21 @@
 
 import dataclasses
 import gc
+import io
+import logging
+import pickle
 from collections import OrderedDict
 
 import numpy as np
 import pytest
 import torch
 from hypothesis import given
+from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
     pickler,
     state_table,
+    table,
     writer,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_table import (
@@ -265,3 +270,96 @@ def test_writers_reject_malformed_tables(dumps_table, corrupt):
     t = corrupt(state_table.from_metadata(writer._sample_metadata()))
     with pytest.raises(ValueError):
         dumps_table(t)
+
+
+def _storage_rows(md) -> np.ndarray:
+    """md.storage_data as gathered write-result tables: one rank's table, in one row."""
+    payload = table.encode(
+        [WriteResult(index, info.length, info) for index, info in md.storage_data.items()]
+    )
+    return np.frombuffer(payload + bytes(-len(payload) % 8), dtype=np.uint8)[None, :]
+
+
+@pytest.mark.parametrize("make", FIXED_METADATA)
+def test_dump_metadata_of_table(make, tmp_path):
+    """A table is written as its Metadata, with the storage_data given, or None."""
+    md = make(tmp_path)
+    t = writer.to_table(md)
+    assert isinstance(t, state_table.StateDictTable)
+    for storage_data in (md.storage_data, None):
+        buf = io.BytesIO()
+        writer.dump_metadata(t, buf, storage_data=storage_data)
+        expected = dataclasses.replace(md, storage_data=storage_data)
+        assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(expected))
+
+
+def test_dump_metadata_of_table_with_rows():
+    md = writer._sample_metadata()
+    rows = _storage_rows(md)
+    a, b = io.BytesIO(), io.BytesIO()
+    writer.dump_metadata(writer.to_table(md), a, storage_rows=rows)
+    writer.dump_metadata(md, b, storage_rows=rows)
+    assert a.getvalue() == b.getvalue()
+
+
+def test_with_fields():
+    """Fields set on a table are written as if set on the Metadata; a new one comes last."""
+    md = writer._sample_metadata()
+    t = state_table.with_fields(writer.to_table(md), version="9.9", extra=[1, 2])
+    md.version, md.extra = "9.9", [1, 2]
+    buf = io.BytesIO()
+    writer.dump_metadata(t, buf, storage_data=md.storage_data)
+    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
+    with pytest.raises(ValueError):
+        state_table.with_fields(t, storage_data={})
+
+
+def test_to_metadata():
+    md = writer._sample_metadata()
+    back = writer.to_metadata(writer.to_table(md), md.storage_data)
+    assert back.storage_data is md.storage_data
+    assert_identical(
+        dataclasses.replace(back, storage_data=None),
+        stock_round_trip(dataclasses.replace(md, storage_data=None)),
+    )
+
+
+def test_to_table_warns_and_returns_none(caplog):
+    md = writer._sample_metadata()
+    md.__class__ = _Metadata
+    with caplog.at_level(logging.WARNING, logger=writer.__name__):
+        assert writer.to_table(md) is None
+    assert "can't convert" in caplog.text
+
+
+def test_no_table_without_the_fast_writers(monkeypatch):
+    monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", "0")
+    assert writer.to_table(writer._sample_metadata()) is None
+
+
+@NEEDS_NATIVE
+def test_dump_metadata_of_table_falls_back_to_python(caplog):
+    """A table the native writer can't write (a lone surrogate) is written by the Python one."""
+    md = writer._sample_metadata()
+    _rename_first(md, lambda s: s + "\ud800")
+    t = writer.native.from_metadata(md)
+    buf = io.BytesIO()
+    with caplog.at_level(logging.WARNING, logger=writer.__name__):
+        writer.dump_metadata(t, buf, storage_data=md.storage_data)
+    assert "failed to write" in caplog.text
+    assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
+
+
+def test_to_metadata_without_a_writer(monkeypatch):
+    """to_metadata builds the metadata itself when no writer can write the table."""
+    md = writer._sample_metadata()
+    t = writer.to_table(md)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(pickler, "dumps_table", fail)
+    if writer.native:
+        monkeypatch.setattr(writer.native, "dumps_table", fail)
+    back = writer.to_metadata(t, md.storage_data)
+    assert back == md and list(vars(back)) == list(vars(md))

@@ -55,7 +55,7 @@ import os
 # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
 import pickle  # nosec
-from typing import IO, Callable, Optional
+from typing import IO, Callable, Optional, Union
 
 import numpy as np
 import torch
@@ -70,7 +70,8 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from . import pickler, table
+from . import pickler, state_table, table
+from .state_table import StateDictTable
 
 try:
     from . import native
@@ -263,15 +264,62 @@ def writes_tables() -> bool:
     return _tested_torch() and _select_dumps() is not None
 
 
+def _selected_writer():
+    """The module of the selected writer (native or pickler), or None to use pickle.dump."""
+    dumps = _select_dumps()
+    if dumps is None:
+        return None
+    return native if native is not None and dumps is native.dumps else pickler
+
+
+def to_table(md: Metadata) -> Optional[StateDictTable]:
+    """md without its storage_data as a table, converted by the selected writer's producer; None
+    if the fast writers are not used here, or, with a warning, if md can't be converted."""
+    w = _selected_writer()
+    if w is None:
+        return None
+    try:
+        return w.from_metadata(md)
+    except Exception:
+        logger.warning(
+            "can't convert the metadata to a table; keeping it as Python objects", exc_info=True
+        )
+        return None
+
+
+def to_metadata(t: StateDictTable, storage_data: Optional[dict] = None) -> Metadata:
+    """The Metadata t was converted from, with this storage_data."""
+    try:
+        w = _selected_writer() or pickler
+        md = pickle.loads(w.dumps_table(t))  # nosec - our own bytes
+    except Exception:
+        logger.warning("fast .metadata pickling failed; building the metadata", exc_info=True)
+        md = Metadata.__new__(Metadata)
+        for name, opcodes in t.fields:
+            if name == state_table.STATE_DICT_METADATA:
+                value = {fqn: t.entry(i) for i, fqn in enumerate(t.fqns)}
+            else:
+                value = None if opcodes is None else state_table.small_unpickle(opcodes)
+            setattr(md, name, value)
+    md.storage_data = storage_data
+    return md
+
+
 def dump_metadata(
-    metadata: Metadata, stream: IO[bytes], storage_rows: Optional[np.ndarray] = None
+    metadata: Union[Metadata, StateDictTable],
+    stream: IO[bytes],
+    storage_rows: Optional[np.ndarray] = None,
+    storage_data: Optional[dict] = None,
 ) -> None:
     """Write metadata to stream as a pickle that ``pickle.load`` reads back as an equal Metadata.
 
-    With storage_rows (the gathered write-result tables, a 2-D uint8 array with one zero-padded
-    table per row, see table.py), its storage_data is the one they describe instead of
-    metadata.storage_data.
+    metadata is a Metadata, or a table of one (see state_table.py) with this storage_data. With
+    storage_rows (the gathered write-result tables, a 2-D uint8 array with one zero-padded table
+    per row, see table.py), storage_data is the one they describe instead.
     """
+    if isinstance(metadata, StateDictTable):
+        _dump_table(metadata, stream, storage_rows, storage_data)
+        return
     dumps = _select_dumps()
     if dumps is not None:
         try:
@@ -289,3 +337,21 @@ def dump_metadata(
     # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
     # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
     pickle.dump(metadata, stream)  # nosec
+
+
+def _dump_table(t: StateDictTable, stream, storage_rows, storage_data) -> None:
+    """dump_metadata of a table: by the selected writer, or if the native one fails, the Python one;
+    else pickle.dump of the Metadata the table was converted from."""
+    selected = _selected_writer()
+    writers = [] if selected is None else [selected, pickler] if selected is native else [pickler]
+    for w in writers:
+        try:
+            data = w.dumps_table(t, storage_data, storage_rows)
+        except Exception:
+            logger.warning(f"{w.__name__} failed to write the .metadata table", exc_info=True)
+        else:
+            stream.write(data)
+            return
+    if storage_rows is not None:
+        storage_data = table.to_storage_data(table.decode_rows(storage_rows))
+    pickle.dump(to_metadata(t, storage_data), stream)  # nosec

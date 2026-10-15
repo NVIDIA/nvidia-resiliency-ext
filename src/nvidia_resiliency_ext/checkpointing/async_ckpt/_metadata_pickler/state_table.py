@@ -56,6 +56,7 @@ kept apart. ``fields`` holds Metadata's fields in order, with their opcodes, exc
 state_dict_metadata and storage_data, which the writers write themselves.
 """
 
+import dataclasses
 import io
 
 # Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
@@ -155,6 +156,20 @@ class StateDictTable:
         ]
         size = torch.Size(self.size(i).tolist())
         return TensorStorageMetadata(small_unpickle(self.properties[self.ref[i]]), size, chunks)
+
+
+def with_fields(t: StateDictTable, **values) -> StateDictTable:
+    """t with these Metadata fields set to these values, sharing t's arrays. A field t doesn't have
+    is added last, as setting a new attribute on the Metadata would add it."""
+    for name in values:
+        if name in (STATE_DICT_METADATA, STORAGE_DATA):
+            raise ValueError(f"{name} is written by the writers, not set as a field")
+    fields = [
+        (name, small_pickle(values.pop(name)) if name in values else opcodes)
+        for name, opcodes in t.fields
+    ]
+    fields.extend((name, small_pickle(value)) for name, value in values.items())
+    return dataclasses.replace(t, fields=fields)
 
 
 def check(t: StateDictTable) -> None:
