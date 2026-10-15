@@ -44,7 +44,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_tabl
     TENSOR,
     StateDictTable,
 )
-from nvidia_resiliency_ext.checkpointing.async_ckpt.global_metadata import GlobalMetadata
+from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
 from .test_metadata_pickler import (
     FIXED_METADATA,
@@ -457,14 +457,14 @@ def test_writing_a_table_matches_writing_the_metadata(metadata, data):
 @given(metadatas(), st.none() | texts)
 def test_table_round_trips(metadata, version):
     """to_metadata gives the metadata back, with the fields with_fields set, as stock pickle
-    round-trips it; GlobalMetadata does in both its forms."""
+    round-trips it; MetadataTemplate does in both its forms."""
     expected = stock_round_trip(metadata)
     expected.version, expected.storage_data = version, None
     state_dict_table = StateDictTable.from_metadata(metadata).with_fields(version=version)
     assert_identical(state_dict_table.to_metadata(), expected)
-    as_table = GlobalMetadata(StateDictTable.from_metadata(metadata)).with_fields(version=version)
+    as_table = MetadataTemplate(StateDictTable.from_metadata(metadata)).with_fields(version=version)
     assert_identical(as_table.to_metadata(), expected)
-    as_metadata = GlobalMetadata(dataclasses.replace(metadata, storage_data=None))
+    as_metadata = MetadataTemplate(dataclasses.replace(metadata, storage_data=None))
     back = as_metadata.with_fields(version=version).to_metadata()
     assert back == dataclasses.replace(metadata, version=version, storage_data=None)
     buf = io.BytesIO()

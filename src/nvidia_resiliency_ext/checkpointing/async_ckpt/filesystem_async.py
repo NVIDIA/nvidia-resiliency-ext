@@ -68,7 +68,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from ..utils import _disable_gc
 from . import _metadata_pickler
 from .core import PersistentAsyncCaller
-from .global_metadata import GlobalMetadata
+from .metadata_template import MetadataTemplate
 
 if TYPE_CHECKING:
     import numpy as np
@@ -1300,11 +1300,11 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     def _finish(
         self,
-        metadata: Union[Metadata, "GlobalMetadata"],
+        metadata: Union[Metadata, "MetadataTemplate"],
         results: List[List[WriteResult]],
         storage_rows: Optional["np.ndarray"] = None,
     ) -> None:
-        """``finish``, also of a GlobalMetadata, which it doesn't modify; or with storage_rows (the
+        """``finish``, also of a MetadataTemplate, which it doesn't modify; or with storage_rows (the
         ranks' write results as tables, one zero-padded table per row of a 2-D uint8 array, see
         ``_metadata_pickler.table``), written as storage_data instead of results."""
         fast = _metadata_pickler.fast_metadata_enabled()
@@ -1317,7 +1317,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             results = [_metadata_pickler.table.to_write_results(t) for t in tables]
             storage_rows = None
         if not fast and not self.use_msc:
-            if isinstance(metadata, GlobalMetadata):
+            if isinstance(metadata, MetadataTemplate):
                 metadata = metadata.to_metadata()
             super().finish(metadata, results)
             return
@@ -1334,7 +1334,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             for wr_list in results:
                 storage_md.update({wr.index: wr.storage_data for wr in wr_list})
 
-        if isinstance(metadata, GlobalMetadata):
+        if isinstance(metadata, MetadataTemplate):
             metadata = metadata.with_fields(**fields)
 
             def dump(stream) -> None:

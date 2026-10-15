@@ -28,7 +28,7 @@ def test_unpacking_is_deprecated():
     pending = PendingSave("writer", "metadata", "wrapper")
     with pytest.warns(DeprecationWarning, match="unpacking a PendingSave"):
         assert tuple(pending) == ("writer", "metadata", "wrapper")
-    assert (pending.storage_writer, pending.global_metadata, pending.dist_wrapper) == (
+    assert (pending.storage_writer, pending.metadata_template, pending.dist_wrapper) == (
         "writer",
         "metadata",
         "wrapper",
