@@ -61,6 +61,13 @@ def test_a_table_is_independent_of_its_metadata():
     assert pickle.dumps(gm.to_metadata()) == before
 
 
+def test_with_fields_refuses_unknown_fields(fast):
+    gm = GlobalMetadata.from_metadata(writer._sample_metadata())
+    for name in ("extra", "storage_data", "state_dict_metadata"):
+        with pytest.raises(TypeError):
+            gm.with_fields(**{name: None})
+
+
 def test_with_fields_leaves_the_original_alone(fast):
     md = writer._sample_metadata()
     gm = GlobalMetadata.from_metadata(md)
