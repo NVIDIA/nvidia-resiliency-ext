@@ -25,7 +25,7 @@ import warnings
 from dataclasses import dataclass, fields
 from logging import getLogger
 from time import time
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union, overload
 
 import numpy as np
 import torch
@@ -35,6 +35,7 @@ from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.metadata import STATE_DICT_TYPE, Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner
 from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_exception
+from typing_extensions import deprecated
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
@@ -133,6 +134,15 @@ class CheckpointMetadataCache:
         return self._global_metadata
 
 
+_UNPACKING_DEPRECATED = (
+    "unpacking a PendingSave is deprecated; pass it to save_state_dict_async_finalize as it is"
+)
+_LEGACY_FINALIZE_DEPRECATED = (
+    "save_state_dict_async_finalize(storage_writer, global_metadata, dist_wrapper) is "
+    "deprecated; pass the PendingSave that save_state_dict_async_plan returns"
+)
+
+
 @dataclass
 class PendingSave:
     """A save planned and staged by `save_state_dict_async_plan`, to pass to
@@ -149,17 +159,12 @@ class PendingSave:
     global_metadata: Optional[GlobalMetadata]
     dist_wrapper: _DistWrapper
 
+    # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save, up
+    # to the version that passes it whole) are no longer supported.
+    @deprecated(_UNPACKING_DEPRECATED)
     def __iter__(self):
         """The (storage_writer, global_metadata, dist_wrapper) tuple that
-        save_state_dict_async_plan used to return. Deprecated."""
-        # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save,
-        # up to the version that passes it whole) are no longer supported.
-        warnings.warn(
-            "unpacking a PendingSave is deprecated; pass it to save_state_dict_async_finalize "
-            "as it is",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        save_state_dict_async_plan used to return."""
         return iter((self.storage_writer, self.global_metadata, self.dist_wrapper))
 
 
@@ -484,7 +489,21 @@ def _storage_writer_finish_is_nvrx(storage_writer) -> bool:
     )
 
 
-def save_state_dict_async_finalize(pending: PendingSave, *legacy_args) -> None:
+@overload
+def save_state_dict_async_finalize(pending: PendingSave) -> None: ...
+
+
+# TODO: remove with the legacy arguments below.
+@overload
+@deprecated(_LEGACY_FINALIZE_DEPRECATED)
+def save_state_dict_async_finalize(
+    storage_writer: "FileSystemWriterAsync",
+    global_metadata: Optional[GlobalMetadata],
+    dist_wrapper: _DistWrapper,
+) -> None: ...
+
+
+def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     """
     Finalization of save_state_dict_async_plan.
 
@@ -502,12 +521,7 @@ def save_state_dict_async_finalize(pending: PendingSave, *legacy_args) -> None:
     if legacy_args:
         # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save,
         # up to the version that passes it whole) are no longer supported.
-        warnings.warn(
-            "save_state_dict_async_finalize(storage_writer, global_metadata, dist_wrapper) is "
-            "deprecated; pass the PendingSave that save_state_dict_async_plan returns",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        warnings.warn(_LEGACY_FINALIZE_DEPRECATED, DeprecationWarning, stacklevel=2)
         pending = PendingSave(pending, *legacy_args)
     storage_writer, global_metadata, dist_wrapper = (
         pending.storage_writer,
