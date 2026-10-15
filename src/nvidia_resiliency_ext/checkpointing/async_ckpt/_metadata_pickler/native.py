@@ -23,11 +23,27 @@ from typing import Optional
 import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
 
-from . import _native, pickler
+from . import _native
+from .state_table import StateDictTable, small_pickle
+
+
+def from_metadata(md: Metadata) -> StateDictTable:
+    """md without its storage_data as a table, exactly as state_table.from_metadata converts it."""
+    return _native.from_metadata(md, small_pickle, StateDictTable)
+
+
+def dumps_table(
+    t: StateDictTable,
+    storage_data: Optional[dict] = None,
+    storage_rows: Optional[np.ndarray] = None,
+) -> bytes:
+    """The pickle of the Metadata t was converted from, byte for byte as pickler.dumps_table writes
+    it; the extension reads the storage rows itself."""
+    return _native.dumps_table(t, small_pickle, storage_data, storage_rows)
 
 
 def dumps(md: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
     """The pickle of md, byte for byte as pickler.dumps writes it. With storage_rows (the gathered
     write-result tables, see table.py), storage_data is written from them instead of
-    md.storage_data; the extension reads the rows itself."""
-    return _native.dumps(md, pickler.small_pickle, storage_rows)
+    md.storage_data."""
+    return dumps_table(from_metadata(md), md.storage_data, storage_rows)
