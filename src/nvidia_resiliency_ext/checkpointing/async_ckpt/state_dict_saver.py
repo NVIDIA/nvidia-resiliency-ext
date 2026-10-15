@@ -21,7 +21,8 @@
 # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
 import pickle  # nosec
-from dataclasses import fields
+import warnings
+from dataclasses import dataclass, fields
 from logging import getLogger
 from time import time
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
@@ -132,6 +133,36 @@ class CheckpointMetadataCache:
         return self._global_metadata
 
 
+@dataclass
+class PendingSave:
+    """A save planned and staged by `save_state_dict_async_plan`, to pass to
+    `save_state_dict_async_finalize`.
+
+    Attributes:
+        storage_writer (FileSystemWriterAsync): The storage writer the save was planned with.
+        global_metadata (GlobalMetadata, optional): The global metadata to write, on the
+            coordinator; None on other ranks.
+        dist_wrapper (_DistWrapper): The distributed wrapper used for planning.
+    """
+
+    storage_writer: "FileSystemWriterAsync"
+    global_metadata: Optional[GlobalMetadata]
+    dist_wrapper: _DistWrapper
+
+    def __iter__(self):
+        """The (storage_writer, global_metadata, dist_wrapper) tuple that
+        save_state_dict_async_plan used to return. Deprecated."""
+        # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save,
+        # up to the version that passes it whole) are no longer supported.
+        warnings.warn(
+            "unpacking a PendingSave is deprecated; pass it to save_state_dict_async_finalize "
+            "as it is",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return iter((self.storage_writer, self.global_metadata, self.dist_wrapper))
+
+
 _checkpoint_metadata_cache = None
 
 
@@ -156,7 +187,7 @@ def save_state_dict_async_plan(
     planner: Optional[Union[SavePlanner, DefaultSavePlanner]] = None,
     enable_cache: bool = False,
     metadata_cache: Optional[CheckpointMetadataCache] = None,
-) -> Tuple["FileSystemWriterAsync", Union[Metadata, None], _DistWrapper]:
+) -> PendingSave:
     """
     First stage of saving a state dict to storage.
 
@@ -189,14 +220,7 @@ def save_state_dict_async_plan(
             for storing and retrieving checkpoint metadata. If not provided, the global cache will be used.
 
     Returns:
-        tuple: Contains:
-
-            - storage writer (the one passed as input)
-            - global metadata to write, a GlobalMetadata (on the coordinator; None on other ranks)
-            - distributed wrapper used for planning
-
-    The return value of this function should be passed as an input to
-    `save_state_dict_async_finalize`.
+        PendingSave: the planned and staged save, to pass to `save_state_dict_async_finalize`.
     """
     global _checkpoint_metadata_cache
     metadata_cache = metadata_cache if metadata_cache is not None else _checkpoint_metadata_cache
@@ -298,7 +322,7 @@ def save_state_dict_async_plan(
         )
     elif global_metadata is not None:
         global_metadata = GlobalMetadata.from_metadata(global_metadata)
-    return storage_writer, global_metadata, dist_wrapper
+    return PendingSave(storage_writer, global_metadata, dist_wrapper)
 
 
 @telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.check_plan_unchanged")
@@ -459,26 +483,36 @@ def _finishes_as_nvrx(storage_writer) -> bool:
     )
 
 
-def save_state_dict_async_finalize(
-    storage_writer: "FileSystemWriterAsync",
-    global_metadata: Optional[GlobalMetadata],
-    dist_wrapper: _DistWrapper,
-) -> None:
+def save_state_dict_async_finalize(pending: PendingSave, *legacy_args) -> None:
     """
     Finalization of save_state_dict_async_plan.
 
-    The input arguments are the same as the save_state_dict_async_plan output,
-    the `write_results` are retrieved from the storage_writer. Each rank sends them to the
+    The `write_results` are retrieved from the plan's storage_writer. Each rank sends them to the
     coordinator as a table (see `_metadata_pickler.table`) if it can, else pickled.
 
     Args:
-        storage_writer (FileSystemWriterAsync): storage writer used for planning
-        global_metadata (GlobalMetadata): global metadata created during planning (on the
-            coordinator; None on other ranks)
-        dist_wrapper (_DistWrapper): distributed wrapper created during planning
+        pending (PendingSave): the save planned and staged by `save_state_dict_async_plan`.
+        legacy_args: deprecated: the plan's global metadata and distributed wrapper, after its
+            storage writer as the first argument, as save_state_dict_async_plan used to return
+            them in a tuple.
 
     Returns: None
     """
+    if legacy_args:
+        # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save,
+        # up to the version that passes it whole) are no longer supported.
+        warnings.warn(
+            "save_state_dict_async_finalize(storage_writer, global_metadata, dist_wrapper) is "
+            "deprecated; pass the PendingSave that save_state_dict_async_plan returns",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        pending = PendingSave(pending, *legacy_args)
+    storage_writer, global_metadata, dist_wrapper = (
+        pending.storage_writer,
+        pending.global_metadata,
+        pending.dist_wrapper,
+    )
     write_results = storage_writer.retrieve_write_results()
 
     # Gather the write results that will be saved to the metadata file.

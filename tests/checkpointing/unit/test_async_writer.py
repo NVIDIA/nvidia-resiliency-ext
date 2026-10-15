@@ -124,13 +124,17 @@ def rank_state_dict(extra=False):
 
 
 class TestAsyncSave:
-    def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
-        """Creates an async save request with a finalization step."""
+    def get_async_save_request(self, writer, pending, legacy=False) -> AsyncRequest:
+        """Creates an async save request with a finalization step; legacy: unpacking the PendingSave into
+        the arguments finalize used to take."""
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
 
         def finalize_fn():
             """Finalizes async checkpointing and synchronizes processes."""
-            save_state_dict_async_finalize(*save_state_dict_ret)
+            if legacy:
+                save_state_dict_async_finalize(*pending)
+            else:
+                save_state_dict_async_finalize(pending)
 
         return AsyncRequest(
             save_fn, save_args, [finalize_fn], preload_fn=preload_fn, async_fn_kwargs={}
@@ -149,6 +153,7 @@ class TestAsyncSave:
         use_cached_data_structure=False,
         use_cpu_shm_for_gpu_tensors=False,
         metadata_cache=None,
+        legacy=False,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
@@ -161,7 +166,7 @@ class TestAsyncSave:
         )
         coordinator_rank = 0
 
-        save_state_dict_ret = save_state_dict_async_plan(
+        pending = save_state_dict_async_plan(
             state_dict,
             writer,
             None,
@@ -170,7 +175,7 @@ class TestAsyncSave:
             enable_cache=caching,
             metadata_cache=metadata_cache,
         )
-        async_request = self.get_async_save_request(writer, save_state_dict_ret)
+        async_request = self.get_async_save_request(writer, pending, legacy=legacy)
         async_queue.schedule_async_request(async_request)
 
     def sync_save_checkpoint(self, checkpoint_dir, state_dict, planner):
@@ -246,6 +251,26 @@ class TestAsyncSave:
                     loaded_sync_state_dict[key], state_dict[key]
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
+
+    def test_legacy_finalize_arguments(self, tmp_path_dist_ckpt, async_queue):
+        """Unpacking the PendingSave into finalize's old arguments still saves, with deprecation warnings.
+
+        TODO: remove with the deprecated PendingSave.__iter__ and finalize arguments.
+        """
+        Utils.initialize_distributed()
+        fqn = f'rank{Utils.rank}.w'
+        state_dict = {fqn: torch.arange(16.0, device='cuda').reshape(4, 4) + Utils.rank}
+        with TempNamedDir(tmp_path_dist_ckpt / 'legacy', sync=True) as ckpt_dir:
+            self.async_save_checkpoint(
+                ckpt_dir, state_dict, DefaultSavePlanner(), async_queue, legacy=True
+            )
+            with pytest.warns(DeprecationWarning) as record:
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            messages = " ".join(str(w.message) for w in record)
+            assert "unpacking a PendingSave" in messages
+            assert "save_state_dict_async_finalize(storage_writer" in messages
+            loaded = self.load_checkpoint(ckpt_dir, deepcopy(state_dict))
+            assert torch.equal(loaded[fqn], state_dict[fqn])
 
     @pytest.mark.parametrize('rank1', ['same', 'unencodable', 'fast'])
     @pytest.mark.parametrize('mode', ['1', 'python', '0'])
