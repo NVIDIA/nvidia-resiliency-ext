@@ -15,14 +15,20 @@
 
 """Unit tests of StateDictTable, a Metadata without storage_data as arrays (CPU only)."""
 
+import dataclasses
 import gc
 from collections import OrderedDict
 
+import numpy as np
 import pytest
 import torch
 from hypothesis import given
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import state_table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
+    pickler,
+    state_table,
+    writer,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_table import (
     BYTES,
     OTHER,
@@ -31,6 +37,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_tabl
 
 from .test_metadata_pickler import (
     FIXED_METADATA,
+    NEEDS_NATIVE,
     _Metadata,
     _metadata_changed_while_pickled,
     _rename_first,
@@ -47,6 +54,7 @@ from .test_metadata_pickler import (
 
 def assert_consistent(t: state_table.StateDictTable) -> None:
     """The arrays describe len(t) entries and use exactly the dims they hold."""
+    state_table.check(t)
     n = len(t)
     assert len(t.kind) == len(t.ref) == len(t.ndim) == n
     for starts in (t.chunk_start, t.dims_start):
@@ -168,3 +176,92 @@ def test_few_objects_for_the_gc():
                 seen.add(id(r))
                 stack.append(r)
     assert len(t) == 1501 and len(seen) < 40
+
+
+def assert_same_tables(a: state_table.StateDictTable, b: state_table.StateDictTable) -> None:
+    """a and b hold the same values, in arrays of the same types."""
+    for f in dataclasses.fields(state_table.StateDictTable):
+        va, vb = getattr(a, f.name), getattr(b, f.name)
+        if isinstance(va, np.ndarray):
+            assert va.dtype == vb.dtype and np.array_equal(va, vb), f.name
+        else:
+            assert va == vb, f.name
+
+
+@NEEDS_NATIVE
+@hypothesis_settings
+@given(metadatas())
+def test_native_converts_like_python(md):
+    assert_same_tables(writer.native.from_metadata(md), state_table.from_metadata(md))
+
+
+@NEEDS_NATIVE
+@pytest.mark.parametrize("make", FIXED_METADATA)
+def test_native_converts_like_python_on(make, tmp_path):
+    md = make(tmp_path)
+    assert_same_tables(writer.native.from_metadata(md), state_table.from_metadata(md))
+
+
+@NEEDS_NATIVE
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(lambda md: setattr(md, "__class__", _Metadata), id="metadata-subclass"),
+        pytest.param(
+            lambda md: setattr(md, "state_dict_metadata", OrderedDict(md.state_dict_metadata)),
+            id="ordered-dict",
+        ),
+        pytest.param(lambda md: _rename_first(md, _Str), id="str-subclass"),
+    ],
+)
+def test_native_rejects(mutate):
+    md = writer._sample_metadata()
+    mutate(md)
+    with pytest.raises(TypeError):
+        writer.native.from_metadata(md)
+
+
+def _replace(t, **arrays):
+    return dataclasses.replace(t, **arrays)
+
+
+def _bump(a: np.ndarray, i: int, by: int) -> np.ndarray:
+    a = a.copy()
+    a[i] += by
+    return a
+
+
+# Malformed tables, which both writers must reject before reading their arrays.
+MALFORMED = [
+    pytest.param(lambda t: _replace(t, kind=t.kind.astype(np.int64)), id="kind-dtype"),
+    pytest.param(lambda t: _replace(t, dims=t.dims[::2]), id="not-contiguous"),
+    pytest.param(lambda t: _replace(t, ref=t.ref[:-1]), id="short-ref"),
+    pytest.param(lambda t: _replace(t, fqns=t.fqns[:-1]), id="short-fqns"),
+    pytest.param(lambda t: _replace(t, ndim=t.ndim[:-1]), id="short-ndim"),
+    pytest.param(lambda t: _replace(t, dims_start=_bump(t.dims_start, -1, 1)), id="dims-range"),
+    pytest.param(lambda t: _replace(t, dims_start=_bump(t.dims_start, 1, -1)), id="dims-mismatch"),
+    pytest.param(lambda t: _replace(t, ndim=_bump(t.ndim, 0, 1)), id="ndim-mismatch"),
+    pytest.param(lambda t: _replace(t, ndim=_bump(t.ndim, 0, -5)), id="negative-ndim"),
+    pytest.param(lambda t: _replace(t, chunk_start=_bump(t.chunk_start, 1, 1)), id="chunk-count"),
+    pytest.param(lambda t: _replace(t, kind=_bump(t.kind, 0, 7)), id="unknown-kind"),
+    pytest.param(lambda t: _replace(t, ref=_bump(t.ref, 0, 99)), id="ref-out-of-range"),
+    pytest.param(lambda t: _replace(t, properties=[1, *t.properties[1:]]), id="properties-type"),
+    pytest.param(lambda t: _replace(t, fields=[*t.fields, ("x", None)]), id="field-opcodes"),
+    pytest.param(lambda t: _replace(t, fields=[["x", b"N"]]), id="field-not-tuple"),
+    pytest.param(
+        lambda t: _replace(t, kind=np.where(t.kind == TENSOR, BYTES, t.kind).astype(np.uint8)),
+        id="bytes-with-dims",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "dumps_table",
+    [pickler.dumps_table, *([writer.native.dumps_table] if writer.native else [])],
+    ids=lambda f: f.__module__.rsplit(".", 1)[-1],
+)
+@pytest.mark.parametrize("corrupt", MALFORMED)
+def test_writers_reject_malformed_tables(dumps_table, corrupt):
+    t = corrupt(state_table.from_metadata(writer._sample_metadata()))
+    with pytest.raises(ValueError):
+        dumps_table(t)

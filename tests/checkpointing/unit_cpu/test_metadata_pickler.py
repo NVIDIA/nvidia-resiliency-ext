@@ -268,22 +268,53 @@ def _rename_first(md, rename):
     md.state_dict_metadata[rename(fqn)] = md.state_dict_metadata.pop(fqn)
 
 
-# (mutation, whether the Python writer rejects it too). The native writer rejects them all.
-UNEXPECTED_VALUES = pytest.mark.parametrize(
-    ("mutate", "python_rejects"),
+# State-dict entries the table keeps as the stdlib pickler's opcodes (see state_table.py), which
+# both writers write exactly as stock pickle does.
+KEPT_AS_PICKLES = pytest.mark.parametrize(
+    "mutate",
     [
         pytest.param(
             lambda md: setattr(
                 md.state_dict_metadata["w"], "chunks", tuple(md.state_dict_metadata["w"].chunks)
             ),
-            True,
             id="tuple-chunks",
         ),
         pytest.param(
             lambda md: setattr(md.state_dict_metadata["w"].chunks[0], "offsets", (0, 0, 0, 0)),
-            True,
             id="tuple-size",
         ),
+        pytest.param(
+            lambda md: object.__setattr__(md.state_dict_metadata["w"], "extra", 1),
+            id="tensor-extra-attribute",
+        ),
+        pytest.param(
+            lambda md: object.__setattr__(md.state_dict_metadata["w"].chunks[0], "extra", 1),
+            id="chunk-extra-attribute",
+        ),
+    ],
+)
+
+
+@pytest.mark.parametrize("dumps", WRITERS)
+@KEPT_AS_PICKLES
+def test_writer_writes_unusual_entries_like_stock(dumps, mutate):
+    md = writer._sample_metadata()
+    mutate(md)
+    assert_written_like_stock(dumps, md)
+
+
+@NEEDS_NATIVE
+@KEPT_AS_PICKLES
+def test_native_matches_python_on_unusual_entries(mutate):
+    md = writer._sample_metadata()
+    mutate(md)
+    assert writer.native.dumps(md) == pickler.dumps(md)
+
+
+# (mutation, whether the Python writer rejects it too). The native writer rejects them all.
+UNEXPECTED_VALUES = pytest.mark.parametrize(
+    ("mutate", "python_rejects"),
+    [
         pytest.param(lambda md: _set_index(md, True), True, id="bool-int"),
         pytest.param(lambda md: _rename_first(md, _Str), True, id="str-subclass"),
         pytest.param(
@@ -295,16 +326,6 @@ UNEXPECTED_VALUES = pytest.mark.parametrize(
             lambda md: object.__setattr__(next(iter(md.storage_data)), "extra", 1),
             True,
             id="metadata-index-extra-attribute",
-        ),
-        pytest.param(
-            lambda md: object.__setattr__(md.state_dict_metadata["w"], "extra", 1),
-            True,
-            id="tensor-extra-attribute",
-        ),
-        pytest.param(
-            lambda md: object.__setattr__(md.state_dict_metadata["w"].chunks[0], "extra", 1),
-            True,
-            id="chunk-extra-attribute",
         ),
         pytest.param(
             lambda md: setattr(next(iter(md.storage_data.values())), "extra", 1),

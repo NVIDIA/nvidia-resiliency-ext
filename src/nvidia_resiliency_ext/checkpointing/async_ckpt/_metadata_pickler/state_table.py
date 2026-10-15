@@ -157,6 +157,70 @@ class StateDictTable:
         return TensorStorageMetadata(small_unpickle(self.properties[self.ref[i]]), size, chunks)
 
 
+def check(t: StateDictTable) -> None:
+    """Raise ValueError unless t's arrays describe its entries consistently, so that a writer can
+    read them without further checks. The native writer checks the same."""
+
+    def bad(what: str):
+        return ValueError(f"state table: {what}")
+
+    arrays = {
+        "kind": (t.kind, np.uint8),
+        "ref": (t.ref, np.int64),
+        "ndim": (t.ndim, np.int64),
+        "chunk_start": (t.chunk_start, np.int64),
+        "dims_start": (t.dims_start, np.int64),
+        "dims": (t.dims, np.int64),
+    }
+    for name, (a, dtype) in arrays.items():
+        if type(a) is not np.ndarray or a.dtype != dtype or a.ndim != 1 or not a.flags.c_contiguous:
+            raise bad(f"{name} is not a 1-D array of the expected type")
+    for name in ("fqns", "properties", "others", "fields"):
+        if type(getattr(t, name)) is not list:
+            raise bad(f"{name} is not a list")
+    for f in t.fields:
+        if type(f) is not tuple or len(f) != 2:
+            raise bad("a field is not a (name, opcodes) tuple")
+        name, opcodes = f
+        if type(name) is not str:
+            raise TypeError(f"expected str field name, got {type(name).__name__}")
+        written_here = name in (STATE_DICT_METADATA, STORAGE_DATA)
+        if opcodes is not None if written_here else type(opcodes) is not bytes:
+            raise bad(f"unexpected opcodes of field {name}")
+    n = len(t.kind)
+    if len(t.fqns) != n or len(t.ref) != n or len(t.ndim) != n:
+        raise bad("arrays of different lengths")
+    for starts, pool in ((t.chunk_start, None), (t.dims_start, len(t.dims))):
+        if (
+            len(starts) != n + 1
+            or starts[0] != 0
+            or (starts[1:] < starts[:-1]).any()
+            or (pool is not None and starts[-1] != pool)
+        ):
+            raise bad("start offsets out of order or range")
+    ndim, chunks, values = t.ndim, np.diff(t.chunk_start), np.diff(t.dims_start)
+    kind, ref = t.kind, t.ref
+
+    def refers(lists, mask):
+        return all(0 <= r < len(lists) and type(lists[r]) is bytes for r in ref[mask].tolist())
+
+    tensor, other = kind == TENSOR, kind == OTHER
+    if not np.isin(kind, (BYTES, TENSOR, OTHER)).all():
+        raise bad("unknown entry kind")
+    if (ndim < 0).any():
+        raise bad("a negative number of dims")
+    # Python ints: no overflow.
+    if any(
+        v != a * (1 + 2 * c)
+        for v, a, c in zip(values[tensor].tolist(), ndim[tensor].tolist(), chunks[tensor].tolist())
+    ) or not refers(t.properties, tensor):
+        raise bad("a tensor entry's dims don't match its chunks")
+    if not refers(t.others, other):
+        raise bad("an entry refers to no pickle")
+    if (ndim[~tensor] != 0).any() or (chunks[~tensor] != 0).any() or (values[~tensor] != 0).any():
+        raise bad("a non-tensor entry has dims")
+
+
 def _tensor(v, dims: array) -> Optional[Tuple[int, int]]:
     """Append a TENSOR entry's values to dims and return its number of dims and of chunks; None,
     with nothing appended, if it isn't one."""
