@@ -278,10 +278,8 @@ reuses metadata instead, kept between saves in a
 * Later saves reuse the previous save's plans and metadata without communicating. The checkpoint
   structure must not change between them: a rank whose local plan changed raises an error.
 
-With the fast ``.metadata`` writer, the cache keeps the metadata as a few arrays rather than a
-Python object per chunk, so that it doesn't slow down garbage collections. It keeps none of the
-objects of the metadata passed to ``set_cached_global_metadata``, so the caller can free that
-metadata afterwards.
+The cache doesn't modify the metadata passed to ``set_cached_global_metadata``. The caller may
+drop its reference to that metadata afterwards, but must not modify it.
 
 ``save_state_dict_async_plan`` returns a
 :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave`, to pass

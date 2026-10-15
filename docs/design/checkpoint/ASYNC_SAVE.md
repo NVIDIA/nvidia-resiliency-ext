@@ -108,7 +108,7 @@ classDiagram
 classDiagram
     direction LR
     class CheckpointMetadataCache {
-        global_metadata : GlobalMetadata or None
+        _global_metadata : GlobalMetadata or None
         fqns : list of str
         fqn_index : dict, fqn to int
         local_plan : SavePlan
@@ -121,23 +121,30 @@ classDiagram
     }
     class GlobalMetadata {
         content : StateDictTable or Metadata
-        from_metadata(Metadata)$ GlobalMetadata
-        to_metadata(storage_data) Metadata
-        with_fields(values) GlobalMetadata
-        dump(stream, storage_rows, storage_data)
+        from_metadata(metadata : Metadata)$ GlobalMetadata
+        to_metadata(storage_data : dict or None) Metadata
+        with_fields(fields a save sets) GlobalMetadata
+        dump(stream, storage_rows : rows or None, storage_data : dict or None)
     }
     class StateDictTable {
-        fields : list of name and pickle
-        fqns : list of str
-        index : dict, fqn to int
+        <<frozen>>
+        fields : tuple of name and pickle
+        fqns : tuple of str
+        index : read-only mapping, fqn to int
         kind : uint8 array
         ref : int64 array
         ndim : int64 array
         chunk_start : int64 array
         dims_start : int64 array
         dims : int64 array
-        properties : list of pickles
-        others : list of pickles
+        properties : tuple of pickles
+        others : tuple of pickles
+        from_metadata(metadata : Metadata)$ StateDictTable
+        to_metadata(storage_data : dict or None) Metadata
+        with_fields(fields a save sets) StateDictTable
+    }
+    class NativeStateDictTable["native.StateDictTable"] {
+        from_metadata(metadata : Metadata)$ StateDictTable
     }
     class WriteResultTable {
         fqn_mode : string or index
@@ -151,12 +158,15 @@ classDiagram
     GlobalMetadata o-- StateDictTable : content, fast writers
     GlobalMetadata o-- Metadata : content, fallback
     GlobalMetadata ..> Metadata : to_metadata builds a new one
-    StateDictTable ..> Metadata : converted from
+    StateDictTable ..> Metadata : converted from, to_metadata builds
+    StateDictTable <|-- NativeStateDictTable : C++ producer
     WriteResultTable ..> WriteResult : one rank's
     WriteResultTable ..> StateDictTable : index table fqns are entries of
 ```
 
-`fqns` and `fqn_index`: the coordinator's fqn list, replicated on every rank (see the protocol below). A `GlobalMetadata`'s `content` is either a state table or a `Metadata`. It is a state table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` from the table each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
+`fqns` and `fqn_index`: the coordinator's fqn list, replicated on every rank (see the protocol below). A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
+
+A `GlobalMetadata`'s `content` is either a state table or a `Metadata`. It is a state table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets fields a save sets (`version`, `storage_meta`), and raises `TypeError` for any other name. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
 
 ## Table schemas
 
@@ -439,6 +449,7 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 | Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                               |
 | Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                       |
 | Cached global metadata                        | `global_metadata.py`: `GlobalMetadata`                                                                                                                   |
+| Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                           |
 | State table and its Python producer           | `_metadata_pickler/state_table.py`                                                                                                                       |
 | Write-result tables                           | `_metadata_pickler/table.py`                                                                                                                             |
 | `.metadata` writers                           | `_metadata_pickler/`: `writer.py` (selection), `native.py` and `native_src/native.cpp` (C++), `pickler.py` (Python)                                      |
