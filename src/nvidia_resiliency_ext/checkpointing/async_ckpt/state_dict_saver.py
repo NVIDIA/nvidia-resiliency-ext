@@ -410,9 +410,10 @@ def verify_global_metadata_reuse(
 
 def _encode_write_results(write_results, storage_writer) -> bytes:
     """This rank's write results for the coordinator: a table if it can and its storage writer
-    writes from tables (see _writes_rows), else pickled. A storage writer whose finish a subclass
-    overrides thus gets the write results from every rank that has the same writer as they are."""
-    if isinstance(write_results, list) and _writes_rows(storage_writer):
+    writes from tables (see _storage_writer_writes_rows), else pickled. A storage writer whose
+    finish a subclass overrides thus gets the write results from every rank that has the same
+    writer as they are."""
+    if isinstance(write_results, list) and _storage_writer_writes_rows(storage_writer):
         try:
             return _table.encode(write_results)
         except _table.Unencodable:
@@ -466,13 +467,13 @@ def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
     return is_table, pickled
 
 
-def _writes_rows(storage_writer) -> bool:
+def _storage_writer_writes_rows(storage_writer) -> bool:
     """Whether storage_writer can write storage_data from the gathered tables: a fast .metadata
     writer, and a FileSystemWriterAsync whose finish a subclass doesn't override."""
-    return _finishes_as_nvrx(storage_writer) and _metadata_pickler.writes_tables()
+    return _storage_writer_finish_is_nvrx(storage_writer) and _metadata_pickler.writes_tables()
 
 
-def _finishes_as_nvrx(storage_writer) -> bool:
+def _storage_writer_finish_is_nvrx(storage_writer) -> bool:
     """Whether storage_writer's finish is FileSystemWriterAsync's, which _finish implements: then
     _finish writes a GlobalMetadata as it is, and other storage writers get a Metadata."""
     from .filesystem_async import FileSystemWriterAsync
@@ -534,14 +535,14 @@ def save_state_dict_async_finalize(pending: PendingSave, *legacy_args) -> None:
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
-                if is_table.all() and _writes_rows(storage_writer):
+                if is_table.all() and _storage_writer_writes_rows(storage_writer):
                     storage_writer._finish(global_metadata, [], storage_rows=rows)
                 else:
                     results = [
                         _table.to_write_results(_table.decode(row)) if sent_table else pickled[rank]
                         for rank, (row, sent_table) in enumerate(zip(rows, is_table))
                     ]
-                    if _finishes_as_nvrx(storage_writer):
+                    if _storage_writer_finish_is_nvrx(storage_writer):
                         storage_writer._finish(global_metadata, results)
                     else:
                         storage_writer.finish(global_metadata.to_metadata(), results)
