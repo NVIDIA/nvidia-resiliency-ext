@@ -36,7 +36,7 @@ Scope:
 | `local_plan`      | all ranks   | This rank's local plan of the previous save; `None` before the first save in the process.                               |
 | `central_plan`    | all ranks   | This rank's global plan of the previous save.                                                                           |
 
-On every save the coordinator hands `finish` a shallow copy of the cached metadata, so the save's `storage_data` is dropped once written. Kept in the cache, it would stay alive on the coordinator and slow down every full garbage collection there, which its data-parallel peers wait for at the next save.
+The cache keeps the global metadata as a `GlobalMetadata` (`global_metadata.py`), which is never modified. With the fast `.metadata` writers it is a state table (`_metadata_pickler/state_table.py`): `state_dict_metadata` in a few numpy arrays instead of a Python object per chunk, which every full garbage collection would visit, and none of the objects of the `Metadata` it was converted from, so the caller can free that. `finish` writes it with the save's `storage_data`, `version` and `storage_meta`, which are not kept, and the writers write `state_dict_metadata` from the arrays.
 
 Staging buffers, keyed by a hash of the rank's tensor write items:
 
@@ -213,4 +213,5 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 | Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`)                                                         |
 | Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                      |
 | `.metadata` pickler                           | `_metadata_pickler/`                                                                                                                    |
+| Cached global metadata                        | `global_metadata.py`: `GlobalMetadata`; `_metadata_pickler/state_table.py`: `StateDictTable`                                            |
 | Async workers, finalize scheduling, shm drain | `core.py`: `AsyncCallsQueue`, `PersistentAsyncCaller`                                                                                   |
