@@ -265,7 +265,7 @@ def writes_tables() -> bool:
 
 
 def _selected_writer():
-    """The module of the selected writer (native or pickler), or None to use pickle.dump."""
+    """Return the module of the selected writer (native or pickler), or None to use pickle.dump."""
     dumps = _select_dumps()
     if dumps is None:
         return None
@@ -273,9 +273,11 @@ def _selected_writer():
 
 
 def state_dict_table_if_fast(metadata: Metadata) -> Optional[StateDictTable]:
-    """metadata without its storage_data as a table, converted by the selected writer module's
-    StateDictTable; None if the fast writers are not used here, or, with a warning, if metadata
-    can't be converted."""
+    """Convert metadata, without its storage_data, to a table with the selected writer module.
+
+    Return None if the fast writers are not used here, or, with a warning, if metadata can't be
+    converted.
+    """
     writer_module = _selected_writer()
     if writer_module is None:
         return None
@@ -323,8 +325,11 @@ def dump_metadata(
 
 
 def _dump_table(state_dict_table: StateDictTable, stream, storage_rows, storage_data) -> None:
-    """dump_metadata of a table: by the selected writer, or if the native one fails, the Python one;
-    else pickle.dump of the Metadata the table was converted from."""
+    """Write a table as dump_metadata does.
+
+    Write it with the selected writer, or with the Python one if the native one fails; if both fail,
+    write the Metadata the table was converted from with pickle.dump.
+    """
     selected = _selected_writer()
     writers = [] if selected is None else [selected, pickler] if selected is native else [pickler]
     for writer_module in writers:

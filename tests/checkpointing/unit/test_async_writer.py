@@ -125,8 +125,10 @@ def rank_state_dict(extra=False):
 
 class TestAsyncSave:
     def get_async_save_request(self, writer, pending, legacy=False) -> AsyncRequest:
-        """Creates an async save request with a finalization step; legacy: unpacking the PendingSave into
-        the arguments finalize used to take."""
+        """Create an async save request with a finalization step.
+
+        With legacy, finalize gets the PendingSave unpacked into the arguments it used to take.
+        """
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
 
         def finalize_fn():
@@ -253,7 +255,8 @@ class TestAsyncSave:
             async_queue.close()
 
     def test_legacy_finalize_arguments(self, tmp_path_dist_ckpt, async_queue):
-        """Unpacking the PendingSave into finalize's old arguments still saves, with deprecation warnings.
+        """Unpacking the PendingSave into finalize's old arguments still saves, with deprecation
+        warnings.
 
         TODO: remove with the deprecated PendingSave.__iter__ and finalize arguments.
         """

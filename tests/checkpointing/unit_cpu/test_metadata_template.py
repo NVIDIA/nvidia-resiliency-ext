@@ -30,7 +30,7 @@ from .metadata_samples import SETTABLE_FIELD
 
 @pytest.fixture(params=[pytest.param("fast", marks=NEEDS_FAST), "off"])
 def fast(request, monkeypatch):
-    """With the fast .metadata writers, and with NVRX_FAST_METADATA_PICKLE=0."""
+    """Run with the fast .metadata writers, and with NVRX_FAST_METADATA_PICKLE=0."""
     if request.param == "off":
         monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", "0")
     return request.param == "fast"

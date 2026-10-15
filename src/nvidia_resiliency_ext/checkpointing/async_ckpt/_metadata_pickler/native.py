@@ -33,7 +33,7 @@ class StateDictTable(state_dict_table.StateDictTable):
 
     @classmethod
     def from_metadata(cls, metadata: Metadata) -> "StateDictTable":
-        """metadata without its storage_data, as a table."""
+        """Convert metadata, without its storage_data, to a table with the C++ producer."""
         return _native.from_metadata(metadata, small_pickle, cls)
 
 
@@ -42,13 +42,19 @@ def dumps_table(
     storage_data: Optional[dict] = None,
     storage_rows: Optional[np.ndarray] = None,
 ) -> bytes:
-    """The pickle of the Metadata table was converted from, byte for byte as pickler.dumps_table
-    writes it; the extension reads the storage rows itself."""
+    """Pickle the Metadata that table was converted from, and return the bytes.
+
+    storage_data is written from storage_rows (the gathered write-result tables, see table.py) if
+    given, else from the storage_data dict, else as None. The bytes equal pickler.dumps_table's; the
+    extension reads the rows itself.
+    """
     return _native.dumps_table(table, small_pickle, storage_data, storage_rows)
 
 
 def dumps(metadata: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
-    """The pickle of metadata, byte for byte as pickler.dumps writes it. With storage_rows (the
-    gathered write-result tables, see table.py), storage_data is written from them instead of
-    metadata.storage_data."""
+    """Pickle metadata and return the bytes.
+
+    storage_data is written from storage_rows (the gathered write-result tables, see table.py) if
+    given, else from metadata.storage_data. The bytes equal pickler.dumps's.
+    """
     return dumps_table(StateDictTable.from_metadata(metadata), metadata.storage_data, storage_rows)

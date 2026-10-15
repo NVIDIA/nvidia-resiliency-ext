@@ -58,7 +58,9 @@ chunks = st.builds(ChunkStorageMetadata, offsets=sizes, sizes=sizes)
 
 @st.composite
 def consistent_tensors(draw):
-    """A tensor entry whose size and chunks all have the same number of dims, as in a checkpoint."""
+    """Draw a tensor entry whose size and chunks all have the same number of dims, as in a
+    checkpoint.
+    """
     ndim = draw(st.integers(0, 4))
     dims = st.lists(dims_values, min_size=ndim, max_size=ndim).map(torch.Size)
     chunk = st.builds(ChunkStorageMetadata, offsets=dims, sizes=dims)

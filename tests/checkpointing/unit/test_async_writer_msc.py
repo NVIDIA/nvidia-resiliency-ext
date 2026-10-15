@@ -38,7 +38,7 @@ from .test_utilities import Model, Utils
 class TestAsyncSaveWithMSC:
 
     def get_async_save_request(self, writer, pending) -> AsyncRequest:
-        """Creates an async save request with a finalization step."""
+        """Create an async save request with a finalization step."""
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
 
         def finalize_fn():

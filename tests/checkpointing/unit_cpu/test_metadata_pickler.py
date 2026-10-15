@@ -84,8 +84,8 @@ def test_native_matches_python_on(make, tmp_path):
     assert writer.native.dumps(md) == pickler.dumps(md)
 
 
-# State-dict entries the table keeps as the stdlib pickler's opcodes (see state_dict_table.py), which
-# both writers write exactly as stock pickle does.
+# State-dict entries the table keeps as the stdlib pickler's opcodes (see state_dict_table.py),
+# which both writers write exactly as stock pickle does.
 KEPT_AS_PICKLES = pytest.mark.parametrize(
     "mutate",
     [

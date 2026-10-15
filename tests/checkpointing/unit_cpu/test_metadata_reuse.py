@@ -104,7 +104,7 @@ entries_of = VIEWS["objects"]  # the view the checks below read the metadata thr
 
 @pytest.fixture(autouse=True, params=VIEWS)
 def view(request, monkeypatch):
-    """Every reuse check reads the metadata through each view."""
+    """Make every reuse check read the metadata through each view."""
     monkeypatch.setitem(globals(), "entries_of", VIEWS[request.param])
 
 

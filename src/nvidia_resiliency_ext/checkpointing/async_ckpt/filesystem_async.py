@@ -1304,9 +1304,12 @@ class FileSystemWriterAsync(FileSystemWriter):
         results: List[List[WriteResult]],
         storage_rows: Optional["np.ndarray"] = None,
     ) -> None:
-        """``finish``, also of a MetadataTemplate, which it doesn't modify; or with storage_rows (the
-        ranks' write results as tables, one zero-padded table per row of a 2-D uint8 array, see
-        ``_metadata_pickler.table``), written as storage_data instead of results."""
+        """Write .metadata as finish does, also from a MetadataTemplate, which it doesn't modify.
+
+        With storage_rows (the ranks' write results as tables, one zero-padded table per row of a
+        2-D uint8 array, see ``_metadata_pickler.table``), storage_data is written from them
+        instead of results.
+        """
         fast = _metadata_pickler.fast_metadata_enabled()
         if storage_rows is not None and not fast:
             logger.warning(

@@ -40,13 +40,15 @@ class MetadataTemplate:
     """
 
     def __init__(self, content: Union[StateDictTable, Metadata]):
-        """Use from_metadata. content: a state dict table, or a Metadata without storage_data."""
+        """Hold content: a state dict table, or a Metadata without storage_data.
+
+        Use from_metadata to make one."""
         self._content = content
 
     @classmethod
     def from_metadata(cls, metadata: Metadata) -> "MetadataTemplate":
-        """The global metadata of metadata, without its storage_data, and with only Metadata's
-        fields (not e.g. the local plans older versions attach).
+        """Make the template of metadata: without its storage_data, and with only Metadata's fields
+        (not e.g. the local plans older versions attach).
 
         As a table, it holds no reference to metadata's objects. Otherwise it shares its
         state_dict_metadata, which must then not be modified.
@@ -64,14 +66,16 @@ class MetadataTemplate:
         return self._content if isinstance(self._content, StateDictTable) else None
 
     def to_metadata(self, storage_data: Optional[dict] = None) -> Metadata:
-        """A new Metadata, with this storage_data."""
+        """Build a new Metadata from the template, with this storage_data."""
         if isinstance(self._content, StateDictTable):
             return self._content.to_metadata(storage_data)
         return dataclasses.replace(self._content, storage_data=storage_data)
 
     def with_fields(self, **values) -> "MetadataTemplate":
-        """This global metadata with these Metadata fields (e.g. version) set to these values.
-        Raises TypeError for a name that isn't a field of Metadata a save sets."""
+        """Return a copy of the template with these Metadata fields (e.g. version) set.
+
+        Raise TypeError for a name that isn't a field of Metadata a save sets.
+        """
         if isinstance(self._content, StateDictTable):
             return MetadataTemplate(self._content.with_fields(**values))
         written = {"state_dict_metadata", "storage_data"} & set(values)
@@ -80,7 +84,7 @@ class MetadataTemplate:
         return MetadataTemplate(dataclasses.replace(self._content, **values))
 
     def entries(self) -> _metadata_reuse.Entries:
-        """Its entries, as the reuse check reads them."""
+        """Return its entries, as the reuse check reads them."""
         if isinstance(self._content, StateDictTable):
             return _metadata_reuse.TableEntries(self._content)
         return _metadata_reuse.ObjectEntries(self._content)
