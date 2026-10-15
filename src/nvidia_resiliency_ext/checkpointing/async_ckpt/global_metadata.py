@@ -15,7 +15,6 @@
 
 """The global metadata of a save, as the metadata cache keeps it and the coordinator writes it."""
 
-import copy
 import dataclasses
 from typing import IO, Optional, Union
 
@@ -67,18 +66,17 @@ class GlobalMetadata:
         """A new Metadata, with this storage_data."""
         if isinstance(self._content, StateDictTable):
             return self._content.to_metadata(storage_data)
-        metadata = copy.copy(self._content)
-        metadata.storage_data = storage_data
-        return metadata
+        return dataclasses.replace(self._content, storage_data=storage_data)
 
     def with_fields(self, **values) -> "GlobalMetadata":
-        """This global metadata with these Metadata fields (e.g. version) set to these values."""
+        """This global metadata with these Metadata fields (e.g. version) set to these values.
+        Raises TypeError for a name that isn't a field of Metadata a save sets."""
         if isinstance(self._content, StateDictTable):
             return GlobalMetadata(self._content.with_fields(**values))
-        metadata = copy.copy(self._content)
-        for name, value in values.items():
-            setattr(metadata, name, value)
-        return GlobalMetadata(metadata)
+        written = {"state_dict_metadata", "storage_data"} & set(values)
+        if written:
+            raise TypeError(f"not fields of Metadata that a save sets: {sorted(written)}")
+        return GlobalMetadata(dataclasses.replace(self._content, **values))
 
     def entries(self) -> _metadata_reuse.Entries:
         """Its entries, as the reuse check reads them."""
