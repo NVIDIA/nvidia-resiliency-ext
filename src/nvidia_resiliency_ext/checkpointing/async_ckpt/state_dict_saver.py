@@ -356,7 +356,8 @@ def verify_global_metadata_reuse(
     if loaded_metadata is None:
         votes = [1] + [0] * _metadata_reuse.LANES
     else:
-        votes = _metadata_reuse.votes(local_plan, loaded_metadata, rank, world_size)
+        entries = _metadata_reuse.ObjectEntries(loaded_metadata)
+        votes = _metadata_reuse.votes(local_plan, entries, rank, world_size)
     summed = torch.tensor(votes, dtype=torch.int64, device=torch.cuda.current_device())
     with telemetry.span(
         semconv.SPAN_GROUP_CKPT_PROFILING,
