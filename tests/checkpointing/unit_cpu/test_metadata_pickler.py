@@ -45,6 +45,9 @@ from torch.distributed.checkpoint.metadata import (
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, writer
 
 HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo)}  # torch 2.8+
+# A Metadata field a test can set with with_fields: version where torch has it (2.9+), else
+# planner_data, which every version has.
+SETTABLE_FIELD = "version" if "version" in {f.name for f in fields(Metadata)} else "planner_data"
 NEEDS_NATIVE = pytest.mark.skipif(writer.native is None, reason="native extension not built")
 _FAST_HERE = writer.fast_metadata_enabled()
 writer.fast_metadata_enabled.cache_clear()
