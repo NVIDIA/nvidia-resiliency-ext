@@ -21,8 +21,9 @@ all_reduce would.
 """
 
 import dataclasses
+import gc
 import pickle
-from dataclasses import fields
+import weakref
 
 import pytest
 import torch
@@ -318,40 +319,43 @@ def test_reuse_leaves_the_loaded_metadata_alone():
     plans = sample_plans()
     metadata = metadata_of(plans)
     metadata.all_local_plans = plans  # as written by older versions
-    before = dict(vars(metadata))
+    before = pickle.dumps(metadata)
     cache = CheckpointMetadataCache()
     cache.set_cached_global_metadata(metadata)
     written = cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True)
-    written.storage_data = {"rewritten": None}  # as finish does
-    assert vars(metadata) == before
-    assert "all_local_plans" not in vars(written)
-    assert all(
-        getattr(written, f.name) == before[f.name]
-        for f in fields(metadata)
-        if f.name != "storage_data"
-    )
+    assert pickle.dumps(metadata) == before
+    back = written.to_metadata()
+    assert "all_local_plans" not in vars(back)
+    assert back == dataclasses.replace(metadata, storage_data=None)
 
 
 @pytest.mark.parametrize("reused", [False, True], ids=["built", "reused"])
-def test_finish_never_writes_into_the_cache(reused):
-    """Each save's storage_data goes into a copy: kept in the cache, it would stay alive on the
-    coordinator and slow down every full garbage collection there."""
+def test_the_cache_holds_no_storage_data(reused):
+    """The cache keeps the metadata without storage_data, and every save writes the same one."""
     plans = sample_plans()
     cache = CheckpointMetadataCache()
+    built = metadata_of(plans)
     if reused:
-        cache.set_cached_global_metadata(metadata_of(plans))
-        built = None
-    else:
-        built = metadata_of(plans)
-        built.storage_data = None  # create_global_plan leaves it to finish
+        cache.set_cached_global_metadata(built)
     for save in range(3):
         written = cache._update(plans[0], plans[0], built, reused or save > 0, is_coordinator=True)
-        cached = cache.global_metadata
-        storage_data = cached.storage_data
-        assert written is not cached
-        written.storage_data = {f"save {save}": None}  # as finish does
-        assert cached.storage_data is storage_data
-        assert written.state_dict_metadata is cached.state_dict_metadata
+        assert written.to_metadata().storage_data is None
+        assert cache.global_metadata == dataclasses.replace(built, storage_data=None)
+
+
+def test_the_cache_keeps_no_reference_to_the_loaded_metadata():
+    """With the fast .metadata writers, the caller can free the loaded metadata after handing it
+    to the cache: the cache keeps a table of it, not its objects."""
+    loaded = metadata_of(sample_plans())
+    loaded.storage_data = {}
+    entry = loaded.state_dict_metadata["w"]
+    refs = [weakref.ref(loaded), weakref.ref(entry), weakref.ref(entry.chunks[0])]
+    cache = CheckpointMetadataCache()
+    cache.set_cached_global_metadata(loaded)
+    del loaded, entry
+    gc.collect()
+    assert all(ref() is None for ref in refs)
+    assert cache.global_metadata is not None
 
 
 def test_only_the_coordinator_keeps_metadata_after_a_save():
@@ -366,8 +370,8 @@ def test_only_the_coordinator_keeps_metadata_after_a_save():
     built = metadata_of(plans)
     coordinator = CheckpointMetadataCache()
     coordinator.set_cached_global_metadata(metadata)
-    assert coordinator._update(plans[0], plans[0], built, False, is_coordinator=True) == built
-    assert coordinator.global_metadata is built
+    written = coordinator._update(plans[0], plans[0], built, False, is_coordinator=True)
+    assert written.to_metadata() == coordinator.global_metadata == built
 
 
 def test_reuse_without_metadata_on_the_coordinator_raises():
@@ -441,7 +445,7 @@ def test_finish_leaves_the_cache_and_the_caller_alone(tmp_path, monkeypatch, reu
         path.mkdir()
         storage_writer = FileSystemWriterAsync(path)
         storage_writer.set_up_storage_writer(True)
-        storage_writer.finish(written, results)
+        storage_writer._finish(written, results)
 
         assert pickle.dumps(cache.global_metadata) == cache_before, f"save {save}: cache changed"
         assert pickle.dumps(loaded) == caller_before, f"save {save}: caller's metadata changed"
