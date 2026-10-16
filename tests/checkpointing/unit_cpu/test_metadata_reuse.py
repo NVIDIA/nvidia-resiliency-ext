@@ -392,9 +392,9 @@ def test_every_rank_keeps_the_fqn_list_of_the_loaded_metadata():
     for rank, is_coordinator in enumerate([True, False]):
         cache = CheckpointMetadataCache()
         cache.set_cached_global_metadata(loaded)
-        assert cache.fqn_list == expected
+        assert cache._fqn_list_slot.fqn_list == expected
         cache._update(plans[rank], plans[rank], None, reused=True, is_coordinator=is_coordinator)
-        assert cache.fqn_list == expected
+        assert cache._fqn_list_slot.fqn_list == expected
 
 
 def test_a_build_leaves_the_other_ranks_without_an_fqn_list():
@@ -403,12 +403,12 @@ def test_a_build_leaves_the_other_ranks_without_an_fqn_list():
     other = CheckpointMetadataCache()
     other.set_cached_global_metadata(metadata_of(plans))
     other._update(plans[1], plans[1], None, reused=False, is_coordinator=False)
-    assert other.fqn_list is None
+    assert other._fqn_list_slot.fqn_list is None
 
     built = metadata_of(plans)
     coordinator = CheckpointMetadataCache()
     coordinator._update(plans[0], plans[0], built, reused=False, is_coordinator=True)
-    assert coordinator.fqn_list == FqnList.of(built.state_dict_metadata)
+    assert coordinator._fqn_list_slot.fqn_list == FqnList.of(built.state_dict_metadata)
 
 
 def test_metadata_with_an_fqn_that_isnt_a_str_has_no_fqn_list():
@@ -420,7 +420,7 @@ def test_metadata_with_an_fqn_that_isnt_a_str_has_no_fqn_list():
     loaded.set_cached_global_metadata(metadata)
     built = CheckpointMetadataCache()
     built._update(plans[0], plans[0], metadata, reused=False, is_coordinator=True)
-    assert loaded.fqn_list is None and built.fqn_list is None
+    assert loaded._fqn_list_slot.fqn_list is None and built._fqn_list_slot.fqn_list is None
 
 
 def test_reuse_without_metadata_on_the_coordinator_raises():

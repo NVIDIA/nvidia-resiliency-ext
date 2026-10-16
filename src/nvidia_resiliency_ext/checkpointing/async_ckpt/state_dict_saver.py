@@ -42,7 +42,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import table as _table
 from ._metadata_pickler.table import FqnList
-from .metadata_template import MetadataTemplate
+from ._metadata_template import MetadataTemplate
 
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
@@ -52,7 +52,7 @@ logger = getLogger(__name__)
 
 
 @dataclass
-class FqnListSlot:
+class _FqnListSlot:
     """The fqn list of one global metadata, as a rank knows it.
 
     Saves that write the same global metadata share its slot. The coordinator fills it when it
@@ -72,7 +72,7 @@ class CheckpointMetadataCache:
 
     * The first save in a process reuses the metadata of a loaded checkpoint (see
       `set_cached_global_metadata`) if all ranks' local plans write exactly the chunks it lists;
-      `verify_global_metadata_reuse` checks that with one all_reduce.
+      `_verify_global_metadata_reuse` checks that with one all_reduce.
     * Later saves reuse the plans and metadata of the previous save without communicating:
       `enable_cache` promises that the checkpoint structure does not change. Each rank still
       creates its local plan and raises if it differs from the previous one.
@@ -90,21 +90,14 @@ class CheckpointMetadataCache:
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
         central_plan (SavePlan): This rank's global plan of the previous save.
-        fqn_list (FqnList): The fqn list of the global metadata to reuse, on every rank, which
-            index tables refer to. None on the other ranks from a save that builds new metadata
-            until its finalize delivers the new list, and None if an fqn isn't a str.
     """
 
     def __init__(self):
         self._metadata_template: Optional[MetadataTemplate] = None
         self.local_plan: Optional[SavePlan] = None
         self.central_plan: Optional[SavePlan] = None
-        self._fqn_list_slot = FqnListSlot()
-
-    @property
-    def fqn_list(self) -> Optional[FqnList]:
-        """See the class docstring."""
-        return self._fqn_list_slot.fqn_list
+        # The fqn list of the metadata to reuse, which index tables refer to; see _FqnListSlot.
+        self._fqn_list_slot = _FqnListSlot()
 
     @property
     def global_metadata(self) -> Optional[Metadata]:
@@ -132,7 +125,7 @@ class CheckpointMetadataCache:
         )
         self.local_plan = None
         self.central_plan = None
-        self._fqn_list_slot = FqnListSlot(
+        self._fqn_list_slot = _FqnListSlot(
             self._metadata_template.fqn_list if self._metadata_template else None
         )
 
@@ -151,11 +144,11 @@ class CheckpointMetadataCache:
             self._metadata_template = None
             if not reused:
                 # The coordinator built new metadata; this save's finalize delivers its list.
-                self._fqn_list_slot = FqnListSlot()
+                self._fqn_list_slot = _FqnListSlot()
             return None
         if not reused:
             self._metadata_template = MetadataTemplate.from_metadata(global_metadata)
-            self._fqn_list_slot = FqnListSlot(self._metadata_template.fqn_list)
+            self._fqn_list_slot = _FqnListSlot(self._metadata_template.fqn_list)
         elif self._metadata_template is None:
             raise RuntimeError(
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
@@ -183,18 +176,18 @@ class PendingSave:
         metadata_template (MetadataTemplate, optional): The global metadata to write, without
             this save's storage_data, on the coordinator; None on other ranks.
         dist_wrapper (_DistWrapper): The distributed wrapper used for planning.
-        fqn_list_slot (FqnListSlot, optional): The slot of the fqn list of the global metadata
+        _fqn_list_slot (_FqnListSlot, optional): The slot of the fqn list of the global metadata
             this save writes, from the cache it was planned with; None without enable_cache.
             Finalize encodes the write results against the list if the slot holds it.
-        delivers_fqn_list (bool): Whether this save built new metadata, whose fqn list its
+        _delivers_fqn_list (bool): Whether this save built new metadata, whose fqn list its
             finalize delivers into the other ranks' slots.
     """
 
     storage_writer: "FileSystemWriterAsync"
     metadata_template: Optional[MetadataTemplate]
     dist_wrapper: _DistWrapper
-    fqn_list_slot: Optional[FqnListSlot] = None
-    delivers_fqn_list: bool = False
+    _fqn_list_slot: Optional[_FqnListSlot] = None
+    _delivers_fqn_list: bool = False
 
     # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save, up
     # to the version that passes it whole) are no longer supported.
@@ -317,7 +310,7 @@ def save_state_dict_async_plan(
         local_plan = local_step()
         if metadata_cache is not None:
             # The first save in this process: every rank takes part, with or without metadata.
-            reused = verify_global_metadata_reuse(
+            reused = _verify_global_metadata_reuse(
                 metadata_cache._metadata_template, local_plan, dist_wrapper
             )
 
@@ -371,10 +364,10 @@ def save_state_dict_async_plan(
         storage_writer,
         metadata_template,
         dist_wrapper,
-        fqn_list_slot=metadata_cache._fqn_list_slot if metadata_cache is not None else None,
+        _fqn_list_slot=metadata_cache._fqn_list_slot if metadata_cache is not None else None,
         # Only a storage writer that writes from tables reads index tables; every rank decides
         # alike, so the collectives of finalize match.
-        delivers_fqn_list=(
+        _delivers_fqn_list=(
             metadata_cache is not None
             and not reused
             and _storage_writer_writes_rows(storage_writer)
@@ -423,7 +416,7 @@ def _check_plan_unchanged(previous: SavePlan, current: SavePlan, rank: int) -> N
 @telemetry.trace_fn(
     semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.verify_global_metadata_reuse"
 )
-def verify_global_metadata_reuse(
+def _verify_global_metadata_reuse(
     loaded_metadata: Optional[MetadataTemplate],
     local_plan: SavePlan,
     dist_wrapper: _DistWrapper,
@@ -604,11 +597,11 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
         pending.dist_wrapper,
     )
     write_results = storage_writer.retrieve_write_results()
-    fqn_list_slot = pending.fqn_list_slot
+    fqn_list_slot = pending._fqn_list_slot
     # The coordinator delivers the fqn list of the metadata it built to the other ranks.
     delivered = b""
     if (
-        pending.delivers_fqn_list
+        pending._delivers_fqn_list
         and dist_wrapper.is_coordinator
         and dist_wrapper.use_dist
         and fqn_list_slot.fqn_list is not None
