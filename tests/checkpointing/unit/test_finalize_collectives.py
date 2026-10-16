@@ -13,18 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The collectives of save_state_dict_async_finalize on two CPU ranks (gloo): which tables the
-ranks send, the delivery of the coordinator's fqn list, and failures raised on every rank. The
-saves are planned with the plan's own _pending_save, without writing tensors."""
+"""The collectives of save_state_dict_async_finalize on two ranks: which tables the ranks send, the
+delivery of the coordinator's fqn list, and failures raised on every rank. The saves are planned
+with the plan's own _pending_save, without writing tensors."""
 
-import datetime
-import os
 import warnings
 
 import numpy as np
 import pytest
-import torch.distributed as dist
-import torch.multiprocessing as mp
+import torch
 from torch.distributed.checkpoint import CheckpointException, FileSystemReader
 from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata, MetadataIndex
@@ -38,12 +35,12 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     CheckpointMetadataCache,
     save_state_dict_async_finalize,
 )
+from tests.checkpointing.unit import TempNamedDir
+from tests.checkpointing.unit.test_utilities import Utils
 
 pytestmark = pytest.mark.skipif(
     not writer.writes_tables(), reason="needs the fast .metadata writer"
 )
-
-WORLD_SIZE = 2
 
 
 def write_results(rank: int):
@@ -60,7 +57,9 @@ def write_results(rank: int):
 def global_metadata() -> Metadata:
     """Return the global metadata of the ranks' bytes entries."""
     return Metadata(
-        state_dict_metadata={f"r{rank}.w": BytesStorageMetadata() for rank in range(WORLD_SIZE)}
+        state_dict_metadata={
+            f"r{rank}.w": BytesStorageMetadata() for rank in range(Utils.world_size)
+        }
     )
 
 
@@ -68,13 +67,12 @@ class StagedWriter(FileSystemWriterAsync):
     """A storage writer whose save wrote this rank's write results, without writing tensors."""
 
     def retrieve_write_results(self):
-        return write_results(dist.get_rank())
+        return write_results(torch.distributed.get_rank())
 
 
 def plan(path, cache, reused):
     """Plan a save into path as save_state_dict_async_plan ends it, building the global
     metadata on the coordinator unless reused."""
-    os.makedirs(path, exist_ok=True)
     dist_wrapper = _DistWrapper(None, True, 0)
     storage_writer = StagedWriter(path)
     storage_writer.set_up_storage_writer(dist_wrapper.is_coordinator)
@@ -84,39 +82,44 @@ def plan(path, cache, reused):
     )
 
 
-def record_fqn_modes(modes):
-    """Record in modes the fqn mode of the table each finalize on this rank sends."""
+@pytest.fixture
+def modes(monkeypatch):
+    """Record the fqn mode of the table each finalize on this rank sends."""
+    Utils.initialize_distributed()
+    recorded = []
     encode = state_dict_saver._encode_write_results
 
     def recording(*args, **kwargs):
         payload = encode(*args, **kwargs)
-        modes.append(table.decode(np.frombuffer(payload, dtype=np.uint8)).fqn_mode)
+        recorded.append(table.decode(np.frombuffer(payload, dtype=np.uint8)).fqn_mode)
         return payload
 
-    state_dict_saver._encode_write_results = recording
+    monkeypatch.setattr(state_dict_saver, "_encode_write_results", recording)
+    return recorded
 
 
 def assert_written(path):
-    """Assert that path's .metadata holds both ranks' write results."""
+    """Assert that path's .metadata holds every rank's write results."""
     written = FileSystemReader(path).read_metadata()
-    expected = [r for rank in range(WORLD_SIZE) for r in write_results(rank)]
+    expected = [r for rank in range(Utils.world_size) for r in write_results(rank)]
     assert written.storage_data == {r.index: r.storage_data for r in expected}
 
 
-def build_then_reuse(tmp_path, modes):
-    """The other rank gets the coordinator's list from the build's finalize, then sends index
+def test_build_then_reuse(tmp_path_dist_ckpt, modes):
+    """The other ranks get the coordinator's list from the build's finalize, then send index
     tables."""
     cache = CheckpointMetadataCache()
     for i, reused in enumerate([False, True]):
-        save_state_dict_async_finalize(plan(tmp_path / f"save_{i}", cache, reused))
-        assert_written(tmp_path / f"save_{i}")
-    if dist.get_rank() == 0:
+        with TempNamedDir(tmp_path_dist_ckpt / f"build_then_reuse_{i}") as ckpt_dir:
+            save_state_dict_async_finalize(plan(ckpt_dir, cache, reused))
+            assert_written(ckpt_dir)
+    if torch.distributed.get_rank() == 0:
         assert modes == [table.FQN_INDICES] * 2
     else:
         assert modes == [table.FQN_STRINGS, table.FQN_INDICES]
 
 
-def failed_build_still_delivers(tmp_path, modes):
+def test_failed_build_still_delivers(tmp_path_dist_ckpt, modes, monkeypatch):
     """A build whose .metadata write fails raises on every rank, and still delivers its fqn list,
     which the next save, reusing its metadata, encodes against."""
     cache = CheckpointMetadataCache()
@@ -125,18 +128,20 @@ def failed_build_still_delivers(tmp_path, modes):
     def failing(*args):
         raise OSError("disk full")
 
-    state_dict_saver._write_metadata = failing
-    with pytest.raises(CheckpointException):
-        save_state_dict_async_finalize(plan(tmp_path / "failed", cache, reused=False))
-    state_dict_saver._write_metadata = write
-    save_state_dict_async_finalize(plan(tmp_path / "next", cache, reused=True))
-    assert_written(tmp_path / "next")
+    monkeypatch.setattr(state_dict_saver, "_write_metadata", failing)
+    with TempNamedDir(tmp_path_dist_ckpt / "failed_build") as ckpt_dir:
+        with pytest.raises(CheckpointException):
+            save_state_dict_async_finalize(plan(ckpt_dir, cache, reused=False))
+    monkeypatch.setattr(state_dict_saver, "_write_metadata", write)
+    with TempNamedDir(tmp_path_dist_ckpt / "after_failed_build") as ckpt_dir:
+        save_state_dict_async_finalize(plan(ckpt_dir, cache, reused=True))
+        assert_written(ckpt_dir)
     assert modes[-1] == table.FQN_INDICES
 
 
-def legacy_finalize_with_cache(tmp_path, modes):
-    """Unpacked into finalize's old arguments, as Megatron-LM passes it, a save with a cache
-    writes .metadata, with every rank sending fqn strings.
+def test_legacy_finalize_with_cache(tmp_path_dist_ckpt, modes):
+    """Unpacked into finalize's old arguments, a save with a cache writes .metadata, with every
+    rank sending fqn strings.
 
     TODO: remove with the deprecated PendingSave.__iter__ and finalize arguments.
     """
@@ -144,48 +149,19 @@ def legacy_finalize_with_cache(tmp_path, modes):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         for i, reused in enumerate([False, True]):
-            save_state_dict_async_finalize(*plan(tmp_path / f"legacy_{i}", cache, reused))
-            assert_written(tmp_path / f"legacy_{i}")
+            with TempNamedDir(tmp_path_dist_ckpt / f"legacy_{i}") as ckpt_dir:
+                save_state_dict_async_finalize(*plan(ckpt_dir, cache, reused))
+                assert_written(ckpt_dir)
     assert modes == [table.FQN_STRINGS] * 2
 
 
-def coordinator_failure_raises_everywhere(tmp_path, modes):
+def test_coordinator_failure_raises_everywhere(tmp_path_dist_ckpt, modes, monkeypatch):
     """A failure on the coordinator after the gather raises on every rank."""
 
     def unreadable(rows):
         raise RuntimeError("unreadable rows")
 
-    state_dict_saver._decode_payloads = unreadable
-    with pytest.raises(CheckpointException):
-        save_state_dict_async_finalize(plan(tmp_path / "unreadable", None, reused=False))
-
-
-def run(rank, scenario, tmp_path, init_file):
-    """Run scenario on this rank of a gloo group."""
-    dist.init_process_group(
-        "gloo",
-        init_method=f"file://{init_file}",
-        rank=rank,
-        world_size=WORLD_SIZE,
-        timeout=datetime.timedelta(seconds=60),
-    )
-    try:
-        modes = []
-        record_fqn_modes(modes)
-        scenario(tmp_path, modes)
-    finally:
-        dist.destroy_process_group()
-
-
-@pytest.mark.parametrize(
-    "scenario",
-    [
-        build_then_reuse,
-        failed_build_still_delivers,
-        legacy_finalize_with_cache,
-        coordinator_failure_raises_everywhere,
-    ],
-    ids=lambda scenario: scenario.__name__,
-)
-def test_finalize_on_two_ranks(tmp_path, scenario):
-    mp.spawn(run, args=(scenario, tmp_path, tmp_path / "init"), nprocs=WORLD_SIZE, join=True)
+    monkeypatch.setattr(state_dict_saver, "_decode_payloads", unreadable)
+    with TempNamedDir(tmp_path_dist_ckpt / "unreadable_rows") as ckpt_dir:
+        with pytest.raises(CheckpointException):
+            save_state_dict_async_finalize(plan(ckpt_dir, None, reused=False))
