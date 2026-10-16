@@ -273,18 +273,20 @@ reuses metadata instead, kept between saves in a
 * After loading a checkpoint, pass its metadata to ``set_cached_global_metadata`` on every rank.
   The first save reuses it if all ranks' local plans write exactly the chunks it lists, checked
   with one ``all_reduce``; otherwise the metadata is built as usual. This needs a planner that
-  plans each rank's writes locally (``can_run_decentralized_global_plan``), as Megatron-LM's does,
-  and no planner data.
+  plans each rank's writes locally (``can_run_decentralized_global_plan``), and no planner data.
 * Later saves reuse the previous save's plans and metadata without communicating. The checkpoint
   structure must not change between them: a rank whose local plan changed raises an error.
 
 The cache doesn't modify the metadata passed to ``set_cached_global_metadata``. The caller may
-drop its reference to that metadata afterwards, but must not modify it.
+drop its reference to that metadata afterwards, but must not modify it. ``.metadata`` holds only
+the fields of torch's ``Metadata``: other attributes a planner sets on the global metadata aren't
+written.
 
 ``save_state_dict_async_plan`` returns a
 :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave`, to pass
 to ``save_state_dict_async_finalize`` as it is. Unpacking it into the three arguments
-``save_state_dict_async_finalize`` used to take still works, but is deprecated.
+``save_state_dict_async_finalize`` used to take still works, but is deprecated, and sends every
+rank's write results with their fqns as strings.
 
 
 Best Practices

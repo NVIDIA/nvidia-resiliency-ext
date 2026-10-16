@@ -4,9 +4,10 @@ This document describes how a torch DCP checkpoint is saved through NVRx on the 
 
 Scope:
 
-- The planner and the storage writer both set `can_run_decentralized_global_plan` (Megatron-LM's `MCoreSavePlanner` with `FileSystemWriterAsync`).
-- `enable_cache=True` and `use_cached_data_structure=True` (Megatron-LM: `--ckpt-assume-constant-structure`).
-- CPU shared-memory staging: `FileSystemWriterAsync(use_cpu_shm_for_gpu_tensors=True)` and a persistent `AsyncCallsQueue(cpu_shm_mode=True)` (Megatron-LM: `--async-ckpt-use-cpu-shm`).
+- The planner and the storage writer both set `can_run_decentralized_global_plan` (`FileSystemWriterAsync` does).
+- `enable_cache=True` and `use_cached_data_structure=True`.
+- CPU shared-memory staging: `FileSystemWriterAsync(use_cpu_shm_for_gpu_tensors=True)` and a persistent `AsyncCallsQueue(cpu_shm_mode=True)`.
+- The `PendingSave` that `save_state_dict_async_plan` returns is passed to `save_state_dict_async_finalize` as it is. Unpacked into finalize's deprecated arguments, it carries no fqn list slot, so every rank sends string tables.
 - A torch version the fast `.metadata` writers were tested with. Other paths are listed under [Paths](#paths).
 
 A DCP `Metadata` holds a Python object per chunk, each with a `torch.Size` of offsets and of sizes, and its `storage_data` one more per chunk. If kept between saves, they will slow down every full garbage collection, most of all on the coordinator, whose built metadata lies scattered across the heap. Another source of overhead is when the coordinator rank must unpickle every rank's write result, slowing down the coordinator and holding up all ranks when finishing the checkpoint write. Tables reduce the wire traffic and the unpickling overhead.
@@ -18,7 +19,7 @@ A DCP `Metadata` holds a Python object per chunk, each with a `torch.Size` of of
 | Local plan         | A rank's `SavePlan` from `planner.create_local_plan()`: one `WriteItem` per tensor chunk or bytes entry the rank writes.                                                                                                   |
 | Global plan        | A rank's local plan after `create_decentralized_global_plan` and `prepare_decentralized_global_plan`; the writer adds the file prefix `__<rank>_`. Each rank makes its own; on this path the coordinator does not.         |
 | Global metadata    | The `Metadata` written to `.metadata`. `state_dict_metadata` is built from the write items of all ranks' local plans; `storage_data` (file, offset, length of each chunk) is built from the write results at finalization. |
-| Coordinator        | The planning rank that builds the global metadata and writes `.metadata` (rank 0 in Megatron-LM).                                                                                                                          |
+| Coordinator        | The planning rank that builds the global metadata and writes `.metadata` (rank 0 by default).                                                                                                                          |
 | Shm tensor         | A CPU tensor in shared memory (`share_memory_()`), one per tensor the rank saves, holding the values being written.                                                                                                        |
 | Async worker       | The persistent process per rank that writes the files. In CPU shared-memory mode it never initializes CUDA.                                                                                                                |
 | Fast writers       | nvrx's `.metadata` writers (C++, else Python), used on tested torch versions (`_metadata_pickler/writer.py`).                                                                                                              |
@@ -29,7 +30,7 @@ A DCP `Metadata` holds a Python object per chunk, each with a `torch.Size` of of
 
 ## Phases of a save
 
-1. **Plan and stage**, in the training process, blocking training: `save_state_dict_async_plan` in `state_dict_saver.py` plans the save and returns a `PendingSave` object, then `FileSystemWriterAsync.prepare_write_data` copies every tensor into its shm tensor.
+1. **Plan and stage**, in the training process, blocking training: `save_state_dict_async_plan` in `state_dict_saver.py` plans the save, has `FileSystemWriterAsync.prepare_write_data` copy every tensor into its shm tensor, and returns a `PendingSave` object.
 2. **Write**, in the async worker: the shm tensors are written to `__<rank>_<n>.distcp` files; no device-to-host copy is left to do.
 3. **Finalize**, in the training process, blocking training: `save_state_dict_async_finalize(pending_save)` gathers the write results on the coordinator as write-result tables, and the coordinator writes `.metadata`. It runs from `AsyncCallsQueue.maybe_finalize_async_calls` once all ranks' workers are done, or at the latest at the next save, before its staging overwrites the shm tensors.
 
@@ -184,7 +185,7 @@ classDiagram
 
 `FqnList`: the fqns of the coordinator's state dict table in entry order, replicated on every rank through `_FqnListSlot` (see the protocol below). Metadata with an fqn that isn't a `str` has no fqn list: `FqnList.of` returns `None`, the slots stay empty, and every rank sends string tables. A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
 
-A `MetadataTemplate`'s `content` is either a state dict table or a `Metadata`. It is a state dict table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` uses it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets `Metadata` fields other than `state_dict_metadata` and `storage_data` (a save sets `version` and `storage_meta`), and raises `TypeError` for those two and for any name that isn't a field. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
+A `MetadataTemplate`'s `content` is either a state dict table or a `Metadata`. It is a state dict table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `from_metadata` keeps only `Metadata`'s dataclass fields: attributes a planner or an older nvrx set on the `Metadata` (such as `all_local_plans`) aren't kept, nor written to `.metadata`, as torch 2.9 to 2.11's `FileSystemWriter.finish` didn't write them either. `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` uses it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets `Metadata` fields other than `state_dict_metadata` and `storage_data` (a save sets `version` and `storage_meta`), and raises `TypeError` for those two and for any name that isn't a field. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
 
 ## Table schemas
 
@@ -196,7 +197,7 @@ Entries are in `state_dict_metadata`'s order; entry `i` is one fqn, of one of th
 - TENSOR: a `TensorStorageMetadata` with exactly `properties`, `size` and `chunks`, whose chunks are `ChunkStorageMetadata` with exactly `offsets` and `sizes`, each a `torch.Size` of the tensor's number of dims, and at most one chunk if the tensor has no dims;
 - OTHER: anything else (a subclass, a tuple instead of a list, an extra attribute, a 0-dim tensor with several chunks), kept as its pickle in `others`.
 
-A 0-dim tensor's chunks have no dims, so the arrays don't bound their number; the table checks reject a 0-dim TENSOR entry with more than one chunk. Several chunks are rare but legal: a planner that skips torch's dedup, such as Megatron-LM's when two ranks both hold a scalar as main replica and its sharding validation is off, writes one chunk per rank.
+A 0-dim tensor's chunks have no dims, so the arrays don't bound their number; the table checks reject a 0-dim TENSOR entry with more than one chunk. Several chunks are rare but legal: a planner that skips torch's dedup writes one chunk per rank that saves the scalar. The producers keep such an entry as OTHER.
 
 Per entry (`n` entries, `+ 1` for the start columns, whose last value is the end):
 
@@ -234,7 +235,7 @@ One rank's write results, little-endian, gathered to the coordinator zero-padded
 
 ## State kept between saves
 
-`CheckpointMetadataCache`, one per training process, kept by the caller across saves (Megatron-LM: in the save strategy):
+`CheckpointMetadataCache`, one per training process, kept by the caller across saves:
 
 | State                                     | Rank        | When                                                                    |
 | ----------------------------------------- | ----------- | ----------------------------------------------------------------------- |
@@ -366,10 +367,10 @@ sequenceDiagram
     participant S as Storage
 
     rect rgba(150, 150, 150, 0.12)
-    Note over R,S: Load (Megatron-LM: TorchDistLoadShardedStrategy)
+    Note over R,S: Load
     S->>R: read .metadata
     R->>R: new CheckpointMetadataCache, set_cached_global_metadata:<br/>convert to a state dict table, keep its fqn list
-    R->>R: the caller frees the loaded Metadata
+    R->>R: the caller may free the loaded Metadata
     end
 
     rect rgba(70, 130, 220, 0.12)
@@ -421,7 +422,7 @@ sequenceDiagram
 - Each rank checks that its tensor items' entries have the same global size and properties, compared with `==`.
 - A 128-bit hash of each chunk covers its fqn, bytes or tensor, offsets and sizes. Each rank adds up the hashes of its own items and subtracts those of its 1/N slice of the metadata's chunks. The sum over all ranks is zero if, and (up to 2^-127) only if, the chunks written now are those the metadata lists, each exactly once. Missing, extra and duplicated chunks all leave a non-zero sum.
 - Which rank writes a chunk doesn't matter: the metadata doesn't record it, and `storage_data` is rebuilt from this save's write results. Chunks may move between ranks.
-- Plan validation (torch's `_validate_global_plan`, Megatron-LM's `validate_global_plan`) depends only on `state_dict_metadata`, which equals that of a checkpoint that passed validation when it was written.
+- Plan validation (torch's `_validate_global_plan`, or a planner's own) depends only on `state_dict_metadata`, which equals that of a checkpoint that passed validation when it was written.
 - Reuse is refused if the plans or the metadata carry planner data, which isn't checked, or if torch's `ChunkStorageMetadata` has fields other than `offsets` and `sizes`.
 
 ## Paths
@@ -435,7 +436,7 @@ F: fast writers usable. D: decentralized planning (`can_run_decentralized_global
 | yes | any | no  | nothing               | no                           | write-result tables | strings                                | state dict table and rows      |
 | no  | any | any | `Metadata`, as before | as before                    | pickled             | strings                                | torch's `finish`         |
 
-The first row is the fast path (Megatron-LM). On every path:
+The first row is the fast path. On every path:
 
 - A rank whose write results don't fit a table sends them pickled; the coordinator handles each rank's payload as it is.
 - A storage writer that overrides `finish` gets a `Metadata` and `WriteResult`s, and its ranks send string tables.
@@ -447,7 +448,7 @@ Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save
 ## Invariants
 
 1. **The fqn list a rank encodes against is the coordinator's.** It holds by construction, not by agreement at run time:
-   - after a reuse, every rank holds the loaded checkpoint's state dict table, which is the coordinator's metadata;
+   - after a reuse, every rank holds the fqn list of the loaded checkpoint's metadata, which the coordinator writes;
    - after a build, the save's finalize delivers the coordinator's list to every rank, into the slot of the template it built, even if the save failed (only when the storage writer writes from tables; otherwise every rank sends strings);
    - a save's finalize runs before the next save's finalize encodes anything: the next save finalizes the previous one before staging overwrites its shared memory (case 2);
    - with `enable_cache`, the coordinator rank and the checkpoint structure stay the same between saves; a rank that breaks this raises (`_update`, `_check_plan_unchanged`);
