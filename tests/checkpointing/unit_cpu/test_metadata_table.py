@@ -355,6 +355,17 @@ def test_corrupt_index_tables_are_rejected(dumps, corrupt):
 
 
 @pytest.mark.parametrize("dumps", DUMPS)
+@pytest.mark.parametrize("make", [large_metadata, dcp_saved_metadata], ids=["large", "dcp-save"])
+def test_index_tables_write_like_the_dict_on(dumps, make, tmp_path):
+    """Index tables over many memo entries and write batches, some spanning tables."""
+    md = make(tmp_path) if make is dcp_saved_metadata else make()
+    rows = _mixed_rows(md, 7, [True] * 7)
+    from_tables = dumps(dataclasses.replace(md, storage_data=None), storage_rows=rows)
+    assert from_tables == dumps(md)
+    assert all(t.fqn_mode == table.FQN_INDICES for t in table.decode_rows(rows))
+
+
+@pytest.mark.parametrize("dumps", DUMPS)
 def test_index_table_written_like_the_dict(dumps):
     md = _index_table_metadata()
     rows = _mixed_rows(md, 1, [True])
