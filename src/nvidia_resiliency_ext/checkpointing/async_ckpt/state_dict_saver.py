@@ -499,8 +499,13 @@ def _encode_write_results(
 
 
 def _global_coordinator_rank(dist_wrapper: _DistWrapper) -> int:
-    """Return the coordinator's global rank, which collectives over a group take as src or dst."""
-    return getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank)
+    """Return the coordinator's global rank, which collectives over a group take as src or dst.
+
+    _DistWrapper.global_coordinator_rank only exists from torch 2.7 on.
+    """
+    if dist_wrapper.group is None:
+        return dist_wrapper.coordinator_rank
+    return dist.get_global_rank(dist_wrapper.group, dist_wrapper.coordinator_rank)
 
 
 def _gather_payloads(
