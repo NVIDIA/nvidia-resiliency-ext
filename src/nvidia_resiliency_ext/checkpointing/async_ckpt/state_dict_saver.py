@@ -597,12 +597,8 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
             )
         warnings.warn(_LEGACY_FINALIZE_DEPRECATED, DeprecationWarning, stacklevel=2)
         pending = PendingSave(pending, *legacy_args)
-    storage_writer, metadata_template, dist_wrapper = (
-        pending.storage_writer,
-        pending.metadata_template,
-        pending.dist_wrapper,
-    )
-    write_results = storage_writer.retrieve_write_results()
+    dist_wrapper = pending.dist_wrapper
+    write_results = pending.storage_writer.retrieve_write_results()
     fqn_list_slot = pending._fqn_list_slot
     # The coordinator delivers the fqn list of the metadata it built to the other ranks.
     delivered = b""
@@ -619,7 +615,7 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.finalize_gather"):
         payload = _encode_write_results(
             write_results,
-            storage_writer,
+            pending.storage_writer,
             fqn_list_slot.fqn_list if fqn_list_slot is not None else None,
         )
         rows, delivered_length = _gather_payloads(payload, dist_wrapper, len(delivered))
@@ -635,12 +631,14 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
             is_table, pickled = _decode_payloads(rows)
             node_failures = {rank: r for rank, r in pickled.items() if _is_wrapped_exception(r)}
             if len(node_failures) == 0:
-                assert metadata_template is not None
+                assert pending.metadata_template is not None
                 with telemetry.span(
                     semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
                 ):
                     write_start = time()
-                    _write_metadata(storage_writer, metadata_template, rows, is_table, pickled)
+                    _write_metadata(
+                        pending.storage_writer, pending.metadata_template, rows, is_table, pickled
+                    )
                     write_end = time()
                     logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
         except Exception as e:
