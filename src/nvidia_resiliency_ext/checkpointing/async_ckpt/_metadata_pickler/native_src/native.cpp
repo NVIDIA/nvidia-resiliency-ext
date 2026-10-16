@@ -1160,39 +1160,23 @@ class Writer {
         if (!is(dims, size_cls_)) {
             throw py::type_error("expected torch.Size");
         }
-        put_get(size_ref_);
-        const Py_ssize_t n = PyTuple_GET_SIZE(dims);
-        if (n == 0) {
-            put(EMPTY_TUPLE);
-        } else {
-            if (n > 3) {
-                put(MARK);
-            }
-            for (Py_ssize_t j = 0; j < n; ++j) put_int(as_int(PyTuple_GET_ITEM(dims, j)));
-            put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
-        }
-        put({TUPLE1, REDUCE});
+        put_size(static_cast<size_t>(PyTuple_GET_SIZE(dims)),
+                 [dims](size_t j) { return as_int(PyTuple_GET_ITEM(dims, j)); });
     }
 
     // Write a torch.Size from a state dict table's dims, as size(PyObject*) does.
     void size(std::span<const int64_t> dims) {
-        const size_t n = dims.size();
-        put_get(size_ref_);
-        if (n == 0) {
-            put(EMPTY_TUPLE);
-        } else {
-            if (n > 3) {
-                put(MARK);
-            }
-            for (const int64_t d : dims) put_int(d);
-            put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
-        }
-        put({TUPLE1, REDUCE});
+        put_size(dims.size(), [dims](size_t j) { return dims[j]; });
     }
 
     // The same, for dims from a write-result table.
     void size(const Int64s& dims) {
-        const size_t n = dims.size();
+        put_size(dims.size(), [&dims](size_t j) { return dims[j]; });
+    }
+
+    // Write torch.Size of n dims, the j-th of which dim(j) returns.
+    template <typename Dim>
+    void put_size(const size_t n, Dim dim) {
         put_get(size_ref_);
         if (n == 0) {
             put(EMPTY_TUPLE);
@@ -1200,7 +1184,7 @@ class Writer {
             if (n > 3) {
                 put(MARK);
             }
-            for (size_t j = 0; j < n; ++j) put_int(dims[j]);
+            for (size_t j = 0; j < n; ++j) put_int(dim(j));
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
         put({TUPLE1, REDUCE});
