@@ -44,7 +44,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_dict
     TENSOR,
     StateDictTable,
 )
-from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 
 from .metadata_assertions import NEEDS_FAST, NEEDS_NATIVE, assert_identical, stock_round_trip
 from .metadata_samples import (

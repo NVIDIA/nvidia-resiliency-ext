@@ -110,7 +110,7 @@ classDiagram
     direction LR
     class CheckpointMetadataCache {
         _metadata_template : MetadataTemplate or None
-        _fqn_list_slot : FqnListSlot
+        _fqn_list_slot : _FqnListSlot
         local_plan : SavePlan
         central_plan : SavePlan
     }
@@ -118,10 +118,10 @@ classDiagram
         storage_writer : FileSystemWriterAsync
         metadata_template : MetadataTemplate or None
         dist_wrapper : _DistWrapper
-        fqn_list_slot : FqnListSlot or None
-        delivers_fqn_list : bool
+        _fqn_list_slot : _FqnListSlot or None
+        _delivers_fqn_list : bool
     }
-    class FqnListSlot {
+    class _FqnListSlot {
         fqn_list : FqnList or None
     }
     class FqnList {
@@ -129,7 +129,7 @@ classDiagram
         fqns : tuple of str
         index : mapping, fqn to int
         fingerprint : int
-        of(fqns)$ FqnList
+        of(fqns)$ FqnList or None
         encode() bytes
         decode(data : bytes)$ FqnList
     }
@@ -169,10 +169,10 @@ classDiagram
         strings : list of str, paths and in string tables fqns
     }
     CheckpointMetadataCache o-- MetadataTemplate
-    CheckpointMetadataCache o-- FqnListSlot : current
+    CheckpointMetadataCache o-- _FqnListSlot : current
     PendingSave o-- MetadataTemplate
-    PendingSave o-- FqnListSlot : of its save's template
-    FqnListSlot o-- FqnList
+    PendingSave o-- _FqnListSlot : of its save's template
+    _FqnListSlot o-- FqnList
     MetadataTemplate o-- StateDictTable : content, fast writers
     MetadataTemplate o-- Metadata : content, fallback
     MetadataTemplate ..> Metadata : to_metadata builds a new one
@@ -182,7 +182,7 @@ classDiagram
     WriteResultTable ..> StateDictTable : index table fqns are entries of
 ```
 
-`FqnList`: the fqns of the coordinator's state dict table in entry order, replicated on every rank through `FqnListSlot` (see the protocol below). Metadata with an fqn that isn't a `str` has no fqn list: `FqnList.of` returns `None`, the slots stay empty, and every rank sends string tables. A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
+`FqnList`: the fqns of the coordinator's state dict table in entry order, replicated on every rank through `_FqnListSlot` (see the protocol below). Metadata with an fqn that isn't a `str` has no fqn list: `FqnList.of` returns `None`, the slots stay empty, and every rank sends string tables. A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
 
 A `MetadataTemplate`'s `content` is either a state dict table or a `Metadata`. It is a state dict table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets fields a save sets (`version`, `storage_meta`), and raises `TypeError` for any other name. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
 
@@ -238,7 +238,7 @@ One rank's write results, little-endian, gathered to the coordinator zero-padded
 | ----------------------------------------- | ----------- | ----------------------------------------------------------------------- |
 | `MetadataTemplate` of the loaded checkpoint | all ranks   | From `set_cached_global_metadata` until the first save.                 |
 | `MetadataTemplate` of the previous save     | coordinator | After a save, built or reused.                                          |
-| fqn list slot (`FqnListSlot`)             | all ranks   | A new one from `set_cached_global_metadata` and from each build.        |
+| fqn list slot (`_FqnListSlot`)             | all ranks   | A new one from `set_cached_global_metadata` and from each build.        |
 | `local_plan`, `central_plan`              | all ranks   | This rank's local and global plan of the previous save.                 |
 
 Each `MetadataTemplate` has its fqn list slot. It holds the template's fqn list on the coordinator, and on the other ranks once they have the list: from `set_cached_global_metadata`, or delivered by the finalize of the save that built the template. Saves that reuse the template share its slot, and each `PendingSave` refers to the slot of the template its save writes. A finalize delivers into its own save's slot, so a save that is finalized after the next one was planned never changes the list the next one encodes against.
@@ -270,7 +270,7 @@ sequenceDiagram
     rect rgba(70, 130, 220, 0.12)
     Note over R,C: Plan and stage: save_state_dict_async_plan (blocks training)
     R->>R: local_step: set_up_planner, create_local_plan, prepare_local_plan
-    R<<->>C: verify_global_metadata_reuse: all_reduce(SUM) of 5 int64,<br/>no metadata, so every rank votes against reuse
+    R<<->>C: _verify_global_metadata_reuse: all_reduce(SUM) of 5 int64,<br/>no metadata, so every rank votes against reuse
     R->>C: gather_object(local plan)
     C->>C: unpickle all plans, create_global_plan: dedup, build metadata, validate
     C->>C: convert the metadata to a state dict table, drop the Metadata
@@ -373,7 +373,7 @@ sequenceDiagram
     rect rgba(70, 130, 220, 0.12)
     Note over R,C: Plan and stage: first save in this process
     R->>R: local_step, then votes: own items vs the state dict table,<br/>hash sum of own chunks minus a 1/N slice of the table's
-    R<<->>C: verify_global_metadata_reuse: all_reduce(SUM) of 5 int64
+    R<<->>C: _verify_global_metadata_reuse: all_reduce(SUM) of 5 int64
     alt sum is zero: same chunks, sizes and properties
         Note over R,C: Kept: the coordinator's loaded state dict table, every rank's fqn list.<br/>Other ranks drop their state dict table
     else plans differ (e.g. world size or parallelism changed)
@@ -462,12 +462,12 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 
 | What                                          | Where (`src/nvidia_resiliency_ext/checkpointing/async_ckpt/`)                                                                                            |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Planning, cache, reuse decision               | `state_dict_saver.py`: `save_state_dict_async_plan`, `PendingSave`, `CheckpointMetadataCache`, `verify_global_metadata_reuse`, `_check_plan_unchanged` |
+| Planning, cache, reuse decision               | `state_dict_saver.py`: `save_state_dict_async_plan`, `PendingSave`, `CheckpointMetadataCache`, `_verify_global_metadata_reuse`, `_check_plan_unchanged` |
 | Reuse check against loaded metadata           | `_metadata_reuse.py`, reading a state dict table through `TableEntries`                                                                                       |
 | Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                                  |
 | Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                               |
 | Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                       |
-| Cached metadata template                      | `metadata_template.py`: `MetadataTemplate`                                                                                                                   |
+| Cached metadata template                      | `_metadata_template.py`: `MetadataTemplate`                                                                                                                 |
 | Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                           |
 | State dict table and its Python producer           | `_metadata_pickler/state_dict_table.py`                                                                                                                       |
 | Write-result tables                           | `_metadata_pickler/table.py`                                                                                                                             |

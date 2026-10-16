@@ -31,8 +31,8 @@ from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
-from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
 # FileSystemWriter.set_up_storage_writer takes rank and use_collectives from PyTorch 2.9.
 HAS_PER_RANK_METADATA = (

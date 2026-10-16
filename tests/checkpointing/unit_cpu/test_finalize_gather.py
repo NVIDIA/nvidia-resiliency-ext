@@ -32,11 +32,11 @@ from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_excepti
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import state_dict_saver
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
     FileSystemWriterAsync,
     _wrap_exception_for_gather,
 )
-from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
 
 def results(rank: int, n: int = 3):

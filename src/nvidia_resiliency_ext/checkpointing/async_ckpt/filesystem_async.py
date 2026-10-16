@@ -67,8 +67,8 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
 from . import _metadata_pickler
+from ._metadata_template import MetadataTemplate
 from .core import PersistentAsyncCaller
-from .metadata_template import MetadataTemplate
 
 if TYPE_CHECKING:
     import numpy as np

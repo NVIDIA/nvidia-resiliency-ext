@@ -88,7 +88,10 @@ class FqnListDelivery(RuleBasedStateMachine):
     @invariant()
     def the_ranks_agree_once_every_save_is_finalized(self):
         if not self.pending:
-            assert self.other.fqn_list in (None, self.coordinator.fqn_list)
+            assert self.other._fqn_list_slot.fqn_list in (
+                None,
+                self.coordinator._fqn_list_slot.fqn_list,
+            )
 
 
 TestFqnListDelivery = FqnListDelivery.TestCase

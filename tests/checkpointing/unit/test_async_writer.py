@@ -37,13 +37,13 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async, state_dict_saver
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
     AsyncRequest,
     abort_nvrx_checkpoint,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
-from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     CheckpointMetadataCache,
     save_state_dict_async_finalize,

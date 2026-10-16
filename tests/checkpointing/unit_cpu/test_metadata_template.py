@@ -22,7 +22,7 @@ import pytest
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
-from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 
 from .metadata_assertions import NEEDS_FAST, assert_identical, stock_round_trip
 from .metadata_samples import SETTABLE_FIELD
