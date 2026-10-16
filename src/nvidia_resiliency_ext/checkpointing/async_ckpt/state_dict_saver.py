@@ -630,24 +630,23 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     )
 
     # Store the metadata on coordinator rank
+    node_failures = {}
     if dist_wrapper.is_coordinator:
-        is_table, pickled = _decode_payloads(rows)
-        node_failures = {rank: r for rank, r in pickled.items() if _is_wrapped_exception(r)}
-        if len(node_failures) == 0:
-            assert metadata_template is not None
-            with telemetry.span(
-                semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
-            ):
-                write_start = time()
-                try:
+        try:
+            is_table, pickled = _decode_payloads(rows)
+            node_failures = {rank: r for rank, r in pickled.items() if _is_wrapped_exception(r)}
+            if len(node_failures) == 0:
+                assert metadata_template is not None
+                with telemetry.span(
+                    semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
+                ):
+                    write_start = time()
                     _write_metadata(storage_writer, metadata_template, rows, is_table, pickled)
-                except Exception as e:
-                    # Raise on every rank instead of leaving the others in the broadcast.
-                    node_failures[dist_wrapper.rank] = _wrap_exception(e)
-                write_end = time()
-                logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
-    else:
-        node_failures = {}
+                    write_end = time()
+                    logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
+        except Exception as e:
+            # Raise on every rank instead of leaving the others in the broadcast.
+            node_failures[dist_wrapper.rank] = _wrap_exception(e)
 
     # Broadcast the failure status, and the fqn list the coordinator delivers, to all ranks, to
     # raise exceptions everywhere if needed. The failure details are only raised on the
