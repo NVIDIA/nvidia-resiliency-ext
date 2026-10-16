@@ -34,7 +34,7 @@ from torch.distributed.checkpoint import CheckpointException
 from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.metadata import STATE_DICT_TYPE, Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner
-from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_exception
+from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_exception, _wrap_exception
 from typing_extensions import deprecated
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
@@ -49,6 +49,19 @@ if TYPE_CHECKING:
 
 
 logger = getLogger(__name__)
+
+
+@dataclass
+class FqnListSlot:
+    """The fqn list of one global metadata, as a rank knows it.
+
+    Saves that write the same global metadata share its slot. The coordinator fills it when it
+    builds or loads the metadata, the other ranks when they load it or when the finalize of the
+    save that built it delivers the list. A save finalized after the next one was planned thus
+    still delivers into its own slot.
+    """
+
+    fqn_list: Optional[FqnList] = None
 
 
 class CheckpointMetadataCache:
@@ -77,16 +90,21 @@ class CheckpointMetadataCache:
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
         central_plan (SavePlan): This rank's global plan of the previous save.
-        fqn_list (FqnList): The coordinator's fqn list, on every rank, which index tables refer
-            to: the loaded checkpoint's, or the previous save's. None on the other ranks from a
-            save that builds new metadata until its finalize delivers the new list.
+        fqn_list (FqnList): The fqn list of the global metadata to reuse, on every rank, which
+            index tables refer to. None on the other ranks from a save that builds new metadata
+            until its finalize delivers the new list.
     """
 
     def __init__(self):
         self._metadata_template: Optional[MetadataTemplate] = None
         self.local_plan: Optional[SavePlan] = None
         self.central_plan: Optional[SavePlan] = None
-        self.fqn_list: Optional[FqnList] = None
+        self._fqn_list_slot = FqnListSlot()
+
+    @property
+    def fqn_list(self) -> Optional[FqnList]:
+        """See the class docstring."""
+        return self._fqn_list_slot.fqn_list
 
     @property
     def global_metadata(self) -> Optional[Metadata]:
@@ -114,7 +132,9 @@ class CheckpointMetadataCache:
         )
         self.local_plan = None
         self.central_plan = None
-        self.fqn_list = self._metadata_template.fqn_list if self._metadata_template else None
+        self._fqn_list_slot = FqnListSlot(
+            self._metadata_template.fqn_list if self._metadata_template else None
+        )
 
     def _update(
         self,
@@ -131,16 +151,16 @@ class CheckpointMetadataCache:
             self._metadata_template = None
             if not reused:
                 # The coordinator built new metadata; this save's finalize delivers its list.
-                self.fqn_list = None
+                self._fqn_list_slot = FqnListSlot()
             return None
         if not reused:
             self._metadata_template = MetadataTemplate.from_metadata(global_metadata)
+            self._fqn_list_slot = FqnListSlot(self._metadata_template.fqn_list)
         elif self._metadata_template is None:
             raise RuntimeError(
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
-        self.fqn_list = self._metadata_template.fqn_list
         return self._metadata_template
 
 
@@ -163,16 +183,17 @@ class PendingSave:
         metadata_template (MetadataTemplate, optional): The global metadata to write, without
             this save's storage_data, on the coordinator; None on other ranks.
         dist_wrapper (_DistWrapper): The distributed wrapper used for planning.
-        metadata_cache (CheckpointMetadataCache, optional): The cache the save was planned with,
-            whose fqn list finalize encodes the write results against; None without enable_cache.
+        fqn_list_slot (FqnListSlot, optional): The slot of the fqn list of the global metadata
+            this save writes, from the cache it was planned with; None without enable_cache.
+            Finalize encodes the write results against the list if the slot holds it.
         delivers_fqn_list (bool): Whether this save built new metadata, whose fqn list its
-            finalize delivers to the other ranks' caches.
+            finalize delivers into the other ranks' slots.
     """
 
     storage_writer: "FileSystemWriterAsync"
     metadata_template: Optional[MetadataTemplate]
     dist_wrapper: _DistWrapper
-    metadata_cache: Optional[CheckpointMetadataCache] = None
+    fqn_list_slot: Optional[FqnListSlot] = None
     delivers_fqn_list: bool = False
 
     # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save, up
@@ -350,7 +371,7 @@ def save_state_dict_async_plan(
         storage_writer,
         metadata_template,
         dist_wrapper,
-        metadata_cache=metadata_cache,
+        fqn_list_slot=metadata_cache._fqn_list_slot if metadata_cache is not None else None,
         delivers_fqn_list=metadata_cache is not None and not reused,
     )
 
@@ -438,13 +459,23 @@ def verify_global_metadata_reuse(
     return reuse
 
 
-def _encode_write_results(write_results, storage_writer) -> bytes:
-    """This rank's write results for the coordinator: a table if it can and its storage writer
-    writes from tables (see _storage_writer_writes_rows), else pickled. A storage writer whose
-    finish a subclass overrides thus gets the write results from every rank that has the same
-    writer as they are."""
+def _encode_write_results(
+    write_results, storage_writer, fqn_list: Optional[FqnList] = None
+) -> bytes:
+    """Encode this rank's write results for the coordinator.
+
+    Encode them as a table if possible and the storage writer writes from tables (see
+    _storage_writer_writes_rows), naming fqns by entry in fqn_list if given; else pickle them. A
+    storage writer whose finish a subclass overrides thus gets the write results from every rank
+    as they are.
+    """
     if isinstance(write_results, list) and _storage_writer_writes_rows(storage_writer):
         try:
+            if fqn_list is not None:
+                try:
+                    return _table.encode(write_results, fqn_list.index, fqn_list.fingerprint)
+                except _table.Unencodable:
+                    logger.debug("an fqn is missing from the fqn list; sending fqn strings")
             return _table.encode(write_results)
         except _table.Unencodable:
             logger.debug(
@@ -455,25 +486,29 @@ def _encode_write_results(write_results, storage_writer) -> bytes:
     return pickle.dumps(write_results)
 
 
-def _gather_payloads(payload: bytes, dist_wrapper: _DistWrapper) -> Optional[np.ndarray]:
-    """Collective: the ranks' payloads on the coordinator, one zero-padded row per rank.
+def _gather_payloads(
+    payload: bytes, dist_wrapper: _DistWrapper, delivered_length: int = 0
+) -> Tuple[Optional[np.ndarray], int]:
+    """Collective: gather the ranks' payloads on the coordinator, one zero-padded row per rank.
 
     Rows are a multiple of 8 bytes wide, so a table's int64s are aligned and every row holds the
-    8 bytes that tell a table from a pickle.
+    8 bytes that tell a table from a pickle. The all_reduce that finds the widest payload also
+    tells every rank the length of what the coordinator delivers after the gather
+    (delivered_length, nonzero on the coordinator only); return the rows and that length.
     """
     width = len(payload)
     device = torch.cuda.current_device() if dist_wrapper.use_dist else None
     if dist_wrapper.use_dist:
-        widest = torch.tensor([width], dtype=torch.int64, device=device)
+        lanes = torch.tensor([width, delivered_length], dtype=torch.int64, device=device)
         torch.distributed.all_reduce(
-            widest, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group
+            lanes, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group
         )
-        width = int(widest.item())
+        width, delivered_length = lanes.tolist()
     width = -(-width // 8) * 8
     row = np.zeros(width, dtype=np.uint8)
     row[: len(payload)] = np.frombuffer(payload, dtype=np.uint8)
     if not dist_wrapper.use_dist:
-        return row[None, :]
+        return row[None, :], delivered_length
     rows = None
     if dist_wrapper.is_coordinator:
         rows = torch.empty((dist_wrapper.get_world_size(), width), dtype=torch.uint8, device=device)
@@ -483,7 +518,7 @@ def _gather_payloads(payload: bytes, dist_wrapper: _DistWrapper) -> Optional[np.
         dst=getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank),
         group=dist_wrapper.group,
     )
-    return rows.cpu().numpy() if rows is not None else None
+    return (rows.cpu().numpy() if rows is not None else None), delivered_length
 
 
 def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
@@ -559,11 +594,21 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
         pending.dist_wrapper,
     )
     write_results = storage_writer.retrieve_write_results()
+    fqn_list_slot = pending.fqn_list_slot
+    # The coordinator delivers the fqn list of the metadata it built to the other ranks.
+    delivered = b""
+    if pending.delivers_fqn_list and dist_wrapper.is_coordinator and dist_wrapper.use_dist:
+        delivered = fqn_list_slot.fqn_list.encode()
 
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.finalize_gather"):
-        rows = _gather_payloads(_encode_write_results(write_results, storage_writer), dist_wrapper)
+        payload = _encode_write_results(
+            write_results,
+            storage_writer,
+            fqn_list_slot.fqn_list if fqn_list_slot is not None else None,
+        )
+        rows, delivered_length = _gather_payloads(payload, dist_wrapper, len(delivered))
     gather_end = time()
     logger.debug(
         f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end - gather_start}"
@@ -579,40 +624,55 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
-                if is_table.all() and _storage_writer_writes_rows(storage_writer):
-                    storage_writer._finish(metadata_template, [], storage_rows=rows)
-                else:
-                    results = [
-                        (
-                            _table.to_write_results(
-                                _table.decode(row),
-                                metadata_template.fqn_list.fqns,
-                                metadata_template.fqn_list.fingerprint,
-                            )
-                            if sent_table
-                            else pickled[rank]
-                        )
-                        for rank, (row, sent_table) in enumerate(zip(rows, is_table))
-                    ]
-                    if _storage_writer_finish_is_nvrx(storage_writer):
-                        storage_writer._finish(metadata_template, results)
-                    else:
-                        storage_writer.finish(metadata_template.to_metadata(), results)
+                try:
+                    _write_metadata(storage_writer, metadata_template, rows, is_table, pickled)
+                except Exception as e:
+                    # Raise on every rank instead of leaving the others in the broadcast.
+                    node_failures[dist_wrapper.rank] = _wrap_exception(e)
                 write_end = time()
                 logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
     else:
         node_failures = {}
 
-    # Broadcast failure status to all ranks to raise exceptions everywhere if needed.
-    # The failure details are only raised on the coordinator.
-    failures_occurred = torch.tensor(
-        [int(len(node_failures) > 0)],
-        dtype=torch.int,
-        device=torch.cuda.current_device(),
+    # Broadcast the failure status, and the fqn list the coordinator delivers, to all ranks, to
+    # raise exceptions everywhere if needed. The failure details are only raised on the
+    # coordinator. The list is delivered even if the save failed: the next save reuses its
+    # metadata.
+    broadcast = torch.zeros(
+        8 + delivered_length, dtype=torch.uint8, device=torch.cuda.current_device()
     )
+    if dist_wrapper.is_coordinator:
+        broadcast[0] = int(len(node_failures) > 0)
+        if delivered:
+            broadcast[8:] = torch.frombuffer(bytearray(delivered), dtype=torch.uint8)
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.broadcast_failures"):
         torch.distributed.broadcast(
-            failures_occurred, src=dist_wrapper.coordinator_rank, group=dist_wrapper.group
+            broadcast, src=dist_wrapper.coordinator_rank, group=dist_wrapper.group
         )
-    if failures_occurred:
+    broadcast = broadcast.cpu().numpy()
+    if delivered_length and not dist_wrapper.is_coordinator:
+        fqn_list_slot.fqn_list = FqnList.decode(broadcast[8:].tobytes())
+    if broadcast[0]:
         raise CheckpointException("write", node_failures)
+
+
+def _write_metadata(
+    storage_writer, metadata_template: MetadataTemplate, rows, is_table, pickled
+) -> None:
+    """Write the .metadata file from the gathered rows, on the coordinator."""
+    if is_table.all() and _storage_writer_writes_rows(storage_writer):
+        storage_writer._finish(metadata_template, [], storage_rows=rows)
+        return
+    fqn_list = metadata_template.fqn_list
+    results = [
+        (
+            _table.to_write_results(_table.decode(row), fqn_list.fqns, fqn_list.fingerprint)
+            if sent_table
+            else pickled[rank]
+        )
+        for rank, (row, sent_table) in enumerate(zip(rows, is_table))
+    ]
+    if _storage_writer_finish_is_nvrx(storage_writer):
+        storage_writer._finish(metadata_template, results)
+    else:
+        storage_writer.finish(metadata_template.to_metadata(), results)

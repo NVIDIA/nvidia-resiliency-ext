@@ -109,19 +109,33 @@ classDiagram
 classDiagram
     direction LR
     class CheckpointMetadataCache {
-        _global_metadata : MetadataTemplate or None
-        fqns : list of str
-        fqn_index : dict, fqn to int
+        _metadata_template : MetadataTemplate or None
+        _fqn_list_slot : FqnListSlot
         local_plan : SavePlan
         central_plan : SavePlan
     }
     class PendingSave {
         storage_writer : FileSystemWriterAsync
-        global_metadata : MetadataTemplate or None
+        metadata_template : MetadataTemplate or None
         dist_wrapper : _DistWrapper
+        fqn_list_slot : FqnListSlot or None
+        delivers_fqn_list : bool
+    }
+    class FqnListSlot {
+        fqn_list : FqnList or None
+    }
+    class FqnList {
+        <<frozen>>
+        fqns : tuple of str
+        index : mapping, fqn to int
+        fingerprint : int
+        of(fqns)$ FqnList
+        encode() bytes
+        decode(data : bytes)$ FqnList
     }
     class MetadataTemplate {
         content : StateDictTable or Metadata
+        fqn_list : FqnList
         from_metadata(metadata : Metadata)$ MetadataTemplate
         to_metadata(storage_data : dict or None) Metadata
         with_fields(fields a save sets) MetadataTemplate
@@ -155,7 +169,10 @@ classDiagram
         strings : list of str, paths and in string tables fqns
     }
     CheckpointMetadataCache o-- MetadataTemplate
+    CheckpointMetadataCache o-- FqnListSlot : current
     PendingSave o-- MetadataTemplate
+    PendingSave o-- FqnListSlot : of its save's template
+    FqnListSlot o-- FqnList
     MetadataTemplate o-- StateDictTable : content, fast writers
     MetadataTemplate o-- Metadata : content, fallback
     MetadataTemplate ..> Metadata : to_metadata builds a new one
@@ -165,7 +182,7 @@ classDiagram
     WriteResultTable ..> StateDictTable : index table fqns are entries of
 ```
 
-`fqns` and `fqn_index`: the coordinator's fqn list, replicated on every rank (see the protocol below). A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
+`FqnList`: the fqns of the coordinator's state dict table in entry order, replicated on every rank through `FqnListSlot` (see the protocol below). A `StateDictTable` is checked when it is created and is immutable: its sequences are tuples, its index read-only and its arrays read-only. `native.StateDictTable` only replaces `from_metadata` with the C++ producer, which builds the same table, so each writer module exports a `StateDictTable` with the same interface. `writer.state_dict_table_if_fast` converts with the selected module's, or returns `None` when the fast writers aren't used.
 
 A `MetadataTemplate`'s `content` is either a state dict table or a `Metadata`. It is a state dict table whenever the fast writers are used. It falls back to a `Metadata` (without `storage_data`, sharing the caller's `state_dict_metadata`) when the fast writers are turned off with `NVRX_FAST_METADATA_PICKLE=0`, when the torch version is untested or fails the layout check, or when the table can't represent the metadata (a subclass of `Metadata`, a `state_dict_metadata` that isn't a `dict`, or an fqn that isn't a `str`). `to_metadata` builds a new `Metadata` each time it is called. torch's `finish` and the `global_metadata` property use it, and nothing keeps the result. Its `storage_data` argument is the dict `Metadata.storage_data` holds, `MetadataIndex` to `_StorageInfo`, not write results: `finish` builds that dict from the write results, and `dump` writes it from the gathered rows on the fast path. `with_fields` sets fields a save sets (`version`, `storage_meta`), and raises `TypeError` for any other name. `WriteResultTable` is a decoded write-result table, numpy views into the gathered rows. Its `strings` are the relative paths, a few per rank, and in a string table also the fqns; an index table names fqns by their entry in the fqn list. `fqn_mode` says whether the `fqn` column holds strings or indices. In an index table, `fingerprint` identifies the fqn list the table was encoded against. The coordinator checks it against its own list and raises if they differ. It is only a safety check.
 
@@ -213,8 +230,6 @@ One rank's write results, little-endian, gathered to the coordinator zero-padded
 | `length`      | `_StorageInfo.length`.                                                                                        |
 | `flags`       | Whether `index` is set, whether the `MetadataIndex` has an offset, and whether that offset is a `torch.Size`. |
 
-The header's fqn mode (string or index table) and fqn list fingerprint are new; they are 0 today.
-
 ## State kept between saves
 
 `CheckpointMetadataCache`, one per training process, kept by the caller across saves (Megatron-LM: in the save strategy):
@@ -223,8 +238,10 @@ The header's fqn mode (string or index table) and fqn list fingerprint are new; 
 | ----------------------------------------- | ----------- | ----------------------------------------------------------------------- |
 | `MetadataTemplate` of the loaded checkpoint | all ranks   | From `set_cached_global_metadata` until the first save.                 |
 | `MetadataTemplate` of the previous save     | coordinator | After a save, built or reused.                                          |
-| fqn list (`fqns`, `fqn_index`)            | all ranks   | From `set_cached_global_metadata`; replaced by the finalize of a build. |
+| fqn list slot (`FqnListSlot`)             | all ranks   | A new one from `set_cached_global_metadata` and from each build.        |
 | `local_plan`, `central_plan`              | all ranks   | This rank's local and global plan of the previous save.                 |
+
+Each `MetadataTemplate` has its fqn list slot. It holds the template's fqn list on the coordinator, and on the other ranks once they have the list: from `set_cached_global_metadata`, or delivered by the finalize of the save that built the template. Saves that reuse the template share its slot, and each `PendingSave` refers to the slot of the template its save writes. A finalize delivers into its own save's slot, so a save that is finalized after the next one was planned never changes the list the next one encodes against.
 
 A `MetadataTemplate` is never modified: `finish` writes it with the save's `storage_data`, `version` and `storage_meta`, which are not kept. The caller can free the `Metadata` it hands to `set_cached_global_metadata`: as a state dict table, the cache keeps none of its objects.
 
@@ -428,12 +445,12 @@ Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save
 
 1. **The fqn list a rank encodes against is the coordinator's.** It holds by construction, not by agreement at run time:
    - after a reuse, every rank holds the loaded checkpoint's state dict table, which is the coordinator's metadata;
-   - after a build, the save's finalize delivers the coordinator's list to every rank;
+   - after a build, the save's finalize delivers the coordinator's list to every rank, into the slot of the template it built, even if the save failed;
    - a save's finalize runs before the next save's finalize encodes anything: the next save finalizes the previous one before staging overwrites its shared memory (case 2);
    - with `enable_cache`, the coordinator rank and the checkpoint structure stay the same between saves; a rank that breaks this raises (`_update`, `_check_plan_unchanged`);
    - `set_cached_global_metadata` is called on every rank with the same loaded checkpoint.
 2. **A broken invariant fails the save, it never writes a wrong `.metadata`.** An index table carries the fingerprint of the list it was encoded against; the coordinator raises on a mismatch, which every rank receives as a `CheckpointException` through the failure broadcast.
-3. **The collectives are the same on every rank.** A rank chooses between strings and indices in finalize, when it encodes, not when the save is planned: it sends indices if its cache holds the fqn list. Every rank holds the list by then, or none does: saves are finalized in order on every rank, a save that built the metadata delivers its list at the end of its finalize, and the finalize of a save runs on all ranks or none (the done-flags all_reduce, or the drain, which every rank reaches in the same save). So a save planned before the previous one was finalized (case 2, drain) still encodes against the right list. The list travels in collectives that run every save.
+3. **The collectives are the same on every rank.** A rank chooses between strings and indices in finalize, when it encodes, not when the save is planned. It sends indices if its save's fqn list slot holds the list, else strings. The coordinator can mix both kinds of table in one save, so the ranks don't need to agree. Saves are finalized in order on every rank, a save that built the metadata delivers its list at the end of its finalize, and the finalize of a save runs on all ranks or none (the done-flags all_reduce, or the drain, which every rank reaches in the same save). So a save planned before the previous one was finalized (case 2, drain) gets the list in time if it reuses the previous save's metadata. If a checkpoint was loaded in between, it encodes against the loaded list. The list travels in collectives that run every save. A failure of the coordinator's metadata write is raised on every rank through the same broadcast.
 4. **Nothing is modified in place.** `MetadataTemplate` and state dict tables are never changed; a save's `storage_data`, `version` and `storage_meta` are added when writing. The `Metadata` passed to `set_cached_global_metadata` is not modified.
 
 ## Other transfer path
