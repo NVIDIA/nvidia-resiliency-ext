@@ -125,16 +125,16 @@ class CheckpointMetadataCache:
         reused: bool,
         is_coordinator: bool,
     ) -> Optional[MetadataTemplate]:
-        """Record a planned save; return the global metadata the coordinator writes for it."""
-        self._local_plan = local_plan
-        self._central_plan = central_plan
+        """Record a planned save; return the global metadata the coordinator writes for it.
+
+        The plans are recorded last, so that a save that raises here isn't reused by the next.
+        """
         if not is_coordinator:
             self._metadata_template = None
             if not reused:
                 # The coordinator built new metadata; this save's finalize delivers its list.
                 self._fqn_list_slot = _FqnListSlot()
-            return None
-        if not reused:
+        elif not reused:
             self._metadata_template = MetadataTemplate.from_metadata(global_metadata)
             self._fqn_list_slot = _FqnListSlot(self._metadata_template.fqn_list)
         elif self._metadata_template is None:
@@ -142,6 +142,8 @@ class CheckpointMetadataCache:
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
+        self._local_plan = local_plan
+        self._central_plan = central_plan
         return self._metadata_template
 
 
