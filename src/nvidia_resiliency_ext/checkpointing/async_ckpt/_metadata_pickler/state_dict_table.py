@@ -227,11 +227,6 @@ class StateDictTable:
         """The fqns, in entry order: the fqn list index tables refer to."""
         return table.FqnList(self.fqns, self.index, self.fqns_fingerprint)
 
-    @property
-    def nbytes(self) -> int:
-        """Bytes held by the arrays."""
-        return sum(getattr(self, name).nbytes for name in self.ARRAYS)
-
     def chunk_count(self, i: int) -> int:
         """Return the number of chunks of entry i (0 unless a tensor)."""
         return int(self.chunk_start[i + 1] - self.chunk_start[i])

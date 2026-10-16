@@ -22,6 +22,9 @@ import pytest
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_dict_table import (
+    StateDictTable,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 
 from .metadata_assertions import NEEDS_FAST, assert_identical, stock_round_trip
@@ -38,7 +41,7 @@ def fast(request, monkeypatch):
 
 def test_kept_as_a_table_with_the_fast_writers(fast):
     metadata_template = MetadataTemplate.from_metadata(writer._sample_metadata())
-    assert (metadata_template.table is not None) is fast
+    assert isinstance(metadata_template._content, StateDictTable) is fast
     expected = _metadata_reuse.TableEntries if fast else _metadata_reuse.ObjectEntries
     assert isinstance(metadata_template.entries(), expected)
 
