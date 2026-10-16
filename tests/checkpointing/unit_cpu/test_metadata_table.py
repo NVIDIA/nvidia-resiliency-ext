@@ -21,6 +21,7 @@ finish builds out of the same write results, rank by rank.
 
 import dataclasses
 import io
+import struct
 
 import numpy as np
 import pytest
@@ -245,10 +246,33 @@ def test_fqn_list_of_the_metadata_matches_its_state_dict_table(tmp_path):
     )
 
 
-@given(st.lists(st.text(), unique=True))
+# Any str, often with lone surrogates, which st.text all but leaves out.
+any_text = st.lists(st.characters() | st.characters(categories=["Cs"])).map("".join)
+
+
+@given(st.lists(any_text, unique=True))
 def test_fqn_list_round_trips(fqns):
     fqn_list = table.FqnList.of(fqns)
     assert table.FqnList.decode(fqn_list.encode()) == fqn_list
+
+
+def test_fqn_list_round_trips_lone_surrogates():
+    """Python strings, which fqns are, may hold lone surrogates; UTF-8 can't encode them."""
+    fqn_list = table.FqnList.of(["w\ud800", "\udfff"])
+    assert table.FqnList.decode(fqn_list.encode()) == fqn_list
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"\x01\x00", id="truncated-length"),
+        pytest.param(struct.pack("<q", -16) + b"abcd", id="negative-length"),
+        pytest.param(struct.pack("<q", 5) + b"abcd", id="length-past-the-end"),
+    ],
+)
+def test_malformed_fqn_lists_are_rejected(data):
+    with pytest.raises(ValueError):
+        table.FqnList.decode(data)
 
 
 def _mixed_rows(md: Metadata, ranks: int, indices):
