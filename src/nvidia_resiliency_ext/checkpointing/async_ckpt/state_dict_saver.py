@@ -375,8 +375,9 @@ def _pending_save(
         dist_wrapper,
         _metadata_template=metadata_template,
         _fqn_list_slot=metadata_cache._fqn_list_slot if metadata_cache is not None else None,
-        # Only a storage writer that writes from tables reads index tables; every rank decides
-        # alike, so the collectives of finalize match.
+        # Only a storage writer that writes from tables reads index tables. Only the
+        # coordinator's flag decides what is delivered: the other ranks learn the length from
+        # finalize's all_reduce, so the collectives match whatever they decide.
         _delivers_fqn_list=(
             metadata_cache is not None
             and not reused
