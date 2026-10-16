@@ -11,6 +11,7 @@ from nvidia_resiliency_ext.attribution import (
     RESP_LOGS_DIR,
     RESP_MODE,
     RESP_MODULE,
+    RESP_RECOMMENDATION,
     RESP_RESULT,
     RESP_SCHED_RESTARTS,
     JobMode,
@@ -50,6 +51,7 @@ def submit_log(
     log_path: str,
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
 ) -> None:
     """
     Submit a log file to the attribution service.
@@ -59,7 +61,10 @@ def submit_log(
         log_path: Path to the log file
         state: MonitorState to update counters
         attrsvc_client: Client for attrsvc HTTP requests
+        analysis_job_id: Identity to analyze under, when it differs from the
+            SLURM task ID (see Monitor._analysis_job_id). Defaults to the task.
     """
+    analysis_job_id = analysis_job_id or job.job_id
 
     def on_success(response):
         job.log_submitted = True
@@ -67,7 +72,7 @@ def submit_log(
         try:
             result = response.json()
         except Exception as e:
-            logger.warning(f"[{job.job_id}] POST 2xx but JSON parse failed: {e}")
+            logger.warning(f"[{analysis_job_id}] POST 2xx but JSON parse failed: {e}")
             return
         mode = result.get(RESP_MODE, JobMode.SINGLE.value)
         if mode == JobMode.SPLITLOG.value:
@@ -75,11 +80,11 @@ def submit_log(
             sched_restarts = result.get(RESP_SCHED_RESTARTS, 0)
             files_analyzed = result.get(RESP_FILES_ANALYZED, 0)
             logger.info(
-                f"[{job.job_id}] POST submitted (splitlog mode): {log_path} "
+                f"[{analysis_job_id}] POST submitted (splitlog mode): {log_path} "
                 f"(logs_dir={logs_dir}, sched_restarts={sched_restarts}, files_analyzed={files_analyzed})"
             )
         else:
-            logger.info(f"[{job.job_id}] POST submitted: {log_path}")
+            logger.info(f"[{analysis_job_id}] POST submitted: {log_path}")
         job.post_success = True
         state.post_success += 1
 
@@ -89,14 +94,14 @@ def submit_log(
         categorize_path_error(state, error_msg)
 
     def on_404():
-        logger.debug(f"[{job.job_id}] POST 404 (file not found): {log_path}")
+        logger.debug(f"[{analysis_job_id}] POST 404 (file not found): {log_path}")
         job.log_submitted = True  # Don't retry - attrsvc received the path
         state.logs_submitted += 1
         state.path_errors_not_found += 1
 
     attrsvc_client.request_with_retry(
         method="POST",
-        job_id=job.job_id,
+        job_id=analysis_job_id,
         log_path=log_path,
         on_success=on_success,
         on_client_error=on_client_error,
@@ -105,11 +110,103 @@ def submit_log(
     )
 
 
+def request_terminal_analysis(
+    job: "SlurmJob",
+    log_path: str,
+    attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
+) -> bool:
+    """Ask attrsvc for a full analysis of ``log_path``, at most once per path.
+
+    attrsvc runs the pipeline and sends the Slack alert off the back of this
+    POST, so this is the whole notification trigger; the later GET only feeds
+    smonsvc's own console summary.
+
+    Returns True when a request was issued, False when the path was already
+    signaled.
+    """
+    analysis_job_id = analysis_job_id or job.job_id
+    signaled = getattr(job, "terminal_signaled_paths", None)
+    if signaled is None:
+        signaled = set()
+        job.terminal_signaled_paths = signaled
+    if log_path in signaled:
+        return False
+    signaled.add(log_path)
+
+    def on_terminal_success(_response):
+        logger.info(f"[{analysis_job_id}] Terminal analysis requested: {log_path}")
+
+    def on_terminal_client_error(error_msg: str):
+        logger.debug(f"[{analysis_job_id}] Terminal analysis request POST failed: {error_msg}")
+
+    attrsvc_client.request_with_retry(
+        method="POST",
+        job_id=analysis_job_id,
+        log_path=log_path,
+        on_success=on_terminal_success,
+        on_client_error=on_terminal_client_error,
+        user=job.user,
+        analysis_intent=ANALYSIS_INTENT_TERMINAL,
+    )
+    return True
+
+
+def cycle_analysis_finished(
+    analysis_job_id: str,
+    log_path: str,
+    attrsvc_client: "AttrsvcClient",
+) -> bool:
+    """Whether ``log_path``'s analysis has settled, so the next cycle may start.
+
+    Fails open: a GET that errors or 404s means attrsvc has no running record
+    for the path, and holding the job's remaining cycles hostage to a lost
+    request would stall attribution for that run indefinitely.
+    """
+    settled = True
+
+    def on_success(response):
+        nonlocal settled
+        try:
+            status = (response.json() or {}).get("status")
+        except Exception:
+            return
+        settled = status not in ("registered", "analyzing", "pending")
+
+    attrsvc_client.request_with_retry(
+        method="GET",
+        job_id=analysis_job_id,
+        log_path=log_path,
+        on_success=on_success,
+        on_client_error=lambda _error: None,
+    )
+    return settled
+
+
+def analyze_completed_cycle(
+    job: "SlurmJob",
+    log_path: str,
+    state: "MonitorState",
+    attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
+) -> None:
+    """Analyze a cycle log that a successor cycle has proven complete.
+
+    Waiting for SLURM to go terminal is the wrong trigger for a job that
+    restarts in place: the allocation stays RUNNING across every cycle, so the
+    alert would arrive only when some array task happens to die, hours after
+    the failure it describes.
+    """
+    if request_terminal_analysis(job, log_path, attrsvc_client, analysis_job_id):
+        state.completed_cycles_analyzed += 1
+
+
 def fetch_results(
     job: "SlurmJob",
     log_path: str,
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
+    analysis_job_id: str | None = None,
 ) -> None:
     """
     Fetch attribution results for a completed job.
@@ -119,26 +216,11 @@ def fetch_results(
         log_path: Path to the log file
         state: MonitorState to update counters
         attrsvc_client: Client for attrsvc HTTP requests
+        analysis_job_id: Identity to analyze under; defaults to the SLURM task.
     """
+    analysis_job_id = analysis_job_id or job.job_id
 
-    if not getattr(job, "terminal_signaled", False):
-        job.terminal_signaled = True
-
-        def on_terminal_success(_response):
-            logger.info(f"[{job.job_id}] Terminal analysis requested: {log_path}")
-
-        def on_terminal_client_error(error_msg: str):
-            logger.debug(f"[{job.job_id}] Terminal analysis request POST failed: {error_msg}")
-
-        attrsvc_client.request_with_retry(
-            method="POST",
-            job_id=job.job_id,
-            log_path=log_path,
-            on_success=on_terminal_success,
-            on_client_error=on_terminal_client_error,
-            user=job.user,
-            analysis_intent=ANALYSIS_INTENT_TERMINAL,
-        )
+    request_terminal_analysis(job, log_path, attrsvc_client, analysis_job_id)
 
     def on_success(response):
         try:
@@ -159,7 +241,7 @@ def fetch_results(
 
     attrsvc_client.request_with_retry(
         method="GET",
-        job_id=job.job_id,
+        job_id=analysis_job_id,
         log_path=log_path,
         on_success=on_success,
         on_client_error=on_client_error,
@@ -169,6 +251,9 @@ def fetch_results(
 def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> None:
     """
     Log a summary of the attribution result to stdout.
+
+    Slack alerting lives in attrsvc so that inline NVRx deployments, which have
+    no monitor, are covered by the same implementation.
 
     Args:
         job: The SLURM job
@@ -180,9 +265,14 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
 
         inner = response.get(RESP_RESULT, response)
 
-        if not inner or not inner.get(RESP_MODULE):
+        # Legacy LogSage results identify themselves with a module; Restart Agent
+        # results carry no module and are identified by the recommendation
+        # envelope instead. Requiring a module would drop every direct-backend
+        # result before it is reported or alerted on.
+        has_recommendation = isinstance(response.get(RESP_RECOMMENDATION), dict)
+        if not inner or not (inner.get(RESP_MODULE) or has_recommendation):
             logger.warning(
-                f"[{job.job_id}] Attribution result is empty or missing module: {response}"
+                f"[{job.job_id}] Attribution result is empty or unrecognized: {response}"
             )
             return
 
@@ -192,8 +282,6 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
         if action == RECOMMENDATION_TIMEOUT:
             timeout_reason = parsed.recommendation_reason or "Attribution analysis timed out"
             logger.warning(f"[{job.job_id}] Attribution timeout: {timeout_reason}")
-            print(parsed.format_summary(prefix=f"[{job.job_id}] "), flush=True)
-            return
 
         print(parsed.format_summary(prefix=f"[{job.job_id}] "), flush=True)
 
