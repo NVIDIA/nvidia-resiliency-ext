@@ -44,7 +44,7 @@ from torch.distributed.checkpoint.metadata import (
 from torch.distributed.checkpoint.planner import SavePlan, TensorWriteData, WriteItem, WriteItemType
 from torch.distributed.checkpoint.storage import WriteResult
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
+from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse, state_dict_saver
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
     state_dict_table,
     writer,
@@ -427,6 +427,20 @@ def test_metadata_with_an_fqn_that_isnt_a_str_has_no_fqn_list():
     built = CheckpointMetadataCache()
     built._update(plans[0], plans[0], metadata, reused=False, is_coordinator=True)
     assert loaded._fqn_list_slot.fqn_list is None and built._fqn_list_slot.fqn_list is None
+
+
+def test_a_save_that_fails_to_record_its_metadata_isnt_reused(monkeypatch):
+    """The plans are recorded only once the metadata is: a retried save builds it again."""
+    plans = sample_plans()
+    cache = CheckpointMetadataCache()
+
+    def failing(metadata):
+        raise MemoryError("no room for the table")
+
+    monkeypatch.setattr(state_dict_saver.MetadataTemplate, "from_metadata", failing)
+    with pytest.raises(MemoryError):
+        cache._update(plans[0], plans[0], metadata_of(plans), False, is_coordinator=True)
+    assert cache._local_plan is None and cache._central_plan is None
 
 
 def test_reuse_without_metadata_on_the_coordinator_raises():
