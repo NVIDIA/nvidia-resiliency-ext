@@ -116,8 +116,8 @@ classDiagram
     }
     class PendingSave {
         storage_writer : FileSystemWriterAsync
-        metadata_template : MetadataTemplate or None
         dist_wrapper : _DistWrapper
+        _metadata_template : MetadataTemplate or None
         _fqn_list_slot : _FqnListSlot or None
         _delivers_fqn_list : bool
     }
