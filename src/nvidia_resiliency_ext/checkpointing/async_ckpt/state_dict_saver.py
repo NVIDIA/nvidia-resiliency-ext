@@ -590,6 +590,7 @@ def save_state_dict_async_finalize(
     storage_writer: "FileSystemWriterAsync",
     global_metadata: Any,
     dist_wrapper: _DistWrapper,
+    /,
 ) -> None: ...
 
 

@@ -43,3 +43,13 @@ def test_finalize_takes_a_pending_save_or_the_three_old_arguments(arguments):
     """
     with pytest.raises(TypeError, match="takes a PendingSave"):
         save_state_dict_async_finalize("writer", *["argument"] * arguments)
+
+
+def test_finalize_takes_the_old_arguments_by_position_only():
+    """The deprecated form is positional-only, as its overload says: its callers passed the tuple
+    save_state_dict_async_plan returned, unpacked.
+
+    TODO: remove with the deprecated finalize arguments.
+    """
+    with pytest.raises(TypeError):
+        save_state_dict_async_finalize("writer", global_metadata="metadata", dist_wrapper="wrapper")
