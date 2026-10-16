@@ -20,7 +20,10 @@ tests/checkpointing/unit/test_async_writer.py."""
 import pickle
 
 import numpy as np
+import pytest
 import torch
+from hypothesis import given
+from hypothesis import strategies as st
 from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
@@ -49,7 +52,7 @@ def results(rank: int, n: int = 3):
 def test_without_process_group(tmp_path):
     """Without a process group, the rank's own payload is the one row, padded to 8 bytes."""
     payload = state_dict_saver._encode_write_results(results(0), FileSystemWriterAsync(tmp_path))
-    rows = state_dict_saver._gather_payloads(payload, _DistWrapper(None, False, 0))
+    rows, _ = state_dict_saver._gather_payloads(payload, _DistWrapper(None, False, 0))
     assert rows.shape[0] == 1 and rows.shape[1] % 8 == 0 and rows.shape[1] >= len(payload)
     assert rows[0, : len(payload)].tobytes() == payload
     is_table, pickled = state_dict_saver._decode_payloads(rows)
@@ -104,3 +107,50 @@ def test_overridden_finish_gets_the_write_results(tmp_path):
     ]
     payload = state_dict_saver._encode_write_results(rank_results, FileSystemWriterAsync(tmp_path))
     assert (payload[:8] == table.MAGIC.to_bytes(8, "little")) == writer.writes_tables()
+
+
+@pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
+def test_write_results_name_fqns_by_entry_in_the_fqn_list(tmp_path):
+    """With an fqn list holding every fqn the rank writes, it sends an index table."""
+    storage_writer = FileSystemWriterAsync(tmp_path)
+    fqn_list = table.FqnList.of(["r0.w", "other"])
+    payload = state_dict_saver._encode_write_results(results(0), storage_writer, fqn_list)
+    sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
+    assert sent.fqn_mode == table.FQN_INDICES
+    assert table.to_write_results(sent, fqn_list.fqns, fqn_list.fingerprint) == results(0)
+
+
+@pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
+def test_an_fqn_missing_from_the_list_sends_fqn_strings(tmp_path):
+    storage_writer = FileSystemWriterAsync(tmp_path)
+    fqn_list = table.FqnList.of(["other"])
+    payload = state_dict_saver._encode_write_results(results(0), storage_writer, fqn_list)
+    sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
+    assert sent.fqn_mode == table.FQN_STRINGS
+    assert table.to_write_results(sent) == results(0)
+
+
+@pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
+@given(
+    written=st.lists(st.text(min_size=1), min_size=1, max_size=5, unique=True),
+    listed=st.lists(st.text(min_size=1), max_size=8, unique=True),
+)
+def test_write_results_name_fqns_by_entry_iff_the_list_holds_them(
+    tmp_path_factory, written, listed
+):
+    """Index table iff the fqn list holds every fqn written; either way they decode back."""
+    sent_results = [
+        WriteResult(
+            index=MetadataIndex(fqn, torch.Size([i]), i),
+            size_in_bytes=10,
+            storage_data=_StorageInfo("__0_0.distcp", 10 * i, 10),
+        )
+        for i, fqn in enumerate(written)
+    ]
+    fqn_list = table.FqnList.of(listed)
+    storage_writer = FileSystemWriterAsync(tmp_path_factory.mktemp("writer"))
+    payload = state_dict_saver._encode_write_results(sent_results, storage_writer, fqn_list)
+    sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
+    holds_all = set(written) <= set(listed)
+    assert sent.fqn_mode == (table.FQN_INDICES if holds_all else table.FQN_STRINGS)
+    assert table.to_write_results(sent, fqn_list.fqns, fqn_list.fingerprint) == sent_results
