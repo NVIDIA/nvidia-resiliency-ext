@@ -57,6 +57,7 @@ state_dict_metadata and storage_data, which the writers write themselves.
 """
 
 import dataclasses
+import functools
 from array import array
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -71,6 +72,7 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
+from . import table
 from .opcodes import small_pickle, small_unpickle
 
 BYTES, TENSOR, OTHER = 0, 1, 2
@@ -214,6 +216,11 @@ class StateDictTable:
 
     def __len__(self) -> int:
         return len(self.fqns)
+
+    @functools.cached_property
+    def fqns_fingerprint(self) -> int:
+        """The fingerprint of the fqn list (see table.fingerprint), computed once."""
+        return table.fingerprint(self.fqns)
 
     @property
     def nbytes(self) -> int:

@@ -26,12 +26,16 @@ import numpy as np
 import pytest
 import torch
 from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import strategies as st
 from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.filesystem import _StorageInfo
-from torch.distributed.checkpoint.metadata import Metadata, MetadataIndex
+from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata, MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_dict_table import (
+    StateDictTable,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 
 from .metadata_samples import dcp_saved_metadata, large_metadata
@@ -220,3 +224,116 @@ def test_corrupt_tables_are_rejected(dumps, corrupt):
     misplacing a value."""
     with pytest.raises(ValueError):
         dumps(Metadata(state_dict_metadata={}, storage_data=None), storage_rows=corrupt())
+
+
+# Index tables: fqns named by entry in the coordinator's fqn list.
+
+
+def _fqn_list(md: Metadata):
+    """Return the fqn list of md's state dict table, its lookup and its fingerprint."""
+    state_dict_table = StateDictTable.from_metadata(dataclasses.replace(md, storage_data=None))
+    return state_dict_table.fqns, state_dict_table.index, state_dict_table.fqns_fingerprint
+
+
+def _mixed_rows(md: Metadata, ranks: int, indices):
+    """Encode md.storage_data as `ranks` ranks' tables, rank r an index table if indices[r] and
+    every fqn it writes is in md's fqn list, else a string table."""
+    _, index, fingerprint = _fqn_list(md)
+    encoded = []
+    for r, results in enumerate(split_into_ranks(md, ranks)):
+        try:
+            if not indices[r]:
+                raise table.Unencodable("a string table")
+            encoded.append(table.encode(results, index, fingerprint))
+        except table.Unencodable:
+            encoded.append(table.encode(results))
+    width = -(-max(len(e) for e in encoded) // 8) * 8
+    return np.stack([np.frombuffer(e.ljust(width, b"\0"), dtype=np.uint8) for e in encoded])
+
+
+@pytest.mark.parametrize("dumps", DUMPS)
+@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(md=metadatas(), data=st.data())
+def test_index_and_string_tables_write_like_the_dict(dumps, md, data):
+    """Any mix of index and string tables writes the bytes of writing md itself."""
+    assume(all(getattr(i, "transform_descriptors", None) is None for i in md.storage_data.values()))
+    # fqns the storage writes that state_dict_metadata lacks make those ranks send strings
+    ranks = data.draw(st.integers(1, 4))
+    rows = _mixed_rows(
+        md, ranks, data.draw(st.lists(st.booleans(), min_size=ranks, max_size=ranks))
+    )
+    from_tables = dumps(dataclasses.replace(md, storage_data=None), storage_rows=rows)
+    assert from_tables == dumps(md)
+    fqns, _, fingerprint = _fqn_list(md)
+    assert table.to_storage_data(table.decode_rows(rows), fqns, fingerprint) == md.storage_data
+
+
+def _index_table_metadata() -> Metadata:
+    """Return metadata whose storage writes fqns of its state dict: w and b."""
+    return Metadata(
+        state_dict_metadata={"w": BytesStorageMetadata(), "b": BytesStorageMetadata()},
+        storage_data={
+            MetadataIndex("w"): _StorageInfo("__0_0.distcp", 0, 1),
+            MetadataIndex("b"): _StorageInfo("__0_0.distcp", 1, 1),
+        },
+    )
+
+
+def _corrupt_index_table(mutate):
+    """Return the row of an index table of _index_table_metadata, after mutate(header, entry)."""
+    md = _index_table_metadata()
+    rows = _mixed_rows(md, 1, [True])
+    raw = rows[0].copy()
+    header = raw[: 8 * table.HEADER].view("<i8")
+    assert header[table.FQN_MODE] == table.FQN_INDICES
+    pos = 8 * table.HEADER + 8 * int(header[3])
+    entry = (
+        raw[pos : pos + 8 * table.COLUMNS * int(header[2])].view("<i8").reshape(-1, table.COLUMNS)
+    )
+    mutate(header, entry)
+    return raw[None, :]
+
+
+CORRUPT_INDEX = {
+    "unknown-fqn-mode": lambda: _corrupt_index_table(lambda h, e: _set(h, table.FQN_MODE, 7)),
+    "other-fqn-list": lambda: _corrupt_index_table(
+        lambda h, e: _set(h, table.FINGERPRINT, h[table.FINGERPRINT] ^ 1)
+    ),
+    "fqn-entry-past-the-list": lambda: _corrupt_index_table(
+        lambda h, e: _set(e, (0, table.FQN), 2)
+    ),
+    "negative-fqn-entry": lambda: _corrupt_index_table(lambda h, e: _set(e, (0, table.FQN), -1)),
+}
+
+
+@pytest.mark.parametrize("dumps", DUMPS)
+@pytest.mark.parametrize("corrupt", CORRUPT_INDEX.values(), ids=CORRUPT_INDEX.keys())
+def test_corrupt_index_tables_are_rejected(dumps, corrupt):
+    """Both writers reject an index table that doesn't fit the fqn list, with ValueError."""
+    md = dataclasses.replace(_index_table_metadata(), storage_data=None)
+    with pytest.raises(ValueError):
+        dumps(md, storage_rows=corrupt())
+
+
+@pytest.mark.parametrize("dumps", DUMPS)
+def test_index_table_written_like_the_dict(dumps):
+    md = _index_table_metadata()
+    rows = _mixed_rows(md, 1, [True])
+    assert dumps(dataclasses.replace(md, storage_data=None), storage_rows=rows) == dumps(md)
+
+
+def test_decoding_an_index_table_needs_its_fqn_list():
+    md = _index_table_metadata()
+    (decoded,) = table.decode_rows(_mixed_rows(md, 1, [True]))
+    fqns, _, fingerprint = _fqn_list(md)
+    assert table.to_write_results(decoded, fqns, fingerprint)
+    with pytest.raises(ValueError):
+        table.to_write_results(decoded)
+    with pytest.raises(ValueError):
+        table.to_write_results(decoded, ("b", "w"))
+
+
+def test_encoding_an_fqn_the_list_lacks_is_unencodable():
+    """A rank writing an fqn the coordinator's list lacks sends its write results another way."""
+    with pytest.raises(table.Unencodable):
+        table.encode([_result()], {"other": 0}, 123)

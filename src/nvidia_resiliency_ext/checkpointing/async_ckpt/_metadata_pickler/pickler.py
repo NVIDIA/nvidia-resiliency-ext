@@ -205,7 +205,7 @@ class _MetadataPickler:
                 self._state_dict_metadata(state_dict_table)
             elif field == STORAGE_DATA:
                 if tables is not None:
-                    self._storage_data_tables(tables)
+                    self._storage_data_tables(tables, state_dict_table)
                 elif storage_data is not None:
                     self._storage_data(storage_data)
                 else:
@@ -352,15 +352,17 @@ class _MetadataPickler:
                 )
             out.append(SETITEMS)
 
-    def _storage_data_tables(self, tables) -> None:
-        """Metadata.storage_data from write-result tables, encoded as _storage_data encodes the
-        dict finish builds from the same write results."""
+    def _storage_data_tables(self, tables, state_dict_table: StateDictTable) -> None:
+        """Write Metadata.storage_data from write-result tables, as _storage_data writes the dict
+        finish builds from the same write results. Index tables name their fqns by entries of
+        state_dict_table."""
         out, k, string, int_ = self.out, self.k, self.string, self.int
         INDEX_START, K_INDEX, K_OFFSET = self.INDEX_START, k["index"], k["offset"]
         INFO_START, K_LENGTH = self.INFO_START, k["length"]
         out.append(EMPTY_DICT)
         count = 0
         for t in tables:
+            fqns = table.fqns_of(t, state_dict_table.fqns, state_dict_table.fqns_fingerprint)
             strings, offsets, pos = t.strings, t.offsets.tolist(), 0
             for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
                 if count % _BATCH == 0:
@@ -377,7 +379,7 @@ class _MetadataPickler:
                     off = b""
                 out.append(
                     INDEX_START
-                    + string(strings[fqn])
+                    + string(fqns[fqn])
                     + K_INDEX
                     + (int_(index) if flags & table.FLAG_INDEX else NONE)
                     + off

@@ -561,7 +561,15 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
                     storage_writer._finish(metadata_template, [], storage_rows=rows)
                 else:
                     results = [
-                        _table.to_write_results(_table.decode(row)) if sent_table else pickled[rank]
+                        (
+                            _table.to_write_results(
+                                _table.decode(row),
+                                metadata_template.fqns,
+                                metadata_template.fqns_fingerprint,
+                            )
+                            if sent_table
+                            else pickled[rank]
+                        )
                         for rank, (row, sent_table) in enumerate(zip(rows, is_table))
                     ]
                     if _storage_writer_finish_is_nvrx(storage_writer):
