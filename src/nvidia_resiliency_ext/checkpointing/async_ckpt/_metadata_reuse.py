@@ -100,9 +100,6 @@ class ObjectEntries:
         self._fqns = list(self._entries)
         self.planner_data = metadata.planner_data
 
-    def __len__(self) -> int:
-        return len(self._fqns)
-
     def fqn(self, i: int) -> str:
         return self._fqns[i]
 
@@ -141,9 +138,6 @@ class TableEntries:
         self._properties = {}  # properties id -> TensorProperties
         planner_data = dict(table.fields).get("planner_data")
         self.planner_data = None if planner_data is None else small_unpickle(planner_data)
-
-    def __len__(self) -> int:
-        return len(self._table)
 
     def fqn(self, i: int) -> str:
         return self._table.fqns[i]

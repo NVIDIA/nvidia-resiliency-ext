@@ -519,7 +519,7 @@ def test_the_reuse_views_agree(producer, metadata, data):
     """The reuse check reads the same entries from a Metadata and from its table."""
     objects = _metadata_reuse.ObjectEntries(metadata)
     tables = _metadata_reuse.TableEntries(producer.from_metadata(metadata))
-    assert len(objects) == len(tables) and objects.counts() == tables.counts()
+    assert objects.counts() == tables.counts()
     assert objects.planner_data == tables.planner_data
     for i, count in enumerate(objects.counts()):
         assert objects.fqn(i) == tables.fqn(i) and objects.is_tensor(i) == tables.is_tensor(i)

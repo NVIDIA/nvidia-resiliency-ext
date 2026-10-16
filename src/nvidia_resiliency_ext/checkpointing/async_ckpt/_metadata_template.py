@@ -70,11 +70,6 @@ class MetadataTemplate:
             return self._content.fqn_list
         return FqnList.of(self._content.state_dict_metadata)
 
-    @property
-    def table(self) -> Optional[StateDictTable]:
-        """The state dict table, or None if this is held as a Metadata."""
-        return self._content if isinstance(self._content, StateDictTable) else None
-
     def to_metadata(self, storage_data: Optional[dict] = None) -> Metadata:
         """Build a new Metadata from the template, with this storage_data."""
         if isinstance(self._content, StateDictTable):
