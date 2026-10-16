@@ -262,3 +262,26 @@ def test_write_results_name_fqns_by_entry_iff_the_list_holds_them(
     holds_all = set(written) <= set(listed)
     assert sent.fqn_mode == (table.FQN_INDICES if holds_all else table.FQN_STRINGS)
     assert table.to_write_results(sent, fqn_list) == sent_results
+
+
+def _coordinator_ranks(rank, init_file, ranks):
+    """On each rank of a group of the last rank, record the coordinator's global rank."""
+    torch.distributed.init_process_group(
+        "gloo", init_method=f"file://{init_file}", rank=rank, world_size=2
+    )
+    try:
+        group = torch.distributed.new_group([1])
+        if rank == 1:
+            ranks[rank] = state_dict_saver._global_coordinator_rank(_DistWrapper(group, True, 0))
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+def test_global_coordinator_rank_of_a_group(tmp_path):
+    """The coordinator of a group of only rank 1 is global rank 1, also on torch versions whose
+    _DistWrapper has no global_coordinator_rank."""
+    ranks = torch.multiprocessing.Manager().dict()
+    torch.multiprocessing.spawn(
+        _coordinator_ranks, args=(tmp_path / "init", ranks), nprocs=2, join=True
+    )
+    assert dict(ranks) == {1: 1}

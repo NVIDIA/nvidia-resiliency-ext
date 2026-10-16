@@ -38,7 +38,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Utils
 
-pytestmark = pytest.mark.skipif(
+NEEDS_TABLES = pytest.mark.skipif(
     not writer.writes_tables(), reason="needs the fast .metadata writer"
 )
 
@@ -70,10 +70,10 @@ class StagedWriter(FileSystemWriterAsync):
         return write_results(torch.distributed.get_rank())
 
 
-def plan(path, cache, reused):
-    """Plan a save into path as save_state_dict_async_plan ends it, building the global
-    metadata on the coordinator unless reused."""
-    dist_wrapper = _DistWrapper(None, True, 0)
+def plan(path, cache, reused, group=None):
+    """Plan a save into path as save_state_dict_async_plan ends it, over group, building the
+    global metadata on the coordinator unless reused."""
+    dist_wrapper = _DistWrapper(group, True, 0)
     storage_writer = StagedWriter(path)
     storage_writer.set_up_storage_writer(dist_wrapper.is_coordinator)
     built = global_metadata() if dist_wrapper.is_coordinator and not reused else None
@@ -105,6 +105,7 @@ def assert_written(path):
     assert written.storage_data == {r.index: r.storage_data for r in expected}
 
 
+@NEEDS_TABLES
 def test_build_then_reuse(tmp_path_dist_ckpt, modes):
     """The other ranks get the coordinator's list from the build's finalize, then send index
     tables."""
@@ -119,6 +120,7 @@ def test_build_then_reuse(tmp_path_dist_ckpt, modes):
         assert modes == [table.FQN_STRINGS, table.FQN_INDICES]
 
 
+@NEEDS_TABLES
 def test_failed_build_still_delivers(tmp_path_dist_ckpt, modes, monkeypatch):
     """A build whose .metadata write fails raises on every rank, and still delivers its fqn list,
     which the next save, reusing its metadata, encodes against."""
@@ -139,6 +141,7 @@ def test_failed_build_still_delivers(tmp_path_dist_ckpt, modes, monkeypatch):
     assert modes[-1] == table.FQN_INDICES
 
 
+@NEEDS_TABLES
 def test_legacy_finalize_with_cache(tmp_path_dist_ckpt, modes):
     """Unpacked into finalize's old arguments, a save with a cache writes .metadata, with every
     rank sending fqn strings.
@@ -155,6 +158,7 @@ def test_legacy_finalize_with_cache(tmp_path_dist_ckpt, modes):
     assert modes == [table.FQN_STRINGS] * 2
 
 
+@NEEDS_TABLES
 def test_coordinator_failure_raises_everywhere(tmp_path_dist_ckpt, modes, monkeypatch):
     """A failure on the coordinator after the gather raises on every rank."""
 
@@ -165,3 +169,17 @@ def test_coordinator_failure_raises_everywhere(tmp_path_dist_ckpt, modes, monkey
     with TempNamedDir(tmp_path_dist_ckpt / "unreadable_rows") as ckpt_dir:
         with pytest.raises(CheckpointException):
             save_state_dict_async_finalize(plan(ckpt_dir, None, reused=False))
+
+
+def test_group_whose_coordinator_isnt_global_rank_0(tmp_path_dist_ckpt):
+    """Saving over a group of only the last rank: the collectives address its coordinator by its
+    global rank."""
+    Utils.initialize_distributed()
+    last = Utils.world_size - 1
+    group = torch.distributed.new_group([last])
+    with TempNamedDir(tmp_path_dist_ckpt / "group") as ckpt_dir:
+        if torch.distributed.get_rank() == last:
+            save_state_dict_async_finalize(plan(ckpt_dir, None, reused=False, group=group))
+            written = FileSystemReader(ckpt_dir).read_metadata()
+            assert written.storage_data == {r.index: r.storage_data for r in write_results(last)}
+        torch.distributed.barrier()
