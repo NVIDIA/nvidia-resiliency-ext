@@ -222,6 +222,11 @@ class StateDictTable:
         """The fingerprint of the fqn list (see table.fingerprint), computed once."""
         return table.fingerprint(self.fqns)
 
+    @functools.cached_property
+    def fqn_list(self) -> table.FqnList:
+        """The fqns, in entry order: the fqn list index tables refer to."""
+        return table.FqnList(self.fqns, self.index, self.fqns_fingerprint)
+
     @property
     def nbytes(self) -> int:
         """Bytes held by the arrays."""

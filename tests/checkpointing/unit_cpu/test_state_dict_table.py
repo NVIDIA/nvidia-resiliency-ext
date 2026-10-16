@@ -440,7 +440,7 @@ def _encode(part, state_dict_table, as_indices):
     results = [WriteResult(index, info.length, info) for index, info in part]
     if as_indices:
         try:
-            return table.encode(results, state_dict_table.index, state_dict_table.fqns_fingerprint)
+            return table.encode(results, state_dict_table.fqn_list)
         except table.Unencodable:
             pass  # a rank writing an fqn the list lacks sends strings
     return table.encode(results)

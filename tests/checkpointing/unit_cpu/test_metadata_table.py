@@ -229,20 +229,19 @@ def test_corrupt_tables_are_rejected(dumps, corrupt):
 # Index tables: fqns named by entry in the coordinator's fqn list.
 
 
-def _fqn_list(md: Metadata):
-    """Return the fqn list of md's state dict table, its lookup and its fingerprint."""
-    state_dict_table = StateDictTable.from_metadata(dataclasses.replace(md, storage_data=None))
-    return state_dict_table.fqns, state_dict_table.index, state_dict_table.fqns_fingerprint
+def _fqn_list(md: Metadata) -> table.FqnList:
+    """Return the fqn list of md's state dict table."""
+    return StateDictTable.from_metadata(dataclasses.replace(md, storage_data=None)).fqn_list
 
 
 def test_fqn_list_of_the_metadata_matches_its_state_dict_table(tmp_path):
     md = dcp_saved_metadata(tmp_path)
-    fqns, index, fingerprint = _fqn_list(md)
+    expected = _fqn_list(md)
     fqn_list = table.FqnList.of(md.state_dict_metadata)
     assert (fqn_list.fqns, dict(fqn_list.index), fqn_list.fingerprint) == (
-        fqns,
-        dict(index),
-        fingerprint,
+        expected.fqns,
+        dict(expected.index),
+        expected.fingerprint,
     )
 
 
@@ -255,13 +254,13 @@ def test_fqn_list_round_trips(fqns):
 def _mixed_rows(md: Metadata, ranks: int, indices):
     """Encode md.storage_data as `ranks` ranks' tables, rank r an index table if indices[r] and
     every fqn it writes is in md's fqn list, else a string table."""
-    _, index, fingerprint = _fqn_list(md)
+    fqn_list = _fqn_list(md)
     encoded = []
     for r, results in enumerate(split_into_ranks(md, ranks)):
         try:
             if not indices[r]:
                 raise table.Unencodable("a string table")
-            encoded.append(table.encode(results, index, fingerprint))
+            encoded.append(table.encode(results, fqn_list))
         except table.Unencodable:
             encoded.append(table.encode(results))
     width = -(-max(len(e) for e in encoded) // 8) * 8
@@ -281,8 +280,7 @@ def test_index_and_string_tables_write_like_the_dict(dumps, md, data):
     )
     from_tables = dumps(dataclasses.replace(md, storage_data=None), storage_rows=rows)
     assert from_tables == dumps(md)
-    fqns, _, fingerprint = _fqn_list(md)
-    assert table.to_storage_data(table.decode_rows(rows), fqns, fingerprint) == md.storage_data
+    assert table.to_storage_data(table.decode_rows(rows), _fqn_list(md)) == md.storage_data
 
 
 def _index_table_metadata() -> Metadata:
@@ -342,15 +340,14 @@ def test_index_table_written_like_the_dict(dumps):
 def test_decoding_an_index_table_needs_its_fqn_list():
     md = _index_table_metadata()
     (decoded,) = table.decode_rows(_mixed_rows(md, 1, [True]))
-    fqns, _, fingerprint = _fqn_list(md)
-    assert table.to_write_results(decoded, fqns, fingerprint)
+    assert table.to_write_results(decoded, _fqn_list(md))
     with pytest.raises(ValueError):
         table.to_write_results(decoded)
     with pytest.raises(ValueError):
-        table.to_write_results(decoded, ("b", "w"))
+        table.to_write_results(decoded, table.FqnList.of(("b", "w")))
 
 
 def test_encoding_an_fqn_the_list_lacks_is_unencodable():
     """A rank writing an fqn the coordinator's list lacks sends its write results another way."""
     with pytest.raises(table.Unencodable):
-        table.encode([_result()], {"other": 0}, 123)
+        table.encode([_result()], table.FqnList.of(["other"]))

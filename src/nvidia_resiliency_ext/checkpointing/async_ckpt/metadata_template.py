@@ -66,8 +66,7 @@ class MetadataTemplate:
     def fqn_list(self) -> FqnList:
         """The fqns of state_dict_metadata, in order: the fqn list index tables refer to."""
         if isinstance(self._content, StateDictTable):
-            content = self._content
-            return FqnList(content.fqns, content.index, content.fqns_fingerprint)
+            return self._content.fqn_list
         return FqnList.of(self._content.state_dict_metadata)
 
     @property

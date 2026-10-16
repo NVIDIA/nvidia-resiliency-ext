@@ -473,7 +473,7 @@ def _encode_write_results(
         try:
             if fqn_list is not None:
                 try:
-                    return _table.encode(write_results, fqn_list.index, fqn_list.fingerprint)
+                    return _table.encode(write_results, fqn_list)
                 except _table.Unencodable:
                     logger.debug("an fqn is missing from the fqn list; sending fqn strings")
             return _table.encode(write_results)
@@ -665,11 +665,7 @@ def _write_metadata(
         return
     fqn_list = metadata_template.fqn_list
     results = [
-        (
-            _table.to_write_results(_table.decode(row), fqn_list.fqns, fqn_list.fingerprint)
-            if sent_table
-            else pickled[rank]
-        )
+        (_table.to_write_results(_table.decode(row), fqn_list) if sent_table else pickled[rank])
         for rank, (row, sent_table) in enumerate(zip(rows, is_table))
     ]
     if _storage_writer_finish_is_nvrx(storage_writer):
