@@ -335,12 +335,14 @@ using Array = py::array_t<T, py::array::c_style>;
     return py::reinterpret_steal<py::tuple>(value.release());
 }
 
-// Return the attribute name of table, which must be a 1-D, C-contiguous array of exactly the
-// element type T.
+// Return the attribute name of table, which must be a 1-D, C-contiguous, aligned array of exactly
+// the element type T.
 template <TableValue T>
 [[nodiscard]] Array<T> array_attr(py::handle table, const char* name) {
     py::object value = table.attr(name);
-    if (!Array<T>::check_(value) || py::reinterpret_borrow<py::array>(value).ndim() != 1) {
+    if (!Array<T>::check_(value) || py::reinterpret_borrow<py::array>(value).ndim() != 1 ||
+        (py::reinterpret_borrow<py::array>(value).flags() &
+         py::detail::npy_api::NPY_ARRAY_ALIGNED_) == 0) {
         bad_state_dict_table(std::string(name) + " is not a 1-D array of the expected type");
     }
     return py::reinterpret_steal<Array<T>>(value.release());

@@ -269,6 +269,15 @@ def _bump(a: np.ndarray, i: int, by: int) -> np.ndarray:
     return a
 
 
+def _misaligned(array: np.ndarray) -> np.ndarray:
+    """Return a copy of array whose values don't start at an aligned address."""
+    raw = np.zeros(array.nbytes + 1, dtype=np.uint8)
+    raw[1:] = array.view(np.uint8)
+    copy = raw[1:].view(array.dtype)
+    assert not copy.flags.aligned
+    return copy
+
+
 def _attributes(table: StateDictTable, **changes) -> dict:
     """Return a table's attributes, with these changed."""
     return {**{f.name: getattr(table, f.name) for f in dataclasses.fields(table)}, **changes}
@@ -278,6 +287,7 @@ def _attributes(table: StateDictTable, **changes) -> dict:
 MALFORMED = [
     pytest.param(lambda table: dict(kind=table.kind.astype(np.int64)), id="kind-dtype"),
     pytest.param(lambda table: dict(dims=table.dims[::2]), id="not-contiguous"),
+    pytest.param(lambda table: dict(dims=_misaligned(table.dims)), id="not-aligned"),
     pytest.param(lambda table: dict(ref=table.ref[:-1]), id="short-ref"),
     pytest.param(lambda table: dict(fqns=table.fqns[:-1]), id="short-fqns"),
     pytest.param(lambda table: dict(ndim=table.ndim[:-1]), id="short-ndim"),
