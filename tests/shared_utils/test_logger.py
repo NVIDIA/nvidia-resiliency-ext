@@ -79,12 +79,12 @@ def gen_log_msg(logger, num_msg, log_type="info"):
         if log_type == "error":
             msg = textwrap.dedent(
                 """\
-            monitor_process.py:316 Traceback (most recent call last):
-              File "/usr/local/lib/python3.12/dist-packages/nvidia_resiliency_ext/inprocess/monitor_process.py", line 297, in run
-                store.iteration_barrier(
+            training.py:316 Traceback (most recent call last):
+              File "/workspace/training.py", line 297, in train
+                wait_for_workers(store)
 
-              File "/usr/local/lib/python3.12/dist-packages/nvidia_resiliency_ext/inprocess/store.py", line 303, in reentrant_barrier
-                self.wait([last_worker_arrived_key], timeout_chunk)
+              File "/workspace/training.py", line 303, in wait_for_workers
+                store.wait([last_worker_arrived_key], timeout_chunk)
               torch.distributed.DistNetworkError: Failed to recv, got 0 bytes. Connection was likely closed. Did the remote server shutdown or crash?
 
 
