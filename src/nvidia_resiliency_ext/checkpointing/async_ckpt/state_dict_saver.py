@@ -454,7 +454,7 @@ def _verify_global_metadata_reuse(
             logger.warning(f"rank {rank}: can't read the loaded metadata for reuse: {e!r}")
         else:
             votes = _metadata_reuse.votes(local_plan, entries, rank, world_size)
-    summed = torch.tensor(votes, dtype=torch.int64, device=_device(dist_wrapper))
+    summed = torch.tensor(votes, dtype=torch.int64, device=torch.cuda.current_device())
     with telemetry.span(
         semconv.SPAN_GROUP_CKPT_PROFILING,
         "nv.nvrx.ckpt.save.verify_global_metadata_reuse_all_reduce",
@@ -503,12 +503,6 @@ def _global_coordinator_rank(dist_wrapper: _DistWrapper) -> int:
     return getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank)
 
 
-def _device(dist_wrapper: _DistWrapper):
-    """Return the device of the group's collectives: the CPU with gloo, else the current GPU."""
-    gloo = dist.get_backend(dist_wrapper.group) == dist.Backend.GLOO
-    return torch.device("cpu") if gloo else torch.cuda.current_device()
-
-
 def _gather_payloads(
     payload: bytes, dist_wrapper: _DistWrapper, delivered_length: int = 0
 ) -> Tuple[Optional[np.ndarray], int]:
@@ -520,7 +514,7 @@ def _gather_payloads(
     (delivered_length, nonzero on the coordinator only); return the rows and that length.
     """
     width = len(payload)
-    device = _device(dist_wrapper) if dist_wrapper.use_dist else None
+    device = torch.cuda.current_device() if dist_wrapper.use_dist else None
     if dist_wrapper.use_dist:
         lanes = torch.tensor([width, delivered_length], dtype=torch.int64, device=device)
         torch.distributed.all_reduce(
@@ -663,7 +657,9 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     # raise exceptions everywhere if needed. The failure details are only raised on the
     # coordinator. The list is delivered even if the save failed: the next save reuses its
     # metadata.
-    broadcast = torch.zeros(8 + delivered_length, dtype=torch.uint8, device=_device(dist_wrapper))
+    broadcast = torch.zeros(
+        8 + delivered_length, dtype=torch.uint8, device=torch.cuda.current_device()
+    )
     if dist_wrapper.is_coordinator:
         broadcast[0] = int(len(node_failures) > 0)
         if delivered:
