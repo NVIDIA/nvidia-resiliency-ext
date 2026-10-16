@@ -545,7 +545,8 @@ def _gather_payloads(
 
 
 def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
-    """Which ranks sent a table, and what each other rank pickled: its write results or exception."""
+    """Return which ranks sent a table, and what each other rank pickled: its write results or
+    exception."""
     is_table = rows[:, :8].copy().view("<i8")[:, 0] == write_result_table.MAGIC
     # Unpickles only what this job's ranks pickled, as dist.gather_object does.
     pickled = {
@@ -596,7 +597,8 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     Finalize the save that save_state_dict_async_plan planned and staged.
 
     The `write_results` are retrieved from the pending save's storage_writer. Each rank sends them
-    to the coordinator as a table (see `_metadata_pickler.write_result_table`) if it can, else pickled.
+    to the coordinator as a table (see `_metadata_pickler.write_result_table`) if it can, else
+    pickled.
 
     Args:
         pending (PendingSave): the save planned and staged by `save_state_dict_async_plan`.

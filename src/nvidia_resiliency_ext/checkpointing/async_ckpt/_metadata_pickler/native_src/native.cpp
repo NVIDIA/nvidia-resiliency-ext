@@ -159,7 +159,8 @@ class WriteResultTable {
     [[nodiscard]] Int64s entry(size_t r) const { return entries_.subspan(COLUMNS * r, COLUMNS); }
 
     // Replace out's contents with the strings, as views into the row. Their bytes are not checked
-    // to be UTF-8: tables come from this job's ranks, which encoded them (see write_result_table.py).
+    // to be UTF-8: tables come from this job's ranks, which encoded them (see
+    // write_result_table.py).
     void split_strings(std::vector<std::string_view>& out) const {
         out.clear();
         std::string_view rest = blob_;
