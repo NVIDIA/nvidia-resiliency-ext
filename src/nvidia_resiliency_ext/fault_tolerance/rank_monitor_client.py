@@ -395,6 +395,13 @@ class RankMonitorClient:
             )
         # we receive current FT config from the server
         self.cfg = reply_for_init.cfg
+        if self.cfg.timeout_dump_enabled:
+            from .timeout_diagnostics import authorize_monitor_ptrace
+
+            try:
+                authorize_monitor_ptrace(self.rank_monitor_socket)
+            except (OSError, AttributeError) as exc:
+                self.logger.warning("Could not authorize timeout diagnostics: %s", exc)
 
     def init_workload_monitoring(
         self,
