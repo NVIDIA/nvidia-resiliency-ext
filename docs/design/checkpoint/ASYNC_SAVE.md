@@ -257,7 +257,7 @@ Both are empty in a new process. `FileSystemWriterAsync.cleanup_tensor_caches` c
 
 ## 1. First checkpoint of a job
 
-No checkpoint was loaded, so there is no metadata to reuse. Every rank still takes part in the reuse vote, which keeps the collectives the same on all ranks. The coordinator builds the metadata, which only it has, so the ranks send string tables, and the finalize delivers the fqn list. The shm tensors are allocated and sent to the worker.
+No checkpoint was loaded, so there is no metadata to reuse. Every rank still takes part in the reuse vote, which keeps the collectives the same on all ranks. The coordinator builds the metadata, so it alone has the new fqn list: it sends an index table, the other ranks send string tables, and the finalize delivers the list to them. The shm tensors are allocated and sent to the worker.
 
 ```mermaid
 sequenceDiagram
@@ -291,9 +291,9 @@ sequenceDiagram
     rect rgba(220, 150, 60, 0.12)
     Note over R,C: Finalize
     R<<->>C: maybe_finalize_async_calls: all_reduce of done flags
-    R->>R: save_state_dict_async_finalize: encode its write results as a string table
+    R->>R: save_state_dict_async_finalize: encode its write results as a string table,<br/>on the coordinator as an index table
     R<<->>C: all_reduce(MAX) of [table width, fqn list bytes],<br/>the coordinator contributes its fqn list's byte length
-    R->>C: gather(string tables, or pickled write results)
+    R->>C: gather(string tables and the coordinator's index table,<br/>or pickled write results)
     C->>S: write .metadata from the state dict table and the rows<br/>(temp file, fsync, rename)
     C->>R: broadcast(failure flag and the fqn list)
     R->>R: keep the fqn list: later saves send index tables
@@ -402,9 +402,9 @@ sequenceDiagram
         C->>S: write .metadata from the loaded state dict table and the rows
         C->>R: broadcast(failure flag)
     else metadata built
-        R->>R: encode its write results as a string table
+        R->>R: encode its write results as a string table,<br/>on the coordinator as an index table
         R<<->>C: all_reduce(MAX) of [table width, fqn list bytes],<br/>coordinator: its fqn list's byte length
-        R->>C: gather(string tables, or pickled write results)
+        R->>C: gather(string tables and the coordinator's index table,<br/>or pickled write results)
         C->>S: write .metadata from the new state dict table and the rows
         C->>R: broadcast(failure flag and the fqn list)
         R->>R: keep the fqn list
@@ -428,9 +428,9 @@ F: fast writers usable. D: decentralized planning (`can_run_decentralized_global
 
 | F   | D   | C   | Kept between saves    | Reuse of a loaded checkpoint | Write results       | fqns in write results                  | `.metadata` written from |
 | --- | --- | --- | --------------------- | ---------------------------- | ------------------- | -------------------------------------- | ------------------------ |
-| yes | yes | yes | state dict table, fqn list | checked with one all_reduce  | write-result tables | indices, strings in a save that builds | state dict table and rows     |
-| yes | no  | yes | state dict table, fqn list | no, cached from the 2nd save | write-result tables | indices, strings in a save that builds | state dict table and rows     |
-| yes | any | no  | nothing               | no                           | write-result tables | strings                                | `Metadata` and rows      |
+| yes | yes | yes | state dict table, fqn list | checked with one all_reduce  | write-result tables | indices; in a save that builds, strings from the other ranks | state dict table and rows     |
+| yes | no  | yes | state dict table, fqn list | no, cached from the 2nd save | write-result tables | indices; in a save that builds, strings from the other ranks | state dict table and rows     |
+| yes | any | no  | nothing               | no                           | write-result tables | strings                                | state dict table and rows      |
 | no  | any | any | `Metadata`, as before | as before                    | pickled             | strings                                | torch's `finish`         |
 
 The first row is the fast path (Megatron-LM). On every path:
@@ -440,7 +440,7 @@ The first row is the fast path (Megatron-LM). On every path:
 - A save that builds metadata delivers the fqn list only if its storage writer writes from tables, which every rank decides alike. Otherwise nothing could read index tables, so the list isn't sent.
 - If the C++ writer fails, the Python writer writes `.metadata`; if that fails, `pickle.dump` writes the `Metadata` built from the table.
 
-Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save, the ranks send string tables, and the coordinator writes the `Metadata` with the fast writer.
+Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save and the coordinator converts it to a state dict table, the ranks send string tables, and the coordinator writes the table with the fast writer.
 
 ## Invariants
 
