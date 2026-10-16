@@ -193,8 +193,8 @@ class _MetadataPickler:
         """Pickle the Metadata that state_dict_table was converted from, and return the bytes.
 
         The pickle is a NEWOBJ of Metadata built from its fields, in order. storage_data is
-        written from tables (decoded write-result tables, see write_result_table.py) if given, else from the
-        storage_data dict, else as None.
+        written from tables (decoded write-result tables, see write_result_table.py) if given,
+        else from the storage_data dict, else as None.
         """
         self._prelude()
         out = self.out
@@ -399,8 +399,8 @@ class _MetadataPickler:
 def dumps(metadata: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
     """Pickle metadata and return the bytes.
 
-    storage_data is written from storage_rows (the gathered write-result tables, see write_result_table.py) if
-    given, else from metadata.storage_data. The bytes equal native.dumps's.
+    storage_data is written from storage_rows (the gathered write-result tables, see
+    write_result_table.py) if given, else from metadata.storage_data. The bytes equal native.dumps's.
     """
     return dumps_table(StateDictTable.from_metadata(metadata), metadata.storage_data, storage_rows)
 
@@ -412,8 +412,8 @@ def dumps_table(
 ) -> bytes:
     """Pickle the Metadata that state_dict_table was converted from, and return the bytes.
 
-    storage_data is written from storage_rows (the gathered write-result tables, see write_result_table.py) if
-    given, else from the storage_data dict, else as None. The bytes equal native.dumps_table's. A
+    storage_data is written from storage_rows (the gathered write-result tables, see
+    write_result_table.py) if given, else from the storage_data dict, else as None. The bytes equal native.dumps_table's. A
     StateDictTable is checked when it is created, so it is read without further checks.
     """
     if not isinstance(state_dict_table, StateDictTable):

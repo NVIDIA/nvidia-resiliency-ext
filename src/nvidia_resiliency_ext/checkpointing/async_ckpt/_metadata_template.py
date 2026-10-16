@@ -102,7 +102,8 @@ class MetadataTemplate:
         storage_data: Optional[dict] = None,
     ) -> None:
         """Write it as ``.metadata``, with storage_data from storage_rows (the gathered
-        write-result tables, see ``_metadata_pickler.write_result_table``) if given, else this storage_data.
+        write-result tables, see ``_metadata_pickler.write_result_table``) if given, else this
+        storage_data.
         """
         if isinstance(self._content, StateDictTable):
             _metadata_pickler.dump_metadata(self._content, stream, storage_rows, storage_data)
