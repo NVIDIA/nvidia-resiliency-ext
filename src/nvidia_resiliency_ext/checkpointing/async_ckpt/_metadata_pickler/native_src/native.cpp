@@ -515,6 +515,20 @@ template <TableValue T>
     return py::array_t<T>({values.size()}, {sizeof(T)}, values.data(), owner);
 }
 
+// Transparent hash, so a map keyed by std::string can be looked up by string_view without building
+// a std::string per lookup. std::hash<std::string> is not transparent; this hashes both key types
+// the same.
+struct StringHash {
+    using is_transparent = void;
+    [[nodiscard]] size_t operator()(std::string_view s) const noexcept {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
+// A map keyed by strings that can be looked up by string_view.
+template <typename T>
+using StringMap = std::unordered_map<std::string, T, StringHash, std::equal_to<>>;
+
 // Converts a Metadata into a StateDictTable, exactly as StateDictTable.from_metadata does.
 class StateDictTableBuilder {
    public:
@@ -558,7 +572,9 @@ class StateDictTableBuilder {
         const size_t n = entry_items.size();
         py::list fqns(n);
         py::dict index;
-        kind_.reserve(n), ref_.reserve(n), ndim_.reserve(n);
+        kind_.reserve(n);
+        ref_.reserve(n);
+        ndim_.reserve(n);
         for (auto* starts : {&chunk_start_, &dims_start_}) {
             starts->reserve(n + 1);
             starts->push_back(0);
@@ -576,9 +592,10 @@ class StateDictTableBuilder {
                     is(entry, tensor_cls_) ? tensor_entry(entry) : std::nullopt) {
                 // After the chunks are counted: small_pickle runs Python code.
                 py::bytes opcodes = pickled(tensor->properties.ptr());
-                const auto [it, added] = property_ids_.try_emplace(
-                    std::string(bytes_view(opcodes.ptr())), properties_.size());
-                if (added) {
+                const std::string_view key = bytes_view(opcodes.ptr());
+                auto it = property_ids_.find(key);
+                if (it == property_ids_.end()) {
+                    it = property_ids_.emplace(key, properties_.size()).first;
                     properties_.append(opcodes);
                 }
                 push(Kind::Tensor, static_cast<int64_t>(it->second));
@@ -697,7 +714,7 @@ class StateDictTableBuilder {
     std::vector<uint8_t> kind_;
     std::vector<int64_t> ref_, ndim_, chunk_start_, dims_start_, dims_;
     py::list properties_, others_;
-    std::unordered_map<std::string, size_t> property_ids_;  // by their opcodes
+    StringMap<size_t> property_ids_;  // by their opcodes
 };
 
 // Writes the pickle of one Metadata into out_; use once per dump.
@@ -1205,15 +1222,6 @@ class Writer {
         for (int k = 0; k < nbytes; ++k) put(static_cast<char>((v >> (8 * k)) & 0xff));
     }
 
-    // Transparent hash, so strings_ can be looked up by string_view without building a std::string
-    // per lookup. std::hash<std::string> is not transparent; this hashes both key types the same.
-    struct StringHash {
-        using is_transparent = void;
-        [[nodiscard]] size_t operator()(std::string_view s) const noexcept {
-            return std::hash<std::string_view>{}(s);
-        }
-    };
-
     py::object small_pickle_;
     py::object index_cls_, info_cls_, size_cls_;
     py::str a_fqn_{"fqn"}, a_index_{"index"}, a_offset_{"offset"};
@@ -1229,7 +1237,7 @@ class Writer {
     uint32_t memo_len_ = 0;
     // Each state dict table entry's fqn memo index, once written; index tables name fqns by entry.
     std::vector<std::optional<uint32_t>> fqn_memo_;
-    std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> strings_;
+    StringMap<uint32_t> strings_;
 };
 
 }  // namespace
