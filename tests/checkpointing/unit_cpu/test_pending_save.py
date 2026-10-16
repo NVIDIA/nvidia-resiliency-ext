@@ -17,7 +17,10 @@
 
 import pytest
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import PendingSave
+from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
+    PendingSave,
+    save_state_dict_async_finalize,
+)
 
 
 def test_unpacking_is_deprecated():
@@ -34,3 +37,13 @@ def test_unpacking_is_deprecated():
         "metadata",
         "wrapper",
     )
+
+
+@pytest.mark.parametrize("arguments", [1, 3], ids=["two-arguments", "four-arguments"])
+def test_finalize_takes_a_pending_save_or_the_three_old_arguments(arguments):
+    """Any other number of arguments raises before finalize does anything.
+
+    TODO: remove with the deprecated finalize arguments.
+    """
+    with pytest.raises(TypeError, match="takes a PendingSave"):
+        save_state_dict_async_finalize("writer", *["argument"] * arguments)

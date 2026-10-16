@@ -589,6 +589,12 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     if legacy_args:
         # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save,
         # up to the version that passes it whole) are no longer supported.
+        if len(legacy_args) != 2:
+            raise TypeError(
+                "save_state_dict_async_finalize takes a PendingSave, or (deprecated) a storage "
+                f"writer, global metadata and distributed wrapper; got {1 + len(legacy_args)} "
+                "arguments"
+            )
         warnings.warn(_LEGACY_FINALIZE_DEPRECATED, DeprecationWarning, stacklevel=2)
         pending = PendingSave(pending, *legacy_args)
     storage_writer, metadata_template, dist_wrapper = (
