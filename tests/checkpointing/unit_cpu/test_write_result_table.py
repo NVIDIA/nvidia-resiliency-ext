@@ -424,3 +424,8 @@ def test_encoding_an_fqn_the_list_lacks_is_unencodable():
     """A rank writing an fqn the coordinator's list lacks sends its write results another way."""
     with pytest.raises(write_result_table.FqnNotListed):
         write_result_table.encode([_result()], write_result_table.FqnList.of(["other"]))
+
+
+def test_an_fqn_of_a_str_subclass_has_no_fqn_list():
+    """An index table would write it as a str; its write results are pickled instead."""
+    assert write_result_table.FqnList.of(["w", SubclassedStr("b")]) is None
