@@ -43,6 +43,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     abort_nvrx_checkpoint,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     CheckpointMetadataCache,
     save_state_dict_async_finalize,
@@ -726,6 +727,32 @@ class TestAsyncSave:
             self.save_and_finalize(ckpt_dir, state_dict, async_queue, CheckpointMetadataCache())
             self.check_loads(ckpt_dir, state_dict)
         assert encoded == []
+
+    def test_unreadable_loaded_metadata_votes_against_reuse(
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch
+    ):
+        """A rank that can't read the loaded metadata votes against reusing it, and takes part in
+        the vote instead of leaving the others in it."""
+        Utils.initialize_distributed()
+        with TempNamedDir(tmp_path_dist_ckpt / 'unreadable_loaded', sync=True) as loaded_dir:
+            self.save_and_finalize(loaded_dir, rank_state_dict(), async_queue, None)
+            loaded_md = FileSystemReader(loaded_dir).read_metadata()
+        modes = record_fqn_modes(monkeypatch)
+        cache = CheckpointMetadataCache()
+        cache.set_cached_global_metadata(loaded_md)
+        if torch.distributed.get_rank() != 0:
+
+            def unreadable(template):
+                raise RuntimeError('unreadable')
+
+            monkeypatch.setattr(MetadataTemplate, 'entries', unreadable)
+        state_dict = rank_state_dict()
+        with TempNamedDir(tmp_path_dist_ckpt / 'unreadable', sync=True) as ckpt_dir:
+            self.save_and_finalize(ckpt_dir, state_dict, async_queue, cache)
+            self.check_loads(ckpt_dir, state_dict)
+        # Not reused: the coordinator built new metadata, whose list the other rank lacked.
+        if torch.distributed.get_rank() != 0:
+            assert modes == [table.FQN_STRINGS]
 
     def test_a_wrong_fqn_list_fails_the_save_on_every_rank(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch

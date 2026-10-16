@@ -444,10 +444,14 @@ def verify_global_metadata_reuse(
 
     """
     rank, world_size = dist_wrapper.rank, dist_wrapper.get_world_size()
-    if loaded_metadata is None:
-        votes = [1] + [0] * _metadata_reuse.LANES
-    else:
-        votes = _metadata_reuse.votes(local_plan, loaded_metadata.entries(), rank, world_size)
+    votes = [1] + [0] * _metadata_reuse.LANES  # against reuse
+    if loaded_metadata is not None:
+        try:
+            entries = loaded_metadata.entries()
+        except Exception as e:  # noqa: BLE001 - as in votes, any failure means "don't reuse"
+            logger.warning(f"rank {rank}: can't read the loaded metadata for reuse: {e!r}")
+        else:
+            votes = _metadata_reuse.votes(local_plan, entries, rank, world_size)
     summed = torch.tensor(votes, dtype=torch.int64, device=torch.cuda.current_device())
     with telemetry.span(
         semconv.SPAN_GROUP_CKPT_PROFILING,
