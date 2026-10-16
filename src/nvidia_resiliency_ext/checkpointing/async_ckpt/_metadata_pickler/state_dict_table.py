@@ -273,6 +273,7 @@ class StateDictTable:
                 or array.dtype != dtype
                 or array.ndim != 1
                 or not array.flags.c_contiguous
+                or not array.flags.aligned
             ):
                 raise bad(f"{name} is not a 1-D array of the expected type")
         for field in self.fields:
