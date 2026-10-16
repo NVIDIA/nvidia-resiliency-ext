@@ -26,6 +26,7 @@ import os
 import pickle
 from collections import OrderedDict
 
+import numpy as np
 import pytest
 import torch
 from hypothesis import given
@@ -106,6 +107,16 @@ KEPT_AS_PICKLES = pytest.mark.parametrize(
         pytest.param(
             lambda md: object.__setattr__(md.state_dict_metadata["w"].chunks[0], "extra", 1),
             id="chunk-extra-attribute",
+        ),
+        pytest.param(
+            lambda md: setattr(md.state_dict_metadata["w"], "size", torch.Size([np.int64(4), 2])),
+            id="numpy-int-size",
+        ),
+        pytest.param(
+            lambda md: setattr(
+                md.state_dict_metadata["w"].chunks[0], "offsets", torch.Size([2**63, 0])
+            ),
+            id="offset-beyond-int64",
         ),
     ],
 )

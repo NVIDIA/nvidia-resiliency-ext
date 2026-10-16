@@ -665,7 +665,10 @@ class StateDictTableBuilder {
             return std::nullopt;  // a scalar saved by several ranks without dedup
         }
         const size_t mark = dims_.size();
-        append_dims(size, dims_);
+        if (!append_dims(size, dims_)) {
+            dims_.resize(mark);
+            return std::nullopt;
+        }
         for (Py_ssize_t k = 0; k < chunk_count; ++k) {
             PyObject* const chunk = PyList_GET_ITEM(chunks, k);
             const py::object chunk_state =
@@ -676,22 +679,34 @@ class StateDictTableBuilder {
                 chunk_state ? dict_get(chunk_state.ptr(), a_sizes_.ptr()) : nullptr;
             if (!chunk_state || PyDict_Size(chunk_state.ptr()) != 2 || !offsets || !sizes ||
                 !is(offsets, size_cls_) || !is(sizes, size_cls_) ||
-                PyTuple_GET_SIZE(offsets) != ndim || PyTuple_GET_SIZE(sizes) != ndim) {
+                PyTuple_GET_SIZE(offsets) != ndim || PyTuple_GET_SIZE(sizes) != ndim ||
+                !append_dims(offsets, dims_) || !append_dims(sizes, dims_)) {
                 dims_.resize(mark);
                 return std::nullopt;
             }
-            append_dims(offsets, dims_);
-            append_dims(sizes, dims_);
         }
         return TensorEntry{py::reinterpret_borrow<py::object>(properties),
                            static_cast<size_t>(ndim),
                       static_cast<size_t>(chunk_count)};
     }
 
-    // Append a torch.Size's dims; a torch.Size holds only ints within int64.
-    static void append_dims(PyObject* dims, std::vector<int64_t>& out) {
+    // Append a torch.Size's dims; return false unless each is an int within int64 (a torch.Size
+    // may also hold numpy ints or larger ints, which only pickle writes exactly).
+    [[nodiscard]] static bool append_dims(PyObject* dims, std::vector<int64_t>& out) {
         const Py_ssize_t n = PyTuple_GET_SIZE(dims);
-        for (Py_ssize_t k = 0; k < n; ++k) out.push_back(as_int(PyTuple_GET_ITEM(dims, k)));
+        for (Py_ssize_t k = 0; k < n; ++k) {
+            PyObject* const dim = PyTuple_GET_ITEM(dims, k);
+            if (!PyLong_CheckExact(dim)) {
+                return false;
+            }
+            const long long value = PyLong_AsLongLong(dim);
+            if (value == -1 && PyErr_Occurred()) {
+                PyErr_Clear();  // beyond int64
+                return false;
+            }
+            out.push_back(value);
+        }
+        return true;
     }
 
     void push(Kind kind, int64_t ref) {

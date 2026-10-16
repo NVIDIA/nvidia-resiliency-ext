@@ -26,8 +26,8 @@ Entries are kept in dict order, as one of three kinds:
 - BYTES: a ``BytesStorageMetadata`` without attributes.
 - TENSOR: a ``TensorStorageMetadata`` with exactly the attributes properties, size and chunks,
   whose size is a ``torch.Size``, chunks a list of ``ChunkStorageMetadata`` with exactly the
-  attributes offsets and sizes, each a ``torch.Size`` with as many dims as size, and at most one
-  chunk if size has no dims. A ``torch.Size`` holds only ints within int64.
+  attributes offsets and sizes, each a ``torch.Size`` with as many dims as size. Every
+  ``torch.Size`` holds only ints within int64, and a size without dims has at most one chunk.
 - OTHER: anything else, for example an object of a subclass, kept as the stdlib pickler's
   opcodes for it (``small_pickle``) and written as they are.
 
@@ -343,7 +343,9 @@ def _tensor_entry(entry, dims: array) -> Optional[Tuple[int, int]]:
     ndim = len(size)
     if ndim == 0 and len(chunks) > 1:
         return None  # a scalar saved by several ranks without dedup
-    values = array("q", size)
+    values = _int64s(size)
+    if values is None:
+        return None
     for chunk in chunks:
         if type(chunk) is not ChunkStorageMetadata:
             return None
@@ -357,7 +359,17 @@ def _tensor_entry(entry, dims: array) -> Optional[Tuple[int, int]]:
             or len(sizes) != ndim
         ):
             return None
-        values.extend(offsets)
-        values.extend(sizes)
+        chunk_values = _int64s(offsets + sizes)
+        if chunk_values is None:
+            return None
+        values.extend(chunk_values)
     dims.extend(values)
     return ndim, len(chunks)
+
+
+def _int64s(size: torch.Size) -> Optional[array]:
+    """Return the dims of a torch.Size as int64s; None unless each is an int within int64 (a
+    torch.Size may also hold numpy ints or larger ints, which only pickle writes exactly)."""
+    if not all(type(dim) is int and -(2**63) <= dim < 2**63 for dim in size):
+        return None
+    return array("q", size)
