@@ -28,6 +28,12 @@ import pytest
 import torch
 from hypothesis import assume, given
 from hypothesis import strategies as st
+from torch.distributed.checkpoint.metadata import (
+    ChunkStorageMetadata,
+    Metadata,
+    TensorProperties,
+    TensorStorageMetadata,
+)
 from torch.distributed.checkpoint.storage import WriteResult
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
@@ -126,6 +132,13 @@ def test_kinds():
         pytest.param(lambda w: object.__setattr__(w, "extra", 1), id="tensor-extra-attribute"),
         pytest.param(
             lambda w: object.__setattr__(w.chunks[0], "extra", 1), id="chunk-extra-attribute"
+        ),
+        pytest.param(
+            lambda w: (
+                setattr(w, "size", torch.Size([])),
+                setattr(w, "chunks", [ChunkStorageMetadata(torch.Size([]), torch.Size([]))] * 2),
+            ),
+            id="scalar-of-several-chunks",  # saved by several ranks without dedup
         ),
     ],
 )
@@ -300,6 +313,24 @@ def test_native_writer_rejects_malformed_tables(corrupt):
     table = StateDictTable.from_metadata(writer._sample_metadata())
     with pytest.raises(ValueError):
         writer.native.dumps_table(types.SimpleNamespace(**_attributes(table, **corrupt(table))))
+
+
+def test_a_scalar_with_endless_chunks_is_rejected():
+    """Found by test_both_writers_treat_a_corrupted_table_alike: a 0-dim tensor's chunks have no
+    dims, so the dims didn't bound its chunk count, and both writers accepted 2**63 - 1 chunks and
+    wrote them until memory ran out."""
+    scalar = TensorStorageMetadata(
+        TensorProperties(dtype=torch.bfloat16),
+        torch.Size([]),
+        [ChunkStorageMetadata(torch.Size([]), torch.Size([]))],
+    )
+    table = StateDictTable.from_metadata(Metadata(state_dict_metadata={"\u00c9": scalar}))
+    attributes = _attributes(table, chunk_start=np.array([0, 2**63 - 1]))
+    with pytest.raises(ValueError):
+        StateDictTable(**attributes)
+    if writer.native is not None:
+        with pytest.raises(ValueError):
+            writer.native.dumps_table(types.SimpleNamespace(**attributes))
 
 
 def test_python_writer_takes_only_state_dict_tables():
