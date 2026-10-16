@@ -18,7 +18,7 @@ the coordinator writes it."""
 
 import dataclasses
 import functools
-from typing import IO, Optional, Tuple, Union
+from typing import IO, Optional, Union
 
 import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
@@ -27,6 +27,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import StateDictTable
+from ._metadata_pickler.table import FqnList
 
 
 class MetadataTemplate:
@@ -62,18 +63,12 @@ class MetadataTemplate:
         return cls(table if table is not None else metadata)
 
     @functools.cached_property
-    def fqns(self) -> Tuple[str, ...]:
+    def fqn_list(self) -> FqnList:
         """The fqns of state_dict_metadata, in order: the fqn list index tables refer to."""
         if isinstance(self._content, StateDictTable):
-            return self._content.fqns
-        return tuple(self._content.state_dict_metadata)
-
-    @functools.cached_property
-    def fqns_fingerprint(self) -> int:
-        """The fingerprint of fqns (see _metadata_pickler.table.fingerprint), computed once."""
-        if isinstance(self._content, StateDictTable):
-            return self._content.fqns_fingerprint
-        return _metadata_pickler.table.fingerprint(self.fqns)
+            content = self._content
+            return FqnList(content.fqns, content.index, content.fqns_fingerprint)
+        return FqnList.of(self._content.state_dict_metadata)
 
     @property
     def table(self) -> Optional[StateDictTable]:

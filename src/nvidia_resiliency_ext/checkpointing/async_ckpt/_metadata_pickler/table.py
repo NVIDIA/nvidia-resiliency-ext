@@ -46,6 +46,7 @@ decode, which builds Python strings, raises UnicodeDecodeError for them instead.
 import struct
 from dataclasses import dataclass
 from hashlib import blake2b
+from types import MappingProxyType
 from typing import Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -67,6 +68,51 @@ _INT64 = (-(2**63), 2**63 - 1)
 
 class Unencodable(TypeError):
     """A write result the table can't represent; the save falls back to pickled write results."""
+
+
+@dataclass(frozen=True)
+class FqnList:
+    """The coordinator's fqn list, as index tables refer to it: the fqns of the state dict table
+    it writes, in entry order, their entries, and the list's fingerprint."""
+
+    fqns: Tuple[str, ...]
+    index: Mapping[str, int]  # fqn -> entry
+    fingerprint: int
+
+    @classmethod
+    def of(
+        cls,
+        fqns: Sequence[str],
+        index: Optional[Mapping[str, int]] = None,
+        fqns_fingerprint: Optional[int] = None,
+    ) -> "FqnList":
+        """Make the list of these fqns; their entries and fingerprint are computed if not given."""
+        fqns = tuple(fqns)
+        if index is None:
+            index = MappingProxyType({fqn: i for i, fqn in enumerate(fqns)})
+        if fqns_fingerprint is None:
+            fqns_fingerprint = fingerprint(fqns)
+        return cls(fqns, index, fqns_fingerprint)
+
+    def encode(self) -> bytes:
+        """Encode the fqns, to send them to the other ranks: each as its length in bytes (int64)
+        and its UTF-8 bytes."""
+        parts = []
+        for fqn in self.fqns:
+            encoded = fqn.encode("utf-8", "surrogatepass")
+            parts.append(struct.pack("<q", len(encoded)) + encoded)
+        return b"".join(parts)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "FqnList":
+        """Decode the fqns encode encoded."""
+        fqns, pos = [], 0
+        while pos < len(data):
+            (length,) = struct.unpack_from("<q", data, pos)
+            pos += 8
+            fqns.append(data[pos : pos + length].decode("utf-8", "surrogatepass"))
+            pos += length
+        return cls.of(fqns)
 
 
 def fingerprint(fqns: Sequence[str]) -> int:

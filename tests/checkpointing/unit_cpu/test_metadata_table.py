@@ -235,6 +235,23 @@ def _fqn_list(md: Metadata):
     return state_dict_table.fqns, state_dict_table.index, state_dict_table.fqns_fingerprint
 
 
+def test_fqn_list_of_the_metadata_matches_its_state_dict_table(tmp_path):
+    md = dcp_saved_metadata(tmp_path)
+    fqns, index, fingerprint = _fqn_list(md)
+    fqn_list = table.FqnList.of(md.state_dict_metadata)
+    assert (fqn_list.fqns, dict(fqn_list.index), fqn_list.fingerprint) == (
+        fqns,
+        dict(index),
+        fingerprint,
+    )
+
+
+@given(st.lists(st.text(), unique=True))
+def test_fqn_list_round_trips(fqns):
+    fqn_list = table.FqnList.of(fqns)
+    assert table.FqnList.decode(fqn_list.encode()) == fqn_list
+
+
 def _mixed_rows(md: Metadata, ranks: int, indices):
     """Encode md.storage_data as `ranks` ranks' tables, rank r an index table if indices[r] and
     every fqn it writes is in md's fqn list, else a string table."""
