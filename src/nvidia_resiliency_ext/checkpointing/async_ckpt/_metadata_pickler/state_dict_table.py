@@ -60,7 +60,6 @@ import dataclasses
 import functools
 from array import array
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import ClassVar, Dict, Mapping, Optional, Tuple
 
 import numpy as np
@@ -85,8 +84,8 @@ class StateDictTable:
     """A Metadata without storage_data, as arrays; see the module docstring for the layout.
 
     Create it with from_metadata. It is immutable and checked when created: its sequences are
-    tuples, its index a read-only mapping and its arrays read-only, so a writer can read it
-    without further checks.
+    tuples and its arrays read-only, so a writer can read it without further checks. Its fqn list
+    (with each fqn's entry and the list's fingerprint) is derived from fqns on first use.
     """
 
     # The names of the array fields.
@@ -102,13 +101,11 @@ class StateDictTable:
     dims: np.ndarray
     properties: Tuple[bytes, ...]
     others: Tuple[bytes, ...]
-    index: Mapping[str, int]  # fqn -> entry
 
     def __post_init__(self):
         """Freeze what the fields hold, then check them."""
         for name in ("fields", "fqns", "properties", "others"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
-        object.__setattr__(self, "index", MappingProxyType(dict(self.index)))
         for name in self.ARRAYS:
             value = getattr(self, name)
             if isinstance(value, np.ndarray):
@@ -174,7 +171,6 @@ class StateDictTable:
             dims=np.frombuffer(dims, dtype=np.int64),
             properties=properties,
             others=others,
-            index={fqn: i for i, fqn in enumerate(fqns)},
         )
 
     def to_metadata(self, storage_data: Optional[dict] = None) -> Metadata:
@@ -219,14 +215,14 @@ class StateDictTable:
         return len(self.fqns)
 
     @functools.cached_property
-    def fqns_fingerprint(self) -> int:
-        """The fingerprint of the fqn list (see write_result_table.fingerprint), computed once."""
-        return write_result_table.fingerprint(self.fqns)
-
-    @functools.cached_property
     def fqn_list(self) -> write_result_table.FqnList:
-        """The fqns, in entry order: the fqn list index tables refer to."""
-        return write_result_table.FqnList(self.fqns, self.index, self.fqns_fingerprint)
+        """The fqns, in entry order: the fqn list index tables refer to, computed once."""
+        return write_result_table.FqnList.of(self.fqns)  # not None: _check checked the fqns
+
+    @property
+    def index(self) -> Mapping[str, int]:
+        """Each fqn's entry."""
+        return self.fqn_list.index
 
     def chunk_count(self, i: int) -> int:
         """Return the number of chunks of entry i (0 unless a tensor)."""
