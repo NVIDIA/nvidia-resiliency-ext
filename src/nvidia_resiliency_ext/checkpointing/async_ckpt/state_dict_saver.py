@@ -498,6 +498,11 @@ def _encode_write_results(
     return pickle.dumps(write_results)
 
 
+def _global_coordinator_rank(dist_wrapper: _DistWrapper) -> int:
+    """Return the coordinator's global rank, which collectives over a group take as src or dst."""
+    return getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank)
+
+
 def _device(dist_wrapper: _DistWrapper):
     """Return the device of the group's collectives: the CPU with gloo, else the current GPU."""
     gloo = dist.get_backend(dist_wrapper.group) == dist.Backend.GLOO
@@ -533,7 +538,7 @@ def _gather_payloads(
     torch.distributed.gather(
         torch.from_numpy(row).to(device),
         list(rows) if rows is not None else None,
-        dst=getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank),
+        dst=_global_coordinator_rank(dist_wrapper),
         group=dist_wrapper.group,
     )
     return (rows.cpu().numpy() if rows is not None else None), delivered_length
@@ -665,7 +670,7 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
             broadcast[8:] = torch.frombuffer(bytearray(delivered), dtype=torch.uint8)
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.broadcast_failures"):
         torch.distributed.broadcast(
-            broadcast, src=dist_wrapper.coordinator_rank, group=dist_wrapper.group
+            broadcast, src=_global_coordinator_rank(dist_wrapper), group=dist_wrapper.group
         )
     broadcast = broadcast.cpu().numpy()
     if delivered_length and not dist_wrapper.is_coordinator:
