@@ -105,11 +105,15 @@ class FqnList:
 
     @classmethod
     def decode(cls, data: bytes) -> "FqnList":
-        """Decode the fqns encode encoded."""
+        """Decode the fqns encode encoded; raise ValueError if data isn't such an encoding."""
         fqns, pos = [], 0
         while pos < len(data):
+            if len(data) - pos < 8:
+                raise ValueError("fqn list: truncated length")
             (length,) = struct.unpack_from("<q", data, pos)
             pos += 8
+            if not 0 <= length <= len(data) - pos:
+                raise ValueError("fqn list: fqn length out of range")
             fqns.append(data[pos : pos + length].decode("utf-8", "surrogatepass"))
             pos += length
         return cls.of(fqns)
