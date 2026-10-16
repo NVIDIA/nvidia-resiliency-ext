@@ -338,6 +338,12 @@ def test_reuse_leaves_the_loaded_metadata_alone():
     assert back == dataclasses.replace(metadata, storage_data=None)
 
 
+def cached_metadata(cache: CheckpointMetadataCache):
+    """Return the global metadata the cache would reuse, as a new Metadata, or None."""
+    template = cache._metadata_template
+    return template.to_metadata() if template is not None else None
+
+
 @pytest.mark.parametrize("reused", [False, True], ids=["built", "reused"])
 def test_the_cache_holds_no_storage_data(reused):
     """The cache keeps the metadata without storage_data, and every save writes the same one."""
@@ -349,7 +355,7 @@ def test_the_cache_holds_no_storage_data(reused):
     for save in range(3):
         written = cache._update(plans[0], plans[0], built, reused or save > 0, is_coordinator=True)
         assert written.to_metadata().storage_data is None
-        assert cache.global_metadata == dataclasses.replace(built, storage_data=None)
+        assert cached_metadata(cache) == dataclasses.replace(built, storage_data=None)
 
 
 @NEEDS_FAST
@@ -365,7 +371,7 @@ def test_the_cache_keeps_no_reference_to_the_loaded_metadata():
     del loaded, entry
     gc.collect()
     assert all(ref() is None for ref in refs)
-    assert cache.global_metadata is not None
+    assert cached_metadata(cache) is not None
 
 
 def test_only_the_coordinator_keeps_metadata_after_a_save():
@@ -375,13 +381,13 @@ def test_only_the_coordinator_keeps_metadata_after_a_save():
     other = CheckpointMetadataCache()
     other.set_cached_global_metadata(metadata)
     assert other._update(plans[1], plans[1], None, reused=True, is_coordinator=False) is None
-    assert other.global_metadata is None and other.local_plan is plans[1]
+    assert cached_metadata(other) is None and other.local_plan is plans[1]
 
     built = metadata_of(plans)
     coordinator = CheckpointMetadataCache()
     coordinator.set_cached_global_metadata(metadata)
     written = coordinator._update(plans[0], plans[0], built, False, is_coordinator=True)
-    assert written.to_metadata() == coordinator.global_metadata == built
+    assert written.to_metadata() == cached_metadata(coordinator) == built
 
 
 def test_every_rank_keeps_the_fqn_list_of_the_loaded_metadata():
@@ -438,7 +444,7 @@ def test_set_cached_global_metadata_starts_over():
     cache._update(plans[0], plans[0], metadata_of(plans), reused=False, is_coordinator=True)
     loaded = metadata_of(plans)
     cache.set_cached_global_metadata(loaded)
-    assert cache.global_metadata == dataclasses.replace(loaded, storage_data=None)
+    assert cached_metadata(cache) == dataclasses.replace(loaded, storage_data=None)
     assert cache.local_plan is None and cache.central_plan is None
 
 
@@ -448,7 +454,7 @@ def test_cache_does_not_keep_the_loaded_storage_data():
     loaded.storage_data = {"loaded": None}
     cache = CheckpointMetadataCache()
     cache.set_cached_global_metadata(loaded)
-    assert cache.global_metadata.storage_data is None
+    assert cached_metadata(cache).storage_data is None
     assert loaded.storage_data == {"loaded": None}
 
 
@@ -479,7 +485,7 @@ def test_finish_leaves_the_cache_and_the_caller_alone(tmp_path, monkeypatch, reu
     caller_before = pickle.dumps(loaded)
     for save in range(3):
         written = cache._update(None, None, built, reused or save > 0, is_coordinator=True)
-        cache_before = pickle.dumps(cache.global_metadata)
+        cache_before = pickle.dumps(cached_metadata(cache))
         results = [
             [
                 WriteResult(
@@ -496,7 +502,7 @@ def test_finish_leaves_the_cache_and_the_caller_alone(tmp_path, monkeypatch, reu
         storage_writer.set_up_storage_writer(True)
         storage_writer._finish(written, results)
 
-        assert pickle.dumps(cache.global_metadata) == cache_before, f"save {save}: cache changed"
+        assert pickle.dumps(cached_metadata(cache)) == cache_before, f"save {save}: cache changed"
         assert pickle.dumps(loaded) == caller_before, f"save {save}: caller's metadata changed"
         written_back = FileSystemReader(path).read_metadata()
         assert {info.relative_path for info in written_back.storage_data.values()} == {

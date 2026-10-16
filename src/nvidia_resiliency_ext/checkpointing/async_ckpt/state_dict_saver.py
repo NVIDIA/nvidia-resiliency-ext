@@ -83,28 +83,19 @@ class CheckpointMetadataCache:
     it was given.
 
     Attributes:
-        global_metadata (Metadata): The global metadata to reuse, as a new Metadata made on each
-            access (which, as a table, takes a while): the loaded checkpoint's, without its
-            storage_data, on every rank until the first save, the previous save's on the
-            coordinator afterwards; None if there is none.
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
         central_plan (SavePlan): This rank's global plan of the previous save.
     """
 
     def __init__(self):
+        # The global metadata to reuse: the loaded checkpoint's, on every rank until the first
+        # save, the previous save's on the coordinator afterwards; None if there is none.
         self._metadata_template: Optional[MetadataTemplate] = None
         self.local_plan: Optional[SavePlan] = None
         self.central_plan: Optional[SavePlan] = None
         # The fqn list of the metadata to reuse, which index tables refer to; see _FqnListSlot.
         self._fqn_list_slot = _FqnListSlot()
-
-    @property
-    def global_metadata(self) -> Optional[Metadata]:
-        """See the class docstring."""
-        if self._metadata_template is None:
-            return None
-        return self._metadata_template.to_metadata()
 
     def set_cached_global_metadata(self, cached_global_metadata: Optional[Metadata]):
         """
