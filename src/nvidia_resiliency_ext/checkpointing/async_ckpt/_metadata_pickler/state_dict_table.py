@@ -278,8 +278,13 @@ class StateDictTable:
             name, opcodes = field
             if type(name) is not str:
                 raise bad(f"a field name is a {type(name).__name__}, not a str")
-            written_here = name in (STATE_DICT_METADATA, STORAGE_DATA)
-            if opcodes is not None if written_here else type(opcodes) is not bytes:
+            # The writers write state_dict_metadata and storage_data; the other fields, their
+            # opcodes.
+            if name in (STATE_DICT_METADATA, STORAGE_DATA):
+                expected_opcodes = opcodes is None
+            else:
+                expected_opcodes = type(opcodes) is bytes
+            if not expected_opcodes:
                 raise bad(f"unexpected opcodes of field {name}")
         n = len(self.kind)
         if len(self.fqns) != n or len(self.ref) != n or len(self.ndim) != n:
