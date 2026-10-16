@@ -1308,21 +1308,11 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         With storage_rows (the ranks' write results as tables, one zero-padded table per row of a
         2-D uint8 array, see ``_metadata_pickler.table``), storage_data is written from them
-        instead of results.
+        instead of results. Finalize passes rows only when this process writes from tables, which
+        needs the fast writer.
         """
         fast = _metadata_pickler.fast_metadata_enabled()
-        if storage_rows is not None and not fast:
-            logger.warning(
-                "write-result tables without the fast .metadata writer; "
-                "converting them to write results"
-            )
-            tables = _metadata_pickler.table.decode_rows(storage_rows)
-            if isinstance(metadata, MetadataTemplate):
-                fqn_list = metadata.fqn_list
-            else:
-                fqn_list = _metadata_pickler.table.FqnList.of(metadata.state_dict_metadata)
-            results = [_metadata_pickler.table.to_write_results(t, fqn_list) for t in tables]
-            storage_rows = None
+        assert storage_rows is None or fast, "write-result tables need the fast .metadata writer"
         if not fast and not self.use_msc:
             if isinstance(metadata, MetadataTemplate):
                 metadata = metadata.to_metadata()
