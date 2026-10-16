@@ -280,13 +280,15 @@ class StateDictTable:
                 raise bad("a field is not a (name, opcodes) tuple")
             name, opcodes = field
             if type(name) is not str:
-                raise TypeError(f"expected str field name, got {type(name).__name__}")
+                raise bad(f"a field name is a {type(name).__name__}, not a str")
             written_here = name in (STATE_DICT_METADATA, STORAGE_DATA)
             if opcodes is not None if written_here else type(opcodes) is not bytes:
                 raise bad(f"unexpected opcodes of field {name}")
         n = len(self.kind)
         if len(self.fqns) != n or len(self.ref) != n or len(self.ndim) != n:
             raise bad("arrays of different lengths")
+        if not all(type(fqn) is str for fqn in self.fqns):
+            raise bad("an fqn is not a str")
         for starts, pool in ((self.chunk_start, None), (self.dims_start, len(self.dims))):
             if (
                 len(starts) != n + 1
