@@ -434,8 +434,21 @@ PRODUCERS = [
 ]
 
 
-def _random_rows(metadata, data):
-    """Encode metadata.storage_data as write-result tables of a random number of ranks.
+def _encode(part, state_dict_table, as_indices):
+    """Encode a rank's items as an index table if as_indices and the fqn list of
+    state_dict_table holds their fqns, else as a string table."""
+    results = [WriteResult(index, info.length, info) for index, info in part]
+    if as_indices:
+        try:
+            return table.encode(results, state_dict_table.index, state_dict_table.fqns_fingerprint)
+        except table.Unencodable:
+            pass  # a rank writing an fqn the list lacks sends strings
+    return table.encode(results)
+
+
+def _random_rows(metadata, state_dict_table, data):
+    """Encode metadata.storage_data as write-result tables of a random number of ranks, each an
+    index table (naming fqns by entry in the fqn list of state_dict_table) or a string table.
 
     Each rank's table is a contiguous run of its items, so that the rows list the items in the
     dict's order. Return None if an item doesn't fit a table.
@@ -445,7 +458,7 @@ def _random_rows(metadata, data):
     parts = [items[a:b] for a, b in zip([0, *cuts], [*cuts, len(items)])]
     try:
         payloads = [
-            table.encode([WriteResult(index, info.length, info) for index, info in part])
+            _encode(part, state_dict_table, data.draw(st.booleans(), label="as indices"))
             for part in parts
         ]
     except table.Unencodable:
@@ -461,10 +474,11 @@ def _random_rows(metadata, data):
 @hypothesis_settings
 @given(metadatas(), st.data())
 def test_writing_a_table_matches_writing_the_metadata(producer, metadata, data):
-    """Both writers write a table, with storage_data or with rows of it, as the metadata."""
+    """Both writers write a table, with storage_data or with rows of index and string tables,
+    as the metadata."""
     state_dict_table = producer.from_metadata(metadata)
     expected = pickler.dumps(metadata)
-    rows = _random_rows(metadata, data)
+    rows = _random_rows(metadata, state_dict_table, data)
     for module in WRITER_MODULES:
         assert module.dumps_table(state_dict_table, metadata.storage_data) == expected
         if rows is not None:
