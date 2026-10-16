@@ -410,11 +410,11 @@ class StateDictTableView {
     }
 
     [[nodiscard]] size_t entries() const { return kind_.size(); }
-    // Return the fingerprint of the fqn list (the table's fqns_fingerprint), read once, on first
-    // use: only index tables need it.
+    // Return the fingerprint of the table's fqn list, read once, on first use: only index tables
+    // need it.
     [[nodiscard]] int64_t fqns_fingerprint() const {
         if (!fqns_fingerprint_) {
-            fqns_fingerprint_ = table_.attr("fqns_fingerprint").cast<int64_t>();
+            fqns_fingerprint_ = table_.attr("fqn_list").attr("fingerprint").cast<int64_t>();
         }
         return *fqns_fingerprint_;
     }
@@ -586,7 +586,6 @@ class StateDictTableBuilder {
         const py::list entry_items = items(entries.ptr());
         const size_t n = entry_items.size();
         py::list fqns(n);
-        py::dict index;
         kind_.reserve(n);
         ref_.reserve(n);
         ndim_.reserve(n);
@@ -601,7 +600,6 @@ class StateDictTableBuilder {
                 throw py::type_error("expected str fqn, got " + type_name(fqn));
             }
             fqns[i] = py::handle(fqn);
-            index[py::handle(fqn)] = py::int_(i);
             size_t ndim = 0, chunks = 0;
             if (const std::optional<TensorEntry> tensor =
                     is(entry, tensor_cls_) ? tensor_entry(entry) : std::nullopt) {
@@ -637,8 +635,7 @@ class StateDictTableBuilder {
                          py::arg("dims_start") = to_array(std::move(dims_start_)),
                          py::arg("dims") = to_array(std::move(dims_)),
                          py::arg("properties") = std::move(properties_),
-                         py::arg("others") = std::move(others_),
-                         py::arg("index") = index);
+                         py::arg("others") = std::move(others_));
     }
 
    private:
