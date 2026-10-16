@@ -1248,8 +1248,10 @@ class Writer {
     uint32_t k_fqn_ = 0, k_index_ = 0, k_offset_ = 0, k_relative_path_ = 0, k_length_ = 0;
     uint32_t k_offsets_ = 0, k_sizes_ = 0, k_properties_ = 0, k_size_ = 0, k_chunks_ = 0;
 
-    // Not a std::string: libstdc++ instantiates its members out of line (extern template), so
-    // each byte appended would be a call through the PLT.
+    // Not a std::string: libstdc++ declares std::string's members as extern templates, compiled
+    // into the shared library, so they are never inlined, and each byte appended was a function
+    // call through the PLT. std::vector<char> is instantiated here and its push_back inlines.
+    // Building with -fno-plt kept most of the cost: it is the call, more than the PLT.
     std::vector<char> out_;
     uint32_t memo_len_ = 0;
     // Each state dict table entry's fqn memo index, once written; index tables name fqns by entry.
