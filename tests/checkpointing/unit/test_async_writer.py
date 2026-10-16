@@ -706,6 +706,27 @@ class TestAsyncSave:
         else:
             assert modes == [table.FQN_STRINGS, table.FQN_INDICES]
 
+    def test_no_fqn_list_is_delivered_without_tables(
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch
+    ):
+        """A save that builds metadata delivers its fqn list only if the storage writer writes
+        from tables, the only reader of index tables."""
+        Utils.initialize_distributed()
+        monkeypatch.setattr(state_dict_saver._metadata_pickler, 'writes_tables', lambda: False)
+        encoded = []
+        encode = table.FqnList.encode
+
+        def recording(fqn_list):
+            encoded.append(fqn_list)
+            return encode(fqn_list)
+
+        monkeypatch.setattr(table.FqnList, 'encode', recording)
+        state_dict = rank_state_dict()
+        with TempNamedDir(tmp_path_dist_ckpt / 'no_tables', sync=True) as ckpt_dir:
+            self.save_and_finalize(ckpt_dir, state_dict, async_queue, CheckpointMetadataCache())
+            self.check_loads(ckpt_dir, state_dict)
+        assert encoded == []
+
     def test_a_wrong_fqn_list_fails_the_save_on_every_rank(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch
     ):
