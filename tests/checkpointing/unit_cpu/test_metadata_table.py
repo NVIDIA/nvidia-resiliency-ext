@@ -349,5 +349,5 @@ def test_decoding_an_index_table_needs_its_fqn_list():
 
 def test_encoding_an_fqn_the_list_lacks_is_unencodable():
     """A rank writing an fqn the coordinator's list lacks sends its write results another way."""
-    with pytest.raises(table.Unencodable):
+    with pytest.raises(table.FqnNotListed):
         table.encode([_result()], table.FqnList.of(["other"]))

@@ -477,7 +477,7 @@ def _encode_write_results(
             if fqn_list is not None:
                 try:
                     return _table.encode(write_results, fqn_list)
-                except _table.Unencodable:
+                except _table.FqnNotListed:
                     logger.debug("an fqn is missing from the fqn list; sending fqn strings")
             return _table.encode(write_results)
         except _table.Unencodable:

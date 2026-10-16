@@ -161,6 +161,31 @@ def test_an_fqn_missing_from_the_list_sends_fqn_strings(tmp_path):
 
 
 @pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
+def test_write_results_no_table_holds_are_pickled_after_one_try(tmp_path, monkeypatch):
+    """Only an fqn the list lacks makes a rank try a string table after the index table; write
+    results that no table can hold are sent pickled after the first try."""
+    unencodable = [
+        WriteResult(
+            index=MetadataIndex("r0.w", torch.Size([0]), 0),
+            size_in_bytes=10,
+            storage_data=_StorageInfo("__0_0.distcp", 2**70, 10),  # outside int64
+        )
+    ]
+    tries = []
+    encode = table.encode
+
+    def counting(*args):
+        tries.append(args)
+        return encode(*args)
+
+    monkeypatch.setattr(table, "encode", counting)
+    storage_writer = FileSystemWriterAsync(tmp_path)
+    fqn_list = table.FqnList.of(["r0.w"])
+    payload = state_dict_saver._encode_write_results(unencodable, storage_writer, fqn_list)
+    assert pickle.loads(payload) == unencodable and len(tries) == 1
+
+
+@pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
 @given(
     written=st.lists(st.text(min_size=1), min_size=1, max_size=5, unique=True),
     listed=st.lists(st.text(min_size=1), max_size=8, unique=True),
