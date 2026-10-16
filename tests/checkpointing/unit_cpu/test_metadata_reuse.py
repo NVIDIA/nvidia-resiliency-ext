@@ -381,7 +381,7 @@ def test_only_the_coordinator_keeps_metadata_after_a_save():
     other = CheckpointMetadataCache()
     other.set_cached_global_metadata(metadata)
     assert other._update(plans[1], plans[1], None, reused=True, is_coordinator=False) is None
-    assert cached_metadata(other) is None and other.local_plan is plans[1]
+    assert cached_metadata(other) is None and other._local_plan is plans[1]
 
     built = metadata_of(plans)
     coordinator = CheckpointMetadataCache()
@@ -445,7 +445,7 @@ def test_set_cached_global_metadata_starts_over():
     loaded = metadata_of(plans)
     cache.set_cached_global_metadata(loaded)
     assert cached_metadata(cache) == dataclasses.replace(loaded, storage_data=None)
-    assert cache.local_plan is None and cache.central_plan is None
+    assert cache._local_plan is None and cache._central_plan is None
 
 
 def test_cache_does_not_keep_the_loaded_storage_data():
