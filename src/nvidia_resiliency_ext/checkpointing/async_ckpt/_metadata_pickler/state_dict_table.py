@@ -195,7 +195,7 @@ class StateDictTable:
     def with_fields(self, **values) -> "StateDictTable":
         """Return a copy of this table with these Metadata fields (e.g. version) set.
 
-        The copy shares the table's arrays. A field the table doesn't have yet is added last, as
+        The copy shares the table's arrays, and its fqn list if computed. A field the table doesn't have yet is added last, as
         setting it on the Metadata would. Raise TypeError for state_dict_metadata and
         storage_data, which the table holds otherwise, and for a name that isn't a field of
         Metadata.
@@ -209,7 +209,11 @@ class StateDictTable:
             for name, opcodes in self.fields
         ]
         fields.extend((name, small_pickle(value)) for name, value in values.items())
-        return dataclasses.replace(self, fields=fields)
+        copy = dataclasses.replace(self, fields=fields)
+        if "fqn_list" in vars(self):
+            # The copy has the same fqns: share their list rather than compute it again.
+            vars(copy)["fqn_list"] = self.fqn_list
+        return copy
 
     def __len__(self) -> int:
         return len(self.fqns)

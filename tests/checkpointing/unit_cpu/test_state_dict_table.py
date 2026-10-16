@@ -407,6 +407,14 @@ def test_with_fields():
             table.with_fields(**{name: None})
 
 
+def test_with_fields_shares_the_fqn_list():
+    """A copy shares the fqn list its table computed, which a cached save writes from."""
+    table = StateDictTable.from_metadata(writer._sample_metadata())
+    assert "fqn_list" not in vars(table.with_fields(**{SETTABLE_FIELD: "9.9"}))
+    fqn_list = table.fqn_list
+    assert table.with_fields(**{SETTABLE_FIELD: "9.9"}).fqn_list is fqn_list
+
+
 def test_to_metadata():
     metadata = writer._sample_metadata()
     back = StateDictTable.from_metadata(metadata).to_metadata(metadata.storage_data)
