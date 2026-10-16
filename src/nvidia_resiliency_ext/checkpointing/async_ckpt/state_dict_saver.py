@@ -587,7 +587,7 @@ def save_state_dict_async_finalize(pending: PendingSave) -> None: ...
 @deprecated(_LEGACY_FINALIZE_DEPRECATED)
 def save_state_dict_async_finalize(
     storage_writer: "FileSystemWriterAsync",
-    global_metadata: Optional[MetadataTemplate],
+    global_metadata: Union[MetadataTemplate, Metadata, None],
     dist_wrapper: _DistWrapper,
 ) -> None: ...
 
@@ -601,9 +601,9 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
 
     Args:
         pending (PendingSave): the save planned and staged by `save_state_dict_async_plan`.
-        legacy_args: deprecated: the plan's global metadata and distributed wrapper, after its
-            storage writer as the first argument, as save_state_dict_async_plan used to return
-            them in a tuple.
+        legacy_args: deprecated: the plan's global metadata (a Metadata is accepted too) and
+            distributed wrapper, after its storage writer as the first argument, as
+            save_state_dict_async_plan used to return them in a tuple.
 
     Returns: None
     """
@@ -617,7 +617,11 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
                 "arguments"
             )
         warnings.warn(_LEGACY_FINALIZE_DEPRECATED, DeprecationWarning, stacklevel=2)
-        pending = PendingSave(pending, *legacy_args)
+        global_metadata, dist_wrapper = legacy_args
+        if isinstance(global_metadata, Metadata):
+            # As callers typed it before save_state_dict_async_plan returned a PendingSave.
+            global_metadata = MetadataTemplate.from_metadata(global_metadata)
+        pending = PendingSave(pending, global_metadata, dist_wrapper)
     dist_wrapper = pending.dist_wrapper
     write_results = pending.storage_writer.retrieve_write_results()
     fqn_list_slot = pending._fqn_list_slot
