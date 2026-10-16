@@ -41,6 +41,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import table as _table
+from ._metadata_pickler.table import FqnList
 from .metadata_template import MetadataTemplate
 
 if TYPE_CHECKING:
@@ -76,12 +77,16 @@ class CheckpointMetadataCache:
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
         central_plan (SavePlan): This rank's global plan of the previous save.
+        fqn_list (FqnList): The coordinator's fqn list, on every rank, which index tables refer
+            to: the loaded checkpoint's, or the previous save's. None on the other ranks from a
+            save that builds new metadata until its finalize delivers the new list.
     """
 
     def __init__(self):
         self._metadata_template: Optional[MetadataTemplate] = None
         self.local_plan: Optional[SavePlan] = None
         self.central_plan: Optional[SavePlan] = None
+        self.fqn_list: Optional[FqnList] = None
 
     @property
     def global_metadata(self) -> Optional[Metadata]:
@@ -109,6 +114,7 @@ class CheckpointMetadataCache:
         )
         self.local_plan = None
         self.central_plan = None
+        self.fqn_list = self._metadata_template.fqn_list if self._metadata_template else None
 
     def _update(
         self,
@@ -123,6 +129,9 @@ class CheckpointMetadataCache:
         self.central_plan = central_plan
         if not is_coordinator:
             self._metadata_template = None
+            if not reused:
+                # The coordinator built new metadata; this save's finalize delivers its list.
+                self.fqn_list = None
             return None
         if not reused:
             self._metadata_template = MetadataTemplate.from_metadata(global_metadata)
@@ -131,6 +140,7 @@ class CheckpointMetadataCache:
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
+        self.fqn_list = self._metadata_template.fqn_list
         return self._metadata_template
 
 
@@ -153,11 +163,17 @@ class PendingSave:
         metadata_template (MetadataTemplate, optional): The global metadata to write, without
             this save's storage_data, on the coordinator; None on other ranks.
         dist_wrapper (_DistWrapper): The distributed wrapper used for planning.
+        metadata_cache (CheckpointMetadataCache, optional): The cache the save was planned with,
+            whose fqn list finalize encodes the write results against; None without enable_cache.
+        delivers_fqn_list (bool): Whether this save built new metadata, whose fqn list its
+            finalize delivers to the other ranks' caches.
     """
 
     storage_writer: "FileSystemWriterAsync"
     metadata_template: Optional[MetadataTemplate]
     dist_wrapper: _DistWrapper
+    metadata_cache: Optional[CheckpointMetadataCache] = None
+    delivers_fqn_list: bool = False
 
     # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save, up
     # to the version that passes it whole) are no longer supported.
@@ -330,7 +346,13 @@ def save_state_dict_async_plan(
         metadata_template = MetadataTemplate.from_metadata(global_metadata)
     else:
         metadata_template = None
-    return PendingSave(storage_writer, metadata_template, dist_wrapper)
+    return PendingSave(
+        storage_writer,
+        metadata_template,
+        dist_wrapper,
+        metadata_cache=metadata_cache,
+        delivers_fqn_list=metadata_cache is not None and not reused,
+    )
 
 
 @telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.check_plan_unchanged")
@@ -564,8 +586,8 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
                         (
                             _table.to_write_results(
                                 _table.decode(row),
-                                metadata_template.fqns,
-                                metadata_template.fqns_fingerprint,
+                                metadata_template.fqn_list.fqns,
+                                metadata_template.fqn_list.fingerprint,
                             )
                             if sent_table
                             else pickled[rank]

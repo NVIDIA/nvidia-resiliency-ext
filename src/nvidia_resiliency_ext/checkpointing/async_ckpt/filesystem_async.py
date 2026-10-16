@@ -1318,12 +1318,12 @@ class FileSystemWriterAsync(FileSystemWriter):
             )
             tables = _metadata_pickler.table.decode_rows(storage_rows)
             if isinstance(metadata, MetadataTemplate):
-                fqns, fingerprint = metadata.fqns, metadata.fqns_fingerprint
+                fqn_list = metadata.fqn_list
             else:
-                fqns = list(metadata.state_dict_metadata)
-                fingerprint = _metadata_pickler.table.fingerprint(fqns)
+                fqn_list = _metadata_pickler.table.FqnList.of(metadata.state_dict_metadata)
             results = [
-                _metadata_pickler.table.to_write_results(t, fqns, fingerprint) for t in tables
+                _metadata_pickler.table.to_write_results(t, fqn_list.fqns, fqn_list.fingerprint)
+                for t in tables
             ]
             storage_rows = None
         if not fast and not self.use_msc:
