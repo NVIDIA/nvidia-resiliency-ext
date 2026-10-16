@@ -70,6 +70,10 @@ class Unencodable(TypeError):
     """A write result the table can't represent; the save falls back to pickled write results."""
 
 
+class FqnNotListed(Unencodable):
+    """An fqn the fqn list lacks, which only an index table can't represent."""
+
+
 @dataclass(frozen=True)
 class FqnList:
     """The coordinator's fqn list, as index tables refer to it: the fqns of the state dict table
@@ -195,7 +199,7 @@ def encode(results: List[WriteResult], fqn_list: Optional[FqnList] = None) -> by
     """Encode one rank's write results as a table.
 
     With fqn_list (the coordinator's), encode an index table; else a string table. Raise
-    Unencodable for anything the table can't represent, such as an fqn the list doesn't have.
+    Unencodable for anything the table can't represent, FqnNotListed for an fqn the list lacks.
     """
     string_ids: dict = {}
     strings: List[bytes] = []
@@ -237,7 +241,7 @@ def encode(results: List[WriteResult], fqn_list: Optional[FqnList] = None) -> by
         else:
             entry_id = fqn_list.index.get(state["fqn"])
             if entry_id is None:
-                raise Unencodable(f"fqn {state['fqn']!r} isn't in the coordinator's fqn list")
+                raise FqnNotListed(f"fqn {state['fqn']!r} isn't in the coordinator's fqn list")
             e[FQN] = entry_id
         if state["index"] is not None:
             e[INDEX] = _check_int(state["index"])
