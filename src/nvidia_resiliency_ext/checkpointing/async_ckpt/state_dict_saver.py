@@ -81,19 +81,16 @@ class CheckpointMetadataCache:
     writers, a state dict table that the garbage collector doesn't visit and that refers to none of
     the objects of the Metadata it was made from. The cache never modifies it, nor the Metadata
     it was given.
-
-    Attributes:
-        local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
-            it; None before the first save in this process.
-        central_plan (SavePlan): This rank's global plan of the previous save.
     """
 
     def __init__(self):
         # The global metadata to reuse: the loaded checkpoint's, on every rank until the first
         # save, the previous save's on the coordinator afterwards; None if there is none.
         self._metadata_template: Optional[MetadataTemplate] = None
-        self.local_plan: Optional[SavePlan] = None
-        self.central_plan: Optional[SavePlan] = None
+        # This rank's local plan of the previous save, as the planner created it, and its global
+        # plan; None before the first save in this process.
+        self._local_plan: Optional[SavePlan] = None
+        self._central_plan: Optional[SavePlan] = None
         # The fqn list of the metadata to reuse, which index tables refer to; see _FqnListSlot.
         self._fqn_list_slot = _FqnListSlot()
 
@@ -114,8 +111,8 @@ class CheckpointMetadataCache:
             if cached_global_metadata is not None
             else None
         )
-        self.local_plan = None
-        self.central_plan = None
+        self._local_plan = None
+        self._central_plan = None
         self._fqn_list_slot = _FqnListSlot(
             self._metadata_template.fqn_list if self._metadata_template else None
         )
@@ -129,8 +126,8 @@ class CheckpointMetadataCache:
         is_coordinator: bool,
     ) -> Optional[MetadataTemplate]:
         """Record a planned save; return the global metadata the coordinator writes for it."""
-        self.local_plan = local_plan
-        self.central_plan = central_plan
+        self._local_plan = local_plan
+        self._central_plan = central_plan
         if not is_coordinator:
             self._metadata_template = None
             if not reused:
@@ -286,14 +283,14 @@ def save_state_dict_async_plan(
     # the metadata but prepare the plans independently on each rank.
     # In the worst case we have to reduce_scatter all the plans.
     start_plan = time()
-    if metadata_cache is not None and metadata_cache.local_plan is not None:
+    if metadata_cache is not None and metadata_cache._local_plan is not None:
         # A previous save in this process planned the same structure: `enable_cache` promises
         # it does not change, so reuse its plan and metadata without communication. The local
         # plan is still created (cheap) to catch a broken promise on this rank.
         logger.debug(f"rank: {rank}, Passed cache reusable")
         local_plan = local_step()
-        _check_plan_unchanged(metadata_cache.local_plan, local_plan, rank)
-        central_plan = metadata_cache.central_plan
+        _check_plan_unchanged(metadata_cache._local_plan, local_plan, rank)
+        central_plan = metadata_cache._central_plan
         reused = True
     elif getattr(planner, "can_run_decentralized_global_plan", False) and getattr(
         storage_writer, "can_run_decentralized_global_plan", False
@@ -661,9 +658,7 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     # raise exceptions everywhere if needed. The failure details are only raised on the
     # coordinator. The list is delivered even if the save failed: the next save reuses its
     # metadata.
-    broadcast = torch.zeros(
-        8 + delivered_length, dtype=torch.uint8, device=_device(dist_wrapper)
-    )
+    broadcast = torch.zeros(8 + delivered_length, dtype=torch.uint8, device=_device(dist_wrapper))
     if dist_wrapper.is_coordinator:
         broadcast[0] = int(len(node_failures) > 0)
         if delivered:

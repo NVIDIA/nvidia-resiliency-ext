@@ -111,8 +111,8 @@ classDiagram
     class CheckpointMetadataCache {
         _metadata_template : MetadataTemplate or None
         _fqn_list_slot : _FqnListSlot
-        local_plan : SavePlan
-        central_plan : SavePlan
+        _local_plan : SavePlan
+        _central_plan : SavePlan
     }
     class PendingSave {
         storage_writer : FileSystemWriterAsync
@@ -239,7 +239,7 @@ One rank's write results, little-endian, gathered to the coordinator zero-padded
 | `MetadataTemplate` of the loaded checkpoint | all ranks   | From `set_cached_global_metadata` until the first save.                 |
 | `MetadataTemplate` of the previous save     | coordinator | After a save, built or reused.                                          |
 | fqn list slot (`_FqnListSlot`)             | all ranks   | A new one from `set_cached_global_metadata` and from each build.        |
-| `local_plan`, `central_plan`              | all ranks   | This rank's local and global plan of the previous save.                 |
+| `_local_plan`, `_central_plan`            | all ranks   | This rank's local and global plan of the previous save.                 |
 
 Each `MetadataTemplate` has its fqn list slot. It holds the template's fqn list on the coordinator, and on the other ranks once they have the list: from `set_cached_global_metadata`, or delivered by the finalize of the save that built the template. Saves that reuse the template share its slot, and each `PendingSave` refers to the slot of the template its save writes. A finalize delivers into its own save's slot, so a save that is finalized after the next one was planned never changes the list the next one encodes against.
 
