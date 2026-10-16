@@ -17,6 +17,7 @@
 delivery of the coordinator's fqn list, and failures raised on every rank. The saves are planned
 with the plan's own _pending_save, without writing tensors."""
 
+import pickle
 import warnings
 
 import numpy as np
@@ -186,3 +187,24 @@ def test_group_whose_coordinator_isnt_global_rank_0(tmp_path_dist_ckpt):
             written = FileSystemReader(ckpt_dir).read_metadata()
             assert written.storage_data == {r.index: r.storage_data for r in write_results(last)}
         torch.distributed.barrier()
+
+
+def test_legacy_finalize_with_a_metadata(tmp_path_dist_ckpt, monkeypatch):
+    """Finalize's old arguments with a Metadata, as callers typed them before PendingSave, write
+    .metadata also when a rank sends its write results pickled.
+
+    TODO: remove with the deprecated finalize arguments.
+    """
+    Utils.initialize_distributed()
+    if torch.distributed.get_rank() != 0:
+        monkeypatch.setattr(
+            state_dict_saver,
+            "_encode_write_results",
+            lambda write_results, *args: pickle.dumps(write_results),
+        )
+    with TempNamedDir(tmp_path_dist_ckpt / "legacy_metadata") as ckpt_dir:
+        pending = plan(ckpt_dir, None, reused=False)
+        metadata = global_metadata() if torch.distributed.get_rank() == 0 else None
+        with pytest.warns(DeprecationWarning):
+            save_state_dict_async_finalize(pending.storage_writer, metadata, pending.dist_wrapper)
+        assert_written(ckpt_dir)
