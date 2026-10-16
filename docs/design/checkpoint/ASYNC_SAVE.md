@@ -19,14 +19,14 @@ A DCP `Metadata` holds a Python object per chunk, each with a `torch.Size` of of
 | Local plan         | A rank's `SavePlan` from `planner.create_local_plan()`: one `WriteItem` per tensor chunk or bytes entry the rank writes.                                                                                                   |
 | Global plan        | A rank's local plan after `create_decentralized_global_plan` and `prepare_decentralized_global_plan`; the writer adds the file prefix `__<rank>_`. Each rank makes its own; on this path the coordinator does not.         |
 | Global metadata    | The `Metadata` written to `.metadata`. `state_dict_metadata` is built from the write items of all ranks' local plans; `storage_data` (file, offset, length of each chunk) is built from the write results at finalization. |
-| Coordinator        | The planning rank that builds the global metadata and writes `.metadata` (rank 0 by default).                                                                                                                          |
+| Coordinator        | The planning rank that builds the global metadata and writes `.metadata` (rank 0 by default).                                                                                                                              |
 | Shm tensor         | A CPU tensor in shared memory (`share_memory_()`), one per tensor the rank saves, holding the values being written.                                                                                                        |
 | Async worker       | The persistent process per rank that writes the files. In CPU shared-memory mode it never initializes CUDA.                                                                                                                |
 | Fast writers       | nvrx's `.metadata` writers (C++, else Python), used on tested torch versions (`_metadata_pickler/writer.py`).                                                                                                              |
-| State dict table        | A `Metadata` without `storage_data` as arrays (`StateDictTable`), kept between saves.                                                                                                                                      |
-| Metadata template  | A save's global metadata without the parts each save sets (`storage_data`, `version`, `storage_meta`): a `MetadataTemplate`, kept between saves and completed by each write.                                     |
+| State dict table   | A `Metadata` without `storage_data` as arrays (`StateDictTable`), kept between saves.                                                                                                                                      |
+| Metadata template  | A save's global metadata without the parts each save sets (`storage_data`, `version`, `storage_meta`): a `MetadataTemplate`, kept between saves and completed by each write.                                               |
 | Write-result table | One rank's write results as a table, gathered to the coordinator. A string table names fqns by string, an index table by their entry in the fqn list.                                                                      |
-| fqn list           | The fqns of the coordinator's state dict table, in entry order.                                                                                                                                                                 |
+| fqn list           | The fqns of the coordinator's state dict table, in entry order.                                                                                                                                                            |
 
 ## Phases of a save
 
@@ -237,12 +237,12 @@ One rank's write results, little-endian, gathered to the coordinator zero-padded
 
 `CheckpointMetadataCache`, one per training process, kept by the caller across saves:
 
-| State                                     | Rank        | When                                                                    |
-| ----------------------------------------- | ----------- | ----------------------------------------------------------------------- |
-| `MetadataTemplate` of the loaded checkpoint | all ranks   | From `set_cached_global_metadata` until the first save.                 |
-| `MetadataTemplate` of the previous save     | coordinator | After a save, built or reused.                                          |
-| fqn list slot (`_FqnListSlot`)             | all ranks   | A new one from `set_cached_global_metadata` and from each build.        |
-| `_local_plan`, `_central_plan`            | all ranks   | This rank's local and global plan of the previous save.                 |
+| State                                       | Rank        | When                                                             |
+| ------------------------------------------- | ----------- | ---------------------------------------------------------------- |
+| `MetadataTemplate` of the loaded checkpoint | all ranks   | From `set_cached_global_metadata` until the first save.          |
+| `MetadataTemplate` of the previous save     | coordinator | After a save, built or reused.                                   |
+| fqn list slot (`_FqnListSlot`)              | all ranks   | A new one from `set_cached_global_metadata` and from each build. |
+| `_local_plan`, `_central_plan`              | all ranks   | This rank's local and global plan of the previous save.          |
 
 Each `MetadataTemplate` has its fqn list slot. It holds the template's fqn list on the coordinator, and on the other ranks once they have the list: from `set_cached_global_metadata`, or delivered by the finalize of the save that built the template. Saves that reuse the template share its slot, and each `PendingSave` refers to the slot of the template its save writes. A finalize delivers into its own save's slot, so a save that is finalized after the next one was planned never changes the list the next one encodes against.
 
@@ -429,12 +429,12 @@ sequenceDiagram
 
 F: fast writers usable. D: decentralized planning (`can_run_decentralized_global_plan` of planner and storage writer). C: `enable_cache`.
 
-| F   | D   | C   | Kept between saves    | Reuse of a loaded checkpoint | Write results       | fqns in write results                  | `.metadata` written from |
-| --- | --- | --- | --------------------- | ---------------------------- | ------------------- | -------------------------------------- | ------------------------ |
-| yes | yes | yes | state dict table, fqn list | checked with one all_reduce  | write-result tables | indices; in a save that builds, strings from the other ranks | state dict table and rows     |
-| yes | no  | yes | state dict table, fqn list | no, cached from the 2nd save | write-result tables | indices; in a save that builds, strings from the other ranks | state dict table and rows     |
-| yes | any | no  | nothing               | no                           | write-result tables | strings                                | state dict table and rows      |
-| no  | any | any | `Metadata`, as before | as before                    | pickled             | strings                                | torch's `finish`         |
+| F   | D   | C   | Kept between saves         | Reuse of a loaded checkpoint | Write results       | fqns in write results                                        | `.metadata` written from  |
+| --- | --- | --- | -------------------------- | ---------------------------- | ------------------- | ------------------------------------------------------------ | ------------------------- |
+| yes | yes | yes | state dict table, fqn list | checked with one all_reduce  | write-result tables | indices; in a save that builds, strings from the other ranks | state dict table and rows |
+| yes | no  | yes | state dict table, fqn list | no, cached from the 2nd save | write-result tables | indices; in a save that builds, strings from the other ranks | state dict table and rows |
+| yes | any | no  | nothing                    | no                           | write-result tables | strings                                                      | state dict table and rows |
+| no  | any | any | `Metadata`, as before      | as before                    | pickled             | strings                                                      | torch's `finish`          |
 
 The first row is the fast path. On every path:
 
@@ -463,16 +463,16 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 
 ## Code map
 
-| What                                          | Where (`src/nvidia_resiliency_ext/checkpointing/async_ckpt/`)                                                                                            |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What                                          | Where (`src/nvidia_resiliency_ext/checkpointing/async_ckpt/`)                                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Planning, cache, reuse decision               | `state_dict_saver.py`: `save_state_dict_async_plan`, `PendingSave`, `CheckpointMetadataCache`, `_verify_global_metadata_reuse`, `_check_plan_unchanged` |
-| Reuse check against loaded metadata           | `_metadata_reuse.py`, reading a state dict table through `TableEntries`                                                                                       |
-| Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                                  |
-| Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                               |
-| Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                       |
-| Cached metadata template                      | `_metadata_template.py`: `MetadataTemplate`                                                                                                                 |
-| Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                           |
-| State dict table and its Python producer           | `_metadata_pickler/state_dict_table.py`                                                                                                                       |
-| Write-result tables                           | `_metadata_pickler/write_result_table.py`                                                                                                                             |
-| `.metadata` writers                           | `_metadata_pickler/`: `writer.py` (selection), `native.py` and `native_src/native.cpp` (C++), `pickler.py` (Python)                                      |
-| Async workers, finalize scheduling, shm drain | `core.py`: `AsyncCallsQueue`, `PersistentAsyncCaller`                                                                                                    |
+| Reuse check against loaded metadata           | `_metadata_reuse.py`, reading a state dict table through `TableEntries`                                                                                 |
+| Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                                 |
+| Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                              |
+| Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                      |
+| Cached metadata template                      | `_metadata_template.py`: `MetadataTemplate`                                                                                                             |
+| Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                          |
+| State dict table and its Python producer      | `_metadata_pickler/state_dict_table.py`                                                                                                                 |
+| Write-result tables                           | `_metadata_pickler/write_result_table.py`                                                                                                               |
+| `.metadata` writers                           | `_metadata_pickler/`: `writer.py` (selection), `native.py` and `native_src/native.cpp` (C++), `pickler.py` (Python)                                     |
+| Async workers, finalize scheduling, shm drain | `core.py`: `AsyncCallsQueue`, `PersistentAsyncCaller`                                                                                                   |
