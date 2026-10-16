@@ -92,7 +92,7 @@ class CheckpointMetadataCache:
         central_plan (SavePlan): This rank's global plan of the previous save.
         fqn_list (FqnList): The fqn list of the global metadata to reuse, on every rank, which
             index tables refer to. None on the other ranks from a save that builds new metadata
-            until its finalize delivers the new list.
+            until its finalize delivers the new list, and None if an fqn isn't a str.
     """
 
     def __init__(self):
@@ -597,7 +597,12 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     fqn_list_slot = pending.fqn_list_slot
     # The coordinator delivers the fqn list of the metadata it built to the other ranks.
     delivered = b""
-    if pending.delivers_fqn_list and dist_wrapper.is_coordinator and dist_wrapper.use_dist:
+    if (
+        pending.delivers_fqn_list
+        and dist_wrapper.is_coordinator
+        and dist_wrapper.use_dist
+        and fqn_list_slot.fqn_list is not None
+    ):
         delivered = fqn_list_slot.fqn_list.encode()
 
     # Gather the write results that will be saved to the metadata file.

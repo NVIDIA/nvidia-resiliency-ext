@@ -24,8 +24,9 @@ import pytest
 import torch
 from hypothesis import given
 from hypothesis import strategies as st
+from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.filesystem import _StorageInfo
-from torch.distributed.checkpoint.metadata import MetadataIndex
+from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata, MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_exception
 
@@ -35,6 +36,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
     FileSystemWriterAsync,
     _wrap_exception_for_gather,
 )
+from nvidia_resiliency_ext.checkpointing.async_ckpt.metadata_template import MetadataTemplate
 
 
 def results(rank: int, n: int = 3):
@@ -82,6 +84,34 @@ def test_coordinator_tells_tables_from_pickles():
     assert pickled[1] == results(1) and pickled[3] == []
     assert _is_wrapped_exception(pickled[2])
     assert table.to_write_results(table.decode(rows[0])) == results(0)
+
+
+def _rows(payloads):
+    """Return the payloads as the coordinator receives them: one zero-padded row each."""
+    width = -(-max(map(len, payloads)) // 8) * 8
+    return np.stack([np.frombuffer(p.ljust(width, b"\0"), dtype=np.uint8) for p in payloads])
+
+
+def test_metadata_with_an_fqn_that_isnt_a_str_is_written(tmp_path):
+    """The rank writing that fqn sends its write results pickled, the other one a table if tables
+    are on; the coordinator writes both."""
+    int_result = WriteResult(MetadataIndex(1), 4, _StorageInfo("__1_0.distcp", 0, 4))
+    metadata = Metadata(
+        state_dict_metadata={"r0.w": BytesStorageMetadata(), 1: BytesStorageMetadata()}
+    )
+    storage_writer = FileSystemWriterAsync(tmp_path)
+    rows = _rows(
+        [
+            state_dict_saver._encode_write_results(rank_results, storage_writer)
+            for rank_results in (results(0), [int_result])
+        ]
+    )
+    is_table, pickled = state_dict_saver._decode_payloads(rows)
+    assert is_table.tolist() == [writer.writes_tables(), False]
+    template = MetadataTemplate.from_metadata(metadata)
+    state_dict_saver._write_metadata(storage_writer, template, rows, is_table, pickled)
+    written = FileSystemReader(tmp_path).read_metadata()
+    assert written.storage_data == {r.index: r.storage_data for r in results(0) + [int_result]}
 
 
 class _OwnFinish(FileSystemWriterAsync):

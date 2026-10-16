@@ -63,8 +63,9 @@ class MetadataTemplate:
         return cls(table if table is not None else metadata)
 
     @functools.cached_property
-    def fqn_list(self) -> FqnList:
-        """The fqns of state_dict_metadata, in order: the fqn list index tables refer to."""
+    def fqn_list(self) -> Optional[FqnList]:
+        """The fqns of state_dict_metadata, in order: the fqn list index tables refer to; None if
+        an fqn isn't a str."""
         if isinstance(self._content, StateDictTable):
             return self._content.fqn_list
         return FqnList.of(self._content.state_dict_metadata)

@@ -80,9 +80,12 @@ class FqnList:
     fingerprint: int
 
     @classmethod
-    def of(cls, fqns: Iterable[str]) -> "FqnList":
-        """Make the list of these fqns, computing their entries and fingerprint."""
+    def of(cls, fqns: Iterable[str]) -> Optional["FqnList"]:
+        """Make the list of these fqns, computing their entries and fingerprint; return None if an
+        fqn isn't a str, which index tables can't name, so that every rank sends fqn strings."""
         fqns = tuple(fqns)
+        if not all(isinstance(fqn, str) for fqn in fqns):
+            return None
         return cls(
             fqns, MappingProxyType({fqn: i for i, fqn in enumerate(fqns)}), fingerprint(fqns)
         )
