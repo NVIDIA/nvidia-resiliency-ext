@@ -197,6 +197,16 @@
 <span class="sd">    * `segment_health_check_dir` [str|None] Shared directory containing per-task</span>
 <span class="sd">      segment health decision artifacts. Allocation-unit process 0 checks its artifact</span>
 <span class="sd">      before joining a rendezvous. Default: None (disabled).</span>
+<span class="sd">    * `timeout_dump_enabled` [bool] Enable timeout diagnostics (default: False).</span>
+<span class="sd">    * `timeout_dump` [str] Ordered, comma-separated tools (default:</span>
+<span class="sd">      "pyspy,gdb,cuda-gdb") to capture stacks on selected section</span>
+<span class="sd">      timeouts and automatically upload per-node,</span>
+<span class="sd">      per-cycle text files. ``timeout_dump_local_root`` defaults to /tmp; the</span>
+<span class="sd">      shared destination is derived from ``--ft-nvrx-logfile``. The remaining</span>
+<span class="sd">      ``timeout_dump_*`` fields control capture, storage, collection, and shutdown</span>
+<span class="sd">      bounds. See the timeout diagnostics guide for deployment requirements.</span>
+<span class="sd">    * `timeout_dump_sections` [str] Comma-separated workload section names that</span>
+<span class="sd">      trigger capture when they time out (default: "step"). Names match exactly.</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
@@ -248,6 +258,22 @@
 
     <span class="c1"># Segment health check: shared directory containing per-task decision artifacts</span>
     <span class="n">segment_health_check_dir</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+
+    <span class="c1"># Optional timeout dumps; shared destination is derived from --ft-nvrx-logfile.</span>
+    <span class="n">timeout_dump_enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">timeout_dump</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"pyspy,gdb,cuda-gdb"</span>
+    <span class="n">timeout_dump_sections</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"step"</span>
+    <span class="n">timeout_dump_local_root</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"/tmp"</span>
+    <span class="n">timeout_dump_pyspy</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"py-spy"</span>
+    <span class="n">timeout_dump_gdb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"gdb"</span>
+    <span class="n">timeout_dump_cuda_gdb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"cuda-gdb"</span>
+    <span class="n">timeout_dump_gdb_command_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">timeout_dump_cuda_gdb_command_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">timeout_dump_capture_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>
+    <span class="n">timeout_dump_max_capture_bytes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1024</span> <span class="o">*</span> <span class="mi">1024</span>
+    <span class="n">timeout_dump_poll_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>
+    <span class="n">timeout_dump_upload_attempts</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">3</span>
+    <span class="n">timeout_dump_shutdown_grace</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">10.0</span>
 
     <span class="nd">@property</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>

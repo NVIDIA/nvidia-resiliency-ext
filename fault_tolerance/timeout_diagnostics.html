@@ -1,0 +1,479 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Timeout diagnostics &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Integration Guides" href="integration.html" />
+    <link rel="prev" title="Usage guide" href="usage_guide.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Timeout diagnostics</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#enable-capture">Enable capture</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#debugger-command-files">Debugger command files</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#gdb-timeout-reference">GDB timeout reference</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#cuda-gdb-timeout-reference">CUDA-GDB timeout reference</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="#capture-and-upload">Capture and upload</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#failures-and-retention">Failures and retention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#configuration">Configuration</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../inprocess/index.html">Inprocess Restart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">Fault Tolerance</a></li>
+      <li class="breadcrumb-item active">Timeout diagnostics</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/fault_tolerance/timeout_diagnostics.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="timeout-diagnostics">
+<h1>Timeout diagnostics<a class="headerlink" href="#timeout-diagnostics" title="Link to this heading"></a></h1>
+<p>NVRx can capture Python, native CPU, and CUDA diagnostics when a selected workload
+section times out. Diagnostics are opt-in; the default capture section is <code class="docutils literal notranslate"><span class="pre">step</span></code>.
+Once enabled, all completed captures are uploaded automatically. Heartbeat and
+out-of-section timeouts do not trigger captures by themselves.</p>
+<section id="enable-capture">
+<h2>Enable capture<a class="headerlink" href="#enable-capture" title="Link to this heading"></a></h2>
+<p>Install the requested tools in the training container and enable diagnostics
+on the launcher:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-timeout-dump-enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-timeout-dump<span class="o">=</span>pyspy,gdb,cuda-gdb<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-timeout-dump-gdb-command-file<span class="o">=</span>/lustre/config/gdb-timeout.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-timeout-dump-cuda-gdb-command-file<span class="o">=</span>/lustre/config/cuda-gdb-timeout.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-nvrx-logfile<span class="w"> </span>/lustre/run/nvrx/12345/logs/launcher.log<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-per-cycle-applog-prefix<span class="w"> </span>/lustre/run/logs/training.log<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-timeout-dump-local-root<span class="w"> </span>/tmp<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>...<span class="w"> </span>train.py
+</pre></div>
+</div>
+<p>Select additional named sections with, for example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">sections</span><span class="o">=</span><span class="n">step</span><span class="p">,</span><span class="n">checkpointing</span>
+</pre></div>
+</div>
+<p>The value is a comma-separated list of exact, case-sensitive workload section
+names. Surrounding whitespace is ignored; empty or duplicate names are rejected.
+Megatron uses <code class="docutils literal notranslate"><span class="pre">checkpointing</span></code>, while the NVRx sections example uses
+<code class="docutils literal notranslate"><span class="pre">checkpoint</span></code>. Use the names passed to <code class="docutils literal notranslate"><span class="pre">start_section()</span></code> by your workload.
+Other names, such as <code class="docutils literal notranslate"><span class="pre">setup</span></code> or application-defined sections, are supported.
+There are no wildcard or timeout-type aliases. Selecting a section does not
+enable diagnostics or configure its timeout: it must also have a finite timeout
+in <code class="docutils literal notranslate"><span class="pre">rank_section_timeouts</span></code> and actually expire. Heartbeat and out-of-section
+timeouts are separate detection paths, not section names in this option.</p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=false</span></code> to disable capture, including when YAML
+enables it. Selecting tools alone does not enable diagnostics. The default tool
+list is <code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code>, in that order. There is no automatic detection or
+silent skipping: when enabled, the launcher validates every requested executable
+and fails before starting workers if any is missing or not executable. Each
+selected debugger also requires a readable command file. Supply a smaller tool
+list or install/configure the missing tools. Disabled diagnostics skip tool
+and command-file validation and collector setup. Dumps require
+an absolute <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile=&lt;nvrx-root&gt;/logs/&lt;filename&gt;</span></code> and always use
+<code class="docutils literal notranslate"><span class="pre">&lt;nvrx-root&gt;/diags/</span></code>. The existing requirement for
+<code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code> with <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> still applies.</p>
+<p>Deployment scripts choose <code class="docutils literal notranslate"><span class="pre">&lt;work-dir&gt;/nvrx/&lt;job-id&gt;</span></code> for ordinary jobs and
+<code class="docutils literal notranslate"><span class="pre">&lt;work-dir&gt;/nvrx/&lt;array-parent-id&gt;</span></code> for job arrays. Diagnostics reuse that
+namespace without reconstructing Slurm IDs. A root must distinguish launch
+attempts whose cycle numbers restart at zero.</p>
+<p>The worker obtains its monitor PID from the existing Unix socket and calls
+<code class="docutils literal notranslate"><span class="pre">PR_SET_PTRACER</span></code> to permit the monitor and its descendants to attach under
+Linux Yama mode 1. This does not override container restrictions, other security
+checks, or stricter Yama modes. It replaces any previously nominated ptracer;
+qualify applications that already configure a debugger or crash handler.
+Permission failures are logged and do not disable fault handling. Validate
+attachment inside the actual training container before production rollout.</p>
+<p>Capture targets only the training worker PID. The ptrace authorization does not
+extend to separate processes created by that worker, such as DataLoader workers
+or an async checkpoint-save worker. Capturing them would require their own
+authorization and explicit targeting. Selecting a checkpoint section captures
+the training process, which may show where checkpoint finalization is waiting;
+it does not collect stacks from the async checkpoint worker itself.</p>
+</section>
+<section id="debugger-command-files">
+<h2>Debugger command files<a class="headerlink" href="#debugger-command-files" title="Link to this heading"></a></h2>
+<p>Users must supply a command file for each selected debugger. NVRx does not
+bundle default GDB or CUDA-GDB commands. Set the paths through CLI or YAML:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">command</span><span class="o">-</span><span class="n">file</span><span class="o">=/</span><span class="n">lustre</span><span class="o">/</span><span class="n">config</span><span class="o">/</span><span class="n">gdb</span><span class="o">-</span><span class="n">timeout</span><span class="o">.</span><span class="n">txt</span>
+<span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">command</span><span class="o">-</span><span class="n">file</span><span class="o">=/</span><span class="n">lustre</span><span class="o">/</span><span class="n">config</span><span class="o">/</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">timeout</span><span class="o">.</span><span class="n">txt</span>
+</pre></div>
+</div>
+<section id="gdb-timeout-reference">
+<h3>GDB timeout reference<a class="headerlink" href="#gdb-timeout-reference" title="Link to this heading"></a></h3>
+<p>Use this as the default deployment reference: save the following text as
+<code class="docutils literal notranslate"><span class="pre">/lustre/config/gdb-timeout.txt</span></code> and pass its path explicitly. It is a
+reference for users to copy, not an automatic runtime fallback:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Native CPU call stacks for all host threads, up to 32 frames each.</span>
+<span class="n">thread</span> <span class="n">apply</span> <span class="nb">all</span> <span class="n">bt</span> <span class="mi">32</span>
+
+<span class="c1"># Loaded shared libraries and their symbol-loading status.</span>
+<span class="n">info</span> <span class="n">sharedlibrary</span>
+
+<span class="c1"># Process virtual address ranges and mapped files (Linux).</span>
+<span class="n">info</span> <span class="n">proc</span> <span class="n">mappings</span>
+</pre></div>
+</div>
+<p>These commands produce text. They do not save process memory or create a core
+file. Native backtraces do not automatically reconstruct Python call stacks;
+py-spy provides that view. The 32-frame limit is a starting point that users
+can adjust in their deployed file.</p>
+</section>
+<section id="cuda-gdb-timeout-reference">
+<h3>CUDA-GDB timeout reference<a class="headerlink" href="#cuda-gdb-timeout-reference" title="Link to this heading"></a></h3>
+<p>CUDA-GDB is NVIDIA’s extension of GDB for inspecting both CPU code and CUDA
+GPU execution. It is a separate executable, <code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code>. A command file is
+plain text containing the commands one would otherwise type at its debugger
+prompt; the <code class="docutils literal notranslate"><span class="pre">.txt</span></code> extension is only a naming convention. It is not a CUDA
+kernel, Python program, or binary core dump.</p>
+<p>The following reference was validated with CUDA-GDB 13.2 on four-GPU GB300
+nodes. Save it as
+<code class="docutils literal notranslate"><span class="pre">/lustre/config/cuda-gdb-timeout.txt</span></code>:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Explicit device filters work around the unfiltered context-query issue</span>
+<span class="c1"># observed with CUDA-GDB 13.2 on four-GPU GB300 nodes.</span>
+<span class="n">echo</span> <span class="n">NVRX_CUDA_GDB_STACKS_BEGIN</span>\<span class="n">n</span>
+<span class="n">thread</span> <span class="n">apply</span> <span class="nb">all</span> <span class="n">bt</span> <span class="mi">32</span>
+<span class="n">info</span> <span class="n">cuda</span> <span class="n">devices</span>
+<span class="n">info</span> <span class="n">cuda</span> <span class="n">contexts</span> <span class="n">device</span> <span class="mi">0</span>
+<span class="n">info</span> <span class="n">cuda</span> <span class="n">contexts</span> <span class="n">device</span> <span class="mi">1</span>
+<span class="n">info</span> <span class="n">cuda</span> <span class="n">contexts</span> <span class="n">device</span> <span class="mi">2</span>
+<span class="n">info</span> <span class="n">cuda</span> <span class="n">contexts</span> <span class="n">device</span> <span class="mi">3</span>
+<span class="n">info</span> <span class="n">cuda</span> <span class="n">kernels</span>
+<span class="n">info</span> <span class="n">cuda</span> <span class="n">threads</span>
+<span class="n">echo</span> <span class="n">NVRX_CUDA_GDB_COMMANDS_DONE</span>\<span class="n">n</span>
+</pre></div>
+</div>
+<p>Adjust the device queries to the device IDs reported by <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">cuda</span> <span class="pre">devices</span></code>
+in your deployment; the four-device list above is specific to the tested setup.
+Explicit queries worked around an unfiltered <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">cuda</span> <span class="pre">contexts</span></code> issue
+observed in that environment. A worker using only one GPU can legitimately
+report <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">CUDA</span> <span class="pre">contexts.</span></code> for the other devices. Check the query for its
+active device before concluding that CUDA context capture failed.</p>
+<p>NVRx launches CUDA-GDB against the timed-out worker PID and passes this file
+with <code class="docutils literal notranslate"><span class="pre">-x</span></code>. Its output goes into the CUDA-GDB text capture. The <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">cuda</span></code>
+commands describe GPU execution state; they do not dump a backtrace for every
+GPU thread. Inspecting a particular GPU thread’s stack requires selecting a
+CUDA execution focus and then issuing <code class="docutils literal notranslate"><span class="pre">bt</span></code>. Available detail depends on the
+kernel’s symbols/debug information and the debugger/driver state.</p>
+<p>See the <a class="reference external" href="https://docs.nvidia.com/cuda/cuda-gdb/index.html">NVIDIA CUDA-GDB manual</a> for CUDA focus selection
+and the <code class="docutils literal notranslate"><span class="pre">info</span> <span class="pre">cuda</span></code> commands. CUDA-GDB capture remains best effort on a
+hung GPU and needs qualification in the deployed container.</p>
+<p>The files are independent; only selected debuggers require a file. A py-spy-only
+configuration does not need either file.</p>
+<p>NVRx disables initialization scripts and debuginfod downloads, attaches to the
+worker, disables pagination, executes the file with <code class="docutils literal notranslate"><span class="pre">-x</span></code>, and detaches.
+NVRx still owns the subprocess deadline, output cap, and text upload. Script
+errors are recorded as capture failures; GDB stops processing a command file
+on an error. Each launcher checks that the selected files exist, are regular
+files, and can be read before starting workers. Relative paths are resolved
+once at startup from the launcher’s working directory. The monitor passes the
+validated path to the debugger without resolving or reading it during capture. Files may live on shared Lustre storage;
+mount the path inside the training container on every node, including replacement
+nodes. Debuggers read the files at capture time, so startup validation does not
+guarantee their later availability.</p>
+<p>Command files are trusted deployment code, not a sandboxed query language.
+They should emit text to the captured output and leave attach/detach and process
+lifecycle to NVRx. The capture byte limit applies to captured stdout/stderr;
+it cannot bound files or other side effects produced by arbitrary commands.
+Changes to a file take effect on the next capture; keep it stable during a
+capture or deploy updates with an atomic replacement.</p>
+<p>Binary core generation and binary artifact collection are <strong>future extensions,
+not part of the current feature</strong>. Do not add <code class="docutils literal notranslate"><span class="pre">gcore</span></code> or
+<code class="docutils literal notranslate"><span class="pre">generate-core-file</span></code> to these scripts expecting NVRx to collect the result.
+The collector publishes only text captures. Future core support requires its
+own artifact lifecycle and capture-budget design; no core-specific options
+are provided now.</p>
+</section>
+</section>
+<section id="capture-and-upload">
+<h2>Capture and upload<a class="headerlink" href="#capture-and-upload" title="Link to this heading"></a></h2>
+<p>Each launcher forks one diagnostic collector before threaded logging and attribution
+services start. The collector closes unnecessary inherited descriptors, keeps the
+existing launcher log route, and remains outside training-worker cleanup.</p>
+<p>On a selected section timeout, the rank monitor attempts one diagnostic sequence per
+worker incarnation. Each tool runs in its own
+subprocess, sequentially in the configured order, with bounded output in memory.
+The capture grace defaults to <strong>30 seconds total</strong>, including startup and cleanup.
+Each tool receives at most the remaining time divided by the number of remaining
+tools; unused time becomes available to later tools. A small part of each share
+is reserved for killing and reaping the diagnostic child. If that child remains
+alive, later tools are skipped to prevent overlapping debugger attachments.
+Worker termination is requested by the overall deadline, independently of
+diagnostic subprocess startup and cleanup. Startup runs on a daemon thread so a
+blocked executable lookup cannot hold the monitor event loop or its shutdown.
+A pending launch prevents further captures; if it returns after cancellation or
+timeout, its child is killed and reaped without delaying recovery. Other launchers may terminate the target sooner,
+so capture is best effort. The timeout retains the original process identity
+(PID and creation time): disconnecting or reconnecting its monitor socket does
+not cancel termination, and a replacement process is not targeted by the old timeout.</p>
+<p><code class="docutils literal notranslate"><span class="pre">pyspy</span></code> captures Python thread stacks. <code class="docutils literal notranslate"><span class="pre">gdb</span></code> and <code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code> attach to the
+live worker and execute the user-supplied command files. The files determine
+which native CPU stacks or CUDA state are captured. Debuggers disable
+initialization scripts and debuginfod downloads, then explicitly detach.
+Attachment temporarily stops the worker; detaching resumes it, so successive
+captures may observe different states. Runtime capture errors are retained
+and recovery continues.</p>
+<p>GPU inspection needs GPU device access and a compatible debugger/driver stack.
+CUDA-GDB receives the worker’s <code class="docutils literal notranslate"><span class="pre">TMPDIR</span></code>, <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">CUDA_DEVICE_ORDER</span></code> from a bounded read of its process environment. The worker
+and debugger must share a writable temporary directory. Symbols and device
+line/debug information improve results; production builds need not enable
+<code class="docutils literal notranslate"><span class="pre">-G</span></code>. Executable validation does not prove GPU attachment will work. Qualify
+GPU capture and timeout cleanup in the deployed training container. See the
+<a class="reference external" href="https://docs.nvidia.com/cuda/archive/13.0.0/cuda-gdb/index.html#setting-up-the-debugger-environment">CUDA-GDB setup guide</a>.</p>
+<p>After requesting worker termination, the monitor stages the output locally:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">nvrx</span><span class="o">-</span><span class="n">diags</span><span class="o">/</span><span class="n">cycle</span><span class="o">&lt;</span><span class="n">N</span><span class="o">&gt;/</span>
+    <span class="n">rank</span><span class="o">&lt;</span><span class="n">local_rank</span><span class="o">&gt;</span><span class="n">_pid</span><span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="n">_</span><span class="o">&lt;</span><span class="n">tool</span><span class="o">&gt;.</span><span class="n">txt</span><span class="o">.</span><span class="n">tmp</span>
+    <span class="n">rank</span><span class="o">&lt;</span><span class="n">local_rank</span><span class="o">&gt;</span><span class="n">_pid</span><span class="o">&lt;</span><span class="n">pid</span><span class="o">&gt;</span><span class="n">_</span><span class="o">&lt;</span><span class="n">tool</span><span class="o">&gt;.</span><span class="n">txt</span><span class="o">.</span><span class="n">ready</span>
+</pre></div>
+</div>
+<p>Each file contains the host, cycle, global/local rank, PID, timeout reason,
+timestamp, and capture outcome. The monitor closes the file before renaming it
+to <code class="docutils literal notranslate"><span class="pre">.ready</span></code>. Failed or truncated output is retained with its status. A
+still-running diagnostic child only has a pipe, never a writable staging file.</p>
+<p>The collector polls this local directory every 30 seconds and batches all
+completed files present at each poll. Its initial polling offset is randomized
+within that interval to spread writes across nodes. A late capture is collected
+on a later poll. There are no separate quiet-interval, maximum batch-delay,
+upload-jitter, or retry-delay settings. The collector does not wait for ranks
+that never capture and never synchronizes training recovery with uploading.
+There are no new sockets, collection requests, metadata sidecars, archives, or
+compression.</p>
+<p>Each node publishes one text file per cycle and tool:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">&lt;</span><span class="n">nvrx</span><span class="o">-</span><span class="n">root</span><span class="o">&gt;/</span><span class="n">diags</span><span class="o">/</span><span class="n">cycle</span><span class="o">&lt;</span><span class="n">N</span><span class="o">&gt;/&lt;</span><span class="n">node_name</span><span class="o">&gt;</span><span class="n">_</span><span class="o">&lt;</span><span class="n">tool</span><span class="o">&gt;.</span><span class="n">txt</span>
+</pre></div>
+</div>
+<p>The collector selects a fixed batch, writes a complete <code class="docutils literal notranslate"><span class="pre">.txt.partial</span></code> snapshot,
+syncs it, and atomically renames it over the final file in the same directory.
+It syncs the directory before deleting the included local files. A late capture
+requires reading the previously published contents to build a new snapshot.
+Successful uploads delete their local inputs. Late captures produce updated snapshots.</p>
+</section>
+<section id="failures-and-retention">
+<h2>Failures and retention<a class="headerlink" href="#failures-and-retention" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Upload failure retains local files. Each subsequent collection poll makes
+one retry per pending batch, up to the attempt limit. Every copy attempt
+rebuilds <code class="docutils literal notranslate"><span class="pre">.partial</span></code> from scratch.
+If publication already succeeded, an ordinary retry only finishes syncing and
+local cleanup. New arrivals are not deleted with an earlier batch. Empty cycle
+directories are retained to avoid racing with producers opening capture files;
+successful publication removes the capture files themselves.</p></li>
+<li><p>Exhausted batches stay local; polling does not reset their retry budget.
+Later captures for the same cycle and tool form a new batch with their own
+retry budget; they do not include or retry the exhausted files.
+Collect retained files manually after the owning launcher/collector has stopped.
+A collector crash after publication but before cleanup may leave duplicate dumps
+on replay; exactly-once delivery is deliberately not required.</p></li>
+<li><p>Node-local scratch is assumed to have enough space for text dumps. Each
+rank/tool capture retains its output cap, but there is no aggregate staging
+quota or pre-capture directory scan. At the default 1 MiB cap, py-spy plus
+GDB use at most 8 MiB per cycle on a four-worker node or 16 MiB on an
+eight-worker node. Failed uploads can accumulate across cycles. Local write
+failures are logged after worker termination has been requested.</p></li>
+<li><p>An ownership lock prevents two collectors using the same local staging root.
+Existing captures cause diagnostics to be disabled with a warning, rather
+than uploaded into a new job or deleted. Collect them or select another local
+root. Concurrent launchers on one node need distinct roots and destinations.</p></li>
+<li><p>The collector is not automatically restarted. Uploads do not delay training
+restart. Shutdown wakes the collector immediately for one final collection
+pass (including pending retries within their attempt limit). It grants a
+bounded drain interval, then sends SIGKILL without
+waiting indefinitely for a stuck filesystem operation. A live old writer is
+never replaced. Node loss can lose unpublished captures.</p></li>
+</ul>
+<p>Existing NVRx logs contain concise capture/upload outcomes and destination
+paths. Each capture message includes <code class="docutils literal notranslate"><span class="pre">cycle</span></code>, <code class="docutils literal notranslate"><span class="pre">global_rank</span></code>, <code class="docutils literal notranslate"><span class="pre">local_rank</span></code>,
+worker <code class="docutils literal notranslate"><span class="pre">pid</span></code>, <code class="docutils literal notranslate"><span class="pre">tool</span></code>, <code class="docutils literal notranslate"><span class="pre">status</span></code>, and the local <code class="docutils literal notranslate"><span class="pre">path</span></code>. The existing log
+header supplies the hostname. Dump block headers independently include <code class="docutils literal notranslate"><span class="pre">host</span></code>,
+<code class="docutils literal notranslate"><span class="pre">cycle</span></code>, <code class="docutils literal notranslate"><span class="pre">global_rank</span></code>, <code class="docutils literal notranslate"><span class="pre">local_rank</span></code>, and <code class="docutils literal notranslate"><span class="pre">pid</span></code>, so the aggregated file can
+be correlated with a rank in that cycle’s application log without consulting
+the launcher log. Dump contents remain in the diagnostic files. A <code class="docutils literal notranslate"><span class="pre">.partial</span></code>
+left by an interrupted upload is not a published snapshot.</p>
+</section>
+<section id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
+<p>These fields work in the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> YAML section. <code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code>
+corresponds to <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code>; other fields use matching
+<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-...</span></code> options, replacing underscores with hyphens. Explicit
+CLI values override YAML. Enable diagnostics with
+<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=true</span></code> and select tools with <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code>
+in addition to the existing log configuration.</p>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 45.0%" />
+<col style="width: 20.0%" />
+<col style="width: 35.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Enable or disable diagnostics</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code></p></td>
+<td><p>Ordered comma-separated tools; all must be executable when enabled</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_sections</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">step</span></code></p></td>
+<td><p>Comma-separated workload section names that trigger capture on timeout</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_local_root</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/tmp</span></code></p></td>
+<td><p>Node-local parent of <code class="docutils literal notranslate"><span class="pre">nvrx-diags/</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_pyspy</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">py-spy</span></code></p></td>
+<td><p>Executable name or path</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_gdb</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gdb</span></code></p></td>
+<td><p>GDB executable name or path</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_cuda_gdb</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code></p></td>
+<td><p>CUDA-GDB executable name or path</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_gdb_command_file</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>User-supplied command file; required when gdb is selected</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_cuda_gdb_command_file</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>User-supplied command file; required when cuda-gdb is selected</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_capture_timeout</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">30</span></code> seconds</p></td>
+<td><p>Total capture grace across all tools, including cleanup</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_max_capture_bytes</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1048576</span></code></p></td>
+<td><p>Output cap per tool, including headers</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_poll_interval</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">30</span></code> seconds</p></td>
+<td><p>Collection and retry interval; filesystem I/O can extend the cadence</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_upload_attempts</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">3</span></code></p></td>
+<td><p>Total attempts per batch, including the first upload</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_shutdown_grace</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">10</span></code> seconds</p></td>
+<td><p>Maximum launcher wait for the collector to finish its final pass</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="usage_guide.html" class="btn btn-neutral float-left" title="Usage guide" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="integration.html" class="btn btn-neutral float-right" title="Integration Guides" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

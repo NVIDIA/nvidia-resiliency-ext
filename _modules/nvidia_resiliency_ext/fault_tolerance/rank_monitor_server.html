@@ -110,6 +110,7 @@
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.multiprocessing</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mp</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">psutil</span><span class="w"> </span><span class="kn">import</span> <span class="n">NoSuchProcess</span><span class="p">,</span> <span class="n">Process</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils.log_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">LogConfig</span>
 
@@ -126,6 +127,7 @@
     <span class="n">UpdateConfigMsg</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.rank_monitor_state_machine</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankMonitorStateMachine</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_diagnostics</span><span class="w"> </span><span class="kn">import</span> <span class="n">ToolCapture</span><span class="p">,</span> <span class="n">parse_capture_sections</span><span class="p">,</span> <span class="n">parse_capture_tools</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">is_process_alive</span><span class="p">,</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">,</span> <span class="n">write_obj_to_ipc_stream</span>
 
 
@@ -275,6 +277,11 @@
         <span class="c1"># workload step reporting does not include warmup iterations.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_step_section_seen_this_cycle</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">current_cycle</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Track current cycle number for logging</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_attempted</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_incarnation</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="c1"># Tools run sequentially; retain the last child until its exit is observed.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_child</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_timed_out_sections</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
 
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">enable_nic_monitor</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">"Enable NIC health monitoring."</span><span class="p">)</span>
@@ -299,13 +306,19 @@
         <span class="c1"># without affecting core functionality.</span>
         <span class="k">return</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rank_process</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
         <span class="c1"># First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="n">sig</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_termination_signal</span>
-            <span class="n">rank_pid</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span>
-            <span class="n">os</span><span class="o">.</span><span class="n">kill</span><span class="p">(</span><span class="n">rank_pid</span><span class="p">,</span> <span class="n">signal</span><span class="o">.</span><span class="n">SIGCONT</span><span class="p">)</span>
-            <span class="n">os</span><span class="o">.</span><span class="n">kill</span><span class="p">(</span><span class="n">rank_pid</span><span class="p">,</span> <span class="n">sig</span><span class="p">)</span>
+            <span class="n">rank_pid</span> <span class="o">=</span> <span class="n">rank_process</span><span class="o">.</span><span class="n">pid</span> <span class="k">if</span> <span class="n">rank_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span>
+            <span class="c1"># Process.send_signal checks PID reuse against its saved creation time.</span>
+            <span class="n">send_signal</span> <span class="o">=</span> <span class="p">(</span>
+                <span class="n">rank_process</span><span class="o">.</span><span class="n">send_signal</span>
+                <span class="k">if</span> <span class="n">rank_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+                <span class="k">else</span> <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">kill</span><span class="p">,</span> <span class="n">rank_pid</span><span class="p">)</span>
+            <span class="p">)</span>
+            <span class="n">send_signal</span><span class="p">(</span><span class="n">signal</span><span class="o">.</span><span class="n">SIGCONT</span><span class="p">)</span>
+            <span class="n">send_signal</span><span class="p">(</span><span class="n">sig</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                 <span class="sa">f</span><span class="s2">"Rank monitor sent SIGCONT then </span><span class="si">{</span><span class="n">sig</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> to the rank (PID=</span><span class="si">{</span><span class="n">rank_pid</span><span class="si">}</span><span class="s2">)"</span>
             <span class="p">)</span>
@@ -315,11 +328,15 @@
             <span class="p">)</span>
             <span class="c1"># do nothing, most probably rank process is terminated anyway</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank_if_alive</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank_if_alive</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rank_process</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">rank_process</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
 
         <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">rank_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">rank_process</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank</span><span class="p">(</span><span class="n">rank_process</span><span class="p">)</span>
+                <span class="k">return</span>
             <span class="k">if</span> <span class="n">is_process_alive</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">):</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank</span><span class="p">()</span>
             <span class="k">else</span><span class="p">:</span>
@@ -336,7 +353,84 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_timeout</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
+        <span class="n">rank_info</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span>
+        <span class="n">cycle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_cycle</span>
+        <span class="n">captures</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">cancelled</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="n">rank_process</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">reasons</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_timed_out_sections</span> <span class="o">&amp;</span> <span class="n">parse_capture_sections</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_sections</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_enabled</span>
+            <span class="k">else</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="n">reasons</span> <span class="ow">and</span> <span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="c1"># Snapshot before capture yields. The IPC connection can disappear</span>
+                <span class="c1"># or be replaced while the original process is still alive.</span>
+                <span class="n">rank_process</span> <span class="o">=</span> <span class="n">Process</span><span class="p">(</span><span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">NoSuchProcess</span><span class="p">:</span>
+                <span class="k">return</span>
+            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Could not retain timeout worker identity: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
+                <span class="c1"># Preserve recovery without yielding or attempting diagnostics.</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
+                <span class="k">return</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">terminate_original_worker</span><span class="p">():</span>
+            <span class="k">if</span> <span class="n">rank_process</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">(</span><span class="n">rank_process</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="n">rank_info</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
+
+        <span class="n">timer</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_enabled</span> <span class="ow">and</span> <span class="n">reasons</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_attempted</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_attempted</span> <span class="o">=</span> <span class="kc">True</span>
+                <span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_child</span>
+                <span class="k">if</span> <span class="n">child</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">child</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                        <span class="s2">"Skipping timeout capture: previous diagnostic child is still alive"</span>
+                    <span class="p">)</span>
+                    <span class="k">return</span>
+                <span class="k">if</span> <span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="n">timer</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">call_later</span><span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_capture_timeout</span><span class="p">,</span> <span class="n">terminate_original_worker</span>
+                    <span class="p">)</span>
+                    <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_capture_timeout</span>
+                    <span class="n">tools</span> <span class="o">=</span> <span class="n">parse_capture_tools</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump</span><span class="p">)</span>
+                    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">tool</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">tools</span><span class="p">):</span>
+                        <span class="n">remaining</span> <span class="o">=</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
+                        <span class="k">if</span> <span class="n">remaining</span> <span class="o">&lt;=</span> <span class="mi">0</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">rank_info</span><span class="p">:</span>
+                            <span class="k">break</span>
+                        <span class="n">capture</span> <span class="o">=</span> <span class="n">ToolCapture</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="p">,</span> <span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">,</span> <span class="n">tool</span><span class="p">)</span>
+                        <span class="n">captures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">capture</span><span class="p">)</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_child</span> <span class="o">=</span> <span class="n">capture</span>
+                        <span class="k">await</span> <span class="n">capture</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">remaining</span> <span class="o">/</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">tools</span><span class="p">)</span> <span class="o">-</span> <span class="n">index</span><span class="p">))</span>
+                        <span class="k">if</span> <span class="n">capture</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                                <span class="s2">"Skipping later timeout tools: </span><span class="si">%s</span><span class="s2"> child is still alive"</span><span class="p">,</span> <span class="n">tool</span>
+                            <span class="p">)</span>
+                            <span class="k">break</span>
+        <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">CancelledError</span><span class="p">:</span>
+            <span class="c1"># Preserve collected output when launcher teardown cancels capture.</span>
+            <span class="n">cancelled</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Timeout capture failed: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">timer</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="n">timer</span><span class="o">.</span><span class="n">cancel</span><span class="p">()</span>
+            <span class="n">terminate_original_worker</span><span class="p">()</span>
+        <span class="c1"># Local filesystem writes and publication happen after worker termination</span>
+        <span class="c1"># was requested, so they cannot extend the capture grace period.</span>
+        <span class="k">for</span> <span class="n">capture</span> <span class="ow">in</span> <span class="n">captures</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">capture</span><span class="o">.</span><span class="n">publish_local</span><span class="p">(</span><span class="n">rank_info</span><span class="p">,</span> <span class="n">cycle</span><span class="p">,</span> <span class="s2">","</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">reasons</span><span class="p">)))</span>
+            <span class="k">except</span> <span class="ne">OSError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Could not stage timeout capture: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
+            <span class="k">finally</span><span class="p">:</span>
+                <span class="n">capture</span><span class="o">.</span><span class="n">output</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">cancelled</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">CancelledError</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_authkey_msg</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">writer</span><span class="p">):</span>
         <span class="c1"># resource sharer needs to be restarted to use updated authkey</span>
@@ -365,6 +459,10 @@
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_init_msg</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">msg</span><span class="p">,</span> <span class="n">writer</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="o">=</span> <span class="n">msg</span><span class="o">.</span><span class="n">rank_info</span>
+        <span class="n">incarnation</span> <span class="o">=</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">current_cycle</span><span class="p">,</span> <span class="n">msg</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">incarnation</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_incarnation</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_attempted</span> <span class="o">=</span> <span class="kc">False</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_incarnation</span> <span class="o">=</span> <span class="n">incarnation</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">start_time</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">out_of_section_time</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
@@ -592,6 +690,7 @@
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_is_section_timeout_elapsed</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">curr_time</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
         <span class="n">is_elapsed</span> <span class="o">=</span> <span class="kc">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_timed_out_sections</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
         <span class="c1"># If any sections are open, check their timeouts,</span>
         <span class="c1"># otherwise check the timeout for "out of section"</span>
         <span class="k">for</span> <span class="n">section</span><span class="p">,</span> <span class="n">section_start_time</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">open_sections</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
@@ -607,8 +706,9 @@
                 <span class="n">iterations_this_cycle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_current_iteration</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">_initial_iteration</span>
                 <span class="k">if</span> <span class="n">iterations_this_cycle</span> <span class="o">&lt;</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">num_warmup_iterations</span><span class="p">:</span>
                     <span class="n">timeout</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_section_timeouts</span><span class="p">[</span><span class="s2">"warmup"</span><span class="p">]</span>
-            <span class="n">is_elapsed</span> <span class="o">=</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">elapsed</span> <span class="o">&gt;</span> <span class="n">timeout</span>
-            <span class="k">if</span> <span class="n">is_elapsed</span><span class="p">:</span>
+            <span class="n">section_elapsed</span> <span class="o">=</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">elapsed</span> <span class="o">&gt;</span> <span class="n">timeout</span>
+            <span class="k">if</span> <span class="n">section_elapsed</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_timed_out_sections</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">section</span><span class="p">)</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
                     <span class="sa">f</span><span class="s2">"[Cycle </span><span class="si">{</span><span class="bp">self</span><span class="o">.</span><span class="n">current_cycle</span><span class="si">}</span><span class="s2">] Section '</span><span class="si">{</span><span class="n">section</span><span class="si">}</span><span class="s2">' has been open for </span><span class="si">{</span><span class="n">elapsed</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> seconds. "</span>
                     <span class="sa">f</span><span class="s2">"Timeout is </span><span class="si">{</span><span class="n">timeout</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> seconds."</span>
@@ -634,6 +734,9 @@
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_periodic_rank_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+            <span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_child</span>
+            <span class="k">if</span> <span class="n">child</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">child</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_child</span> <span class="o">=</span> <span class="kc">None</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="n">curr_time</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
                 <span class="n">hb_timed_out</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_hb_timeout_elapsed</span><span class="p">(</span><span class="n">curr_time</span><span class="p">)</span>

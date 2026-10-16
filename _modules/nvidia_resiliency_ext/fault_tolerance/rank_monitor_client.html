@@ -487,6 +487,13 @@
             <span class="p">)</span>
         <span class="c1"># we receive current FT config from the server</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span> <span class="o">=</span> <span class="n">reply_for_init</span><span class="o">.</span><span class="n">cfg</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_enabled</span><span class="p">:</span>
+            <span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_diagnostics</span><span class="w"> </span><span class="kn">import</span> <span class="n">authorize_monitor_ptrace</span>
+
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">authorize_monitor_ptrace</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_monitor_socket</span><span class="p">)</span>
+            <span class="k">except</span> <span class="p">(</span><span class="ne">OSError</span><span class="p">,</span> <span class="ne">AttributeError</span><span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Could not authorize timeout diagnostics: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
 
 <div class="viewcode-block" id="RankMonitorClient.init_workload_monitoring">
 <a class="viewcode-back" href="../../../fault_tolerance/api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.init_workload_monitoring">[docs]</a>
