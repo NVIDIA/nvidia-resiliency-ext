@@ -20,7 +20,8 @@ storage_data. Sent as a table, it receives them without unpickling a WriteResult
 the writer encodes storage_data from the columns without creating its objects.
 
 Layout of an encoded table (little-endian):
-    header      int64[8]: magic, version, entries, strings, string bytes, offset values, 0, 0
+    header      int64[8]: magic, version, entries, strings, string bytes, offset values,
+                fqn mode, fqn list fingerprint
     string_len  int64[strings]       byte length of each string (fqns and relative paths)
     entry       int64[entries, 7]    fqn, index, offset_ndim, path, offset, length, flags
     offsets     int64[offset values] all entries' MetadataIndex offsets, concatenated
@@ -28,6 +29,11 @@ Layout of an encoded table (little-endian):
 
 The coordinator receives each rank's table zero-padded to a common width; the padding is ignored.
 See WriteResultTable for what the entries hold.
+
+A string table (fqn mode FQN_STRINGS) names each fqn by its id among the strings. An index table
+(FQN_INDICES) names it by its entry in the coordinator's fqn list, the fqns of the state dict
+table it writes, and carries that list's fingerprint, so that it holds only the relative paths
+as strings. Reading an index table needs the fqn list, whose fingerprint must match.
 
 Tables come from this job's ranks, and both writers check everything that could make them read
 outside a table or misplace a value: counts, string ids, offset dims, string lengths and flags,
@@ -37,8 +43,10 @@ cost about as much as writing them; corrupt string bytes would make a .metadata 
 decode, which builds Python strings, raises UnicodeDecodeError for them instead.
 """
 
+import struct
 from dataclasses import dataclass
-from typing import Iterator, List, Tuple
+from hashlib import blake2b
+from typing import Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -47,8 +55,10 @@ from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 
 MAGIC = int.from_bytes(b"NVRXTBL1", "little")  # reads "NVRXTBL1" on the wire
-VERSION = 1
+VERSION = 2
 HEADER = 8
+FQN_MODE, FINGERPRINT = 6, 7  # header fields
+FQN_STRINGS, FQN_INDICES = 0, 1  # fqn modes
 COLUMNS = 7
 FQN, INDEX, OFFSET_NDIM, PATH, OFFSET, LENGTH, FLAGS = range(COLUMNS)
 FLAG_INDEX, FLAG_OFFSET, FLAG_OFFSET_SIZE = 0x1, 0x2, 0x4
@@ -57,6 +67,15 @@ _INT64 = (-(2**63), 2**63 - 1)
 
 class Unencodable(TypeError):
     """A write result the table can't represent; the save falls back to pickled write results."""
+
+
+def fingerprint(fqns: Sequence[str]) -> int:
+    """Return the fingerprint of an fqn list, as an int64: a hash of its fqns, in order."""
+    h = blake2b(digest_size=8)
+    for fqn in fqns:
+        encoded = fqn.encode("utf-8", "surrogatepass")
+        h.update(struct.pack("<Q", len(encoded)) + encoded)
+    return int.from_bytes(h.digest(), "little", signed=True)
 
 
 @dataclass
@@ -77,12 +96,14 @@ class WriteResultTable:
       at the end, the position must equal ``len(offsets)``. For example, entries with offsets
       ``(0, 64)``, None and ``(128,)`` have OFFSET_NDIM 2, 0 and 1, and ``offsets`` is
       ``[0, 64, 128]``.
-    - ``strings``: the distinct fqns and relative paths, which FQN and PATH index.
+    - ``strings``: the distinct relative paths, which PATH indexes, and in a string table the
+      distinct fqns, which FQN indexes.
 
     ===========  ===================================================================================
     Column       Value
     ===========  ===================================================================================
-    FQN          ``index.fqn``: an id into ``strings``.
+    FQN          ``index.fqn``: an id into ``strings`` in a string table; in an index table, its
+                 entry in the coordinator's fqn list (whose fingerprint is ``fingerprint``).
     INDEX        ``index.index`` if FLAG_INDEX is set, else 0 (the index is None).
     OFFSET_NDIM  The number of dims of ``index.offset`` if FLAG_OFFSET_SIZE is set, else 0: how many
                  values of ``offsets``, from the running position, are its dims.
@@ -114,6 +135,8 @@ class WriteResultTable:
     entry: np.ndarray  # int64[entries, COLUMNS]
     offsets: np.ndarray  # int64[offset values]
     strings: List[str]
+    fqn_mode: int = FQN_STRINGS
+    fingerprint: int = 0  # of the fqn list an index table was encoded against
 
     def __len__(self) -> int:
         return len(self.entry)
@@ -126,8 +149,17 @@ def _check_int(v) -> int:
     return v
 
 
-def encode(results: List[WriteResult]) -> bytes:
-    """One rank's write results as a table. Raises Unencodable for anything it can't represent."""
+def encode(
+    results: List[WriteResult],
+    fqn_index: Optional[Mapping[str, int]] = None,
+    fqns_fingerprint: int = 0,
+) -> bytes:
+    """Encode one rank's write results as a table.
+
+    With fqn_index (the coordinator's fqn list, fqn to entry) and its fingerprint, encode an index
+    table; else a string table. Raise Unencodable for anything the table can't represent, such as
+    an fqn the list doesn't have.
+    """
     string_ids: dict = {}
     strings: List[bytes] = []
 
@@ -163,7 +195,13 @@ def encode(results: List[WriteResult]) -> bytes:
             raise Unencodable(f"unexpected _StorageInfo state: {info_state}")
         flags = 0
         e = entry[row]
-        e[FQN] = string_id(state["fqn"])
+        if fqn_index is None:
+            e[FQN] = string_id(state["fqn"])
+        else:
+            entry_id = fqn_index.get(state["fqn"])
+            if entry_id is None:
+                raise Unencodable(f"fqn {state['fqn']!r} isn't in the coordinator's fqn list")
+            e[FQN] = entry_id
         if state["index"] is not None:
             e[INDEX] = _check_int(state["index"])
             flags |= FLAG_INDEX
@@ -181,8 +219,19 @@ def encode(results: List[WriteResult]) -> bytes:
         e[FLAGS] = flags
     string_len = np.fromiter((len(s) for s in strings), dtype="<i8", count=len(strings))
     blob = b"".join(strings)
+    fqn_mode = FQN_STRINGS if fqn_index is None else FQN_INDICES
     header = np.array(
-        [MAGIC, VERSION, len(results), len(strings), len(blob), len(offsets), 0, 0], dtype="<i8"
+        [
+            MAGIC,
+            VERSION,
+            len(results),
+            len(strings),
+            len(blob),
+            len(offsets),
+            fqn_mode,
+            fqns_fingerprint if fqn_mode == FQN_INDICES else 0,
+        ],
+        dtype="<i8",
     )
     return b"".join(
         (
@@ -223,7 +272,9 @@ def decode(buf) -> WriteResultTable:
         pos += count * item_size
         return section
 
-    n_entries, n_strings, n_bytes, n_offsets = header[2:6]
+    n_entries, n_strings, n_bytes, n_offsets, fqn_mode, fqns_fingerprint = header[2:8]
+    if fqn_mode not in (FQN_STRINGS, FQN_INDICES):
+        raise _bad("unknown fqn mode")
     string_len = take(n_strings, 8).view("<i8")
     entry = take(n_entries, 8 * COLUMNS).view("<i8").reshape(n_entries, COLUMNS)
     offsets = take(n_offsets, 8).view("<i8")
@@ -235,9 +286,11 @@ def decode(buf) -> WriteResultTable:
     has_size = (flags & FLAG_OFFSET_SIZE) != 0
     if (has_size & ((flags & FLAG_OFFSET) == 0)).any():
         raise _bad("an offset size without an offset")
-    ids = entry[:, [FQN, PATH]]
+    ids = entry[:, [FQN, PATH] if fqn_mode == FQN_STRINGS else [PATH]]
     if (ids < 0).any() or (ids >= n_strings).any():
         raise _bad("string id out of range")
+    if fqn_mode == FQN_INDICES and (entry[:, FQN] < 0).any():
+        raise _bad("fqn entry out of range")
     # Summed as Python ints, which can't wrap around.
     ndim = entry[has_size, OFFSET_NDIM]
     if (ndim < 0).any() or sum(ndim.tolist()) != n_offsets:
@@ -249,7 +302,13 @@ def decode(buf) -> WriteResultTable:
     for n in lengths:
         strings.append(blob[start : start + n].decode("utf-8"))
         start += n
-    return WriteResultTable(entry=entry, offsets=offsets, strings=strings)
+    return WriteResultTable(
+        entry=entry,
+        offsets=offsets,
+        strings=strings,
+        fqn_mode=fqn_mode,
+        fingerprint=fqns_fingerprint,
+    )
 
 
 def decode_rows(rows: np.ndarray) -> List[WriteResultTable]:
@@ -257,35 +316,72 @@ def decode_rows(rows: np.ndarray) -> List[WriteResultTable]:
     return [decode(row) for row in rows]
 
 
-def _items(t: WriteResultTable) -> Iterator[Tuple[MetadataIndex, _StorageInfo]]:
-    """Each entry's index and storage info, in order."""
+def fqns_of(
+    t: WriteResultTable, fqns: Optional[Sequence[str]], fqns_fingerprint: Optional[int]
+) -> Sequence[str]:
+    """Return the fqns t's FQN column indexes: its strings, or for an index table the fqn list,
+    after checking that it is the one t was encoded against."""
+    if t.fqn_mode == FQN_STRINGS:
+        return t.strings
+    if fqns is None or fqns_fingerprint != t.fingerprint:
+        raise _bad("an index table encoded against another fqn list")
+    if len(t) and int(t.entry[:, FQN].max()) >= len(fqns):
+        raise _bad("fqn entry out of range")
+    return fqns
+
+
+def _items(
+    t: WriteResultTable, fqns: Optional[Sequence[str]], fqns_fingerprint: Optional[int]
+) -> Iterator[Tuple[MetadataIndex, _StorageInfo]]:
+    """Yield each entry's index and storage info, in order."""
+    names = fqns_of(t, fqns, fqns_fingerprint)
     offsets = t.offsets.tolist()
     pos = 0
     for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
         if flags & FLAG_OFFSET_SIZE:
             idx = MetadataIndex(
-                t.strings[fqn],
+                names[fqn],
                 torch.Size(offsets[pos : pos + ndim]),
                 index if flags & FLAG_INDEX else None,
             )
             pos += ndim
         elif flags & FLAG_OFFSET:
-            idx = MetadataIndex(t.strings[fqn], None, index if flags & FLAG_INDEX else None)
+            idx = MetadataIndex(names[fqn], None, index if flags & FLAG_INDEX else None)
             idx.__dict__["offset"] = None
         else:
-            idx = MetadataIndex(t.strings[fqn], index=index if flags & FLAG_INDEX else None)
+            idx = MetadataIndex(names[fqn], index=index if flags & FLAG_INDEX else None)
         yield idx, _StorageInfo(t.strings[path], offset, length)
 
 
-def to_storage_data(tables: List[WriteResultTable]) -> dict:
-    """The storage_data dict the tables describe, as finish builds it from write results."""
-    return {idx: info for t in tables for idx, info in _items(t)}
+def to_storage_data(
+    tables: List[WriteResultTable],
+    fqns: Optional[Sequence[str]] = None,
+    fqns_fingerprint: Optional[int] = None,
+) -> dict:
+    """Return the storage_data dict the tables describe, as finish builds it from write results.
+
+    Index tables need fqns, the fqn list they were encoded against; its fingerprint is computed if
+    not given.
+    """
+    if fqns is not None and fqns_fingerprint is None:
+        fqns_fingerprint = fingerprint(fqns)
+    return {idx: info for t in tables for idx, info in _items(t, fqns, fqns_fingerprint)}
 
 
-def to_write_results(t: WriteResultTable) -> List[WriteResult]:
-    """The write results a table holds, one per entry, in order. size_in_bytes is the storage
-    length, as torch's _write_item reports it."""
+def to_write_results(
+    t: WriteResultTable,
+    fqns: Optional[Sequence[str]] = None,
+    fqns_fingerprint: Optional[int] = None,
+) -> List[WriteResult]:
+    """Return the write results a table holds, one per entry, in order.
+
+    size_in_bytes is the storage length, as torch's _write_item reports it. An index table needs
+    fqns, the fqn list it was encoded against; its fingerprint is computed if not given, so a
+    caller decoding many tables should pass it.
+    """
+    if fqns is not None and fqns_fingerprint is None:
+        fqns_fingerprint = fingerprint(fqns)
     return [
         WriteResult(index=idx, size_in_bytes=info.length, storage_data=info)
-        for idx, info in _items(t)
+        for idx, info in _items(t, fqns, fqns_fingerprint)
     ]
