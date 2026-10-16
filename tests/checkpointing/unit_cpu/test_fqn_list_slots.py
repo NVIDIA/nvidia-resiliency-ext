@@ -15,21 +15,32 @@
 
 """Which fqn list each rank's write results refer to, across loads, builds, reuses and finalizes
 that run after the next save was planned. A coordinator's and another rank's caches are driven
-through random sequences of these; the finalize's delivery of the list is simulated as the
-broadcast does it. The collectives are tested on GPUs in
+through random sequences of these, with the plan's and the finalize's own helpers; only the
+collectives that carry the list are left out. They are tested on GPUs in
 tests/checkpointing/unit/test_async_writer.py."""
 
+import tempfile
+import types
 from collections import deque
 
+import pytest
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, rule
 from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata
 
+from nvidia_resiliency_ext.checkpointing.async_ckpt import state_dict_saver
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.table import FqnList
+from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 
 # Global metadata of different state dicts, as fqns.
 STATE_DICTS = [("a", "b"), ("b", "a"), ("a", "b", "c"), ("x",)]
+
+# What the plan and the finalize read of a storage writer and a distributed wrapper.
+STORAGE_WRITER = FileSystemWriterAsync(tempfile.gettempdir())
+COORDINATOR = types.SimpleNamespace(is_coordinator=True)
+OTHER_RANK = types.SimpleNamespace(is_coordinator=False)
 
 
 def metadata_of(fqns) -> Metadata:
@@ -44,7 +55,7 @@ class FqnListDelivery(RuleBasedStateMachine):
         super().__init__()
         self.coordinator = CheckpointMetadataCache()
         self.other = CheckpointMetadataCache()
-        # Per pending save: the slots of both ranks, whether it delivers, and the list to expect.
+        # Per pending save: both ranks' PendingSave, and the fqn list each must encode against.
         self.pending = deque()
 
     @rule(state_dict=st.sampled_from(STATE_DICTS))
@@ -62,28 +73,27 @@ class FqnListDelivery(RuleBasedStateMachine):
         self.plan(None, reused=True)
 
     def plan(self, built, reused):
-        """Record a planned save in both caches, as save_state_dict_async_plan does."""
-        template = self.coordinator._update(None, None, built, reused, is_coordinator=True)
-        self.other._update(None, None, None, reused, is_coordinator=False)
-        self.pending.append(
-            (
-                self.coordinator._fqn_list_slot,
-                self.other._fqn_list_slot,
-                not reused,
-                FqnList.of(template.to_metadata().state_dict_metadata),
-            )
+        """Plan a save on both ranks, as save_state_dict_async_plan ends it."""
+        coordinator = state_dict_saver._pending_save(
+            STORAGE_WRITER, COORDINATOR, self.coordinator, None, None, built, reused
         )
+        other = state_dict_saver._pending_save(
+            STORAGE_WRITER, OTHER_RANK, self.other, None, None, None, reused
+        )
+        expected = FqnList.of(coordinator.metadata_template.to_metadata().state_dict_metadata)
+        self.pending.append((coordinator, other, expected))
 
     @precondition(lambda self: self.pending)
     @rule()
     def finalize(self):
-        coordinator_slot, other_slot, delivers, expected = self.pending.popleft()
-        # What each rank encodes its write results against: the list of this save's metadata.
-        assert coordinator_slot.fqn_list == expected
-        assert other_slot.fqn_list in (None, expected)
-        if delivers:
-            other_slot.fqn_list = FqnList.decode(coordinator_slot.fqn_list.encode())
-        assert other_slot.fqn_list == expected
+        """Finalize the oldest save: what each rank encodes against, and the delivery."""
+        coordinator, other, expected = self.pending.popleft()
+        assert coordinator._fqn_list_slot.fqn_list == expected
+        assert other._fqn_list_slot.fqn_list in (None, expected)
+        delivered = state_dict_saver._fqn_list_to_deliver(coordinator)
+        if delivered:
+            state_dict_saver._receive_fqn_list(other, delivered)
+        assert other._fqn_list_slot.fqn_list == expected
 
     @invariant()
     def the_ranks_agree_once_every_save_is_finalized(self):
@@ -94,4 +104,6 @@ class FqnListDelivery(RuleBasedStateMachine):
             )
 
 
-TestFqnListDelivery = FqnListDelivery.TestCase
+TestFqnListDelivery = pytest.mark.skipif(
+    not writer.writes_tables(), reason="the fqn list is delivered only with write-result tables"
+)(FqnListDelivery.TestCase)

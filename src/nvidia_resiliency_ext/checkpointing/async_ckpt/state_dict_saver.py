@@ -352,6 +352,27 @@ def save_state_dict_async_plan(
     storage_writer.prepare_write_data(final_plan, planner)
     end = time()
     logger.debug(f"{time()} rank: {rank}, write(async) time: {end - start}")
+    return _pending_save(
+        storage_writer,
+        dist_wrapper,
+        metadata_cache,
+        local_plan,
+        central_plan,
+        global_metadata,
+        reused,
+    )
+
+
+def _pending_save(
+    storage_writer: "FileSystemWriterAsync",
+    dist_wrapper: _DistWrapper,
+    metadata_cache: Optional[CheckpointMetadataCache],
+    local_plan: SavePlan,
+    central_plan: SavePlan,
+    global_metadata: Optional[Metadata],
+    reused: bool,
+) -> PendingSave:
+    """Record a planned save in metadata_cache, if given, and return it, to finalize."""
     if metadata_cache is not None:
         metadata_template = metadata_cache._update(
             local_plan, central_plan, global_metadata, reused, dist_wrapper.is_coordinator
@@ -600,15 +621,9 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     dist_wrapper = pending.dist_wrapper
     write_results = pending.storage_writer.retrieve_write_results()
     fqn_list_slot = pending._fqn_list_slot
-    # The coordinator delivers the fqn list of the metadata it built to the other ranks.
     delivered = b""
-    if (
-        pending._delivers_fqn_list
-        and dist_wrapper.is_coordinator
-        and dist_wrapper.use_dist
-        and fqn_list_slot.fqn_list is not None
-    ):
-        delivered = fqn_list_slot.fqn_list.encode()
+    if dist_wrapper.is_coordinator and dist_wrapper.use_dist:
+        delivered = _fqn_list_to_deliver(pending)
 
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
@@ -662,9 +677,21 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
         )
     broadcast = broadcast.cpu().numpy()
     if delivered_length and not dist_wrapper.is_coordinator:
-        fqn_list_slot.fqn_list = FqnList.decode(broadcast[8:].tobytes())
+        _receive_fqn_list(pending, broadcast[8:].tobytes())
     if broadcast[0]:
         raise CheckpointException("write", node_failures)
+
+
+def _fqn_list_to_deliver(pending: PendingSave) -> bytes:
+    """Return what the coordinator delivers to the other ranks in finalize: the encoded fqn list
+    of the metadata the save built, if index tables can use it; else nothing."""
+    fqn_list = pending._fqn_list_slot.fqn_list if pending._delivers_fqn_list else None
+    return fqn_list.encode() if fqn_list is not None else b""
+
+
+def _receive_fqn_list(pending: PendingSave, delivered: bytes) -> None:
+    """Keep the fqn list the coordinator delivered in the slot of the save's metadata."""
+    pending._fqn_list_slot.fqn_list = FqnList.decode(delivered)
 
 
 def _write_metadata(
