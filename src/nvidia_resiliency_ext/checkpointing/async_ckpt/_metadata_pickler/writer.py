@@ -303,23 +303,28 @@ def dump_metadata(
     per row, see write_result_table.py), storage_data is the one they describe instead.
     """
     if isinstance(metadata, StateDictTable):
-        _dump_table(metadata, stream, storage_rows, storage_data)
+        state_dict_table = metadata
+    else:
+        state_dict_table = state_dict_table_if_fast(metadata)
+        storage_data = metadata.storage_data
+    if state_dict_table is not None and _write_table(
+        state_dict_table, stream, storage_rows, storage_data
+    ):
         return
-    dumps = _select_dumps()
-    if dumps is not None:
-        try:
-            data = dumps(metadata, storage_rows=storage_rows)
-        except Exception:
-            logger.warning("fast .metadata pickling failed; using pickle.dump", exc_info=True)
-        else:
-            stream.write(data)
-            return
+    # pickle.dump: the Metadata given, or the one the table was converted from.
     if storage_rows is not None:
-        storage_data = write_result_table.to_storage_data(
-            write_result_table.decode_rows(storage_rows),
-            write_result_table.FqnList.of(metadata.state_dict_metadata),
+        fqn_list = (
+            state_dict_table.fqn_list
+            if state_dict_table is not None
+            else write_result_table.FqnList.of(metadata.state_dict_metadata)
         )
-        metadata = dataclasses.replace(metadata, storage_data=storage_data)
+        storage_data = write_result_table.to_storage_data(
+            write_result_table.decode_rows(storage_rows), fqn_list
+        )
+        if not isinstance(metadata, StateDictTable):
+            metadata = dataclasses.replace(metadata, storage_data=storage_data)
+    if isinstance(metadata, StateDictTable):
+        metadata = metadata.to_metadata(storage_data)
     # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
     # Severity: Medium   Confidence: High
     # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
@@ -327,12 +332,9 @@ def dump_metadata(
     pickle.dump(metadata, stream)  # nosec
 
 
-def _dump_table(state_dict_table: StateDictTable, stream, storage_rows, storage_data) -> None:
-    """Write a table as dump_metadata does.
-
-    Write it with the selected writer, or with the Python one if the native one fails; if both fail,
-    write the Metadata the table was converted from with pickle.dump.
-    """
+def _write_table(state_dict_table: StateDictTable, stream, storage_rows, storage_data) -> bool:
+    """Write a table with the selected writer, or with the Python one if the native one fails;
+    return whether one of them wrote it."""
     selected = _selected_writer()
     writers = [] if selected is None else [selected, pickler] if selected is native else [pickler]
     for writer_module in writers:
@@ -344,9 +346,5 @@ def _dump_table(state_dict_table: StateDictTable, stream, storage_rows, storage_
             )
         else:
             stream.write(data)
-            return
-    if storage_rows is not None:
-        storage_data = write_result_table.to_storage_data(
-            write_result_table.decode_rows(storage_rows), state_dict_table.fqn_list
-        )
-    pickle.dump(state_dict_table.to_metadata(storage_data), stream)  # nosec
+            return True
+    return False
