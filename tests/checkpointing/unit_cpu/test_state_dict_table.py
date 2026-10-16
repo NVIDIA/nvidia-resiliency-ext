@@ -424,6 +424,16 @@ def test_dump_metadata_of_table_without_a_writer(monkeypatch):
 WRITER_MODULES = [pickler, *([writer.native] if writer.native else [])]
 
 
+PRODUCERS = [
+    pytest.param(StateDictTable, id="python-table"),
+    pytest.param(
+        writer.native.StateDictTable if writer.native else None,
+        id="native-table",
+        marks=NEEDS_NATIVE,
+    ),
+]
+
+
 def _random_rows(metadata, data):
     """Encode metadata.storage_data as write-result tables of a random number of ranks.
 
@@ -447,11 +457,12 @@ def _random_rows(metadata, data):
     return rows
 
 
+@pytest.mark.parametrize("producer", PRODUCERS)
 @hypothesis_settings
 @given(metadatas(), st.data())
-def test_writing_a_table_matches_writing_the_metadata(metadata, data):
+def test_writing_a_table_matches_writing_the_metadata(producer, metadata, data):
     """Both writers write a table, with storage_data or with rows of it, as the metadata."""
-    state_dict_table = StateDictTable.from_metadata(metadata)
+    state_dict_table = producer.from_metadata(metadata)
     expected = pickler.dumps(metadata)
     rows = _random_rows(metadata, data)
     for module in WRITER_MODULES:
@@ -460,18 +471,19 @@ def test_writing_a_table_matches_writing_the_metadata(metadata, data):
             assert module.dumps_table(state_dict_table, storage_rows=rows) == expected
 
 
+@pytest.mark.parametrize("producer", PRODUCERS)
 @hypothesis_settings
 @given(metadatas(), st.none() | texts)
-def test_table_round_trips(metadata, value):
+def test_table_round_trips(producer, metadata, value):
     """to_metadata gives the metadata back, with the fields with_fields set, as stock pickle
     round-trips it; MetadataTemplate does in both its forms."""
     expected = stock_round_trip(metadata)
     setattr(expected, SETTABLE_FIELD, value)
     expected.storage_data = None
     fields = {SETTABLE_FIELD: value}
-    state_dict_table = StateDictTable.from_metadata(metadata).with_fields(**fields)
+    state_dict_table = producer.from_metadata(metadata).with_fields(**fields)
     assert_identical(state_dict_table.to_metadata(), expected)
-    as_table = MetadataTemplate(StateDictTable.from_metadata(metadata)).with_fields(**fields)
+    as_table = MetadataTemplate(producer.from_metadata(metadata)).with_fields(**fields)
     assert_identical(as_table.to_metadata(), expected)
     as_metadata = MetadataTemplate(dataclasses.replace(metadata, storage_data=None))
     back = as_metadata.with_fields(**fields).to_metadata()
@@ -486,12 +498,13 @@ def _chunks(chunks):
     return [(tuple(offsets), tuple(sizes)) for offsets, sizes in chunks]
 
 
+@pytest.mark.parametrize("producer", PRODUCERS)
 @hypothesis_settings
 @given(metadatas(), st.data())
-def test_the_reuse_views_agree(metadata, data):
+def test_the_reuse_views_agree(producer, metadata, data):
     """The reuse check reads the same entries from a Metadata and from its table."""
     objects = _metadata_reuse.ObjectEntries(metadata)
-    tables = _metadata_reuse.TableEntries(StateDictTable.from_metadata(metadata))
+    tables = _metadata_reuse.TableEntries(producer.from_metadata(metadata))
     assert len(objects) == len(tables) and objects.counts() == tables.counts()
     assert objects.planner_data == tables.planner_data
     for i, count in enumerate(objects.counts()):
