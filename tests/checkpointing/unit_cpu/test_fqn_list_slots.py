@@ -82,7 +82,7 @@ class FqnListDelivery(RuleBasedStateMachine):
         other = state_dict_saver._pending_save(
             STORAGE_WRITER, OTHER_RANK, self.other, None, None, None, reused
         )
-        expected = FqnList.of(coordinator.metadata_template.to_metadata().state_dict_metadata)
+        expected = FqnList.of(coordinator._metadata_template.to_metadata().state_dict_metadata)
         self.pending.append((coordinator, other, expected))
 
     @precondition(lambda self: self.pending)

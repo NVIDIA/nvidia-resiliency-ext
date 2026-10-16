@@ -22,7 +22,7 @@
 # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
 import pickle  # nosec
 import warnings
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from logging import getLogger
 from time import time
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union, overload
@@ -71,16 +71,15 @@ class CheckpointMetadataCache:
     `enable_cache`, `save_state_dict_async_plan` avoids that:
 
     * The first save in a process reuses the metadata of a loaded checkpoint (see
-      `set_cached_global_metadata`) if all ranks' local plans write exactly the chunks it lists;
-      `_verify_global_metadata_reuse` checks that with one all_reduce.
+      `set_cached_global_metadata`) if all ranks' local plans write exactly the chunks it lists,
+      which one all_reduce checks.
     * Later saves reuse the plans and metadata of the previous save without communicating:
       `enable_cache` promises that the checkpoint structure does not change. Each rank still
       creates its local plan and raises if it differs from the previous one.
 
-    The metadata is kept as a `MetadataTemplate`, without storage_data: with the fast ``.metadata``
-    writers, a state dict table that the garbage collector doesn't visit and that refers to none of
-    the objects of the Metadata it was made from. The cache never modifies it, nor the Metadata
-    it was given.
+    The metadata is kept without storage_data. With the fast ``.metadata`` writers it is kept as a
+    few arrays, which the garbage collector doesn't visit, and shares no objects with the Metadata
+    it was made from but its fqn strings. The cache never modifies the Metadata it was given.
     """
 
     def __init__(self):
@@ -163,30 +162,30 @@ class PendingSave:
 
     Attributes:
         storage_writer (FileSystemWriterAsync): The storage writer the save was planned with.
-        metadata_template (MetadataTemplate, optional): The global metadata to write, without
-            this save's storage_data, on the coordinator; None on other ranks.
         dist_wrapper (_DistWrapper): The distributed wrapper used for planning.
-        _fqn_list_slot (_FqnListSlot, optional): The slot of the fqn list of the global metadata
-            this save writes, from the cache it was planned with; None without enable_cache.
-            Finalize encodes the write results against the list if the slot holds it.
-        _delivers_fqn_list (bool): Whether this save built new metadata, whose fqn list its
-            finalize delivers into the other ranks' slots.
     """
 
     storage_writer: "FileSystemWriterAsync"
-    metadata_template: Optional[MetadataTemplate]
     dist_wrapper: _DistWrapper
-    _fqn_list_slot: Optional[_FqnListSlot] = None
-    _delivers_fqn_list: bool = False
+    # The global metadata to write, without this save's storage_data, on the coordinator; None on
+    # the other ranks.
+    _metadata_template: Optional[MetadataTemplate] = field(default=None, kw_only=True)
+    # The slot of the fqn list of the global metadata this save writes, from the cache it was
+    # planned with; None without enable_cache. Finalize encodes the write results against the
+    # list if the slot holds it.
+    _fqn_list_slot: Optional[_FqnListSlot] = field(default=None, kw_only=True)
+    # Whether this save built new metadata, whose fqn list its finalize delivers into the other
+    # ranks' slots.
+    _delivers_fqn_list: bool = field(default=False, kw_only=True)
 
     # TODO: remove once the callers that unpack the PendingSave (Megatron-LM's nvrx async save, up
     # to the version that passes it whole) are no longer supported.
     @deprecated(_UNPACKING_DEPRECATED)
     def __iter__(self):
-        """Return an iterator over the (storage_writer, metadata_template, dist_wrapper) tuple
+        """Return an iterator over the (storage_writer, global metadata, dist_wrapper) tuple
         that save_state_dict_async_plan used to return.
         """
-        return iter((self.storage_writer, self.metadata_template, self.dist_wrapper))
+        return iter((self.storage_writer, self._metadata_template, self.dist_wrapper))
 
 
 _checkpoint_metadata_cache = None
@@ -373,8 +372,8 @@ def _pending_save(
         metadata_template = None
     return PendingSave(
         storage_writer,
-        metadata_template,
         dist_wrapper,
+        _metadata_template=metadata_template,
         _fqn_list_slot=metadata_cache._fqn_list_slot if metadata_cache is not None else None,
         # Only a storage writer that writes from tables reads index tables; every rank decides
         # alike, so the collectives of finalize match.
@@ -587,7 +586,7 @@ def save_state_dict_async_finalize(pending: PendingSave) -> None: ...
 @deprecated(_LEGACY_FINALIZE_DEPRECATED)
 def save_state_dict_async_finalize(
     storage_writer: "FileSystemWriterAsync",
-    global_metadata: Union[MetadataTemplate, Metadata, None],
+    global_metadata: Any,
     dist_wrapper: _DistWrapper,
 ) -> None: ...
 
@@ -621,7 +620,7 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
         if isinstance(global_metadata, Metadata):
             # As callers typed it before save_state_dict_async_plan returned a PendingSave.
             global_metadata = MetadataTemplate.from_metadata(global_metadata)
-        pending = PendingSave(pending, global_metadata, dist_wrapper)
+        pending = PendingSave(pending, dist_wrapper, _metadata_template=global_metadata)
     dist_wrapper = pending.dist_wrapper
     write_results = pending.storage_writer.retrieve_write_results()
     fqn_list_slot = pending._fqn_list_slot
@@ -650,13 +649,13 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
             is_table, pickled = _decode_payloads(rows)
             node_failures = {rank: r for rank, r in pickled.items() if _is_wrapped_exception(r)}
             if len(node_failures) == 0:
-                assert pending.metadata_template is not None
+                assert pending._metadata_template is not None
                 with telemetry.span(
                     semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
                 ):
                     write_start = time()
                     _write_metadata(
-                        pending.storage_writer, pending.metadata_template, rows, is_table, pickled
+                        pending.storage_writer, pending._metadata_template, rows, is_table, pickled
                     )
                     write_end = time()
                     logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")

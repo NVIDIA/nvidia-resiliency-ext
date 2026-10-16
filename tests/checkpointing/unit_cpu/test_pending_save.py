@@ -29,14 +29,10 @@ def test_unpacking_is_deprecated():
 
     TODO: remove with the deprecated PendingSave.__iter__.
     """
-    pending = PendingSave("writer", "metadata", "wrapper")
+    pending = PendingSave("writer", "wrapper", _metadata_template="metadata")
     with pytest.warns(DeprecationWarning, match="unpacking a PendingSave"):
         assert tuple(pending) == ("writer", "metadata", "wrapper")
-    assert (pending.storage_writer, pending.metadata_template, pending.dist_wrapper) == (
-        "writer",
-        "metadata",
-        "wrapper",
-    )
+    assert (pending.storage_writer, pending.dist_wrapper) == ("writer", "wrapper")
 
 
 @pytest.mark.parametrize("arguments", [1, 3], ids=["two-arguments", "four-arguments"])
