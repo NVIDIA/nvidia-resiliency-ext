@@ -99,6 +99,8 @@ def assert_converted(metadata) -> state_dict_table.StateDictTable:
 @given(metadatas())
 def test_converts(metadata):
     assert_converted(metadata)
+    # As loaded from a checkpoint: equal strings and properties are shared objects.
+    assert_converted(stock_round_trip(metadata))
 
 
 @pytest.mark.parametrize("make", FIXED_METADATA)
@@ -208,9 +210,11 @@ def assert_same_tables(
 @hypothesis_settings
 @given(metadatas())
 def test_native_converts_like_python(metadata):
-    assert_same_tables(
-        writer.native.StateDictTable.from_metadata(metadata), StateDictTable.from_metadata(metadata)
-    )
+    for converted in (metadata, stock_round_trip(metadata)):  # as built and as loaded
+        assert_same_tables(
+            writer.native.StateDictTable.from_metadata(converted),
+            StateDictTable.from_metadata(converted),
+        )
 
 
 @NEEDS_NATIVE
