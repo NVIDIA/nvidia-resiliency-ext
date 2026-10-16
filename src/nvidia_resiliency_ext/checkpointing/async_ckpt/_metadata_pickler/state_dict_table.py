@@ -200,13 +200,14 @@ class StateDictTable:
         """Return a copy of this table with these Metadata fields (e.g. version) set.
 
         The copy shares the table's arrays. A field the table doesn't have yet is added last, as
-        setting it on the Metadata would. Raise TypeError for a name that isn't a field of Metadata
-        a save sets.
+        setting it on the Metadata would. Raise TypeError for state_dict_metadata and
+        storage_data, which the table holds otherwise, and for a name that isn't a field of
+        Metadata.
         """
         known = {f.name for f in dataclasses.fields(Metadata)} - {STATE_DICT_METADATA, STORAGE_DATA}
         unknown = set(values) - known
         if unknown:
-            raise TypeError(f"not fields of Metadata that a save sets: {sorted(unknown)}")
+            raise TypeError(f"not Metadata fields with_fields sets: {sorted(unknown)}")
         fields = [
             (name, small_pickle(values.pop(name)) if name in values else opcodes)
             for name, opcodes in self.fields

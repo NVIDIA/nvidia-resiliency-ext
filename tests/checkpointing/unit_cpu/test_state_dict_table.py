@@ -351,7 +351,7 @@ def test_dump_metadata_of_table_with_rows():
 
 def test_with_fields():
     """Fields set on a table are written as if set on the Metadata; one the table doesn't have yet
-    comes last. Names that aren't fields a save sets are refused."""
+    comes last. state_dict_metadata, storage_data and names that aren't fields are refused."""
     metadata = writer._sample_metadata()
     delattr(metadata, SETTABLE_FIELD)
     table = StateDictTable.from_metadata(metadata).with_fields(**{SETTABLE_FIELD: "9.9"})
