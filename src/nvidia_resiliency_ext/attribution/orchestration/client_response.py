@@ -12,6 +12,7 @@ from .config import (
     RESP_LOG_FILE,
     RESP_MODE,
     RESP_MODULE,
+    RESP_RECOMMENDATION,
     RESP_RESULT,
     RESP_RESULT_ID,
     RESP_SCHED_RESTARTS,
@@ -162,7 +163,7 @@ def parse_attrsvc_response(payload: Any, *, log_path: str | None = None) -> Attr
         )
 
     result = body.get(RESP_RESULT, payload)
-    recommendation = AttributionRecommendation.from_payload(body.get("recommendation"))
+    recommendation = AttributionRecommendation.from_payload(body.get(RESP_RECOMMENDATION))
     if recommendation is None:
         recommendation = AttributionRecommendation()
 
