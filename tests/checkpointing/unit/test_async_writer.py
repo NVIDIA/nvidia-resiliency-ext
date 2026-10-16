@@ -754,6 +754,21 @@ class TestAsyncSave:
         if torch.distributed.get_rank() != 0:
             assert modes == [table.FQN_STRINGS]
 
+    def test_a_failure_to_read_the_gathered_results_fails_every_rank(
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch
+    ):
+        """An exception on the coordinator before it writes .metadata is raised on every rank
+        instead of leaving the others in the failure broadcast."""
+        Utils.initialize_distributed()
+
+        def unreadable(rows):
+            raise RuntimeError('unreadable rows')
+
+        monkeypatch.setattr(state_dict_saver, '_decode_payloads', unreadable)
+        with TempNamedDir(tmp_path_dist_ckpt / 'unreadable_rows', sync=True) as ckpt_dir:
+            with pytest.raises(CheckpointException):
+                self.save_and_finalize(ckpt_dir, rank_state_dict(), async_queue, None)
+
     def test_a_wrong_fqn_list_fails_the_save_on_every_rank(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch
     ):
