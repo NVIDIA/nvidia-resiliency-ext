@@ -772,7 +772,7 @@ class Writer {
             if (field.name == STATE_DICT_METADATA) {
                 dump_state_dict_metadata(table_view);
             } else if (field.name != STORAGE_DATA) {
-                out_.append(bytes_view(field.opcodes.ptr()));
+                append(bytes_view(field.opcodes.ptr()));
             } else if (!rows.is_none()) {
                 dump_storage_tables(tables, table_view);
             } else if (!storage_data.is_none()) {
@@ -782,7 +782,7 @@ class Writer {
             }
         }
         put({SETITEMS, BUILD, STOP});
-        return py::bytes(out_);
+        return py::bytes(out_.data(), out_.size());
     }
 
    private:
@@ -823,13 +823,13 @@ class Writer {
                     put({EMPTY_TUPLE, NEWOBJ});
                     break;
                 case Kind::Other:
-                    out_.append(table_view.other(i));
+                    append(table_view.other(i));
                     break;
                 case Kind::Tensor: {
                     put_get(tensor_ref_);
                     put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                     put_get(k_properties_);
-                    out_.append(table_view.properties(i));
+                    append(table_view.properties(i));
                     put_get(k_size_);
                     size(table_view.size(i));
                     put_get(k_chunks_);
@@ -1082,7 +1082,9 @@ class Writer {
 
     // Append raw opcode bytes.
     void put(char c) { out_.push_back(c); }
-    void put(std::initializer_list<char> cs) { out_.append(cs.begin(), cs.end()); }
+    void put(std::initializer_list<char> cs) { out_.insert(out_.end(), cs.begin(), cs.end()); }
+    // Append bytes as they are.
+    void append(std::string_view bytes) { out_.insert(out_.end(), bytes.begin(), bytes.end()); }
 
     // A str, with the opcode the stdlib pickler picks at protocol 4: SHORT_BINUNICODE,
     // BINUNICODE from 256 bytes on, BINUNICODE8 past 4 GiB.
@@ -1097,7 +1099,7 @@ class Writer {
             put('\x8d');
             put_le(s.size(), 8);
         }
-        out_.append(s);
+        append(s);
     }
 
     // Fetch memo entry idx: BINGET, or LONG_BINGET from 256 on.
@@ -1212,7 +1214,7 @@ class Writer {
         if (PyBytes_AsStringAndSize(b.ptr(), &p, &n) != 0) {
             throw py::error_already_set();
         }
-        out_.append(p, n);
+        append(std::string_view(p, static_cast<size_t>(n)));
     }
 
     // The low nbytes bytes of v, least significant first.
@@ -1231,7 +1233,9 @@ class Writer {
     uint32_t k_fqn_ = 0, k_index_ = 0, k_offset_ = 0, k_relative_path_ = 0, k_length_ = 0;
     uint32_t k_offsets_ = 0, k_sizes_ = 0, k_properties_ = 0, k_size_ = 0, k_chunks_ = 0;
 
-    std::string out_;
+    // Not a std::string: libstdc++ instantiates its members out of line (extern template), so
+    // each byte appended would be a call through the PLT.
+    std::vector<char> out_;
     uint32_t memo_len_ = 0;
     // Each state dict table entry's fqn memo index, once written; index tables name fqns by entry.
     std::vector<std::optional<uint32_t>> fqn_memo_;
