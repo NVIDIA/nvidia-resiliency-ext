@@ -601,3 +601,40 @@ def test_both_writers_treat_a_corrupted_table_alike(metadata, data):
     assert (python is None) == (native is None)
     if python is not None:
         assert pickler.dumps_table(python) == native
+
+
+# Values a corrupted sequence of a table may hold: right and wrong types.
+SEQUENCE_VALUES = {
+    "fqns": texts | st.integers() | st.none(),
+    "properties": st.binary(max_size=40) | st.integers() | st.none(),
+    "others": st.binary(max_size=40) | st.integers() | st.none(),
+    "fields": st.tuples(texts, st.none() | st.binary(max_size=40))
+    | st.lists(st.binary(max_size=8), max_size=3)
+    | st.binary(max_size=8),
+}
+
+
+@NEEDS_NATIVE
+@hypothesis_settings
+@given(metadatas(), st.data())
+def test_both_writers_treat_a_corrupted_sequence_alike(metadata, data):
+    """Replace one item of a valid table's fqns, properties, others or fields: either a
+    StateDictTable refuses to be it and the C++ writer refuses to read it, or both writers write
+    the same bytes."""
+    state_dict_table = StateDictTable.from_metadata(metadata)
+    name = data.draw(st.sampled_from(sorted(SEQUENCE_VALUES)))
+    items = list(getattr(state_dict_table, name))
+    assume(items)
+    items[data.draw(st.integers(0, len(items) - 1))] = data.draw(SEQUENCE_VALUES[name])
+    attributes = _attributes(state_dict_table, **{name: tuple(items)})
+    try:
+        python = StateDictTable(**attributes)
+    except ValueError:
+        python = None
+    try:
+        native = writer.native.dumps_table(types.SimpleNamespace(**attributes))
+    except ValueError:
+        native = None
+    assert (python is None) == (native is None)
+    if python is not None:
+        assert pickler.dumps_table(python) == native
