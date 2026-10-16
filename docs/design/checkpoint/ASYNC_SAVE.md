@@ -437,6 +437,7 @@ The first row is the fast path (Megatron-LM). On every path:
 
 - A rank whose write results don't fit a table sends them pickled; the coordinator handles each rank's payload as it is.
 - A storage writer that overrides `finish` gets a `Metadata` and `WriteResult`s, and its ranks send string tables.
+- A save that builds metadata delivers the fqn list only if its storage writer writes from tables, which every rank decides alike. Otherwise nothing could read index tables, so the list isn't sent.
 - If the C++ writer fails, the Python writer writes `.metadata`; if that fails, `pickle.dump` writes the `Metadata` built from the table.
 
 Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save, the ranks send string tables, and the coordinator writes the `Metadata` with the fast writer.
@@ -445,7 +446,7 @@ Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save
 
 1. **The fqn list a rank encodes against is the coordinator's.** It holds by construction, not by agreement at run time:
    - after a reuse, every rank holds the loaded checkpoint's state dict table, which is the coordinator's metadata;
-   - after a build, the save's finalize delivers the coordinator's list to every rank, into the slot of the template it built, even if the save failed;
+   - after a build, the save's finalize delivers the coordinator's list to every rank, into the slot of the template it built, even if the save failed (only when the storage writer writes from tables; otherwise every rank sends strings);
    - a save's finalize runs before the next save's finalize encodes anything: the next save finalizes the previous one before staging overwrites its shared memory (case 2);
    - with `enable_cache`, the coordinator rank and the checkpoint structure stay the same between saves; a rank that breaks this raises (`_update`, `_check_plan_unchanged`);
    - `set_cached_global_metadata` is called on every rank with the same loaded checkpoint.

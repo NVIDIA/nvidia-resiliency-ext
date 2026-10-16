@@ -372,7 +372,13 @@ def save_state_dict_async_plan(
         metadata_template,
         dist_wrapper,
         fqn_list_slot=metadata_cache._fqn_list_slot if metadata_cache is not None else None,
-        delivers_fqn_list=metadata_cache is not None and not reused,
+        # Only a storage writer that writes from tables reads index tables; every rank decides
+        # alike, so the collectives of finalize match.
+        delivers_fqn_list=(
+            metadata_cache is not None
+            and not reused
+            and _storage_writer_writes_rows(storage_writer)
+        ),
     )
 
 
