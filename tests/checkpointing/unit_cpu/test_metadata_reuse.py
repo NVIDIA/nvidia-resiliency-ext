@@ -36,6 +36,7 @@ from torch.distributed.checkpoint.default_planner import (
     create_default_global_save_plan,
 )
 from torch.distributed.checkpoint.metadata import (
+    BytesStorageMetadata,
     ChunkStorageMetadata,
     MetadataIndex,
     TensorProperties,
@@ -408,6 +409,18 @@ def test_a_build_leaves_the_other_ranks_without_an_fqn_list():
     coordinator = CheckpointMetadataCache()
     coordinator._update(plans[0], plans[0], built, reused=False, is_coordinator=True)
     assert coordinator.fqn_list == FqnList.of(built.state_dict_metadata)
+
+
+def test_metadata_with_an_fqn_that_isnt_a_str_has_no_fqn_list():
+    """Caching such metadata, loaded or built, leaves every rank to send fqn strings."""
+    plans = sample_plans()
+    metadata = metadata_of(plans)
+    metadata.state_dict_metadata[1] = BytesStorageMetadata()
+    loaded = CheckpointMetadataCache()
+    loaded.set_cached_global_metadata(metadata)
+    built = CheckpointMetadataCache()
+    built._update(plans[0], plans[0], metadata, reused=False, is_coordinator=True)
+    assert loaded.fqn_list is None and built.fqn_list is None
 
 
 def test_reuse_without_metadata_on_the_coordinator_raises():
