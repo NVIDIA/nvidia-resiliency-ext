@@ -1321,10 +1321,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 fqn_list = metadata.fqn_list
             else:
                 fqn_list = _metadata_pickler.table.FqnList.of(metadata.state_dict_metadata)
-            results = [
-                _metadata_pickler.table.to_write_results(t, fqn_list.fqns, fqn_list.fingerprint)
-                for t in tables
-            ]
+            results = [_metadata_pickler.table.to_write_results(t, fqn_list) for t in tables]
             storage_rows = None
         if not fast and not self.use_msc:
             if isinstance(metadata, MetadataTemplate):

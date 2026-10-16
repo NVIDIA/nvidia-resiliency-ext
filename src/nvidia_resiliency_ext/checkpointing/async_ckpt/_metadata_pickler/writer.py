@@ -316,7 +316,7 @@ def dump_metadata(
             return
     if storage_rows is not None:
         storage_data = table.to_storage_data(
-            table.decode_rows(storage_rows), list(metadata.state_dict_metadata)
+            table.decode_rows(storage_rows), table.FqnList.of(metadata.state_dict_metadata)
         )
         metadata = dataclasses.replace(metadata, storage_data=storage_data)
     # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
@@ -346,8 +346,6 @@ def _dump_table(state_dict_table: StateDictTable, stream, storage_rows, storage_
             return
     if storage_rows is not None:
         storage_data = table.to_storage_data(
-            table.decode_rows(storage_rows),
-            state_dict_table.fqns,
-            state_dict_table.fqns_fingerprint,
+            table.decode_rows(storage_rows), state_dict_table.fqn_list
         )
     pickle.dump(state_dict_table.to_metadata(storage_data), stream)  # nosec

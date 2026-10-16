@@ -117,7 +117,7 @@ def test_write_results_name_fqns_by_entry_in_the_fqn_list(tmp_path):
     payload = state_dict_saver._encode_write_results(results(0), storage_writer, fqn_list)
     sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
     assert sent.fqn_mode == table.FQN_INDICES
-    assert table.to_write_results(sent, fqn_list.fqns, fqn_list.fingerprint) == results(0)
+    assert table.to_write_results(sent, fqn_list) == results(0)
 
 
 @pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
@@ -153,4 +153,4 @@ def test_write_results_name_fqns_by_entry_iff_the_list_holds_them(
     sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
     holds_all = set(written) <= set(listed)
     assert sent.fqn_mode == (table.FQN_INDICES if holds_all else table.FQN_STRINGS)
-    assert table.to_write_results(sent, fqn_list.fqns, fqn_list.fingerprint) == sent_results
+    assert table.to_write_results(sent, fqn_list) == sent_results

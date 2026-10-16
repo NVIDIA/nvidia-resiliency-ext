@@ -362,7 +362,7 @@ class _MetadataPickler:
         out.append(EMPTY_DICT)
         count = 0
         for t in tables:
-            fqns = table.fqns_of(t, state_dict_table.fqns, state_dict_table.fqns_fingerprint)
+            fqns = table.fqns_of(t, state_dict_table.fqn_list)
             strings, offsets, pos = t.strings, t.offsets.tolist(), 0
             for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
                 if count % _BATCH == 0:

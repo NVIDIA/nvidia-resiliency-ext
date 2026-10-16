@@ -47,7 +47,7 @@ import struct
 from dataclasses import dataclass
 from hashlib import blake2b
 from types import MappingProxyType
-from typing import Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -80,19 +80,12 @@ class FqnList:
     fingerprint: int
 
     @classmethod
-    def of(
-        cls,
-        fqns: Sequence[str],
-        index: Optional[Mapping[str, int]] = None,
-        fqns_fingerprint: Optional[int] = None,
-    ) -> "FqnList":
-        """Make the list of these fqns; their entries and fingerprint are computed if not given."""
+    def of(cls, fqns: Iterable[str]) -> "FqnList":
+        """Make the list of these fqns, computing their entries and fingerprint."""
         fqns = tuple(fqns)
-        if index is None:
-            index = MappingProxyType({fqn: i for i, fqn in enumerate(fqns)})
-        if fqns_fingerprint is None:
-            fqns_fingerprint = fingerprint(fqns)
-        return cls(fqns, index, fqns_fingerprint)
+        return cls(
+            fqns, MappingProxyType({fqn: i for i, fqn in enumerate(fqns)}), fingerprint(fqns)
+        )
 
     def encode(self) -> bytes:
         """Encode the fqns, to send them to the other ranks: each as its length in bytes (int64)
@@ -195,16 +188,11 @@ def _check_int(v) -> int:
     return v
 
 
-def encode(
-    results: List[WriteResult],
-    fqn_index: Optional[Mapping[str, int]] = None,
-    fqns_fingerprint: int = 0,
-) -> bytes:
+def encode(results: List[WriteResult], fqn_list: Optional[FqnList] = None) -> bytes:
     """Encode one rank's write results as a table.
 
-    With fqn_index (the coordinator's fqn list, fqn to entry) and its fingerprint, encode an index
-    table; else a string table. Raise Unencodable for anything the table can't represent, such as
-    an fqn the list doesn't have.
+    With fqn_list (the coordinator's), encode an index table; else a string table. Raise
+    Unencodable for anything the table can't represent, such as an fqn the list doesn't have.
     """
     string_ids: dict = {}
     strings: List[bytes] = []
@@ -241,10 +229,10 @@ def encode(
             raise Unencodable(f"unexpected _StorageInfo state: {info_state}")
         flags = 0
         e = entry[row]
-        if fqn_index is None:
+        if fqn_list is None:
             e[FQN] = string_id(state["fqn"])
         else:
-            entry_id = fqn_index.get(state["fqn"])
+            entry_id = fqn_list.index.get(state["fqn"])
             if entry_id is None:
                 raise Unencodable(f"fqn {state['fqn']!r} isn't in the coordinator's fqn list")
             e[FQN] = entry_id
@@ -265,7 +253,7 @@ def encode(
         e[FLAGS] = flags
     string_len = np.fromiter((len(s) for s in strings), dtype="<i8", count=len(strings))
     blob = b"".join(strings)
-    fqn_mode = FQN_STRINGS if fqn_index is None else FQN_INDICES
+    fqn_mode = FQN_STRINGS if fqn_list is None else FQN_INDICES
     header = np.array(
         [
             MAGIC,
@@ -275,7 +263,7 @@ def encode(
             len(blob),
             len(offsets),
             fqn_mode,
-            fqns_fingerprint if fqn_mode == FQN_INDICES else 0,
+            fqn_list.fingerprint if fqn_list is not None else 0,
         ],
         dtype="<i8",
     )
@@ -362,25 +350,23 @@ def decode_rows(rows: np.ndarray) -> List[WriteResultTable]:
     return [decode(row) for row in rows]
 
 
-def fqns_of(
-    t: WriteResultTable, fqns: Optional[Sequence[str]], fqns_fingerprint: Optional[int]
-) -> Sequence[str]:
-    """Return the fqns t's FQN column indexes: its strings, or for an index table the fqn list,
-    after checking that it is the one t was encoded against."""
+def fqns_of(t: WriteResultTable, fqn_list: Optional[FqnList]) -> Sequence[str]:
+    """Return the fqns t's FQN column indexes: its strings, or for an index table the fqns of
+    fqn_list, after checking that it is the list t was encoded against."""
     if t.fqn_mode == FQN_STRINGS:
         return t.strings
-    if fqns is None or fqns_fingerprint != t.fingerprint:
+    if fqn_list is None or fqn_list.fingerprint != t.fingerprint:
         raise _bad("an index table encoded against another fqn list")
-    if len(t) and int(t.entry[:, FQN].max()) >= len(fqns):
+    if len(t) and int(t.entry[:, FQN].max()) >= len(fqn_list.fqns):
         raise _bad("fqn entry out of range")
-    return fqns
+    return fqn_list.fqns
 
 
 def _items(
-    t: WriteResultTable, fqns: Optional[Sequence[str]], fqns_fingerprint: Optional[int]
+    t: WriteResultTable, fqn_list: Optional[FqnList]
 ) -> Iterator[Tuple[MetadataIndex, _StorageInfo]]:
     """Yield each entry's index and storage info, in order."""
-    names = fqns_of(t, fqns, fqns_fingerprint)
+    names = fqns_of(t, fqn_list)
     offsets = t.offsets.tolist()
     pos = 0
     for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
@@ -399,35 +385,21 @@ def _items(
         yield idx, _StorageInfo(t.strings[path], offset, length)
 
 
-def to_storage_data(
-    tables: List[WriteResultTable],
-    fqns: Optional[Sequence[str]] = None,
-    fqns_fingerprint: Optional[int] = None,
-) -> dict:
+def to_storage_data(tables: List[WriteResultTable], fqn_list: Optional[FqnList] = None) -> dict:
     """Return the storage_data dict the tables describe, as finish builds it from write results.
 
-    Index tables need fqns, the fqn list they were encoded against; its fingerprint is computed if
-    not given.
+    Index tables need fqn_list, the fqn list they were encoded against.
     """
-    if fqns is not None and fqns_fingerprint is None:
-        fqns_fingerprint = fingerprint(fqns)
-    return {idx: info for t in tables for idx, info in _items(t, fqns, fqns_fingerprint)}
+    return {idx: info for t in tables for idx, info in _items(t, fqn_list)}
 
 
-def to_write_results(
-    t: WriteResultTable,
-    fqns: Optional[Sequence[str]] = None,
-    fqns_fingerprint: Optional[int] = None,
-) -> List[WriteResult]:
+def to_write_results(t: WriteResultTable, fqn_list: Optional[FqnList] = None) -> List[WriteResult]:
     """Return the write results a table holds, one per entry, in order.
 
     size_in_bytes is the storage length, as torch's _write_item reports it. An index table needs
-    fqns, the fqn list it was encoded against; its fingerprint is computed if not given, so a
-    caller decoding many tables should pass it.
+    fqn_list, the fqn list it was encoded against.
     """
-    if fqns is not None and fqns_fingerprint is None:
-        fqns_fingerprint = fingerprint(fqns)
     return [
         WriteResult(index=idx, size_in_bytes=info.length, storage_data=info)
-        for idx, info in _items(t, fqns, fqns_fingerprint)
+        for idx, info in _items(t, fqn_list)
     ]
