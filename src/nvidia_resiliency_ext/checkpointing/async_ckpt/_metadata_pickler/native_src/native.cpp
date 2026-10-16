@@ -467,6 +467,10 @@ class StateDictTableView {
                     if (!in(ref_[i], properties_) || !holds_chunks(values, ndim, chunk_count)) {
                         bad_state_dict_table("a tensor entry's dims don't match its chunks");
                     }
+                    // Its chunks have no dims, so nothing else bounds their number.
+                    if (ndim == 0 && chunk_count > 1) {
+                        bad_state_dict_table("a 0-dim tensor entry with more than one chunk");
+                    }
                     break;
                 case static_cast<uint8_t>(Kind::Other):
                     if (!in(ref_[i], others_)) {
@@ -647,9 +651,12 @@ class StateDictTableBuilder {
             return std::nullopt;
         }
         const Py_ssize_t ndim = PyTuple_GET_SIZE(size);
+        const Py_ssize_t chunk_count = PyList_GET_SIZE(chunks);
+        if (ndim == 0 && chunk_count > 1) {
+            return std::nullopt;  // a scalar saved by several ranks without dedup
+        }
         const size_t mark = dims_.size();
         append_dims(size, dims_);
-        const Py_ssize_t chunk_count = PyList_GET_SIZE(chunks);
         for (Py_ssize_t k = 0; k < chunk_count; ++k) {
             PyObject* const chunk = PyList_GET_ITEM(chunks, k);
             const py::object chunk_state =

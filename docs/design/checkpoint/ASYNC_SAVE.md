@@ -193,8 +193,10 @@ A `MetadataTemplate`'s `content` is either a state dict table or a `Metadata`. I
 Entries are in `state_dict_metadata`'s order; entry `i` is one fqn, of one of three kinds:
 
 - BYTES: a `BytesStorageMetadata` without attributes;
-- TENSOR: a `TensorStorageMetadata` with exactly `properties`, `size` and `chunks`, whose chunks are `ChunkStorageMetadata` with exactly `offsets` and `sizes`, each a `torch.Size` of the tensor's number of dims;
-- OTHER: anything else (a subclass, a tuple instead of a list, an extra attribute), kept as its pickle in `others`.
+- TENSOR: a `TensorStorageMetadata` with exactly `properties`, `size` and `chunks`, whose chunks are `ChunkStorageMetadata` with exactly `offsets` and `sizes`, each a `torch.Size` of the tensor's number of dims, and at most one chunk if the tensor has no dims;
+- OTHER: anything else (a subclass, a tuple instead of a list, an extra attribute, a 0-dim tensor with several chunks), kept as its pickle in `others`.
+
+A 0-dim tensor's chunks have no dims, so the arrays don't bound their number; the table checks reject a 0-dim TENSOR entry with more than one chunk. Several chunks are rare but legal: a planner that skips torch's dedup, such as Megatron-LM's when two ranks both hold a scalar as main replica and its sharding validation is off, writes one chunk per rank.
 
 Per entry (`n` entries, `+ 1` for the start columns, whose last value is the end):
 

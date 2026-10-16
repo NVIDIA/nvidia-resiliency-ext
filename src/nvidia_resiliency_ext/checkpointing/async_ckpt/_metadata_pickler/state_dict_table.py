@@ -26,8 +26,8 @@ Entries are kept in dict order, as one of three kinds:
 - BYTES: a ``BytesStorageMetadata`` without attributes.
 - TENSOR: a ``TensorStorageMetadata`` with exactly the attributes properties, size and chunks,
   whose size is a ``torch.Size``, chunks a list of ``ChunkStorageMetadata`` with exactly the
-  attributes offsets and sizes, each a ``torch.Size`` with as many dims as size. A ``torch.Size``
-  holds only ints within int64.
+  attributes offsets and sizes, each a ``torch.Size`` with as many dims as size, and at most one
+  chunk if size has no dims. A ``torch.Size`` holds only ints within int64.
 - OTHER: anything else, for example an object of a subclass, kept as the stdlib pickler's
   opcodes for it (``small_pickle``) and written as they are.
 
@@ -316,6 +316,9 @@ class StateDictTable:
             )
         ) or not refers(self.properties, tensor):
             raise bad("a tensor entry's dims don't match its chunks")
+        # Its chunks have no dims, so nothing else bounds their number.
+        if ((ndim[tensor] == 0) & (chunks[tensor] > 1)).any():
+            raise bad("a 0-dim tensor entry with more than one chunk")
         if not refers(self.others, other):
             raise bad("an entry refers to no pickle")
         non_tensor = ~tensor
@@ -336,6 +339,8 @@ def _tensor_entry(entry, dims: array) -> Optional[Tuple[int, int]]:
     ):
         return None
     ndim = len(size)
+    if ndim == 0 and len(chunks) > 1:
+        return None  # a scalar saved by several ranks without dedup
     values = array("q", size)
     for chunk in chunks:
         if type(chunk) is not ChunkStorageMetadata:
