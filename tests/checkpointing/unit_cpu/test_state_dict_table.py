@@ -291,6 +291,8 @@ MALFORMED = [
     pytest.param(lambda table: dict(properties=(1, *table.properties[1:])), id="properties-type"),
     pytest.param(lambda table: dict(fields=(*table.fields, ("x", None))), id="field-opcodes"),
     pytest.param(lambda table: dict(fields=(["x", b"N"],)), id="field-not-tuple"),
+    pytest.param(lambda table: dict(fields=((1, b"N"), *table.fields)), id="field-name-not-str"),
+    pytest.param(lambda table: dict(fqns=(None, *table.fqns[1:])), id="fqn-not-str"),
     pytest.param(
         lambda table: dict(kind=np.where(table.kind == TENSOR, BYTES, table.kind).astype(np.uint8)),
         id="bytes-with-dims",

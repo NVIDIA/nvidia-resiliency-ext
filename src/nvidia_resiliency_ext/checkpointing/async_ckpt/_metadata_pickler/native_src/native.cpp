@@ -278,6 +278,9 @@ class WriteResultTable {
     return r;
 }
 
+// Return the name of obj's type, for error messages.
+[[nodiscard]] std::string type_name(PyObject* obj) { return Py_TYPE(obj)->tp_name; }
+
 // UTF-8 view of a str's characters, valid while s is alive.
 [[nodiscard]] std::string_view utf8(PyObject* s) {
     if (!PyUnicode_CheckExact(s)) {
@@ -389,6 +392,9 @@ class StateDictTableView {
             }
             PyObject* const name = PyTuple_GET_ITEM(field.ptr(), 0);
             PyObject* const opcodes = PyTuple_GET_ITEM(field.ptr(), 1);
+            if (!PyUnicode_CheckExact(name)) {
+                bad_state_dict_table("a field name is a " + type_name(name) + ", not a str");
+            }
             const std::string_view field_name = utf8(name);
             const bool written_here =
                 field_name == STATE_DICT_METADATA || field_name == STORAGE_DATA;
@@ -456,6 +462,9 @@ class StateDictTableView {
                    PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
         };
         for (size_t i = 0; i < n; ++i) {
+            if (!PyUnicode_CheckExact(fqn(i))) {
+                bad_state_dict_table("an fqn is not a str");
+            }
             const int64_t ndim = ndim_[i];
             const int64_t chunk_count = chunk_start_[i + 1] - chunk_start_[i];
             const int64_t values = dims_start_[i + 1] - dims_start_[i];
@@ -711,8 +720,6 @@ class StateDictTableBuilder {
     [[nodiscard]] static bool is(PyObject* obj, const py::object& cls) {
         return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
     }
-
-    [[nodiscard]] static std::string type_name(PyObject* obj) { return Py_TYPE(obj)->tp_name; }
 
     py::object small_pickle_;
     py::object metadata_cls_, tensor_cls_, bytes_cls_, chunk_cls_, size_cls_;
