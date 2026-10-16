@@ -30,7 +30,9 @@ from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import state_dict_saver
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.table import FqnList
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.write_result_table import (
+    FqnList,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
 

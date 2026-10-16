@@ -40,8 +40,8 @@ from typing_extensions import deprecated
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
-from ._metadata_pickler import table as _table
-from ._metadata_pickler.table import FqnList
+from ._metadata_pickler import write_result_table
+from ._metadata_pickler.write_result_table import FqnList
 from ._metadata_template import MetadataTemplate
 
 if TYPE_CHECKING:
@@ -487,11 +487,11 @@ def _encode_write_results(
         try:
             if fqn_list is not None:
                 try:
-                    return _table.encode(write_results, fqn_list)
-                except _table.FqnNotListed:
+                    return write_result_table.encode(write_results, fqn_list)
+                except write_result_table.FqnNotListed:
                     logger.debug("an fqn is missing from the fqn list; sending fqn strings")
-            return _table.encode(write_results)
-        except _table.Unencodable:
+            return write_result_table.encode(write_results)
+        except write_result_table.Unencodable:
             logger.debug(
                 "write results unencodable as a table; sending them pickled", exc_info=True
             )
@@ -547,7 +547,7 @@ def _gather_payloads(
 
 def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
     """Which ranks sent a table, and what each other rank pickled: its write results or exception."""
-    is_table = rows[:, :8].copy().view("<i8")[:, 0] == _table.MAGIC
+    is_table = rows[:, :8].copy().view("<i8")[:, 0] == write_result_table.MAGIC
     # Unpickles only what this job's ranks pickled, as dist.gather_object does.
     pickled = {
         int(rank): pickle.loads(rows[rank].tobytes())  # nosec B301
@@ -597,7 +597,7 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
     Finalize the save that save_state_dict_async_plan planned and staged.
 
     The `write_results` are retrieved from the pending save's storage_writer. Each rank sends them
-    to the coordinator as a table (see `_metadata_pickler.table`) if it can, else pickled.
+    to the coordinator as a table (see `_metadata_pickler.write_result_table`) if it can, else pickled.
 
     Args:
         pending (PendingSave): the save planned and staged by `save_state_dict_async_plan`.
@@ -710,7 +710,11 @@ def _write_metadata(
         return
     fqn_list = metadata_template.fqn_list
     results = [
-        (_table.to_write_results(_table.decode(row), fqn_list) if sent_table else pickled[rank])
+        (
+            write_result_table.to_write_results(write_result_table.decode(row), fqn_list)
+            if sent_table
+            else pickled[rank]
+        )
         for rank, (row, sent_table) in enumerate(zip(rows, is_table))
     ]
     if _storage_writer_finish_is_nvrx(storage_writer):

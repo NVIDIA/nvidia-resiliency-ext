@@ -70,7 +70,7 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from . import pickler, table
+from . import pickler, write_result_table
 from .state_dict_table import StateDictTable
 
 try:
@@ -300,7 +300,7 @@ def dump_metadata(
 
     metadata is a Metadata, or a table of one (see state_dict_table.py) with this storage_data. With
     storage_rows (the gathered write-result tables, a 2-D uint8 array with one zero-padded table
-    per row, see table.py), storage_data is the one they describe instead.
+    per row, see write_result_table.py), storage_data is the one they describe instead.
     """
     if isinstance(metadata, StateDictTable):
         _dump_table(metadata, stream, storage_rows, storage_data)
@@ -315,8 +315,9 @@ def dump_metadata(
             stream.write(data)
             return
     if storage_rows is not None:
-        storage_data = table.to_storage_data(
-            table.decode_rows(storage_rows), table.FqnList.of(metadata.state_dict_metadata)
+        storage_data = write_result_table.to_storage_data(
+            write_result_table.decode_rows(storage_rows),
+            write_result_table.FqnList.of(metadata.state_dict_metadata),
         )
         metadata = dataclasses.replace(metadata, storage_data=storage_data)
     # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
@@ -345,7 +346,7 @@ def _dump_table(state_dict_table: StateDictTable, stream, storage_rows, storage_
             stream.write(data)
             return
     if storage_rows is not None:
-        storage_data = table.to_storage_data(
-            table.decode_rows(storage_rows), state_dict_table.fqn_list
+        storage_data = write_result_table.to_storage_data(
+            write_result_table.decode_rows(storage_rows), state_dict_table.fqn_list
         )
     pickle.dump(state_dict_table.to_metadata(storage_data), stream)  # nosec

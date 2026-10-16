@@ -1307,7 +1307,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         """Write .metadata as finish does, also from a MetadataTemplate, which it doesn't modify.
 
         With storage_rows (the ranks' write results as tables, one zero-padded table per row of a
-        2-D uint8 array, see ``_metadata_pickler.table``), storage_data is written from them
+        2-D uint8 array, see ``_metadata_pickler.write_result_table``), storage_data is written from them
         instead of results. Finalize passes rows only when this process writes from tables, which
         needs the fast writer.
         """

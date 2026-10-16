@@ -472,6 +472,6 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 | Cached metadata template                      | `_metadata_template.py`: `MetadataTemplate`                                                                                                                 |
 | Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                           |
 | State dict table and its Python producer           | `_metadata_pickler/state_dict_table.py`                                                                                                                       |
-| Write-result tables                           | `_metadata_pickler/table.py`                                                                                                                             |
+| Write-result tables                           | `_metadata_pickler/write_result_table.py`                                                                                                                             |
 | `.metadata` writers                           | `_metadata_pickler/`: `writer.py` (selection), `native.py` and `native_src/native.cpp` (C++), `pickler.py` (Python)                                      |
 | Async workers, finalize scheduling, shm drain | `core.py`: `AsyncCallsQueue`, `PersistentAsyncCaller`                                                                                                    |

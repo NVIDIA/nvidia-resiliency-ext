@@ -72,7 +72,7 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from . import table
+from . import write_result_table
 from .opcodes import small_pickle, small_unpickle
 
 BYTES, TENSOR, OTHER = 0, 1, 2
@@ -220,13 +220,13 @@ class StateDictTable:
 
     @functools.cached_property
     def fqns_fingerprint(self) -> int:
-        """The fingerprint of the fqn list (see table.fingerprint), computed once."""
-        return table.fingerprint(self.fqns)
+        """The fingerprint of the fqn list (see write_result_table.fingerprint), computed once."""
+        return write_result_table.fingerprint(self.fqns)
 
     @functools.cached_property
-    def fqn_list(self) -> table.FqnList:
+    def fqn_list(self) -> write_result_table.FqnList:
         """The fqns, in entry order: the fqn list index tables refer to."""
-        return table.FqnList(self.fqns, self.index, self.fqns_fingerprint)
+        return write_result_table.FqnList(self.fqns, self.index, self.fqns_fingerprint)
 
     def chunk_count(self, i: int) -> int:
         """Return the number of chunks of entry i (0 unless a tensor)."""

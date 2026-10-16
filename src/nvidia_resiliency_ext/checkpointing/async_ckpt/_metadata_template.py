@@ -27,7 +27,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from . import _metadata_pickler, _metadata_reuse
 from ._metadata_pickler import StateDictTable
-from ._metadata_pickler.table import FqnList
+from ._metadata_pickler.write_result_table import FqnList
 
 
 class MetadataTemplate:
@@ -102,7 +102,8 @@ class MetadataTemplate:
         storage_data: Optional[dict] = None,
     ) -> None:
         """Write it as ``.metadata``, with storage_data from storage_rows (the gathered
-        write-result tables, see ``_metadata_pickler.table``) if given, else this storage_data."""
+        write-result tables, see ``_metadata_pickler.write_result_table``) if given, else this storage_data.
+        """
         if isinstance(self._content, StateDictTable):
             _metadata_pickler.dump_metadata(self._content, stream, storage_rows, storage_data)
         else:
