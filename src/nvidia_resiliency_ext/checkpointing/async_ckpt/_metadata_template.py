@@ -79,13 +79,14 @@ class MetadataTemplate:
     def with_fields(self, **values) -> "MetadataTemplate":
         """Return a copy of the template with these Metadata fields (e.g. version) set.
 
-        Raise TypeError for a name that isn't a field of Metadata a save sets.
+        Raise TypeError for state_dict_metadata and storage_data, and for a name that isn't a
+        field of Metadata.
         """
         if isinstance(self._content, StateDictTable):
             return MetadataTemplate(self._content.with_fields(**values))
         written = {"state_dict_metadata", "storage_data"} & set(values)
         if written:
-            raise TypeError(f"not fields of Metadata that a save sets: {sorted(written)}")
+            raise TypeError(f"not Metadata fields with_fields sets: {sorted(written)}")
         return MetadataTemplate(dataclasses.replace(self._content, **values))
 
     def entries(self) -> _metadata_reuse.Entries:
