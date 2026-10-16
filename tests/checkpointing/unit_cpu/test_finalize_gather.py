@@ -121,6 +121,59 @@ class _OwnFinish(FileSystemWriterAsync):
         super().finish(metadata, results)
 
 
+def _two_rank_metadata() -> Metadata:
+    """Return the global metadata of two ranks' results."""
+    return Metadata(state_dict_metadata={f"r{rank}.w": BytesStorageMetadata() for rank in range(2)})
+
+
+def _written(path):
+    """Return the storage_data of path's .metadata."""
+    return FileSystemReader(path).read_metadata().storage_data
+
+
+@pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
+def test_write_metadata_from_an_index_table_and_a_pickle(tmp_path):
+    """One rank sends an index table, the other its write results pickled: the coordinator
+    decodes the table against its fqn list and writes both."""
+    template = MetadataTemplate.from_metadata(_two_rank_metadata())
+    storage_writer = FileSystemWriterAsync(tmp_path)
+    storage_writer.set_up_storage_writer(True)
+    rows = _rows(
+        [
+            state_dict_saver._encode_write_results(results(0), storage_writer, template.fqn_list),
+            pickle.dumps(results(1)),
+        ]
+    )
+    is_table, pickled = state_dict_saver._decode_payloads(rows)
+    assert is_table.tolist() == [True, False]
+    assert table.decode(rows[0]).fqn_mode == table.FQN_INDICES
+    state_dict_saver._write_metadata(storage_writer, template, rows, is_table, pickled)
+    assert _written(tmp_path) == {r.index: r.storage_data for r in results(0) + results(1)}
+
+
+def test_write_metadata_with_an_overridden_finish(tmp_path, monkeypatch):
+    """A storage writer whose finish a subclass overrides gets a Metadata and every rank's write
+    results, from tables and pickles alike."""
+    received = []
+    finish = _OwnFinish.finish
+
+    def recording(self, metadata, rank_results):
+        received.append((metadata, rank_results))
+        finish(self, metadata, rank_results)
+
+    monkeypatch.setattr(_OwnFinish, "finish", recording)
+    storage_writer = _OwnFinish(tmp_path)
+    storage_writer.set_up_storage_writer(True)
+    rows = _rows([table.encode(results(0)), pickle.dumps(results(1))])
+    is_table, pickled = state_dict_saver._decode_payloads(rows)
+    template = MetadataTemplate.from_metadata(_two_rank_metadata())
+    state_dict_saver._write_metadata(storage_writer, template, rows, is_table, pickled)
+    ((metadata, rank_results),) = received
+    assert type(metadata) is Metadata
+    assert rank_results == [results(0), results(1)]
+    assert _written(tmp_path) == {r.index: r.storage_data for r in results(0) + results(1)}
+
+
 def test_overridden_finish_gets_the_write_results(tmp_path):
     """A rank whose storage writer overrides finish sends its write results pickled, as they are,
     so that finish gets them unchanged; one that doesn't sends a table if tables are on."""
