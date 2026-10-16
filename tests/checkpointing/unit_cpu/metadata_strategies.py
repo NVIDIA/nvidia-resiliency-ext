@@ -16,6 +16,7 @@
 """Hypothesis strategies of DCP metadata, shared by the .metadata tests."""
 
 
+import numpy as np
 import torch
 from hypothesis import HealthCheck, settings
 from hypothesis import strategies as st
@@ -43,6 +44,16 @@ dims_values = st.integers(min_value=0, max_value=2**63 - 1)
 sizes = st.lists(dims_values, max_size=6).map(torch.Size)
 
 
+# Dims of state_dict_metadata entries, also of the kinds a torch.Size keeps but the table doesn't
+# (numpy ints, ints beyond int64): such entries are kept as pickles.
+entry_dims_values = (
+    dims_values | dims_values.map(np.int64) | st.integers(min_value=2**63, max_value=2**70)
+)
+
+
+entry_sizes = st.lists(entry_dims_values, max_size=6).map(torch.Size)
+
+
 texts = st.text(max_size=300)
 
 
@@ -53,7 +64,7 @@ properties = st.builds(
 )
 
 
-chunks = st.builds(ChunkStorageMetadata, offsets=sizes, sizes=sizes)
+chunks = st.builds(ChunkStorageMetadata, offsets=entry_sizes, sizes=entry_sizes)
 
 
 @st.composite
@@ -62,7 +73,7 @@ def consistent_tensors(draw):
     checkpoint.
     """
     ndim = draw(st.integers(0, 4))
-    dims = st.lists(dims_values, min_size=ndim, max_size=ndim).map(torch.Size)
+    dims = st.lists(entry_dims_values, min_size=ndim, max_size=ndim).map(torch.Size)
     chunk = st.builds(ChunkStorageMetadata, offsets=dims, sizes=dims)
     return TensorStorageMetadata(draw(properties), draw(dims), draw(st.lists(chunk, max_size=5)))
 
@@ -75,19 +86,22 @@ def metadatas(draw):
     tensor = st.builds(
         TensorStorageMetadata,
         properties=properties,
-        size=sizes,
+        size=entry_sizes,
         chunks=st.lists(chunks, max_size=5),
     )
     # Unusual entries, which the writers leave to the stdlib pickler: an object of a subclass, a
     # tuple of chunks. (Chunks whose number of dims differs from the size's come from tensor.)
     unusual = st.one_of(
         st.builds(
-            SubclassedTensor, properties=properties, size=sizes, chunks=st.lists(chunks, max_size=3)
+            SubclassedTensor,
+            properties=properties,
+            size=entry_sizes,
+            chunks=st.lists(chunks, max_size=3),
         ),
         st.builds(
             TensorStorageMetadata,
             properties=properties,
-            size=sizes,
+            size=entry_sizes,
             chunks=st.lists(chunks, max_size=3).map(tuple),
         ),
     )
