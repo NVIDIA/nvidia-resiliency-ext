@@ -35,7 +35,10 @@ from torch.distributed.checkpoint import (
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async, state_dict_saver
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
+    pickler,
+    write_result_table,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
@@ -134,7 +137,7 @@ def record_fqn_modes(monkeypatch):
 
     def recording(*args, **kwargs):
         payload = encode(*args, **kwargs)
-        modes.append(table.decode(np.frombuffer(payload, dtype=np.uint8)).fqn_mode)
+        modes.append(write_result_table.decode(np.frombuffer(payload, dtype=np.uint8)).fqn_mode)
         return payload
 
     monkeypatch.setattr(state_dict_saver, '_encode_write_results', recording)
@@ -321,11 +324,11 @@ class TestAsyncSave:
             monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', '1')
             md_writer.fast_metadata_enabled.cache_clear()
             md_writer._select_dumps.cache_clear()
-        encode, decode_payloads = table.encode, state_dict_saver._decode_payloads
+        encode, decode_payloads = write_result_table.encode, state_dict_saver._decode_payloads
 
         def encode_or_fail(results):
             if rank == 1 and rank1 == 'unencodable':
-                raise table.Unencodable('a write result the table lacks')
+                raise write_result_table.Unencodable('a write result the table lacks')
             return encode(results)
 
         received = []
@@ -335,7 +338,7 @@ class TestAsyncSave:
             received.extend(is_table.tolist())
             return is_table, pickled
 
-        monkeypatch.setattr(table, 'encode', encode_or_fail)
+        monkeypatch.setattr(write_result_table, 'encode', encode_or_fail)
         monkeypatch.setattr(state_dict_saver, '_decode_payloads', record_decode_payloads)
 
         model = FSDP(Model((1024, 1024), 8))
@@ -643,11 +646,11 @@ class TestAsyncSave:
                 self.check_loads(ckpt_dir, state_dict)
         coordinator = torch.distributed.get_rank() == 0
         if not cached:
-            assert modes == [table.FQN_STRINGS] * 2
+            assert modes == [write_result_table.FQN_STRINGS] * 2
         elif coordinator:
-            assert modes == [table.FQN_INDICES] * 2
+            assert modes == [write_result_table.FQN_INDICES] * 2
         else:
-            assert modes == [table.FQN_STRINGS, table.FQN_INDICES]
+            assert modes == [write_result_table.FQN_STRINGS, write_result_table.FQN_INDICES]
 
     @pytest.mark.parametrize('extra', [False, True], ids=['reused', 'not-reused'])
     def test_fqns_after_a_load(self, tmp_path_dist_ckpt, async_queue, monkeypatch, extra):
@@ -665,9 +668,9 @@ class TestAsyncSave:
                 self.save_and_finalize(ckpt_dir, state_dict, async_queue, cache)
                 self.check_loads(ckpt_dir, state_dict)
         if extra and torch.distributed.get_rank() != 0:
-            assert modes == [table.FQN_STRINGS, table.FQN_INDICES]
+            assert modes == [write_result_table.FQN_STRINGS, write_result_table.FQN_INDICES]
         else:
-            assert modes == [table.FQN_INDICES] * 2
+            assert modes == [write_result_table.FQN_INDICES] * 2
 
     @pytest.mark.parametrize('load_between', [False, True], ids=['reuse', 'load-between'])
     def test_fqn_list_delivered_by_a_late_finalize(
@@ -703,9 +706,9 @@ class TestAsyncSave:
                 for ckpt_dir, state_dict in zip([first_dir, second_dir], state_dicts):
                     self.check_loads(ckpt_dir, state_dict)
         if torch.distributed.get_rank() == 0:
-            assert modes == [table.FQN_INDICES] * 2
+            assert modes == [write_result_table.FQN_INDICES] * 2
         else:
-            assert modes == [table.FQN_STRINGS, table.FQN_INDICES]
+            assert modes == [write_result_table.FQN_STRINGS, write_result_table.FQN_INDICES]
 
     def test_no_fqn_list_is_delivered_without_tables(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch
@@ -715,13 +718,13 @@ class TestAsyncSave:
         Utils.initialize_distributed()
         monkeypatch.setattr(state_dict_saver._metadata_pickler, 'writes_tables', lambda: False)
         encoded = []
-        encode = table.FqnList.encode
+        encode = write_result_table.FqnList.encode
 
         def recording(fqn_list):
             encoded.append(fqn_list)
             return encode(fqn_list)
 
-        monkeypatch.setattr(table.FqnList, 'encode', recording)
+        monkeypatch.setattr(write_result_table.FqnList, 'encode', recording)
         state_dict = rank_state_dict()
         with TempNamedDir(tmp_path_dist_ckpt / 'no_tables', sync=True) as ckpt_dir:
             self.save_and_finalize(ckpt_dir, state_dict, async_queue, CheckpointMetadataCache())
@@ -752,7 +755,7 @@ class TestAsyncSave:
             self.check_loads(ckpt_dir, state_dict)
         # Not reused: the coordinator built new metadata, whose list the other rank lacked.
         if torch.distributed.get_rank() != 0:
-            assert modes == [table.FQN_STRINGS]
+            assert modes == [write_result_table.FQN_STRINGS]
 
     def test_a_failure_to_read_the_gathered_results_fails_every_rank(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch
@@ -782,7 +785,7 @@ class TestAsyncSave:
             encode = state_dict_saver._encode_write_results
 
             def encode_against_a_reordered_list(write_results, storage_writer, fqn_list=None):
-                reordered = table.FqnList.of(reversed(fqn_list.fqns))
+                reordered = write_result_table.FqnList.of(reversed(fqn_list.fqns))
                 return encode(write_results, storage_writer, reordered)
 
             monkeypatch.setattr(

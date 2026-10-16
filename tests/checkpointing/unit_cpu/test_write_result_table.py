@@ -33,7 +33,11 @@ from torch.distributed.checkpoint.filesystem import _StorageInfo
 from torch.distributed.checkpoint.metadata import BytesStorageMetadata, Metadata, MetadataIndex
 from torch.distributed.checkpoint.storage import WriteResult
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
+    pickler,
+    write_result_table,
+    writer,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.state_dict_table import (
     StateDictTable,
 )
@@ -67,7 +71,7 @@ def split_into_ranks(md: Metadata, ranks: int):
 
 def rows_of(results, pad=0):
     """The ranks' tables as the coordinator receives them: one zero-padded row per rank."""
-    encoded = [table.encode(r) for r in results]
+    encoded = [write_result_table.encode(r) for r in results]
     width = max(len(e) for e in encoded) + pad
     return np.stack([np.frombuffer(e.ljust(width, b"\0"), dtype=np.uint8) for e in encoded])
 
@@ -77,7 +81,9 @@ def assert_tables_write_like_dict(dumps, md: Metadata, ranks: int, pad=0):
     rows = rows_of(split_into_ranks(md, ranks), pad)
     from_tables = dumps(dataclasses.replace(md, storage_data=None), storage_rows=rows)
     assert from_tables == dumps(md)
-    assert table.to_storage_data(table.decode_rows(rows)) == md.storage_data
+    assert (
+        write_result_table.to_storage_data(write_result_table.decode_rows(rows)) == md.storage_data
+    )
 
 
 @pytest.mark.parametrize("dumps", DUMPS)
@@ -103,7 +109,9 @@ def test_index_with_offset_none(dumps):
     idx.__dict__["offset"] = None
     md = Metadata(state_dict_metadata={}, storage_data={idx: _StorageInfo("__0_0.distcp", 0, 9)})
     assert_tables_write_like_dict(dumps, md, ranks=1)
-    (back,) = table.to_storage_data(table.decode_rows(rows_of(split_into_ranks(md, 1))))
+    (back,) = write_result_table.to_storage_data(
+        write_result_table.decode_rows(rows_of(split_into_ranks(md, 1)))
+    )
     assert vars(back) == vars(idx)
 
 
@@ -130,7 +138,11 @@ def test_to_write_results_gives_them_back():
         ),
         _result(idx=MetadataIndex("b")),
     ]
-    assert _fields(table.to_write_results(table.decode(table.encode(results)))) == _fields(results)
+    assert _fields(
+        write_result_table.to_write_results(
+            write_result_table.decode(write_result_table.encode(results))
+        )
+    ) == _fields(results)
 
 
 def test_torch_write_results_fit_the_table(tmp_path):
@@ -154,7 +166,11 @@ def test_torch_write_results_fit_the_table(tmp_path):
         False,
     )
     assert len(results) == 3
-    assert _fields(table.to_write_results(table.decode(table.encode(results)))) == _fields(results)
+    assert _fields(
+        write_result_table.to_write_results(
+            write_result_table.decode(write_result_table.encode(results))
+        )
+    ) == _fields(results)
 
 
 class SubclassedStr(str):
@@ -175,20 +191,26 @@ if "transform_descriptors" in {f.name for f in dataclasses.fields(_StorageInfo)}
 
 @pytest.mark.parametrize("make", UNENCODABLE.values(), ids=UNENCODABLE.keys())
 def test_unencodable_write_results(make):
-    with pytest.raises(table.Unencodable):
-        table.encode([make()])
+    with pytest.raises(write_result_table.Unencodable):
+        write_result_table.encode([make()])
 
 
 def _corrupt(mutate, results=None):
     """The row of a table of results (one write result by default), after mutate(header,
     string_len, entry) changes those sections of it in place."""
-    raw = np.frombuffer(bytearray(table.encode(results or [_result()])), dtype=np.uint8)
-    header = raw[: 8 * table.HEADER].view("<i8")
+    raw = np.frombuffer(
+        bytearray(write_result_table.encode(results or [_result()])), dtype=np.uint8
+    )
+    header = raw[: 8 * write_result_table.HEADER].view("<i8")
     n_entries, n_strings = int(header[2]), int(header[3])
-    pos = 8 * table.HEADER
+    pos = 8 * write_result_table.HEADER
     string_len = raw[pos : pos + 8 * n_strings].view("<i8")
     pos += 8 * n_strings
-    entry = raw[pos : pos + 8 * table.COLUMNS * n_entries].view("<i8").reshape(n_entries, -1)
+    entry = (
+        raw[pos : pos + 8 * write_result_table.COLUMNS * n_entries]
+        .view("<i8")
+        .reshape(n_entries, -1)
+    )
     mutate(header, string_len, entry)
     return raw[None, :]
 
@@ -201,15 +223,20 @@ def _set(array, index, value):
 _FIVE_DIMS = [_result(idx=MetadataIndex("w", torch.Size([i]))) for i in range(5)]
 
 CORRUPT = {
-    "fqn-id": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.FQN), 5)),
-    "path-id": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.PATH), -1)),
-    "offset-ndim": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.OFFSET_NDIM), 9)),
-    "offset-ndim-wraps": lambda: _corrupt(
-        lambda h, s, e: _set(e, (slice(None), table.OFFSET_NDIM), [2**62] * 4 + [5]), _FIVE_DIMS
+    "fqn-id": lambda: _corrupt(lambda h, s, e: _set(e, (0, write_result_table.FQN), 5)),
+    "path-id": lambda: _corrupt(lambda h, s, e: _set(e, (0, write_result_table.PATH), -1)),
+    "offset-ndim": lambda: _corrupt(
+        lambda h, s, e: _set(e, (0, write_result_table.OFFSET_NDIM), 9)
     ),
-    "unknown-flag": lambda: _corrupt(lambda h, s, e: _set(e, (0, table.FLAGS), 0x8 | 0x7)),
+    "offset-ndim-wraps": lambda: _corrupt(
+        lambda h, s, e: _set(e, (slice(None), write_result_table.OFFSET_NDIM), [2**62] * 4 + [5]),
+        _FIVE_DIMS,
+    ),
+    "unknown-flag": lambda: _corrupt(
+        lambda h, s, e: _set(e, (0, write_result_table.FLAGS), 0x8 | 0x7)
+    ),
     "size-without-offset": lambda: _corrupt(
-        lambda h, s, e: _set(e, (0, table.FLAGS), table.FLAG_OFFSET_SIZE)
+        lambda h, s, e: _set(e, (0, write_result_table.FLAGS), write_result_table.FLAG_OFFSET_SIZE)
     ),
     "string-len": lambda: _corrupt(lambda h, s, e: _set(s, 0, 1000)),
     "entries-beyond-row": lambda: _corrupt(lambda h, s, e: _set(h, 2, 2**40)),
@@ -230,7 +257,7 @@ def test_corrupt_tables_are_rejected(dumps, corrupt):
 # Index tables: fqns named by entry in the coordinator's fqn list.
 
 
-def _fqn_list(md: Metadata) -> table.FqnList:
+def _fqn_list(md: Metadata) -> write_result_table.FqnList:
     """Return the fqn list of md's state dict table."""
     return StateDictTable.from_metadata(dataclasses.replace(md, storage_data=None)).fqn_list
 
@@ -238,7 +265,7 @@ def _fqn_list(md: Metadata) -> table.FqnList:
 def test_fqn_list_of_the_metadata_matches_its_state_dict_table(tmp_path):
     md = dcp_saved_metadata(tmp_path)
     expected = _fqn_list(md)
-    fqn_list = table.FqnList.of(md.state_dict_metadata)
+    fqn_list = write_result_table.FqnList.of(md.state_dict_metadata)
     assert (fqn_list.fqns, dict(fqn_list.index), fqn_list.fingerprint) == (
         expected.fqns,
         dict(expected.index),
@@ -252,14 +279,14 @@ any_text = st.lists(st.characters() | st.characters(categories=["Cs"])).map("".j
 
 @given(st.lists(any_text, unique=True))
 def test_fqn_list_round_trips(fqns):
-    fqn_list = table.FqnList.of(fqns)
-    assert table.FqnList.decode(fqn_list.encode()) == fqn_list
+    fqn_list = write_result_table.FqnList.of(fqns)
+    assert write_result_table.FqnList.decode(fqn_list.encode()) == fqn_list
 
 
 def test_fqn_list_round_trips_lone_surrogates():
     """Python strings, which fqns are, may hold lone surrogates; UTF-8 can't encode them."""
-    fqn_list = table.FqnList.of(["w\ud800", "\udfff"])
-    assert table.FqnList.decode(fqn_list.encode()) == fqn_list
+    fqn_list = write_result_table.FqnList.of(["w\ud800", "\udfff"])
+    assert write_result_table.FqnList.decode(fqn_list.encode()) == fqn_list
 
 
 @pytest.mark.parametrize(
@@ -272,7 +299,7 @@ def test_fqn_list_round_trips_lone_surrogates():
 )
 def test_malformed_fqn_lists_are_rejected(data):
     with pytest.raises(ValueError):
-        table.FqnList.decode(data)
+        write_result_table.FqnList.decode(data)
 
 
 def _mixed_rows(md: Metadata, ranks: int, indices):
@@ -283,10 +310,10 @@ def _mixed_rows(md: Metadata, ranks: int, indices):
     for r, results in enumerate(split_into_ranks(md, ranks)):
         try:
             if not indices[r]:
-                raise table.Unencodable("a string table")
-            encoded.append(table.encode(results, fqn_list))
-        except table.Unencodable:
-            encoded.append(table.encode(results))
+                raise write_result_table.Unencodable("a string table")
+            encoded.append(write_result_table.encode(results, fqn_list))
+        except write_result_table.Unencodable:
+            encoded.append(write_result_table.encode(results))
     width = -(-max(len(e) for e in encoded) // 8) * 8
     return np.stack([np.frombuffer(e.ljust(width, b"\0"), dtype=np.uint8) for e in encoded])
 
@@ -304,7 +331,10 @@ def test_index_and_string_tables_write_like_the_dict(dumps, md, data):
     )
     from_tables = dumps(dataclasses.replace(md, storage_data=None), storage_rows=rows)
     assert from_tables == dumps(md)
-    assert table.to_storage_data(table.decode_rows(rows), _fqn_list(md)) == md.storage_data
+    assert (
+        write_result_table.to_storage_data(write_result_table.decode_rows(rows), _fqn_list(md))
+        == md.storage_data
+    )
 
 
 def _index_table_metadata() -> Metadata:
@@ -323,25 +353,31 @@ def _corrupt_index_table(mutate):
     md = _index_table_metadata()
     rows = _mixed_rows(md, 1, [True])
     raw = rows[0].copy()
-    header = raw[: 8 * table.HEADER].view("<i8")
-    assert header[table.FQN_MODE] == table.FQN_INDICES
-    pos = 8 * table.HEADER + 8 * int(header[3])
+    header = raw[: 8 * write_result_table.HEADER].view("<i8")
+    assert header[write_result_table.FQN_MODE] == write_result_table.FQN_INDICES
+    pos = 8 * write_result_table.HEADER + 8 * int(header[3])
     entry = (
-        raw[pos : pos + 8 * table.COLUMNS * int(header[2])].view("<i8").reshape(-1, table.COLUMNS)
+        raw[pos : pos + 8 * write_result_table.COLUMNS * int(header[2])]
+        .view("<i8")
+        .reshape(-1, write_result_table.COLUMNS)
     )
     mutate(header, entry)
     return raw[None, :]
 
 
 CORRUPT_INDEX = {
-    "unknown-fqn-mode": lambda: _corrupt_index_table(lambda h, e: _set(h, table.FQN_MODE, 7)),
+    "unknown-fqn-mode": lambda: _corrupt_index_table(
+        lambda h, e: _set(h, write_result_table.FQN_MODE, 7)
+    ),
     "other-fqn-list": lambda: _corrupt_index_table(
-        lambda h, e: _set(h, table.FINGERPRINT, h[table.FINGERPRINT] ^ 1)
+        lambda h, e: _set(h, write_result_table.FINGERPRINT, h[write_result_table.FINGERPRINT] ^ 1)
     ),
     "fqn-entry-past-the-list": lambda: _corrupt_index_table(
-        lambda h, e: _set(e, (0, table.FQN), 2)
+        lambda h, e: _set(e, (0, write_result_table.FQN), 2)
     ),
-    "negative-fqn-entry": lambda: _corrupt_index_table(lambda h, e: _set(e, (0, table.FQN), -1)),
+    "negative-fqn-entry": lambda: _corrupt_index_table(
+        lambda h, e: _set(e, (0, write_result_table.FQN), -1)
+    ),
 }
 
 
@@ -362,7 +398,9 @@ def test_index_tables_write_like_the_dict_on(dumps, make, tmp_path):
     rows = _mixed_rows(md, 7, [True] * 7)
     from_tables = dumps(dataclasses.replace(md, storage_data=None), storage_rows=rows)
     assert from_tables == dumps(md)
-    assert all(t.fqn_mode == table.FQN_INDICES for t in table.decode_rows(rows))
+    assert all(
+        t.fqn_mode == write_result_table.FQN_INDICES for t in write_result_table.decode_rows(rows)
+    )
 
 
 @pytest.mark.parametrize("dumps", DUMPS)
@@ -374,15 +412,15 @@ def test_index_table_written_like_the_dict(dumps):
 
 def test_decoding_an_index_table_needs_its_fqn_list():
     md = _index_table_metadata()
-    (decoded,) = table.decode_rows(_mixed_rows(md, 1, [True]))
-    assert table.to_write_results(decoded, _fqn_list(md))
+    (decoded,) = write_result_table.decode_rows(_mixed_rows(md, 1, [True]))
+    assert write_result_table.to_write_results(decoded, _fqn_list(md))
     with pytest.raises(ValueError):
-        table.to_write_results(decoded)
+        write_result_table.to_write_results(decoded)
     with pytest.raises(ValueError):
-        table.to_write_results(decoded, table.FqnList.of(("b", "w")))
+        write_result_table.to_write_results(decoded, write_result_table.FqnList.of(("b", "w")))
 
 
 def test_encoding_an_fqn_the_list_lacks_is_unencodable():
     """A rank writing an fqn the coordinator's list lacks sends its write results another way."""
-    with pytest.raises(table.FqnNotListed):
-        table.encode([_result()], table.FqnList.of(["other"]))
+    with pytest.raises(write_result_table.FqnNotListed):
+        write_result_table.encode([_result()], write_result_table.FqnList.of(["other"]))

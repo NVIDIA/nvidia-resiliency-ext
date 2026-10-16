@@ -44,7 +44,7 @@ def dumps_table(
 ) -> bytes:
     """Pickle the Metadata that table was converted from, and return the bytes.
 
-    storage_data is written from storage_rows (the gathered write-result tables, see table.py) if
+    storage_data is written from storage_rows (the gathered write-result tables, see write_result_table.py) if
     given, else from the storage_data dict, else as None. The bytes equal pickler.dumps_table's; the
     extension reads the rows itself.
     """
@@ -54,7 +54,7 @@ def dumps_table(
 def dumps(metadata: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
     """Pickle metadata and return the bytes.
 
-    storage_data is written from storage_rows (the gathered write-result tables, see table.py) if
+    storage_data is written from storage_rows (the gathered write-result tables, see write_result_table.py) if
     given, else from metadata.storage_data. The bytes equal pickler.dumps's.
     """
     return dumps_table(StateDictTable.from_metadata(metadata), metadata.storage_data, storage_rows)

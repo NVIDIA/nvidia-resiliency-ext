@@ -31,7 +31,10 @@ from torch.distributed.checkpoint.storage import WriteResult
 from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_exception
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import state_dict_saver
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
+    write_result_table,
+    writer,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
     FileSystemWriterAsync,
@@ -60,7 +63,7 @@ def test_without_process_group(tmp_path):
     is_table, pickled = state_dict_saver._decode_payloads(rows)
     if writer.writes_tables():
         assert is_table.tolist() == [True] and pickled == {}
-        assert table.to_write_results(table.decode(rows[0])) == results(0)
+        assert write_result_table.to_write_results(write_result_table.decode(rows[0])) == results(0)
     else:
         assert is_table.tolist() == [False] and pickled == {0: results(0)}
 
@@ -70,7 +73,7 @@ def test_coordinator_tells_tables_from_pickles():
     the coordinator unpickles only the pickles, and gets every rank's write results back."""
     failure = _wrap_exception_for_gather(RuntimeError("worker failed"))
     payloads = [
-        table.encode(results(0)),
+        write_result_table.encode(results(0)),
         pickle.dumps(results(1)),
         pickle.dumps(failure),
         pickle.dumps([]),
@@ -83,7 +86,7 @@ def test_coordinator_tells_tables_from_pickles():
     assert sorted(pickled) == [1, 2, 3]
     assert pickled[1] == results(1) and pickled[3] == []
     assert _is_wrapped_exception(pickled[2])
-    assert table.to_write_results(table.decode(rows[0])) == results(0)
+    assert write_result_table.to_write_results(write_result_table.decode(rows[0])) == results(0)
 
 
 def _rows(payloads):
@@ -146,7 +149,7 @@ def test_write_metadata_from_an_index_table_and_a_pickle(tmp_path):
     )
     is_table, pickled = state_dict_saver._decode_payloads(rows)
     assert is_table.tolist() == [True, False]
-    assert table.decode(rows[0]).fqn_mode == table.FQN_INDICES
+    assert write_result_table.decode(rows[0]).fqn_mode == write_result_table.FQN_INDICES
     state_dict_saver._write_metadata(storage_writer, template, rows, is_table, pickled)
     assert _written(tmp_path) == {r.index: r.storage_data for r in results(0) + results(1)}
 
@@ -164,7 +167,7 @@ def test_write_metadata_with_an_overridden_finish(tmp_path, monkeypatch):
     monkeypatch.setattr(_OwnFinish, "finish", recording)
     storage_writer = _OwnFinish(tmp_path)
     storage_writer.set_up_storage_writer(True)
-    rows = _rows([table.encode(results(0)), pickle.dumps(results(1))])
+    rows = _rows([write_result_table.encode(results(0)), pickle.dumps(results(1))])
     is_table, pickled = state_dict_saver._decode_payloads(rows)
     template = MetadataTemplate.from_metadata(_two_rank_metadata())
     state_dict_saver._write_metadata(storage_writer, template, rows, is_table, pickled)
@@ -189,28 +192,28 @@ def test_overridden_finish_gets_the_write_results(tmp_path):
         (vars(r.index), r.size_in_bytes, r.storage_data) for r in rank_results
     ]
     payload = state_dict_saver._encode_write_results(rank_results, FileSystemWriterAsync(tmp_path))
-    assert (payload[:8] == table.MAGIC.to_bytes(8, "little")) == writer.writes_tables()
+    assert (payload[:8] == write_result_table.MAGIC.to_bytes(8, "little")) == writer.writes_tables()
 
 
 @pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
 def test_write_results_name_fqns_by_entry_in_the_fqn_list(tmp_path):
     """With an fqn list holding every fqn the rank writes, it sends an index table."""
     storage_writer = FileSystemWriterAsync(tmp_path)
-    fqn_list = table.FqnList.of(["r0.w", "other"])
+    fqn_list = write_result_table.FqnList.of(["r0.w", "other"])
     payload = state_dict_saver._encode_write_results(results(0), storage_writer, fqn_list)
-    sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
-    assert sent.fqn_mode == table.FQN_INDICES
-    assert table.to_write_results(sent, fqn_list) == results(0)
+    sent = write_result_table.decode(np.frombuffer(payload, dtype=np.uint8))
+    assert sent.fqn_mode == write_result_table.FQN_INDICES
+    assert write_result_table.to_write_results(sent, fqn_list) == results(0)
 
 
 @pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
 def test_an_fqn_missing_from_the_list_sends_fqn_strings(tmp_path):
     storage_writer = FileSystemWriterAsync(tmp_path)
-    fqn_list = table.FqnList.of(["other"])
+    fqn_list = write_result_table.FqnList.of(["other"])
     payload = state_dict_saver._encode_write_results(results(0), storage_writer, fqn_list)
-    sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
-    assert sent.fqn_mode == table.FQN_STRINGS
-    assert table.to_write_results(sent) == results(0)
+    sent = write_result_table.decode(np.frombuffer(payload, dtype=np.uint8))
+    assert sent.fqn_mode == write_result_table.FQN_STRINGS
+    assert write_result_table.to_write_results(sent) == results(0)
 
 
 @pytest.mark.skipif(not writer.writes_tables(), reason="needs the fast .metadata writer")
@@ -225,15 +228,15 @@ def test_write_results_no_table_holds_are_pickled_after_one_try(tmp_path, monkey
         )
     ]
     tries = []
-    encode = table.encode
+    encode = write_result_table.encode
 
     def counting(*args):
         tries.append(args)
         return encode(*args)
 
-    monkeypatch.setattr(table, "encode", counting)
+    monkeypatch.setattr(write_result_table, "encode", counting)
     storage_writer = FileSystemWriterAsync(tmp_path)
-    fqn_list = table.FqnList.of(["r0.w"])
+    fqn_list = write_result_table.FqnList.of(["r0.w"])
     payload = state_dict_saver._encode_write_results(unencodable, storage_writer, fqn_list)
     assert pickle.loads(payload) == unencodable and len(tries) == 1
 
@@ -255,13 +258,15 @@ def test_write_results_name_fqns_by_entry_iff_the_list_holds_them(
         )
         for i, fqn in enumerate(written)
     ]
-    fqn_list = table.FqnList.of(listed)
+    fqn_list = write_result_table.FqnList.of(listed)
     storage_writer = FileSystemWriterAsync(tmp_path_factory.mktemp("writer"))
     payload = state_dict_saver._encode_write_results(sent_results, storage_writer, fqn_list)
-    sent = table.decode(np.frombuffer(payload, dtype=np.uint8))
+    sent = write_result_table.decode(np.frombuffer(payload, dtype=np.uint8))
     holds_all = set(written) <= set(listed)
-    assert sent.fqn_mode == (table.FQN_INDICES if holds_all else table.FQN_STRINGS)
-    assert table.to_write_results(sent, fqn_list) == sent_results
+    assert sent.fqn_mode == (
+        write_result_table.FQN_INDICES if holds_all else write_result_table.FQN_STRINGS
+    )
+    assert write_result_table.to_write_results(sent, fqn_list) == sent_results
 
 
 def _coordinator_ranks(rank, init_file, ranks):
@@ -295,5 +300,5 @@ def test_an_undecodable_fqn_list_leaves_the_slot_empty(caplog):
     state_dict_saver._receive_fqn_list(pending, b"\x01\x00")
     assert pending._fqn_list_slot.fqn_list is None
     assert "can't decode the delivered fqn list" in caplog.text
-    state_dict_saver._receive_fqn_list(pending, table.FqnList.of(["w"]).encode())
-    assert pending._fqn_list_slot.fqn_list == table.FqnList.of(["w"])
+    state_dict_saver._receive_fqn_list(pending, write_result_table.FqnList.of(["w"]).encode())
+    assert pending._fqn_list_slot.fqn_list == write_result_table.FqnList.of(["w"])

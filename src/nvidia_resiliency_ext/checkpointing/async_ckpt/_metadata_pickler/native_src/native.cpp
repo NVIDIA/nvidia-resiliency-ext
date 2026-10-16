@@ -52,7 +52,7 @@ constexpr char STACK_GLOBAL = '\x93', MEMOIZE = '\x94', NONE = 'N';
 constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
-// Write-result tables, as table.py encodes them: little-endian int64s, header first.
+// Write-result tables, as write_result_table.py encodes them: little-endian int64s, header first.
 static_assert(std::endian::native == std::endian::little, "write-result tables are little-endian");
 constexpr int64_t TABLE_MAGIC = 0x314C42545852564E;  // the bytes "NVRXTBL1", read little-endian
 constexpr int64_t TABLE_VERSION = 2;
@@ -159,7 +159,7 @@ class WriteResultTable {
     [[nodiscard]] Int64s entry(size_t r) const { return entries_.subspan(COLUMNS * r, COLUMNS); }
 
     // Replace out's contents with the strings, as views into the row. Their bytes are not checked
-    // to be UTF-8: tables come from this job's ranks, which encoded them (see table.py).
+    // to be UTF-8: tables come from this job's ranks, which encoded them (see write_result_table.py).
     void split_strings(std::vector<std::string_view>& out) const {
         out.clear();
         std::string_view rest = blob_;

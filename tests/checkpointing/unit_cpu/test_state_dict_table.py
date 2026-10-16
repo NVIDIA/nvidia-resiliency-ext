@@ -40,7 +40,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
     pickler,
     state_dict_table,
-    table,
+    write_result_table,
     writer,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.opcodes import small_unpickle
@@ -355,7 +355,7 @@ def test_tables_are_immutable():
 def _storage_rows(metadata) -> np.ndarray:
     """Encode metadata.storage_data as gathered write-result tables: one rank's table, in one
     row."""
-    payload = table.encode(
+    payload = write_result_table.encode(
         [WriteResult(index, info.length, info) for index, info in metadata.storage_data.items()]
     )
     return np.frombuffer(payload + bytes(-len(payload) % 8), dtype=np.uint8)[None, :]
@@ -473,10 +473,10 @@ def _encode(part, state_dict_table, as_indices):
     results = [WriteResult(index, info.length, info) for index, info in part]
     if as_indices:
         try:
-            return table.encode(results, state_dict_table.fqn_list)
-        except table.Unencodable:
+            return write_result_table.encode(results, state_dict_table.fqn_list)
+        except write_result_table.Unencodable:
             pass  # a rank writing an fqn the list lacks sends strings
-    return table.encode(results)
+    return write_result_table.encode(results)
 
 
 def _random_rows(metadata, state_dict_table, data):
@@ -494,7 +494,7 @@ def _random_rows(metadata, state_dict_table, data):
             _encode(part, state_dict_table, data.draw(st.booleans(), label="as indices"))
             for part in parts
         ]
-    except table.Unencodable:
+    except write_result_table.Unencodable:
         return None
     width = -(-max(map(len, payloads)) // 8) * 8
     rows = np.zeros((len(payloads), width), dtype=np.uint8)

@@ -29,7 +29,10 @@ from torch.distributed.checkpoint.storage import WriteResult
 from torch.distributed.checkpoint.utils import _DistWrapper
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import state_dict_saver
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import table, writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
+    write_result_table,
+    writer,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     CheckpointMetadataCache,
@@ -91,7 +94,7 @@ def modes(monkeypatch):
 
     def recording(*args, **kwargs):
         payload = encode(*args, **kwargs)
-        recorded.append(table.decode(np.frombuffer(payload, dtype=np.uint8)).fqn_mode)
+        recorded.append(write_result_table.decode(np.frombuffer(payload, dtype=np.uint8)).fqn_mode)
         return payload
 
     monkeypatch.setattr(state_dict_saver, "_encode_write_results", recording)
@@ -115,9 +118,9 @@ def test_build_then_reuse(tmp_path_dist_ckpt, modes):
             save_state_dict_async_finalize(plan(ckpt_dir, cache, reused))
             assert_written(ckpt_dir)
     if torch.distributed.get_rank() == 0:
-        assert modes == [table.FQN_INDICES] * 2
+        assert modes == [write_result_table.FQN_INDICES] * 2
     else:
-        assert modes == [table.FQN_STRINGS, table.FQN_INDICES]
+        assert modes == [write_result_table.FQN_STRINGS, write_result_table.FQN_INDICES]
 
 
 @NEEDS_TABLES
@@ -138,7 +141,7 @@ def test_failed_build_still_delivers(tmp_path_dist_ckpt, modes, monkeypatch):
     with TempNamedDir(tmp_path_dist_ckpt / "after_failed_build") as ckpt_dir:
         save_state_dict_async_finalize(plan(ckpt_dir, cache, reused=True))
         assert_written(ckpt_dir)
-    assert modes[-1] == table.FQN_INDICES
+    assert modes[-1] == write_result_table.FQN_INDICES
 
 
 @NEEDS_TABLES
@@ -155,7 +158,7 @@ def test_legacy_finalize_with_cache(tmp_path_dist_ckpt, modes):
             with TempNamedDir(tmp_path_dist_ckpt / f"legacy_{i}") as ckpt_dir:
                 save_state_dict_async_finalize(*plan(ckpt_dir, cache, reused))
                 assert_written(ckpt_dir)
-    assert modes == [table.FQN_STRINGS] * 2
+    assert modes == [write_result_table.FQN_STRINGS] * 2
 
 
 @NEEDS_TABLES

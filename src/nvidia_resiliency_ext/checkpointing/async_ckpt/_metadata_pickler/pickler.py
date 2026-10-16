@@ -45,7 +45,7 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from . import table
+from . import write_result_table
 from .opcodes import small_pickle
 from .state_dict_table import BYTES, OTHER, STATE_DICT_METADATA, STORAGE_DATA, StateDictTable
 
@@ -188,12 +188,12 @@ class _MetadataPickler:
         self,
         state_dict_table: StateDictTable,
         storage_data: Optional[dict] = None,
-        tables: Optional[List[table.WriteResultTable]] = None,
+        tables: Optional[List[write_result_table.WriteResultTable]] = None,
     ) -> bytes:
         """Pickle the Metadata that state_dict_table was converted from, and return the bytes.
 
         The pickle is a NEWOBJ of Metadata built from its fields, in order. storage_data is
-        written from tables (decoded write-result tables, see table.py) if given, else from the
+        written from tables (decoded write-result tables, see write_result_table.py) if given, else from the
         storage_data dict, else as None.
         """
         self._prelude()
@@ -362,7 +362,7 @@ class _MetadataPickler:
         out.append(EMPTY_DICT)
         count = 0
         for t in tables:
-            fqns = table.fqns_of(t, state_dict_table.fqn_list)
+            fqns = write_result_table.fqns_of(t, state_dict_table.fqn_list)
             strings, offsets, pos = t.strings, t.offsets.tolist(), 0
             for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
                 if count % _BATCH == 0:
@@ -370,10 +370,10 @@ class _MetadataPickler:
                         out.append(SETITEMS)
                     out.append(MARK)
                 count += 1
-                if flags & table.FLAG_OFFSET_SIZE:
+                if flags & write_result_table.FLAG_OFFSET_SIZE:
                     off = K_OFFSET + self.size_of(tuple(offsets[pos : pos + ndim]))
                     pos += ndim
-                elif flags & table.FLAG_OFFSET:
+                elif flags & write_result_table.FLAG_OFFSET:
                     off = K_OFFSET + NONE
                 else:
                     off = b""
@@ -381,7 +381,7 @@ class _MetadataPickler:
                     INDEX_START
                     + string(fqns[fqn])
                     + K_INDEX
-                    + (int_(index) if flags & table.FLAG_INDEX else NONE)
+                    + (int_(index) if flags & write_result_table.FLAG_INDEX else NONE)
                     + off
                     + END
                     + INFO_START
@@ -399,7 +399,7 @@ class _MetadataPickler:
 def dumps(metadata: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
     """Pickle metadata and return the bytes.
 
-    storage_data is written from storage_rows (the gathered write-result tables, see table.py) if
+    storage_data is written from storage_rows (the gathered write-result tables, see write_result_table.py) if
     given, else from metadata.storage_data. The bytes equal native.dumps's.
     """
     return dumps_table(StateDictTable.from_metadata(metadata), metadata.storage_data, storage_rows)
@@ -412,11 +412,11 @@ def dumps_table(
 ) -> bytes:
     """Pickle the Metadata that state_dict_table was converted from, and return the bytes.
 
-    storage_data is written from storage_rows (the gathered write-result tables, see table.py) if
+    storage_data is written from storage_rows (the gathered write-result tables, see write_result_table.py) if
     given, else from the storage_data dict, else as None. The bytes equal native.dumps_table's. A
     StateDictTable is checked when it is created, so it is read without further checks.
     """
     if not isinstance(state_dict_table, StateDictTable):
         raise TypeError(f"expected StateDictTable, got {type(state_dict_table).__name__}")
-    tables = None if storage_rows is None else table.decode_rows(storage_rows)
+    tables = None if storage_rows is None else write_result_table.decode_rows(storage_rows)
     return _MetadataPickler().dumps(state_dict_table, storage_data, tables)
