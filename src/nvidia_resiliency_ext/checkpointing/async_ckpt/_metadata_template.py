@@ -49,10 +49,10 @@ class MetadataTemplate:
 
     @classmethod
     def from_metadata(cls, metadata: Metadata) -> "MetadataTemplate":
-        """Make the template of metadata: without its storage_data, and with only Metadata's fields
-        (not e.g. the local plans older versions attach).
+        """Make the template of metadata: without its storage_data, and with only Metadata's fields,
+        so that attributes a planner or an older nvrx set (e.g. all_local_plans) aren't written.
 
-        As a table, it holds no reference to metadata's objects. Otherwise it shares its
+        As a table, it shares only the fqn strings of metadata's objects. Otherwise it shares its
         state_dict_metadata, which must then not be modified.
         """
         metadata = dataclasses.replace(metadata, storage_data=None)
