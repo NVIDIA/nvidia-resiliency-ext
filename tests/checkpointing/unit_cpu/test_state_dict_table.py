@@ -445,6 +445,24 @@ def test_dump_metadata_of_table_falls_back_to_python(caplog):
     assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(metadata))
 
 
+@NEEDS_NATIVE
+def test_dump_metadata_of_a_metadata_falls_back_to_python(caplog, monkeypatch):
+    """A Metadata goes through the same writers as a table: if the native one fails, the Python
+    one writes it."""
+    metadata = writer._sample_metadata()
+    assert writer._selected_writer() is writer.native  # selected before it starts failing
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(writer.native, "dumps_table", failing)
+    buf = io.BytesIO()
+    with caplog.at_level(logging.WARNING, logger=writer.__name__):
+        writer.dump_metadata(metadata, buf)
+    assert "failed to write" in caplog.text
+    assert buf.getvalue() == pickler.dumps(metadata)
+
+
 def test_dump_metadata_of_table_without_a_writer(monkeypatch):
     """dump_metadata writes the Metadata built from the table when no writer can write it."""
     metadata = writer._sample_metadata()
