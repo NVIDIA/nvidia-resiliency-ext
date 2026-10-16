@@ -690,8 +690,15 @@ def _fqn_list_to_deliver(pending: PendingSave) -> bytes:
 
 
 def _receive_fqn_list(pending: PendingSave, delivered: bytes) -> None:
-    """Keep the fqn list the coordinator delivered in the slot of the save's metadata."""
-    pending._fqn_list_slot.fqn_list = FqnList.decode(delivered)
+    """Keep the fqn list the coordinator delivered in the slot of the save's metadata.
+
+    If it can't be decoded, leave the slot empty, so that this rank sends fqn strings, rather than
+    raise on this rank only.
+    """
+    try:
+        pending._fqn_list_slot.fqn_list = FqnList.decode(delivered)
+    except Exception:
+        logger.error("can't decode the delivered fqn list; sending fqn strings", exc_info=True)
 
 
 def _write_metadata(

@@ -285,3 +285,15 @@ def test_global_coordinator_rank_of_a_group(tmp_path):
         _coordinator_ranks, args=(tmp_path / "init", ranks), nprocs=2, join=True
     )
     assert dict(ranks) == {1: 1}
+
+
+def test_an_undecodable_fqn_list_leaves_the_slot_empty(caplog):
+    """A rank that can't decode the delivered list sends fqn strings instead of raising alone."""
+    pending = state_dict_saver.PendingSave(
+        None, None, None, _fqn_list_slot=state_dict_saver._FqnListSlot()
+    )
+    state_dict_saver._receive_fqn_list(pending, b"\x01\x00")
+    assert pending._fqn_list_slot.fqn_list is None
+    assert "can't decode the delivered fqn list" in caplog.text
+    state_dict_saver._receive_fqn_list(pending, table.FqnList.of(["w"]).encode())
+    assert pending._fqn_list_slot.fqn_list == table.FqnList.of(["w"])
