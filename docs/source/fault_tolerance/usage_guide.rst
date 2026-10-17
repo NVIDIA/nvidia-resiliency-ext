@@ -113,7 +113,8 @@ Endpoint behavior:
 * If the gRPC client dependencies are unavailable, the UDS socket is missing, or a
   connectivity error occurs, NVRx treats the external check as unavailable and does
   not fail the job for that reason.
-* Explicit failures reported by the service mark the node unhealthy.
+* Only explicit failed checks reported in valid service output mark the node
+  unhealthy.
 
 Compatible service contract:
 
@@ -121,14 +122,16 @@ Compatible service contract:
   ``nvhcd`` protobuf API and listen on the configured UDS.
 * NVRx calls the service with the configured health check arguments, which
   default to ``["--no-slurm", "--group", "prolog", "epilog", "logs", "gpu"]``.
-* To report an unhealthy node, return ``success=false``. For successful
-  responses, NVRx treats JSON in ``output`` with a non-empty ``failed_checks``
-  array as unhealthy. ``fail_count`` is informational and may include checks
-  moved to ``failed_checks_ignored`` by site policy.
+* To report an unhealthy node, return JSON in ``output`` with a non-empty
+  ``failed_checks`` array. ``success`` and ``exit_code`` describe execution of
+  the health check and are logged for diagnostics; they do not independently
+  mark the node unhealthy. ``fail_count`` is informational and may include
+  checks moved to ``failed_checks_ignored`` by site policy.
 * NVRx ignores unavailable or unusable health check signals. A missing endpoint,
   missing gRPC dependency, connectivity error, non-JSON ``output``, missing
-  ``failed_checks``, or invalid ``failed_checks`` value in a successful response
-  is logged and does not mark the node unhealthy.
+  ``failed_checks``, or invalid ``failed_checks`` value is logged and does not
+  mark the node unhealthy, including when health check execution reports an
+  error or timeout.
 
 Example ``nvhcd`` configuration for BCM:
 
