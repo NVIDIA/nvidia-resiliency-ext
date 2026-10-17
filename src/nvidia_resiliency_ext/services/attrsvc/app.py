@@ -252,7 +252,7 @@ def create_app(cfg: Settings) -> FastAPI:
             default=None, description="Indentation level (overrides pretty)"
         ),
     ) -> Response:
-        """Get all tracked jobs (pending, single-file, and splitlog modes)."""
+        """Get all tracked jobs and attempts."""
         adapter: AttributionHttpAdapter = request.app.state.attribution
         jobs = adapter.get_all_jobs()
         return json_response(jobs, pretty=pretty, indent=indent)
@@ -264,13 +264,7 @@ def create_app(cfg: Settings) -> FastAPI:
     )
     @limiter.limit(cfg.RATE_LIMIT_SUBMIT)
     async def submit_analysis(request: Request, req: SubmitRequest) -> LogAnalyzerSubmitResult:
-        """
-        Submit a log file for analysis tracking.
-
-        If job_id is provided and LOGS_DIR is found in the slurm output,
-        split logging mode is enabled. In split logging mode, the service tracks multiple
-        cycles and analyzes log files from the LOGS_DIR folder.
-        """
+        """Register a log attempt and signal its requested analysis intent."""
         adapter: AttributionHttpAdapter = request.app.state.attribution
         result = await adapter.submit_log(
             req.log_path,
@@ -325,12 +319,12 @@ def create_app(cfg: Settings) -> FastAPI:
         ),
         file: str | None = Query(
             default=None,
-            description="Filename for splitlog mode. Use to select specific log file.",
+            description="Legacy splitlog selector; unsupported by the direct backend.",
         ),
         wl_restart: int | None = Query(
             default=None,
             ge=0,
-            description="Workload restart index within file (0-indexed). See spec Section 17.",
+            description="Legacy restart selector; unsupported by the direct backend.",
         ),
         wait: bool = Query(
             default=True,
@@ -340,19 +334,11 @@ def create_app(cfg: Settings) -> FastAPI:
         ),
     ) -> LogAnalysisCycleResult | LogAnalysisSplitlogResult:
         """
-        Analyze a log file and return attribution results.
+        Return the lifecycle state or result for a POST-registered attempt.
 
-        For split logging mode jobs (where LOGS_DIR was found in the slurm output):
-        - Use file= to select a specific log file by filename
-        - Use wl_restart= to select a specific workload restart within that file
-        - Response includes mode="splitlog", sched_restarts count, and log_file path
-
-        For single-file mode jobs:
-        - The file parameter is ignored
-        - Use wl_restart= to select a specific workload restart within the file
-        - Response includes status="completed"
-
-        See spec Section 10 and 17 for GET flow details.
+        The direct Restart Agent backend supports ``log_path`` and ``wait``.
+        Terminal POST starts analysis; GET only probes or waits for that work.
+        The legacy ``file`` and ``wl_restart`` selectors are rejected.
         """
         adapter: AttributionHttpAdapter = request.app.state.attribution
         result = await adapter.analyze_log(log_path, file, wl_restart, wait=wait)

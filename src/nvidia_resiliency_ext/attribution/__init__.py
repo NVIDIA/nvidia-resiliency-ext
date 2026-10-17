@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         run_attribution_pipeline,
     )
     from .orchestration.client_response import (
+        AttrSvcResponseValidationError,
         AttrSvcResult,
         parse_attrsvc_response,
         recommendation_should_stop,
@@ -111,6 +112,7 @@ _EXPORTS = {
     "TTL_TERMINATED_SECONDS": ".orchestration.config",
     "ErrorCode": ".orchestration.config",
     "AttrSvcResult": ".orchestration.client_response",
+    "AttrSvcResponseValidationError": ".orchestration.client_response",
     "parse_attrsvc_response": ".orchestration.client_response",
     "recommendation_should_stop": ".orchestration.client_response",
     "FileInfo": ".orchestration.job",
@@ -158,6 +160,7 @@ __all__ = [
     "LogAnalyzerConfig",
     "AttributionRecommendation",
     "AttrSvcResult",
+    "AttrSvcResponseValidationError",
     "parse_attrsvc_response",
     "recommendation_should_stop",
     "LogAnalyzerError",

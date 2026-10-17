@@ -26,6 +26,13 @@ from .types import (
 )
 
 _SPLITLOG_MODE = "splitlog"
+_ATTRSVC_INCOMPLETE_STATUSES = frozenset({"pending", "in_flight"})
+_ATTRSVC_COMPLETED_STATUS = "completed"
+_ATTRSVC_LIFECYCLE_STATUSES = _ATTRSVC_INCOMPLETE_STATUSES | {_ATTRSVC_COMPLETED_STATUS}
+
+
+class AttrSvcResponseValidationError(ValueError):
+    """Raised when an attrsvc response violates the client wire contract."""
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,11 @@ class AttrSvcResult:
     analyzed_log_file: str = ""
     wl_restart: Any = None
     sched_restarts: Any = None
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether attrsvc has finished analyzing the submitted log."""
+        return self.status == _ATTRSVC_COMPLETED_STATUS
 
     @property
     def recommendation_reason(self) -> str:
@@ -126,12 +138,30 @@ class AttrSvcResult:
 def parse_attrsvc_response(payload: Any, *, log_path: str | None = None) -> AttrSvcResult:
     """Parse attrsvc response JSON into a stable client contract.
 
-    Callers should use ``recommendation`` and ``should_stop`` instead of peeking at
-    backend-specific fields under ``result``.
+    The parser owns validation of the attrsvc response envelope. Callers should
+    use the normalized lifecycle, ``recommendation``, and ``should_stop`` instead
+    of interpreting wire fields or backend-specific data under ``result``.
+
+    Raises:
+        AttrSvcResponseValidationError: If the payload is not an object or
+            contains an invalid lifecycle status.
     """
-    body = payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        raise AttrSvcResponseValidationError("attrsvc response must be a JSON object")
+
+    body = payload
+    raw_status = body.get(RESP_STATUS)
+    if not isinstance(raw_status, str) or not raw_status.strip():
+        raise AttrSvcResponseValidationError(
+            "attrsvc response requires a non-empty lifecycle status"
+        )
+    status = raw_status.strip().lower()
+    if status not in _ATTRSVC_LIFECYCLE_STATUSES:
+        raise AttrSvcResponseValidationError(
+            f"attrsvc response has unsupported lifecycle status: {raw_status!r}"
+        )
+
     result = body.get(RESP_RESULT, payload)
-    status = _string_value(body.get(RESP_STATUS)) or "completed"
     recommendation = AttributionRecommendation.from_payload(body.get("recommendation"))
     if recommendation is None:
         recommendation = AttributionRecommendation()
