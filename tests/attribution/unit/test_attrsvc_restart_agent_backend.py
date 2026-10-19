@@ -4,9 +4,11 @@
 """Behavioral tests for attrsvc's direct Restart Agent backend."""
 
 import asyncio
+import json
 import logging
 import threading
 import time
+from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
@@ -1355,3 +1357,80 @@ def test_shutdown_waits_for_a_queued_notification(tmp_path):
     backend.shutdown()
 
     assert delivered.is_set()
+
+
+def test_an_evicted_entry_still_gets_its_alert(tmp_path):
+    """A queued alert must survive the entry being trimmed from the table.
+
+    Notifications carried only a key, and a later completion can evict the
+    entry through ``_trim_completed_results`` while the alert is still queued.
+    The lookup then found nothing and the alert vanished with no trace.
+    """
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime, max_total_records=1)
+    sent = []
+    backend._slack_notifier = SimpleNamespace(
+        enabled=True, notify=lambda identity, result: sent.append(identity) or True
+    )
+    backend._public_result = lambda entry: SimpleNamespace(
+        result={}, status="completed", recommendation={"action": "STOP", "reason": "", "source": ""}
+    )
+
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    # Occupy every notification worker so the alert is still queued, not
+    # running, when the entry is evicted. Otherwise it delivers immediately
+    # and the race never happens.
+    release = threading.Event()
+    busy = [
+        backend._notify_executor.submit(release.wait, 30)
+        for _ in range(backend._notify_executor._max_workers)
+    ]
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        assert asyncio.run(run()).status == "completed"
+        # Evict everything, as a later completion would through
+        # _trim_completed_results, while the alert is still queued.
+        with backend._lock:
+            backend._entries.clear()
+            backend._path_index.clear()
+        release.set()
+        for f in busy:
+            f.result(timeout=10)
+        backend.shutdown()  # drains the notification pool
+        assert len(sent) == 1, "the alert was dropped when its entry went away"
+        assert sent[0].job_id == "job-7"
+    finally:
+        release.set()
+        with suppress(Exception):
+            backend.shutdown()
+
+
+def test_a_result_is_persisted_even_if_the_alert_cannot_be_scheduled(tmp_path):
+    # Scheduling ran before the save, so a notification pool that was already
+    # closed raised and took the save down with it, losing the result.
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    cache = tmp_path / "cache.json"
+    backend._cache_file = str(cache)
+    backend._notify_executor.shutdown(wait=True)  # as shutdown() leaves it
+
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        assert asyncio.run(run()).status == "completed"
+        assert cache.exists(), "the completed result was never written"
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        assert [e["job_id"] for e in saved["entries"]] == ["job-7"]
+    finally:
+        backend.shutdown()

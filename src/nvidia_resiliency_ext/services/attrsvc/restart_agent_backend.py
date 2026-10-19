@@ -982,10 +982,10 @@ class RestartAgentServiceBackend:
                 terminal_total_s=completed_total_s,
                 route_count=completed_route_count,
             )
-            # Off-thread: GET /logs awaits this future, and a slow Slack call
-            # would hold back advice that is already computed.
-            self._notify_executor.submit(self._notify_slack, key)
+            # Persist before alerting: durability must not depend on whether a
+            # notification could be scheduled.
             self._save_cache(self._cache_file)
+            self._schedule_notification(key)
         except Exception as exc:
             with self._lock:
                 self._execution_errors += 1
@@ -1009,18 +1009,34 @@ class RestartAgentServiceBackend:
                 error_classification=type(exc).__name__,
             )
 
-    def _notify_slack(self, key: Hashable) -> None:
+    def _schedule_notification(self, key: Hashable) -> None:
+        """Hand a completed analysis to the notification pool.
+
+        The entry is passed by reference rather than by key: a later completion
+        can evict it from the table through ``_trim_completed_results`` while
+        the alert is still queued, and a key lookup would then find nothing and
+        drop the notification silently.
+        """
+        with self._lock:
+            entry = self._entries.get(key)
+        if entry is None:
+            return
+        try:
+            self._notify_executor.submit(self._notify_slack, entry)
+        except RuntimeError:
+            # Shutting down. The result is already persisted; the alert is
+            # best effort and must not surface as an analysis failure.
+            logger.debug("Slack notification not scheduled for %s: shutting down", entry.log_path)
+
+    def _notify_slack(self, entry: "_AttemptExecution") -> None:
         """Alert on a completed terminal analysis, never failing the analysis.
 
         Runs off the public result so the message matches exactly what a client
         would read back from ``GET /logs``.
         """
-        if not self._slack_notifier.enabled:
+        if entry is None or not self._slack_notifier.enabled:
             return
         with self._lock:
-            entry = self._entries.get(key)
-            if entry is None:
-                return
             job_id = entry.job_id or ""
             user = entry.user or ""
             log_path = entry.log_path

@@ -332,12 +332,18 @@ class DecisionRationale:
     def empty(self) -> bool:
         return not (self.rule or self.category_id is not None or self.retry_outlook)
 
-    def headline(self) -> str:
+    def headline(self, action: str = "") -> str:
         """One line naming what actually drove the decision.
 
         Ordered by what overrode what: a budget that ran out beats the category,
         because L4 stops on an exhausted ledger whatever L1 concluded - the live
         case being a guard forcing STOP over a category that said RESTART.
+
+        ``action`` is the decision actually taken. When the category called for
+        something else, a policy rule overrode it, and crediting the category
+        would print a reason that contradicts the decision beside it - a STOP
+        category named as the reason for a RESTART. The category is still
+        reported in the detail as the model's assessment.
         """
         if self.other_exhausted:
             ledger = self.other_exhausted[0]
@@ -351,13 +357,23 @@ class DecisionRationale:
         if self.budget_exhausted and self.rule:
             budget = "" if self.allowed_retries is None else f" ({self.allowed_retries})"
             return f"`{self.rule}` budget exhausted{budget}"
+        decided = normalize_recommendation_action(action) if action else ""
+        category_was_followed = not (
+            decided and self.category_decision and self.category_decision != decided
+        )
+        if self.category_id and category_was_followed:
+            name = f" — {self.category_name}" if self.category_name else ""
+            return f"category {self.category_id}{name}"
+        if self.category_id == 0 and category_was_followed:
+            return "no listed category matched"
+        if self.rule:
+            overridden = ""
+            if self.category_id and not category_was_followed:
+                overridden = f" (over category {self.category_id} `{self.category_decision}`)"
+            return f"policy `{self.rule}`{overridden}"
         if self.category_id:
             name = f" — {self.category_name}" if self.category_name else ""
             return f"category {self.category_id}{name}"
-        if self.category_id == 0:
-            return "no listed category matched"
-        if self.rule:
-            return f"policy `{self.rule}`"
         return ""
 
     def as_lines(self) -> list[str]:
@@ -697,7 +713,7 @@ def format_summary(
         header += f" _(source: {result.recommendation.source})_"
 
     lines = [header, identity.as_line()]
-    headline = decision_rationale(result.result).headline()
+    headline = decision_rationale(result.result).headline(result.recommendation.action)
     if headline:
         lines.append(f"*Why {result.recommendation.action}:* {headline}")
     lines.append(f"*Log path:*\n```{result.log_path or ''}```")
@@ -765,10 +781,21 @@ class SlackNotifier:
     MAX_TRACKED_RUNS = 512
 
     def _thread_key(self, identity: "AnalysisIdentity") -> str:
-        """Identify the run a cycle belongs to, or "" when it cannot be known."""
-        run = (identity.run_name or "").strip()
+        """Identify the run a cycle belongs to, or "" when it cannot be known.
+
+        The job ID carries the identity, not the run name: run names come from
+        the log filename and are the experiment's, so two separate submissions
+        of one experiment share it (``..._phase1_v0_4621054_...`` and
+        ``..._4621055_...`` both yield ``..._phase1_v0``) and would otherwise
+        collapse into one thread. Array task suffixes are dropped, because the
+        tasks of one array are one run.
+        """
         job = (identity.job_id or "").strip()
-        return run or job
+        base = job.split("_", 1)[0].split("+", 1)[0].strip()
+        run = (identity.run_name or "").strip()
+        if base:
+            return f"{run}/{base}" if run else base
+        return run
 
     def _remembered_thread(self, key: str) -> Optional[str]:
         if not key:

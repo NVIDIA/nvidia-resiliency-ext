@@ -852,7 +852,7 @@ def test_backend_notifies_on_terminal_completion(monkeypatch):
         _public_result=lambda e: public,
     )
 
-    RestartAgentServiceBackend._notify_slack(backend, "k")
+    RestartAgentServiceBackend._notify_slack(backend, entry)
 
     assert len(sent) == 1
     identity, result = sent[0]
@@ -874,15 +874,16 @@ def test_backend_notification_failure_does_not_break_analysis():
         def notify(self, identity, result):
             raise RuntimeError("slack is down")
 
+    entry = SimpleNamespace(job_id="1", user="u", log_path="/x.log", cycle_id=None)
     backend = SimpleNamespace(
         _slack_notifier=_Exploding(),
         _lock=threading.RLock(),
-        _entries={"k": SimpleNamespace(job_id="1", user="u", log_path="/x.log", cycle_id=None)},
+        _entries={"k": entry},
         _public_result=lambda e: SimpleNamespace(result={}, status="completed", recommendation={}),
     )
 
     # Must return rather than propagate into the analysis path.
-    RestartAgentServiceBackend._notify_slack(backend, "k")
+    RestartAgentServiceBackend._notify_slack(backend, entry)
 
 
 def test_backend_skips_notification_when_slack_is_disabled():
@@ -891,14 +892,15 @@ def test_backend_skips_notification_when_slack_is_disabled():
     )
 
     called = []
+    entry = SimpleNamespace(job_id="1", user="u", log_path="/x.log", cycle_id=None)
     backend = SimpleNamespace(
         _slack_notifier=SimpleNamespace(enabled=False, notify=lambda *a: called.append(a)),
         _lock=threading.RLock(),
-        _entries={},
+        _entries={"k": entry},
         _public_result=lambda e: None,
     )
 
-    RestartAgentServiceBackend._notify_slack(backend, "k")
+    RestartAgentServiceBackend._notify_slack(backend, entry)
     assert called == []
 
 
@@ -1180,17 +1182,16 @@ def test_backend_passes_the_cycle_to_the_alert():
     )
 
     sent = []
+    entry = SimpleNamespace(
+        job_id="4103814_0",
+        user="u",
+        log_path="/x/logs/run_4103814_date_x_cycle2.log",
+        cycle_id=2,
+    )
     backend = SimpleNamespace(
         _slack_notifier=SimpleNamespace(enabled=True, notify=lambda i, r: sent.append(i) or True),
         _lock=threading.RLock(),
-        _entries={
-            "k": SimpleNamespace(
-                job_id="4103814_0",
-                user="u",
-                log_path="/x/logs/run_4103814_date_x_cycle2.log",
-                cycle_id=2,
-            )
-        },
+        _entries={"k": entry},
         _public_result=lambda e: SimpleNamespace(
             result={},
             status="completed",
@@ -1198,7 +1199,7 @@ def test_backend_passes_the_cycle_to_the_alert():
         ),
     )
 
-    RestartAgentServiceBackend._notify_slack(backend, "k")
+    RestartAgentServiceBackend._notify_slack(backend, entry)
 
     assert sent[0].cycle_id == 2
     assert "cycle 2" in sent[0].label
@@ -1405,3 +1406,78 @@ def test_the_environment_still_applies_when_settings_are_silent(monkeypatch):
     config = SlackConfig.from_settings(_Settings())
     assert config.notify_actions == frozenset({"STOP", "RESTART"})
     assert config.email_domain == "nvidia.com"
+
+
+# ─── two jobs of one experiment are two runs ───
+
+
+def test_two_jobs_of_one_experiment_do_not_share_a_thread(monkeypatch):
+    # Run names come from the log filename and belong to the experiment, so
+    # 4621054 and 4621055 of one recipe both resolve to the same run name.
+    # Threading on that alone files the second job under the first job's alert.
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    stem = "nemotron4_ultra_60t_phase1_v0"
+
+    for job in ("4621054", "4621055"):
+        log = f"/l/{stem}_{job}_date_26-10-19_time_00-08-19_cycle0.log"
+        notifier.notify(
+            AnalysisIdentity(
+                job_id=job, run_name=run_name_from_log_path(log, job), user="u", cycle_id=0
+            ),
+            parse_attrsvc_response(_response(), log_path=log),
+        )
+
+    assert run_name_from_log_path(f"/l/{stem}_4621054_date_x_cycle0.log", "4621054") == stem
+    assert len(client.summaries) == 2, "each job keeps its own thread"
+
+
+def test_array_tasks_of_one_job_share_a_thread(monkeypatch):
+    # The tasks of one array are one run, so the suffix is not part of identity.
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    for task in ("4621054_0", "4621054_1"):
+        notifier.notify(
+            AnalysisIdentity(job_id=task, run_name="run", user="u", cycle_id=0),
+            parse_attrsvc_response(_response(), log_path="/l/run_4621054_date_x_cycle0.log"),
+        )
+
+    assert len(client.summaries) == 1
+
+
+# ─── the reason has to match the decision ───
+
+
+def test_a_policy_that_overrode_the_category_is_named_as_the_reason():
+    # Otherwise the channel reads "Why RESTART: category 26 - CUDA OOM...",
+    # quoting a STOP category as the reason for a restart.
+    payload = _policy_payload(
+        applied_policy_context={"policy_context_id": "port_bind_confirmation_retry"},
+        effective_policy={"rule": "port_bind_confirmation_retry", "allowed_retries": 3},
+    )
+    payload["l1_assessment"]["category_selection"]["category_id"] = 26
+
+    line = slack_mod.decision_rationale(payload).headline("RESTART")
+
+    assert "policy `port_bind_confirmation_retry`" in line
+    assert "over category 26" in line
+    assert not line.startswith("category")
+
+
+def test_a_category_the_decision_followed_is_still_the_reason():
+    payload = _policy_payload()
+    payload["l1_assessment"]["category_selection"]["category_id"] = 13
+
+    line = slack_mod.decision_rationale(payload).headline("RESTART")
+
+    assert line.startswith("category 13")
+
+
+def test_an_exhausted_budget_still_outranks_everything():
+    payload = _policy_payload(
+        exhausted_by=["job_no_progress_guard"],
+        job_no_progress_guard={"matching_prior_attempts": 3, "allowed_retries": 3},
+        retry_budget_exhausted=True,
+    )
+    assert "job_no_progress_guard" in slack_mod.decision_rationale(payload).headline("STOP")
