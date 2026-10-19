@@ -1434,3 +1434,41 @@ def test_a_result_is_persisted_even_if_the_alert_cannot_be_scheduled(tmp_path):
         assert [e["job_id"] for e in saved["entries"]] == ["job-7"]
     finally:
         backend.shutdown()
+
+
+def test_a_log_that_grows_during_the_analysis_is_not_cached(tmp_path):
+    """The verdict describes the bytes the analyzer read, not later ones.
+
+    Stat'ing only after the run records the log's newer identity beside a
+    result drawn from the earlier content, so the staleness check passes on
+    restart and a verdict for different bytes is served as current.
+    """
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    class _GrowingRuntime(_FakeRuntime):
+        def analyze(self, request, **kwargs):
+            # The job is still running and appends while we are analyzing.
+            with open(request.log_path, "a", encoding="utf-8") as handle:
+                handle.write("another rank failed after we started reading\n")
+            return super().analyze(request, **kwargs)
+
+        def analyze_prepared(self, request, prepared, **kwargs):
+            with open(request.log_path, "a", encoding="utf-8") as handle:
+                handle.write("another rank failed after we started reading\n")
+            return super().analyze_prepared(request, prepared, **kwargs)
+
+    backend = _backend(tmp_path, _GrowingRuntime())
+    cache = tmp_path / "cache.json"
+    backend._cache_file = str(cache)
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        assert asyncio.run(run()).status == "completed"
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        assert saved["entries"] == [], "a verdict for superseded bytes was cached"
+    finally:
+        backend.shutdown()

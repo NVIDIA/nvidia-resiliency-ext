@@ -924,6 +924,11 @@ class RestartAgentServiceBackend:
                             current.precompute_future = None
                             current.next_poll_at = None
                     accumulator = None
+            # Identity of the source as the analyzer is about to read it. The
+            # stat after the run is not enough on its own: a log that grew
+            # while the analysis was in flight would be recorded with its
+            # later identity beside a verdict drawn from the earlier bytes.
+            identity_before = self._file_identity(request.log_path)
             if finalized_l0a is not None and hasattr(self._runtime, "analyze_prepared"):
                 run = self._runtime.analyze_prepared(
                     request,
@@ -945,8 +950,13 @@ class RestartAgentServiceBackend:
             final = model_results[0].analysis_result if model_results else run.result
             if not isinstance(final, AnalysisResult):
                 raise TypeError("Restart Agent service run did not produce AnalysisResult")
-            # Stat the source now, while it still corresponds to what was read.
-            analyzed_identity = self._file_identity(request.log_path)
+            # Cache the verdict only when the source did not move under it.
+            # An empty identity keeps the entry out of the cache, so a restart
+            # re-analyzes rather than serving a result for bytes that changed.
+            identity_after = self._file_identity(request.log_path)
+            analyzed_identity = identity_after if identity_after == identity_before else {}
+            if not analyzed_identity:
+                logger.debug("Not caching %s: the log changed during analysis", request.log_path)
             with self._lock:
                 current = self._entries.get(key)
                 if current is not None:
