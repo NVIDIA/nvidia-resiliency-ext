@@ -51,7 +51,6 @@ Tool versions: `black==24.10.0`, `isort==5.13.2`, `ruff==0.6.9`. Line length is 
 pytest -s -vvv ./tests/fault_tolerance/unit/
 pytest -s -vvv ./tests/checkpointing/unit/
 pytest -s -vvv ./tests/checkpointing/unit_cpu/
-pytest -s -vvv ./tests/ptl_resiliency/unit/
 pytest -s -vvv ./tests/straggler/unit/
 
 # Attribution includes source-only legacy LogSage tests:
@@ -94,12 +93,6 @@ Log and trace analysis for failure attribution. Contains:
 ### `skills/`
 Current NVRx skill bundles:
 - `nvrx-attr/` — restart-agent log analysis, packaged FR analysis, and the Megatron-LM fault-injection feedback loop. LogSage-specific implementations are not part of this skill bundle.
-
-### `ptl_resiliency/`
-PyTorch Lightning callbacks that wrap the above features:
-- `FaultToleranceCallback` / `FaultToleranceSectionsCallback` — fault tolerance integration
-- `StragglerDetectionCallback` — straggler detection
-- `LocalCheckpointCallback` — local checkpointing
 
 ### `shared_utils/`
 Shared infrastructure: `health_check.py` (GPU/NIC/storage health checks via NVML and gRPC), `log_manager.py` (structured logging), `grpc_log_server.py` + `log_aggregator.py` (centralized log collection), `memory.py` (GPU memory logging), `proto/` (protobuf definitions).
@@ -151,7 +144,7 @@ Generated stubs are gitignored. If you modify `.proto` files, rebuild with `pip 
 Build and verify docs locally before submitting documentation changes:
 
 ```bash
-pip install -U sphinx sphinx-rtd-theme sphinxcontrib-napoleon sphinx_copybutton lightning psutil defusedxml
+pip install -U -r docs/requirements.txt
 sphinx-build -b html docs/source public/
 
 # alternatively:

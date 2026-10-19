@@ -151,6 +151,3 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 markers = []
-filterwarnings = [
-    "ignore:.*ptl_resiliency.*ft_launcher.*InJob.*deprecated.*:DeprecationWarning",
-]
