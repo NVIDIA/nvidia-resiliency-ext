@@ -6,7 +6,7 @@ nvidia-resiliency-ext
 Features
 --------
 
-* `Hang detection and automatic in-job restarting <fault_tolerance/index.html>`_
+* `InJob restart with section-based monitoring <fault_tolerance/index.html>`_
 * `Async checkpointing <checkpointing/async/index.html>`_
 * `Local checkpointing <checkpointing/local/index.html>`_
 * `Straggler (slower ranks) detection <straggler_det/index.html>`_
