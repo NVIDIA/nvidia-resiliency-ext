@@ -15,7 +15,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from queue import SimpleQueue
-from threading import Event, RLock, Thread
+from threading import Event, Lock, RLock, Thread
 from typing import Any, Callable, Hashable, Mapping
 
 from nvidia_resiliency_ext.attribution.coalescing import (
@@ -178,6 +178,11 @@ class _AttemptExecution:
     progressive_phase: str = "not_started"
     progressive_error: str | None = None
     progressive_evicted: bool = False
+    # Size/mtime of the log as it was when this result was produced. Captured
+    # at completion rather than at save time: the newest cycle log keeps being
+    # appended to, and pairing an old verdict with the file's later identity
+    # would make a stale result look byte-for-byte current on restore.
+    source_identity: dict[str, Any] = field(default_factory=dict)
 
 
 class RestartAgentServiceBackend:
@@ -223,6 +228,14 @@ class RestartAgentServiceBackend:
             thread_name_prefix="nvrx-restart-agent-l0",
         )
         self._owns_precompute_executor = precompute_executor is None
+        # Slack delivery runs here, off the analysis workers: a slow Slack call
+        # must not hold an analysis future open, because GET /logs awaits it.
+        self._notify_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="nvrx-restart-agent-notify"
+        )
+        # Writes are serialized end to end. The analysis workers are threads in
+        # one process, so a pid-qualified temp name is shared, not private.
+        self._save_lock = Lock()
         self._scheduler_wakeup = Event()
         self._scheduler = Thread(
             target=self._schedule_progressive,
@@ -246,6 +259,9 @@ class RestartAgentServiceBackend:
             self._executor.shutdown(wait=False, cancel_futures=True)
         if self._owns_precompute_executor:
             self._precompute_executor.shutdown(wait=False, cancel_futures=True)
+        # Drained, not cancelled: a queued alert is the whole point of the
+        # notification, and shutdown already wrote the cache above.
+        self._notify_executor.shutdown(wait=True)
         close_runtime = getattr(self._runtime, "close", None)
         if close_runtime is not None:
             close_runtime()
@@ -280,43 +296,48 @@ class RestartAgentServiceBackend:
         path = (cache_file or "").strip()
         if not path:
             return False
-        with self._lock:
-            entries = [
-                {
-                    "log_path": entry.log_path,
-                    "user": entry.user,
-                    "job_id": entry.job_id,
-                    "cycle_id": entry.cycle_id,
-                    "source": entry.best_source,
-                    "result": (entry.final_result or entry.best_result).to_payload(),
-                    **self._file_identity(entry.log_path),
-                }
-                for entry in self._entries.values()
-                if entry.status == _STATUS_COMPLETED
-                and (entry.final_result or entry.best_result) is not None
-            ]
-        try:
-            records = [
-                record.to_payload() for record in self._runtime.attempt_record_control.records()
-            ]
-        except Exception:  # history disabled, or a runtime without the control seam
-            records = []
-        payload = {
-            "schema": _CACHE_SCHEMA,
-            "saved_at": time.time(),
-            "entries": entries,
-            "attempt_records": records,
-        }
-        tmp = f"{path}.tmp.{os.getpid()}"
-        try:
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle)
-            os.replace(tmp, path)
-        except OSError as exc:
-            logger.warning("Could not write attribution cache %s: %s", path, exc)
-            with suppress(OSError):
-                os.unlink(tmp)
-            return False
+        # Held across snapshot, write and replace. Concurrent savers would
+        # otherwise interleave in one temp file and publish a truncated one.
+        with self._save_lock:
+            with self._lock:
+                entries = [
+                    {
+                        "log_path": entry.log_path,
+                        "user": entry.user,
+                        "job_id": entry.job_id,
+                        "cycle_id": entry.cycle_id,
+                        "source": entry.best_source,
+                        "result": (entry.final_result or entry.best_result).to_payload(),
+                        **entry.source_identity,
+                    }
+                    for entry in self._entries.values()
+                    if entry.status == _STATUS_COMPLETED
+                    and (entry.final_result or entry.best_result) is not None
+                    and entry.source_identity
+                ]
+            try:
+                records = [
+                    record.to_payload() for record in self._runtime.attempt_record_control.records()
+                ]
+            except Exception:  # history disabled, or a runtime without the control seam
+                records = []
+            payload = {
+                "schema": _CACHE_SCHEMA,
+                "saved_at": time.time(),
+                "config_fingerprint": self._config.config_fingerprint,
+                "entries": entries,
+                "attempt_records": records,
+            }
+            tmp = f"{path}.tmp.{os.getpid()}"
+            try:
+                with open(tmp, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+                os.replace(tmp, path)
+            except OSError as exc:
+                logger.warning("Could not write attribution cache %s: %s", path, exc)
+                with suppress(OSError):
+                    os.unlink(tmp)
+                return False
         return True
 
     def _load_cache(self, cache_file: str) -> int:
@@ -331,6 +352,25 @@ class RestartAgentServiceBackend:
             return 0
         if not isinstance(payload, Mapping) or payload.get("schema") != _CACHE_SCHEMA:
             logger.warning("Ignoring attribution cache %s: unrecognized schema", path)
+            return 0
+        # A cached decision is only valid under the policy that produced it.
+        # Restoring across a budget or policy change would keep handing back
+        # the old advice, because a completed entry is never re-analyzed.
+        saved_fingerprint = str(payload.get("config_fingerprint") or "")
+        if saved_fingerprint != self._config.config_fingerprint:
+            logger.info(
+                "Ignoring cached analyses in %s: restart-agent config changed "
+                "(cache %s, current %s); attempt history is still restored",
+                path,
+                saved_fingerprint or "unset",
+                self._config.config_fingerprint,
+            )
+            records = payload.get("attempt_records")
+            if isinstance(records, list) and records:
+                try:
+                    self._runtime.attempt_record_control.seed(records, mode="replace")
+                except Exception as exc:
+                    logger.warning("Could not restore attempt history: %s", exc)
             return 0
 
         # Seed history first: it is useful even for entries whose log has moved
@@ -389,6 +429,7 @@ class RestartAgentServiceBackend:
             best_source=str(item.get("source") or ""),
             progressive_phase="completed",
             completed_at=time.monotonic(),
+            source_identity=dict(identity),
         )
         with self._lock:
             if key in self._entries or log_path in self._path_index:
@@ -904,9 +945,12 @@ class RestartAgentServiceBackend:
             final = model_results[0].analysis_result if model_results else run.result
             if not isinstance(final, AnalysisResult):
                 raise TypeError("Restart Agent service run did not produce AnalysisResult")
+            # Stat the source now, while it still corresponds to what was read.
+            analyzed_identity = self._file_identity(request.log_path)
             with self._lock:
                 current = self._entries.get(key)
                 if current is not None:
+                    current.source_identity = analyzed_identity
                     current.final_result = final
                     current.best_result = final
                     if not current.best_source:
@@ -938,7 +982,9 @@ class RestartAgentServiceBackend:
                 terminal_total_s=completed_total_s,
                 route_count=completed_route_count,
             )
-            self._notify_slack(key)
+            # Off-thread: GET /logs awaits this future, and a slow Slack call
+            # would hold back advice that is already computed.
+            self._notify_executor.submit(self._notify_slack, key)
             self._save_cache(self._cache_file)
         except Exception as exc:
             with self._lock:

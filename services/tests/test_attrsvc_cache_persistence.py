@@ -38,6 +38,13 @@ class _Runtime:
         self.attempt_record_control = _Control()
 
 
+class _Config:
+    """Just the fingerprint: a cached decision is only valid under its policy."""
+
+    def __init__(self, fingerprint="cfg-a"):
+        self.config_fingerprint = fingerprint
+
+
 class _Backend:
     """The persistence surface of the real backend, without its thread pools."""
 
@@ -50,13 +57,15 @@ class _Backend:
     _load_cache = _Real._load_cache
     _restore_entry = _Real._restore_entry
 
-    def __init__(self):
-        from threading import RLock
+    def __init__(self, fingerprint="cfg-a"):
+        from threading import Lock, RLock
 
         self._lock = RLock()
+        self._save_lock = Lock()
         self._entries = {}
         self._path_index = {}
         self._runtime = _Runtime()
+        self._config = _Config(fingerprint)
         self._cache_file = ""
 
 
@@ -70,7 +79,13 @@ def _log(tmp_path, text="boom\n"):
     return str(path)
 
 
-def _completed(log_path, job_id="4234179", cycle_id=0):
+def _completed(log_path, job_id="4234179", cycle_id=0, identity=None):
+    # The real backend stats the source when the analysis finishes, not when
+    # the cache is written; the stand-in has to do the same or the tests would
+    # not exercise what production stores.
+    if identity is None:
+        stat = os.stat(log_path)
+        identity = {"mtime": stat.st_mtime, "size": stat.st_size}
     return _AttemptExecution(
         key=(job_id, cycle_id),
         log_path=log_path,
@@ -81,6 +96,7 @@ def _completed(log_path, job_id="4234179", cycle_id=0):
         best_result=_result(),
         final_result=_result(),
         best_source="l1_enriched",
+        source_identity=identity,
     )
 
 
@@ -207,3 +223,69 @@ def test_the_schema_is_stamped(backend, tmp_path):
     cache = str(tmp_path / "cache.json")
     backend._save_cache(cache)
     assert json.loads(open(cache, encoding="utf-8").read())["schema"] == _CACHE_SCHEMA
+
+
+def test_a_log_that_grew_between_analysis_and_save_is_not_restored(backend, tmp_path):
+    # The identity has to describe the bytes that were analyzed. Stat'ing at
+    # save time instead pairs an old verdict with the file's later size, and a
+    # stale result then validates as byte-for-byte current.
+    log = _log(tmp_path)
+    cache = str(tmp_path / "cache.json")
+    backend._entries[("4234179", 0)] = _completed(log)
+
+    # Another job finishes and triggers a save after this log has moved on.
+    with open(log, "a", encoding="utf-8") as handle:
+        handle.write("appended before anyone saved\n")
+    backend._save_cache(cache)
+
+    restarted = _Backend()
+    assert restarted._load_cache(cache) == 0
+    assert restarted._entries == {}
+
+
+def test_decisions_from_a_different_policy_are_not_restored(backend, tmp_path):
+    # A completed entry is never re-analyzed, so restoring across a budget or
+    # policy change would keep returning advice the current policy would not
+    # give. History is still seeded: it records what happened, not a verdict.
+    log = _log(tmp_path)
+    cache = str(tmp_path / "cache.json")
+    backend._entries[("4234179", 0)] = _completed(log)
+    backend._runtime.attempt_record_control._records = ()
+    backend._save_cache(cache)
+    payload = json.loads(open(cache, encoding="utf-8").read())
+    payload["attempt_records"] = [{"job_id": "4234179", "cycle_id": 0}]
+    open(cache, "w", encoding="utf-8").write(json.dumps(payload))
+
+    restarted = _Backend(fingerprint="cfg-b")
+    assert restarted._load_cache(cache) == 0
+    assert restarted._entries == {}
+    assert restarted._runtime.attempt_record_control.seeded is not None
+
+
+def test_the_config_fingerprint_is_stamped(backend, tmp_path):
+    cache = str(tmp_path / "cache.json")
+    backend._save_cache(cache)
+    saved = json.loads(open(cache, encoding="utf-8").read())
+    assert saved["config_fingerprint"] == "cfg-a"
+
+
+def test_concurrent_saves_leave_readable_json(backend, tmp_path):
+    # The analysis workers are threads in one process, so a pid-qualified temp
+    # name is shared between them. Unserialized, one saver truncates the file
+    # another is writing and the published cache is corrupt.
+    from concurrent.futures import ThreadPoolExecutor
+
+    cache = str(tmp_path / "cache.json")
+    for cycle in range(40):
+        log = tmp_path / f"run_4234179_date_x_cycle{cycle}.log"
+        log.write_text("boom\n" * (cycle + 1))
+        backend._entries[("4234179", cycle)] = _completed(str(log), cycle_id=cycle)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = [f.result() for f in [pool.submit(backend._save_cache, cache) for _ in range(24)]]
+    assert all(results)
+
+    payload = json.loads(open(cache, encoding="utf-8").read())
+    assert payload["schema"] == _CACHE_SCHEMA
+    assert len(payload["entries"]) == 40
+    assert not list(tmp_path.glob("cache.json.tmp*"))

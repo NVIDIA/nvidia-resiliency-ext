@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import OrderedDict
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Mapping, Optional, Sequence
 
 from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
@@ -123,12 +125,17 @@ class SlackConfig:
         an empty token defers to ``SLACK_BOT_TOKEN_FILE`` and the default paths.
         """
         token = str(getattr(settings, "SLACK_BOT_TOKEN", "") or "").strip()
+        # Read through ``settings`` rather than ``os.environ`` so a value set in
+        # ``.env`` is honored; falling back to the environment keeps a bare
+        # Settings stand-in (and the older call sites) working.
+        notify_raw = str(getattr(settings, "SLACK_NOTIFY_ACTIONS", "") or "").strip()
+        domain_raw = str(getattr(settings, "SLACK_EMAIL_DOMAIN", "") or "").strip()
         return cls(
             token=token or load_slack_bot_token(),
             channel=str(getattr(settings, "SLACK_CHANNEL", "") or "").strip(),
-            notify_actions=parse_notify_actions(os.environ.get(NOTIFY_ACTIONS_ENV)),
+            notify_actions=parse_notify_actions(notify_raw or os.environ.get(NOTIFY_ACTIONS_ENV)),
             cluster=str(getattr(settings, "CLUSTER_NAME", "") or "").strip(),
-            email_domain=(os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
+            email_domain=(domain_raw or os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
         )
 
 
@@ -414,6 +421,12 @@ def _exhaustion(policy: Mapping[str, Any]) -> tuple[bool, tuple[ExhaustedLedger,
     it beside the rule's budget claims same-root exhaustion that may not have
     happened. ``exhausted_by`` names the ledgers that actually fired; fall back
     to the aggregate flag only for payloads that predate it.
+
+    A ledger counts as the rule's own only when its budget is also the one the
+    message will print. When the selected policy is skipped, the general
+    ceiling governs but carries its own, different allowed_retries - calling
+    that "the rule's budget, exhausted" would attach the stop to a number the
+    rule never hit, which is the same misreading this split exists to prevent.
     """
     exhausted_by = policy.get("exhausted_by")
     if not isinstance(exhausted_by, (list, tuple)):
@@ -425,6 +438,13 @@ def _exhaustion(policy: Mapping[str, Any]) -> tuple[bool, tuple[ExhaustedLedger,
         if isinstance(selected, Mapping) and selected.get("applicable")
         else _GENERAL_ROOT_CEILING
     )
+    effective = policy.get("effective_policy")
+    effective = effective if isinstance(effective, Mapping) else {}
+    shown_budget = _int_or_none(effective.get("allowed_retries"))
+    own = policy.get(rule_ledger_id)
+    own_budget = _int_or_none(own.get("allowed_retries")) if isinstance(own, Mapping) else None
+    if own_budget is not None and shown_budget is not None and own_budget != shown_budget:
+        rule_ledger_id = ""  # report it as a separate ceiling, with its own numbers
 
     rule_exhausted = False
     others = []
@@ -734,6 +754,39 @@ class SlackNotifier:
         self.config = SlackConfig.from_env() if config is None else config
         self.stats = SlackStats()
         self._client: Any = None
+        # First message timestamp per run, so a run's cycles collect into one
+        # thread instead of one top-level alert each. Keyed by run rather than
+        # by cycle, and bounded because a long-lived service sees many runs.
+        self._run_threads: "OrderedDict[str, str]" = OrderedDict()
+        self._run_threads_lock = Lock()
+
+    #: How many runs keep a remembered thread. Oldest are forgotten first; a
+    #: forgotten run simply starts a new thread rather than failing to post.
+    MAX_TRACKED_RUNS = 512
+
+    def _thread_key(self, identity: "AnalysisIdentity") -> str:
+        """Identify the run a cycle belongs to, or "" when it cannot be known."""
+        run = (identity.run_name or "").strip()
+        job = (identity.job_id or "").strip()
+        return run or job
+
+    def _remembered_thread(self, key: str) -> Optional[str]:
+        if not key:
+            return None
+        with self._run_threads_lock:
+            ts = self._run_threads.get(key)
+            if ts is not None:
+                self._run_threads.move_to_end(key)
+            return ts
+
+    def _remember_thread(self, key: str, ts: str) -> None:
+        if not key or not ts:
+            return
+        with self._run_threads_lock:
+            self._run_threads[key] = ts
+            self._run_threads.move_to_end(key)
+            while len(self._run_threads) > self.MAX_TRACKED_RUNS:
+                self._run_threads.popitem(last=False)
 
     @property
     def enabled(self) -> bool:
@@ -787,9 +840,16 @@ class SlackNotifier:
         summary = format_summary(identity, result, self.config.cluster)
         summary += self._mention(identity.user)
 
+        # A later cycle of a run replies under that run's first alert, so one
+        # job reads as one thread rather than as N unrelated channel messages.
+        run_key = self._thread_key(identity)
+        run_thread = self._remembered_thread(run_key)
+
         self.stats.attempts += 1
         try:
-            posted = self._web_client().chat_postMessage(channel=self.config.channel, text=summary)
+            posted = self._web_client().chat_postMessage(
+                channel=self.config.channel, text=summary, thread_ts=run_thread
+            )
         except SlackApiError as e:
             self.stats.failed += 1
             logger.error(f"[{identity.job_id}] Slack notification failed: {e}")
@@ -797,8 +857,15 @@ class SlackNotifier:
         self.stats.sent += 1
         logger.info(f"[{identity.job_id}] Slack notification sent to {self.config.channel}")
 
+        posted_ts = posted.get("ts") if hasattr(posted, "get") else None
+        if run_thread is None:
+            # This cycle opened the run's thread; later cycles join it.
+            self._remember_thread(run_key, str(posted_ts or ""))
+
         details = format_details(identity, result)
-        thread_ts = posted.get("ts") if hasattr(posted, "get") else None
+        # Detail hangs off this cycle's own message when it started the thread,
+        # and off the run thread otherwise, so replies stay in one place.
+        thread_ts = run_thread or posted_ts
         if details and thread_ts:
             # The alert is already delivered; a failed thread reply costs detail,
             # not the notification, so it must not be reported as a failure.

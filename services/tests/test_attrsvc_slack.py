@@ -85,6 +85,15 @@ def summary_ts(client):
     return "171000000.000001"
 
 
+def root_ts(client):
+    """The ts of the run's first message; later cycles thread onto it."""
+    return client.messages[0]["thread_ts"] or "171000000.000001"
+
+
+def _job_identity(job_id="123", run_name="nemotron_pretrain", user="alice", cycle_id=None):
+    return AnalysisIdentity(job_id=job_id, run_name=run_name, user=user, cycle_id=cycle_id)
+
+
 def _notifier(monkeypatch, client=None, **config_kwargs):
     """Build an enabled notifier backed by a stub Slack client."""
     monkeypatch.setattr(slack_mod, "HAS_SLACK", True)
@@ -1274,3 +1283,125 @@ def test_placeholder_owners_are_omitted():
     for placeholder in ("", "unknown", "UNKNOWN", "none", "  "):
         line = slack_mod.AnalysisIdentity(job_id="1", user=placeholder).as_line()
         assert "Owner" not in line, placeholder
+
+
+# ─── one run, one thread ───
+
+
+def test_later_cycles_of_a_run_reply_in_the_first_cycles_thread(monkeypatch):
+    # Otherwise one job becomes N unrelated top-level alerts and its history
+    # is scattered across the channel.
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    for cycle in (0, 1, 2):
+        notifier.notify(
+            _job_identity(cycle_id=cycle), parse_attrsvc_response(_response(), log_path="/x.log")
+        )
+
+    assert len(client.summaries) == 1, "only the first cycle opens a top-level message"
+    root = client.summaries[0]
+    assert all(m["thread_ts"] == root_ts(client) for m in client.messages if m is not root)
+
+
+def test_a_different_run_starts_its_own_thread(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+
+    notifier.notify(
+        _job_identity(run_name="run-a"), parse_attrsvc_response(_response(), log_path="/a.log")
+    )
+    notifier.notify(
+        _job_identity(run_name="run-b"), parse_attrsvc_response(_response(), log_path="/b.log")
+    )
+
+    assert len(client.summaries) == 2
+
+
+def test_the_remembered_thread_table_is_bounded(monkeypatch):
+    # A long-lived service sees many runs; forgetting the oldest just starts a
+    # new thread, which is better than growing without limit.
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    monkeypatch.setattr(type(notifier), "MAX_TRACKED_RUNS", 4)
+
+    for i in range(10):
+        notifier.notify(
+            _job_identity(run_name=f"run-{i}"),
+            parse_attrsvc_response(_response(), log_path=f"/{i}.log"),
+        )
+
+    assert len(notifier._run_threads) <= 4
+
+
+# ─── a ceiling that is not the rule's own budget ───
+
+
+def test_a_general_ceiling_with_a_different_budget_is_reported_separately(monkeypatch):
+    # The selected policy allows 3, the general ceiling stops at 2. Saying the
+    # rule exhausted its budget would attach the stop to a number it never hit.
+    payload = _policy_payload(
+        effective_policy={"rule": "port_bind_confirmation_retry", "allowed_retries": 3},
+        selected_policy_ledger={"applicable": False, "allowed_retries": 3},
+        general_root_ceiling={"matching_prior_attempts": 2, "allowed_retries": 2},
+        exhausted_by=["general_root_ceiling"],
+        retry_budget_exhausted=True,
+    )
+    r = slack_mod.decision_rationale(payload)
+
+    assert r.budget_exhausted is False, "not the rule's own budget"
+    assert [led.ledger_id for led in r.other_exhausted] == ["general_root_ceiling"]
+    assert r.other_exhausted[0].allowed_retries == 2
+
+
+def test_a_general_ceiling_matching_the_shown_budget_is_still_the_rules_own(monkeypatch):
+    payload = _policy_payload(
+        effective_policy={"rule": "general_retry", "allowed_retries": 2},
+        general_root_ceiling={"matching_prior_attempts": 2, "allowed_retries": 2},
+        exhausted_by=["general_root_ceiling"],
+        retry_budget_exhausted=True,
+    )
+    r = slack_mod.decision_rationale(payload)
+
+    assert r.budget_exhausted is True
+    assert r.other_exhausted == ()
+
+
+# ─── settings, not just the environment ───
+
+
+class _Settings:
+    """Stands in for attrsvc ``Settings``, which loads from ``.env``."""
+
+    def __init__(self, **kw):
+        self.SLACK_BOT_TOKEN = kw.get("token", "xoxb-from-settings")
+        self.SLACK_CHANNEL = kw.get("channel", "#from-settings")
+        self.CLUSTER_NAME = kw.get("cluster", "aws-cmh")
+        self.SLACK_NOTIFY_ACTIONS = kw.get("actions", "")
+        self.SLACK_EMAIL_DOMAIN = kw.get("domain", "")
+
+
+def test_notify_actions_and_domain_come_from_settings(monkeypatch):
+    # These are loadable from .env like every other setting; reading only
+    # os.environ made a configured STOP,RESTART silently stay STOP-only.
+    monkeypatch.delenv(slack_mod.NOTIFY_ACTIONS_ENV, raising=False)
+    monkeypatch.delenv(slack_mod.EMAIL_DOMAIN_ENV, raising=False)
+
+    config = SlackConfig.from_settings(_Settings(actions="STOP,RESTART", domain="@example.com"))
+
+    assert config.notify_actions == frozenset({"STOP", "RESTART"})
+    assert config.email_domain == "example.com"
+
+
+def test_settings_win_over_the_environment(monkeypatch):
+    monkeypatch.setenv(slack_mod.NOTIFY_ACTIONS_ENV, "STOP")
+    config = SlackConfig.from_settings(_Settings(actions="RESTART"))
+    assert config.notify_actions == frozenset({"RESTART"})
+
+
+def test_the_environment_still_applies_when_settings_are_silent(monkeypatch):
+    monkeypatch.setenv(slack_mod.NOTIFY_ACTIONS_ENV, "STOP,RESTART")
+    monkeypatch.setenv(slack_mod.EMAIL_DOMAIN_ENV, "nvidia.com")
+    config = SlackConfig.from_settings(_Settings())
+    assert config.notify_actions == frozenset({"STOP", "RESTART"})
+    assert config.email_domain == "nvidia.com"

@@ -1296,3 +1296,62 @@ def test_outside_root_and_missing_parent_are_rejected(tmp_path):
         assert missing_parent.error_code.value == "not_found"
     finally:
         backend.shutdown()
+
+
+def test_a_slow_slack_call_does_not_hold_back_the_analysis_result(tmp_path):
+    """GET /logs awaits the analysis future, so Slack must not run inside it.
+
+    Delivery used to happen on the analysis worker, which meant a client
+    waiting for restart advice also waited out the Slack lookup, summary and
+    reply - and a slow Slack occupied a worker that could be analyzing.
+    """
+    import threading
+
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    entered = threading.Event()
+    release = threading.Event()
+    SLACK_BLOCK_S = 30.0
+
+    def blocking_notify(_key):
+        entered.set()
+        release.wait(timeout=SLACK_BLOCK_S)
+
+    backend._notify_slack = blocking_notify
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        started = time.monotonic()
+        result = asyncio.run(run())
+        elapsed = time.monotonic() - started
+
+        assert result.status == "completed"
+        assert entered.wait(timeout=10), "notification was never attempted"
+        # The point of the fix: the caller is not made to wait out Slack. On
+        # the analysis worker this would take SLACK_BLOCK_S instead.
+        assert elapsed < SLACK_BLOCK_S / 3, f"result waited {elapsed:.1f}s on the notification"
+        assert not release.is_set()
+    finally:
+        release.set()
+        backend.shutdown()
+
+
+def test_shutdown_waits_for_a_queued_notification(tmp_path):
+    # Dropping a queued alert would silently lose the notification that the
+    # whole feature exists to send.
+    import threading
+
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    delivered = threading.Event()
+
+    backend._notify_executor.submit(lambda: (time.sleep(0.2), delivered.set()))
+    backend.shutdown()
+
+    assert delivered.is_set()
