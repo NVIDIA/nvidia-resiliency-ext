@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**NVIDIA Resiliency Extension (NVRx)** is a PyTorch distributed training resiliency library. It provides fault tolerance (in-job restart without SLURM node reallocation), in-process restarting, async/local checkpointing, and straggler detection.
+**NVIDIA Resiliency Extension (NVRx)** is a PyTorch distributed training resiliency library. It provides fault tolerance (in-job restart without SLURM node reallocation), async/local checkpointing, and straggler detection.
 
 ## Build and Install
 
@@ -49,7 +49,6 @@ Tool versions: `black==24.10.0`, `isort==5.13.2`, `ruff==0.6.9`. Line length is 
 ```bash
 # Run all unit tests in a module
 pytest -s -vvv ./tests/fault_tolerance/unit/
-pytest -s -vvv ./tests/inprocess/
 pytest -s -vvv ./tests/checkpointing/unit/
 pytest -s -vvv ./tests/checkpointing/unit_cpu/
 pytest -s -vvv ./tests/ptl_resiliency/unit/
@@ -78,9 +77,6 @@ Source lives in `src/nvidia_resiliency_ext/`. Key modules:
 In-job restart without reallocating SLURM nodes. Entry point: `ft_launcher` CLI (`launcher.py`). Extends PyTorch's elastic agent with rank monitoring via gRPC heartbeats. Key classes: `FaultToleranceConfig` (dataclass with all timeout/health settings), `RankMonitorServer`/`RankMonitorClient` (gRPC), `FtRendezvousBarrier` (custom rendezvous).
 
 Section-based timeout model: user code calls `begin_section(name)` / `end_section(name)` to define named regions with individual timeouts. Out-of-section code uses a default timeout.
-
-### `inprocess/`
-Detect failures and restart within a single process (no job resubmission). Core pattern: wrap the user's training function with `Wrapper` or `Compose`. State machine managed in `state.py`. Background monitors (`monitor_thread.py`, `monitor_process.py`) detect hangs. `rank_assignment.py` handles dynamic rank reassignment on restart. States serialized with JSON (not pickle).
 
 ### `checkpointing/`
 Two submodules:
