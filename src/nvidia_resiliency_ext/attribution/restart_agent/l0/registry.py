@@ -72,6 +72,15 @@ _REJECTED_NONFINITE_ITERATION_RE = re.compile(
     re.I,
 )
 
+#: NCCL's wording for device exhaustion. Kept separate from _CUDA_OOM_RE so
+#: the registry can file it as a confirmation rather than a root candidate: it
+#: explains an exception raised elsewhere, since the collective that failed
+#: reports only "unhandled cuda error".
+_NCCL_DEVICE_OOM_RE = re.compile(
+    r"\bCuda failure\s+\d+\s+'out of memory'" r"|\bFailed to CUDA calloc async\b",
+    re.I,
+)
+
 _CUDA_OOM_RE = re.compile(
     r"\bCUDA(?:\s+error:)?\s+out of memory\b"
     r"|\btorch(?:\.cuda)?\.OutOfMemoryError\b"
@@ -450,7 +459,7 @@ def failure_signal_classifiers(line: str) -> tuple[str, ...]:
     """Return policy-neutral classifiers for an observed failure line."""
 
     classifiers: list[str] = []
-    if _CUDA_OOM_RE.search(line):
+    if _CUDA_OOM_RE.search(line) or _NCCL_DEVICE_OOM_RE.search(line):
         classifiers.append(FailureClassifier.CUDA_OOM.value)
     if _PORT_BIND_CONFLICT_RE.search(line):
         classifiers.append(FailureClassifier.PORT_BIND_CONFLICT.value)

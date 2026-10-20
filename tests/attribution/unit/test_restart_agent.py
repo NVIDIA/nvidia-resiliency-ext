@@ -11048,3 +11048,44 @@ def test_runtime_closes_each_unique_route_extractor_once():
     runtime.close()
 
     assert extractor.close_count == 1
+
+
+def test_a_confirmed_nccl_device_oom_gets_the_no_retry_policy(tmp_path):
+    """The deterministic path must stop on a confirmed OOM, not budget a retry.
+
+    cuda_oom_no_retry is configured to STOP on first occurrence. It keys on the
+    cuda_oom classifier, which a confirmation identity does not supply by name,
+    so this is the seam where an explicitly typed OOM could still be retried.
+    """
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-10-19 04:00:00] iteration 2000/601014 | lm loss: 1.0 |",
+                "3070: [rank3070]: Traceback (most recent call last):",
+                '3070: [rank3070]:   File "/code/training.py", line 1031, in save_checkpoint',
+                (
+                    "3070: [rank3070]: torch.distributed.DistBackendError: NCCL error in: "
+                    "NCCLUtils.cpp:117, unhandled cuda error"
+                ),
+                "3070: [rank3070]: Last error:",
+                "3070: [rank3070]: Failed to CUDA calloc async 16384 bytes",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    from nvidia_resiliency_ext.attribution.restart_agent.l0.decision import build_decision_evidence
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+    evidence = build_decision_evidence(bundle)
+
+    assert primary is not None
+    assert primary.failure_class == "cuda_oom_confirmation"
+    # What cuda_oom_no_retry actually tests for. The identity is named
+    # "cuda_oom_confirmation", which that policy would not recognise, so the
+    # classifier is the only thing carrying the OOM through to the decision.
+    assert FailureClassifier.CUDA_OOM.value in (
+        evidence.canonical_observed_identity.get("classifiers") or ()
+    )

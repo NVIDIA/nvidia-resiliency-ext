@@ -270,3 +270,24 @@ def test_the_pytorch_allocator_oom_is_still_a_root_candidate():
 
     assert "cuda_oom" in ids
     assert FailureClassifier.CUDA_OOM.value in failure_signal_classifiers(line)
+
+
+def test_nccl_device_oom_carries_the_cuda_oom_classifier():
+    """Retry policy keys on the classifier, not on the registry id.
+
+    cuda_oom_no_retry matches ``cuda_oom`` in the classifiers or a
+    ``cuda_oom`` failure_class. A confirmation identity satisfies neither by
+    name, so without this a confirmed device OOM would be handed a retry
+    budget instead of the configured immediate STOP whenever L1 is
+    unavailable and the deterministic path decides.
+    """
+    for line in (
+        "NCCL WARN Cuda failure 2 'out of memory'",
+        "[rank3070]: Failed to CUDA calloc async 16384 bytes",
+    ):
+        assert FailureClassifier.CUDA_OOM.value in failure_signal_classifiers(line), line
+
+
+def test_a_capture_error_does_not_claim_the_oom_classifier():
+    line = "NCCL WARN Cuda failure 700 operation failed due to a previous error during capture"
+    assert FailureClassifier.CUDA_OOM.value not in failure_signal_classifiers(line)
