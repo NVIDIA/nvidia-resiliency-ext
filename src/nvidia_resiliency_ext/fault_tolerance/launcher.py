@@ -1159,6 +1159,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Wait for GPU memory to be reclaimed BEFORE returning control
         # This ensures the node doesn't proceed to the next rendezvous cycle while memory is still tied up
+        gpu_memory_reclaimed = False
         if self._ft_cfg.gpu_memory_reclaim_timeout > 0:
             logger.debug(
                 "Waiting for GPU memory to be reclaimed (timeout: %ds, tolerance: %d MB, poll interval: %ds)...",
@@ -1166,7 +1167,11 @@ class LocalElasticAgent(SimpleElasticAgent):
                 int(self._ft_cfg.gpu_memory_tolerance_mb),
                 int(self._ft_cfg.gpu_memory_poll_interval),
             )
-            self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
+            gpu_memory_reclaimed = self._wait_for_gpu_memory_reclaim(worker_group.spec.local_world_size)
+
+        node_health_check = get_node_health_check()
+        if node_health_check is not None:
+            node_health_check.gpu_memory_reclaimed = gpu_memory_reclaimed
 
         # Wait for reader thread to drain pipes (polls every 100ms, wait 3 cycles)
         # then close pipe file objects to prevent FD reuse bugs
@@ -1370,7 +1375,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         return self._pcontext.pids()
 
-    def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> None:
+    def _wait_for_gpu_memory_reclaim(self, num_gpus: int) -> bool:
         """
         Wait for GPU memory to be reclaimed below the tolerance threshold before starting new workers.
         This is called on restarts (not on initial start) to ensure memory has been cleaned up.
@@ -1379,6 +1384,9 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         Args:
             num_gpus: Number of GPUs on this node
+
+        Returns:
+            True if the cleanup wait completes without timing out; False on timeout.
         """
         def log_memory_stats(memory_stats, num_gpus, log_func, message_template, *args):
             """Helper to log GPU memory statistics."""
@@ -1441,7 +1449,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     "GPU %d memory reclaimed in %ds (%d samples): %s",
                     int(elapsed_time),
                 )
-                return
+                return True
 
             time.sleep(poll_interval)
 
@@ -1457,6 +1465,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             logger.warning,
             "GPU %d memory usage history (%d samples): %s",
         )
+        return False
 
 
     def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30) -> None:
