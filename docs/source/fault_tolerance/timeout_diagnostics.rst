@@ -55,6 +55,15 @@ Deployment scripts choose ``<work-dir>/nvrx/<job-id>`` for ordinary jobs and
 namespace without reconstructing Slurm IDs. A root must distinguish launch
 attempts whose cycle numbers restart at zero.
 
+Successful startup validation logs resolved paths only from node0 at DEBUG
+(``NVRX_LOG_DEBUG=1``): one summary for selected tools (including the CUDA-GDB
+mode) and one for debugger command files, if any. Node0 uses the launcher's
+infrastructure rank with hostname/topology-derived IDs disabled; Slurm job-array
+offsets still apply. If the startup rank is unknown, the summaries are omitted.
+Every node still validates its own dependencies. INFO is reserved for actual
+capture results and upload completion. Validation errors, runtime warnings, and
+capture/upload results remain visible from every node at their existing levels.
+
 The worker obtains its monitor PID from the existing Unix socket and calls
 ``PR_SET_PTRACER`` to permit the monitor and its descendants to attach under
 Linux Yama mode 1. This does not override container restrictions, other security
@@ -69,6 +78,44 @@ or an async checkpoint-save worker. Capturing them would require their own
 authorization and explicit targeting. Selecting a checkpoint section captures
 the training process, which may show where checkpoint finalization is waiting;
 it does not collect stacks from the async checkpoint worker itself.
+
+CUDA-GDB launch mode
+--------------------
+
+CUDA-GDB defaults to ``batch``, preserving the existing ``--batch``, ``-ex``,
+and ``-x`` invocation. To use its normal stdin command reader instead::
+
+    --ft-timeout-dump-cuda-gdb-mode=stdin
+
+The equivalent YAML setting is:
+
+.. code-block:: yaml
+
+    fault_tolerance:
+      timeout_dump_cuda_gdb_mode: stdin
+
+CLI values override YAML. Selecting a mode does not enable diagnostics or add
+CUDA-GDB to the tool list. Native GDB and py-spy are unaffected. Switch back with
+``--ft-timeout-dump-cuda-gdb-mode=batch``; there is no automatic fallback.
+
+``stdin`` is fully automated: no terminal, prompts, or monitor command exchange
+is required. The startup thread writes setup, ``attach``, ``source`` of the
+configured command file, ``detach``, and ``quit`` into a Linux anonymous in-memory
+file (``memfd``), rewinds it, and passes it as the debugger's stdin without
+``--batch``. The parent closes its descriptor after subprocess startup, including
+failed or abandoned launches. The shared command file is still read only by the
+debugger; its path must not contain a newline or carriage return in stdin mode.
+Both modes use the same capture deadline, output cap, cancellation, and cleanup.
+
+Use stdin mode for environments where batch attach does not expose usable CUDA
+state, after qualifying it in the deployed debugger/driver/container combination.
+A zero exit code in stdin mode is recorded as ``completed``, not ``success``:
+command errors can be printed while the debugger continues to ``detach`` and
+``quit`` and exits zero. NVRx retains merged stdout/stderr and partial output,
+and records the selected CUDA-GDB mode and process exit code in the capture.
+It does not parse command errors or certify GPU-state availability. Nonzero exits,
+timeouts, and output limits retain their existing failure statuses. Diagnostic
+failure does not add retries or extend recovery beyond the capture budget.
 
 Debugger command files
 ----------------------
@@ -134,7 +181,35 @@ report ``No CUDA contexts.`` for the other devices. Check the query for its
 active device before concluding that CUDA context capture failed.
 
 NVRx launches CUDA-GDB against the timed-out worker PID and passes this file
-with ``-x``. Its output goes into the CUDA-GDB text capture. The ``info cuda``
+with ``-x`` in batch mode or ``source`` in stdin mode. Its output goes into the
+CUDA-GDB text capture. Both modes use the same command file; leave ``attach``,
+``detach``, and ``quit`` out of that file because NVRx supplies them.
+
+To use this reference through stdin, add
+``--ft-timeout-dump-cuda-gdb-mode=stdin`` to the launcher options. The equivalent
+manual invocation below shows the command stream NVRx supplies. Replace
+``<worker-pid>`` with the target PID and use a command-file path available inside
+the training container:
+
+.. code-block:: bash
+
+    cuda-gdb --nx -q -iex 'set debuginfod enabled off' <<'EOF'
+    set confirm off
+    set pagination off
+    set width 0
+    set height 0
+    attach <worker-pid>
+    source /lustre/config/cuda-gdb-timeout.txt
+    detach
+    quit
+    EOF
+
+This invocation omits ``--batch`` and supplies ``attach`` as a top-level stdin
+command. NVRx uses an anonymous in-memory file instead of a shell here-document
+and also enforces the capture deadline and output limit. This manual example
+does not impose those limits.
+
+The ``info cuda``
 commands describe GPU execution state; they do not dump a backtrace for every
 GPU thread. Inspecting a particular GPU thread's stack requires selecting a
 CUDA execution focus and then issuing ``bt``. Available detail depends on the
@@ -149,10 +224,12 @@ The files are independent; only selected debuggers require a file. A py-spy-only
 configuration does not need either file.
 
 NVRx disables initialization scripts and debuginfod downloads, attaches to the
-worker, disables pagination, executes the file with ``-x``, and detaches.
-NVRx still owns the subprocess deadline, output cap, and text upload. Script
-errors are recorded as capture failures; GDB stops processing a command file
-on an error. Each launcher checks that the selected files exist, are regular
+worker, disables pagination, executes the file, and detaches.
+NVRx still owns the subprocess deadline, output cap, and text upload. GDB stops
+processing a sourced command file on an error. Batch mode reports command
+failures through its exit code; stdin mode continues with subsequent top-level
+commands and can exit zero despite a command error, as described above.
+Each launcher checks that the selected files exist, are regular
 files, and can be read before starting workers. Relative paths are resolved
 once at startup from the launcher's working directory. The monitor passes the
 validated path to the debugger without resolving or reading it during capture. Files may live on shared Lustre storage;
@@ -226,12 +303,30 @@ timestamp, and capture outcome. The monitor closes the file before renaming it
 to ``.ready``. Failed or truncated output is retained with its status. A
 still-running diagnostic child only has a pipe, never a writable staging file.
 
-The collector polls this local directory every 30 seconds and batches all
-completed files present at each poll. Its initial polling offset is randomized
-within that interval to spread writes across nodes. A late capture is collected
-on a later poll. There are no separate quiet-interval, maximum batch-delay,
-upload-jitter, or retry-delay settings. The collector does not wait for ranks
-that never capture and never synchronizes training recovery with uploading.
+After staging, the monitor emits one INFO summary per rank and capture sequence,
+combining the attempted tools' capture statuses and the local cycle directory::
+
+    Timeout captures: cycle=0 global_rank=246 local_rank=2 pid=1536944 pyspy=success gdb=success cuda-gdb=completed dir=/tmp/nvrx-diags/cycle0
+
+There are no per-tool staging messages at INFO or DEBUG. Individual files retain
+their full metadata and status; staging failures still produce warnings.
+Upload completion messages remain separate and report the shared output path
+and number of captures in each node/tool upload batch.
+
+The collector polls this local directory every 30 seconds. The launcher supplies
+the local worker count; it is not hard-coded to four. A newly discovered batch
+with captures from all local ranks is published immediately. An incomplete batch
+waits one additional poll to collect late arrivals, then publishes whatever is
+available even if ranks are still missing. New arrivals do not extend that wait.
+Distinct local ranks are counted, so two PIDs for one rank do not make a batch
+complete. Tools and cycles are handled independently. Waiting does not consume
+an upload attempt; inputs become fixed when the first upload is attempted.
+
+The initial polling offset is randomized within the interval to spread writes
+across nodes. There are no separate quiet-interval, maximum batch-delay,
+upload-jitter, or retry-delay settings, and no new timer. Training recovery never
+waits for uploading. Shutdown bypasses incomplete-batch deferral for one final
+collection pass within the existing shutdown grace period.
 There are no new sockets, collection requests, metadata sidecars, archives, or
 compression.
 
@@ -279,8 +374,8 @@ Failures and retention
   never replaced. Node loss can lose unpublished captures.
 
 Existing NVRx logs contain concise capture/upload outcomes and destination
-paths. Each capture message includes ``cycle``, ``global_rank``, ``local_rank``,
-worker ``pid``, ``tool``, ``status``, and the local ``path``. The existing log
+paths. Each capture summary includes ``cycle``, ``global_rank``, ``local_rank``,
+worker ``pid``, all attempted tools' statuses, and the local cycle ``dir``. The existing log
 header supplies the hostname. Dump block headers independently include ``host``,
 ``cycle``, ``global_rank``, ``local_rank``, and ``pid``, so the aggregated file can
 be correlated with a rank in that cycle's application log without consulting
