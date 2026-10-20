@@ -64,6 +64,10 @@ grpcio = "^1.76.0"
 grpcio-tools = "^1.76.0"
 protobuf = ">=4.22.0"
 
+[tool.poetry.group.test.dependencies]
+pytest = "*"
+hypothesis = "*"
+
 [tool.poetry.extras]
 attribution = [
     "mcp",
