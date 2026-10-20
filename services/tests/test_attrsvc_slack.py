@@ -321,7 +321,6 @@ def _restart_agent_response(action="STOP"):
             "justification": "Line 28693 matched failure class observed_exception.",
             "schema_version": "restart_agent_response.v1",
         },
-        "status": "completed",
         "recommendation": {
             "action": action,
             "reason": "Line 28693 matched failure class observed_exception.",
@@ -370,7 +369,6 @@ def _restart_agent_payload():
             },
             "schema_version": "restart_agent_response.v1",
         },
-        "status": "completed",
         "recommendation": {
             "action": "STOP",
             # The Restart Agent reports its justification as the reason.
