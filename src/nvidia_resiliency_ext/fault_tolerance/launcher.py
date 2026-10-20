@@ -104,6 +104,7 @@ from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import rdzv_config_get_as_
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+    RDZV_SHUTDOWN_REASON_FAILURE,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
     get_infrastructure_rank,
     get_log_aggregator_shard_index,
@@ -139,6 +140,7 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
+CYCLE_END_REASON = "nv.nvrx.cycle.end_reason"  # telemetry: why the job's last cycle ended
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -709,6 +711,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             # indistinguishable to downstream tooling, rather than this one looking like
             # an ordinary crash.
             self._rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_NO_PROGRESS)
+            self._cycle_phase.set({CYCLE_END_REASON: RDZV_SHUTDOWN_REASON_NO_PROGRESS})
             self._stop_workers(self._worker_group)
             self._worker_group.state = WorkerState.FAILED
             raise NoRestartRequested(
@@ -784,6 +787,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 self._run_phase.close()
                 rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
                 self._stop_workers(self._worker_group)
+                self._cycle_phase.set({CYCLE_END_REASON: RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP})
                 self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                 self._worker_group.state = WorkerState.FAILED
                 raise NoRestartRequested(
@@ -841,7 +845,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
-                self._cycle_phase.close()
+                self._cycle_phase.close({CYCLE_END_REASON: RDZV_SHUTDOWN_REASON_FAILURE})
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED, failures=run_result.failures)
             elif state == WorkerState.HEALTHY:
@@ -863,6 +867,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                         )
                         self._run_phase.close()
                         self._stop_workers(self._worker_group)
+                        self._cycle_phase.set({CYCLE_END_REASON: no_restart})
                         self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                         self._worker_group.state = WorkerState.FAILED
                         raise NoRestartRequested(no_restart)
@@ -886,7 +891,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     if not should_restart:
                         self._stop_workers(self._worker_group)
-                        self._cycle_phase.close()
+                        self._cycle_phase.close({CYCLE_END_REASON: RDZV_SHUTDOWN_REASON_FAILURE})
                         self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
             else:
@@ -1613,6 +1618,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             raise
         except (RendezvousClosedError, RendezvousGracefulExitError):
             # job ended while it waited
+            self._cycle_phase.set({CYCLE_END_REASON: spec.rdzv_handler.get_shutdown_reason()})
             self._cycle_phase.close(
                 {CYCLE_OUTCOME: "standby", "nv.nvrx.ftl.membership": "standby"}
             )
