@@ -225,3 +225,48 @@ def test_nccl_rdma_port_lifecycle_parser_preserves_explicit_event_semantics(
 def test_nccl_rdma_port_lifecycle_parser_rejects_generic_rdma_mentions(line):
     assert parse_nccl_rdma_port_lifecycle_event(line) is None
     assert "nccl_rdma_port_error_event" not in {row.registry_id for row in match_registry(line)}
+
+
+@pytest.mark.parametrize(
+    "line",
+    (
+        # NCCL reports device exhaustion in its own words; the PyTorch
+        # allocator wording that cuda_oom matches never appears for it.
+        "nvl72d214-T18:1941407 [2] include/alloc.h:334 (ncclCuMemAlloc) "
+        "NCCL WARN Cuda failure 2 'out of memory'",
+        "include/alloc.h:548 (ncclCudaCallocAsyncDebug) "
+        "NCCL WARN Failed to CUDA calloc async 38912 bytes",
+        "[rank3070]: Failed to CUDA calloc async 16384 bytes",
+    ),
+)
+def test_nccl_device_oom_is_a_cause_confirmation_not_a_cascade(line):
+    ids = {row.registry_id for row in match_registry(line)}
+
+    assert "cuda_oom_confirmation" in ids
+    # It explains why the collective failed; it is not a symptom of an
+    # earlier capture error, which is what the cascade row would claim.
+    assert "cuda_previous_error_cascade" not in ids
+
+
+@pytest.mark.parametrize(
+    "line",
+    (
+        "NCCL WARN Cuda failure 700 operation failed due to a previous error during capture",
+        "NCCL WARN Cuda failure 999 unspecified launch failure",
+    ),
+)
+def test_other_nccl_cuda_failures_remain_cascades(line):
+    ids = {row.registry_id for row in match_registry(line)}
+
+    assert "cuda_previous_error_cascade" in ids
+    assert "cuda_oom_confirmation" not in ids
+
+
+def test_the_pytorch_allocator_oom_is_still_a_root_candidate():
+    # The confirmation row is an addition, not a replacement: an OOM the
+    # allocator reports itself still stands on its own as a root cause.
+    line = "torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 2 GiB"
+    ids = {row.registry_id for row in match_registry(line)}
+
+    assert "cuda_oom" in ids
+    assert FailureClassifier.CUDA_OOM.value in failure_signal_classifiers(line)
