@@ -2,6 +2,12 @@
 
 NVIDIA Resiliency Extension is a Python package for framework developers and users to implement fault-tolerant features. It improves effective training time by minimizing downtime due to failures and interruptions.
 
+## Unreleased
+
+### Removals
+
+- **In-process restart has been removed**, including the `nvidia_resiliency_ext.inprocess` package, its documentation, examples, and tests. Use in-job restart through `ft_launcher`; see the [Fault Tolerance usage guide](fault_tolerance/usage_guide.rst).
+
 ## NVIDIA Resiliency Extension v0.7.0
 
 ### Highlights
