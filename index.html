@@ -48,7 +48,6 @@
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="release-notes.html">Release Notes</a></li>
 <li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a></li>
-<li class="toctree-l1"><a class="reference internal" href="inprocess/index.html">Inprocess Restart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
@@ -83,13 +82,10 @@
   <section id="nvidia-resiliency-ext">
 <h1>nvidia-resiliency-ext<a class="headerlink" href="#nvidia-resiliency-ext" title="Link to this heading"></a></h1>
 <p><strong>nvidia-resiliency-ext</strong> is a set of tools developed by NVIDIA to improve large-scale distributed training resiliency.</p>
-<a class="reference internal image-reference" href="_images/nvrx_docs_source.png"><img alt="Figure highlighting core NVRx features including automatic restart, hierarchical checkpointing, fault detection and health checks." src="_images/nvrx_docs_source.png" width="750" />
-</a>
 <section id="features">
 <h2>Features<a class="headerlink" href="#features" title="Link to this heading"></a></h2>
 <ul class="simple">
 <li><p><a class="reference external" href="fault_tolerance/index.html">Hang detection and automatic in-job restarting</a></p></li>
-<li><p><a class="reference external" href="inprocess/index.html">In-process restarting</a></p></li>
 <li><p><a class="reference external" href="checkpointing/async/index.html">Async checkpointing</a></p></li>
 <li><p><a class="reference external" href="checkpointing/local/index.html">Local checkpointing</a></p></li>
 <li><p><a class="reference external" href="straggler_det/index.html">Straggler (slower ranks) detection</a></p></li>
@@ -100,6 +96,10 @@
 <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="release-notes.html">Release Notes</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="release-notes.html#unreleased">Unreleased</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="release-notes.html#removals">Removals</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="release-notes.html#nvidia-resiliency-extension-v0-7-0">NVIDIA Resiliency Extension v0.7.0</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="release-notes.html#highlights">Highlights</a></li>
 <li class="toctree-l3"><a class="reference internal" href="release-notes.html#deprecations-removals">Deprecations &amp; Removals</a></li>
@@ -168,7 +168,6 @@
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/heartbeats.html">Heartbeats API Integration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/sections.html">Sections API Integration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/ptl.html">PyTorch Lightning Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/inprocess.html">FT Launcher &amp; Inprocess integration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/segment_health_check.html">Segment Health Check</a></li>
 </ul>
 </li>
@@ -184,36 +183,6 @@
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/train_ddp_sections.html">Section API usage example with DDP</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
-</ul>
-</li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="inprocess/index.html">Inprocess Restart</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="inprocess/usage_guide.html">Usage Guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#requirements">Requirements</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#running-with-slurm">Running with SLURM</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#restrictions">Restrictions</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#functionality-overview">Functionality overview</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#restart-latency">Restart latency</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/usage_guide.html#known-issues">Known issues</a></li>
-</ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="inprocess/api.html">API documentation</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/wrap.html">Wrapper</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/compose.html">Compose</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/state.html">State</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/rank_assignment.html">Rank Assignment</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/rank_filter.html">Rank Filter</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/initialize.html">Initialize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/abort.html">Abort</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/finalize.html">Finalize</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/health_check.html">Health Check</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/api/exception.html">Exceptions</a></li>
-</ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="inprocess/examples.html">Examples</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/examples/basic_example.html">Basic usage example</a></li>
-<li class="toctree-l3"><a class="reference internal" href="inprocess/examples/optimal_example.html">Advanced usage example</a></li>
 </ul>
 </li>
 </ul>
