@@ -356,6 +356,11 @@ class SlurmJobMonitor:
                     job.stdout_path = prev_job.stdout_path
                 if not job.stderr_path and prev_job.stderr_path:
                     job.stderr_path = prev_job.stderr_path
+                # scontrol stops reporting these once a job leaves the queue.
+                if not job.work_dir and prev_job.work_dir:
+                    job.work_dir = prev_job.work_dir
+                if not job.script and prev_job.script:
+                    job.script = prev_job.script
                 self.state.jobs[job_id] = job
 
             tracked_job = self.state.jobs[job_id]
@@ -365,7 +370,11 @@ class SlurmJobMonitor:
 
             log_paths = self._get_log_paths(tracked_job)
             if not log_paths:
-                if tracked_job.app_log_missing:
+                # Only settle once the allocation is over. A running job that
+                # has not written its application log yet will write one;
+                # retiring it here means the log appears, registration is
+                # already blocked, and the run is never analyzed at all.
+                if tracked_job.app_log_missing and tracked_job.state.is_terminal():
                     tracked_job.log_submitted = True  # settled; nothing to analyze
                 continue
 
@@ -415,6 +424,21 @@ class SlurmJobMonitor:
             return False
         self.state.submitted_log_paths.add(log_path)
         return True
+
+    def release_log_claim(self, log_path: str) -> None:
+        """Return a submit claim that never settled, so the next poll retries.
+
+        A request that times out calls neither callback: the POST may or may
+        not have landed, but the claim is held either way, and the job is then
+        treated as a duplicate forever and never reaches terminal analysis.
+        """
+        self.state.submitted_log_paths.discard(log_path)
+
+    def release_analysis_claim(self, log_path: str, run_id: str = "") -> None:
+        """Return an analysis claim that never settled, and reopen the gate."""
+        self.state.analyzed_log_paths.discard(log_path)
+        if run_id and self.state.cycle_inflight.get(run_id) == log_path:
+            self.state.cycle_inflight.pop(run_id, None)
 
     def _claim_analysis_path(self, job: SlurmJob, log_path: str) -> bool:
         """Claim ``log_path`` for analysis; False when a sibling task already analyzed it.
@@ -483,10 +507,19 @@ class SlurmJobMonitor:
                 if tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
                     self._mark_get_exhausted(job_id, tracked_job)
                     continue
-                for log_path in self._get_log_paths(tracked_job):
+                # Same gate as the in-flight path: L3 compares an attempt
+                # against those that have *completed*, so a job going terminal
+                # must not fan its remaining cycles out at once.
+                run_paths = self._get_log_paths(tracked_job)
+                run_id = self._analysis_job_id(tracked_job, run_paths[0] if run_paths else "")
+                if self.state.cycle_inflight.get(run_id):
+                    continue
+                for log_path in run_paths:
                     if self._claim_analysis_path(tracked_job, log_path):
+                        self.state.cycle_inflight[run_id] = log_path
                         tracked_job.get_attempts += 1
                         jobs_to_fetch.append((tracked_job, log_path))
+                        break
 
         return jobs_to_fetch
 
@@ -514,6 +547,8 @@ class SlurmJobMonitor:
                 state=JobState.from_str(info["state"]),
                 stdout_path=info["stdout_path"],
                 stderr_path=info["stderr_path"],
+                work_dir=info.get("work_dir", ""),
+                script=info.get("command", ""),
             )
 
         return jobs
@@ -634,19 +669,31 @@ class SlurmJobMonitor:
 
     def _analyze_completed_cycle(self, job: SlurmJob, log_path: str) -> None:
         """Run a full analysis of a cycle a successor has proven complete."""
-        analyze_completed_cycle(
+        run_id = self._analysis_job_id(job, log_path)
+        accepted = analyze_completed_cycle(
             job,
             log_path,
             self.state,
             self._attrsvc_client,
-            self._analysis_job_id(job, log_path),
+            run_id,
         )
+        if not accepted:
+            # The claim was taken before the request. Keeping it on a failure
+            # would skip this cycle permanently and submit its successors
+            # without its history - the gap the gate exists to prevent.
+            with self._state_lock:
+                self.release_analysis_claim(log_path, run_id)
 
     def _submit_log(self, job: SlurmJob, log_path: str) -> None:
         """Submit a log file to the attribution service."""
         submit_log(
             job, log_path, self.state, self._attrsvc_client, self._analysis_job_id(job, log_path)
         )
+        if not job.log_submitted:
+            # Neither callback fired, so the request never settled. Hand the
+            # claim back rather than treating the next poll as a duplicate.
+            with self._state_lock:
+                self.release_log_claim(log_path)
 
     def _fetch_results(self, job: SlurmJob, log_path: str) -> None:
         """Fetch attribution results for a completed job."""
@@ -671,3 +718,20 @@ class SlurmJobMonitor:
                 for job_id, _ in done_jobs[:to_remove]:
                     del self.state.jobs[job_id]
                 logger.debug(f"Cleaned up {to_remove} old completed jobs from state")
+
+            # The claim sets exist to stop sibling array tasks resubmitting one
+            # log. Once no retained job can resolve to a path, nothing is left
+            # to deduplicate against, and keeping it only grows the process.
+            # The counters are cumulative and are not derived from these sets.
+            live_paths = {
+                path for job in self.state.jobs.values() for path in self._get_log_paths(job)
+            }
+            for claimed in (self.state.submitted_log_paths, self.state.analyzed_log_paths):
+                stale = claimed - live_paths
+                if stale:
+                    claimed -= stale
+            self.state.cycle_inflight = {
+                run_id: path
+                for run_id, path in self.state.cycle_inflight.items()
+                if path in live_paths
+            }

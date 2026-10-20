@@ -159,3 +159,99 @@ def test_analysis_identity_keeps_the_task_when_resolution_is_off():
     job = _job()
 
     assert monitor._analysis_job_id(job, f"{BASE}_cycle0.log") == "4173891_96"
+
+
+# ─── a log that has not appeared yet is not a log that never will ───
+
+
+def test_a_running_job_without_its_log_yet_is_not_retired():
+    """The log appears after the first poll for nearly every job.
+
+    Settling the job on that first empty poll left registration permanently
+    blocked, so when the log did appear it was never submitted and the run was
+    never analyzed at all.
+    """
+    monitor = _monitor([])
+    job = _job(state=JobState.RUNNING)
+    job.app_log_missing = True
+    monitor.state.jobs[job.job_id] = job
+
+    monitor._sync_jobs_from_slurm({job.job_id: job})
+
+    assert job.log_submitted is False, "a running job must stay eligible"
+
+
+def test_a_terminal_job_that_never_wrote_a_log_is_retired():
+    monitor = _monitor([])
+    job = _job(state=JobState.FAILED)
+    job.app_log_missing = True
+    monitor.state.jobs[job.job_id] = job
+
+    monitor._sync_jobs_from_slurm({job.job_id: job})
+
+    assert job.log_submitted is True
+
+
+# ─── a claim that never settled must not retire the work ───
+
+
+def test_a_cycle_whose_request_failed_is_retried():
+    # The claim is taken before the POST. Holding it through a failure skips
+    # that cycle forever and submits its successors without its history.
+    monitor = _monitor(_cycles(3))
+    job = _job()
+    monitor.state.jobs[job.job_id] = job
+    _, cycles = monitor._sync_jobs_from_slurm({job.job_id: job})
+    assert len(cycles) == 1
+    claimed = cycles[0][1]
+
+    run_id = monitor._analysis_job_id(job, claimed)
+    monitor.release_analysis_claim(claimed, run_id)
+
+    _, retry = monitor._sync_jobs_from_slurm({job.job_id: job})
+    assert [path for _job, path in retry] == [claimed], "the failed cycle must come back"
+
+
+def test_a_submission_whose_request_failed_is_retried():
+    monitor = _monitor(_cycles(1))
+    job = _job()
+    monitor.state.jobs[job.job_id] = job
+    submit, _ = monitor._sync_jobs_from_slurm({job.job_id: job})
+    assert len(submit) == 1
+    claimed = submit[0][1]
+
+    monitor.release_log_claim(claimed)
+
+    submit_again, _ = monitor._sync_jobs_from_slurm({job.job_id: job})
+    assert [path for _job, path in submit_again] == [claimed]
+
+
+# ─── the terminal path obeys the same gate ───
+
+
+def test_a_job_going_terminal_does_not_fan_its_cycles_out():
+    """L3 needs an ordered sequence, including when the allocation ends.
+
+    The terminal collector claimed every unanalyzed cycle in one pass, which
+    sent them concurrently and defeated the serialization the in-flight path
+    takes care to maintain.
+    """
+    monitor = _monitor(_cycles(4))
+    job = _job(state=JobState.FAILED)
+    job.post_success = True
+    monitor.state.jobs[job.job_id] = job
+
+    to_fetch = monitor._collect_jobs_for_fetch()
+
+    assert len(to_fetch) == 1, f"expected one cycle at a time, got {len(to_fetch)}"
+
+
+def test_the_terminal_path_waits_for_an_in_flight_cycle():
+    monitor = _monitor(_cycles(4))
+    job = _job(state=JobState.FAILED)
+    job.post_success = True
+    monitor.state.jobs[job.job_id] = job
+    run_id = monitor._analysis_job_id(job, _cycles(4)[0])
+    monitor.state.cycle_inflight[run_id] = _cycles(4)[0]
+
+    assert monitor._collect_jobs_for_fetch() == []

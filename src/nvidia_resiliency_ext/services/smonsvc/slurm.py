@@ -244,10 +244,10 @@ class SlurmClient:
             # Second pass: create job info dicts
             jobs: dict[str, dict] = {}
             for job_id, name, user, partition, state in parsed_jobs:
+                info = fetched_paths.get(job_id)
                 if job_id in existing_paths:
                     stdout_path, stderr_path = existing_paths[job_id]
                 else:
-                    info = fetched_paths.get(job_id)
                     stdout_path = info.stdout if info else ""
                     stderr_path = info.stderr if info else ""
 
@@ -258,6 +258,12 @@ class SlurmClient:
                     "state": state,
                     "stdout_path": stdout_path,
                     "stderr_path": stderr_path,
+                    # Carried through discovery, not just the terminal refresh:
+                    # resolving where a launcher wrote its logs needs the submit
+                    # script, and dropping these left that fallback unreachable
+                    # for every normally discovered job.
+                    "work_dir": info.work_dir if info else "",
+                    "command": info.command if info else "",
                 }
 
             return jobs

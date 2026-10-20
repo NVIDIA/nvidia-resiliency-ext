@@ -258,9 +258,14 @@ def _logs_for_job(log_dir: Path, base: str) -> list[Path]:
     """Non-empty, non-sidecar logs in ``log_dir`` belonging to ``base``."""
     found = []
     for path in log_dir.glob(f"*_{base}_*.log"):
-        if not path.is_file() or _is_sidecar(path):
+        if _is_sidecar(path):
             continue
         try:
+            # Inside the guard: a symlink into an unreadable directory makes
+            # is_file() raise, and that would abort resolution for every job
+            # in this poll, not just the one that owns the bad path.
+            if not path.is_file():
+                continue
             size = path.stat().st_size
         except OSError:
             continue
@@ -437,6 +442,8 @@ def resolve_app_logs(
     for path in cycles:
         runs.setdefault(_run_stem(path), []).append(path)
     series = max(runs.values(), key=lambda group: max(_mtime(member) for member in group))
-    if len(series) < 2:
-        return [best]
+    # Return the newest run even when it is one cycle long. Falling back to
+    # ``best`` here hands back a file ranked by cycle number across all runs,
+    # so an older run's cycle 2 would outrank the live run's cycle 0 and the
+    # monitor would analyze the run that already finished.
     return [str(p) for p in sorted(series, key=_rank_key)]

@@ -17,6 +17,9 @@ from nvidia_resiliency_ext.attribution import (
     JobMode,
     parse_attrsvc_response,
 )
+from nvidia_resiliency_ext.attribution.orchestration.client_response import (
+    ATTRSVC_INCOMPLETE_STATUSES as _ANALYSIS_IN_PROGRESS_STATUSES,
+)
 from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TERMINAL
 from nvidia_resiliency_ext.attribution.orchestration.types import RECOMMENDATION_TIMEOUT
 
@@ -159,11 +162,17 @@ def cycle_analysis_finished(
 ) -> bool:
     """Whether ``log_path``'s analysis has settled, so the next cycle may start.
 
-    Fails open: a GET that errors or 404s means attrsvc has no running record
-    for the path, and holding the job's remaining cycles hostage to a lost
-    request would stall attribution for that run indefinitely.
+    Probes with ``wait=False``: ``GET /logs`` blocks until the analysis finishes
+    by default, which would stall the monitor for the length of an analysis and
+    then report "settled" when the request timed out rather than when the work
+    ended.
+
+    Fails closed. The gate exists so cycle N's history is available to cycle
+    N+1; opening it on a lost request trades the guarantee for liveness. A 404
+    is the one safe open: attrsvc has no record of the path, so nothing is
+    running and the next cycle cannot be racing anything.
     """
-    settled = True
+    settled = False
 
     def on_success(response):
         nonlocal settled
@@ -171,7 +180,13 @@ def cycle_analysis_finished(
             status = (response.json() or {}).get("status")
         except Exception:
             return
-        settled = status not in ("registered", "analyzing", "pending")
+        # The public lifecycle vocabulary, not the backend's internal names:
+        # a running analysis reports "in_flight", never "analyzing".
+        settled = status not in _ANALYSIS_IN_PROGRESS_STATUSES
+
+    def on_missing(*_args):
+        nonlocal settled
+        settled = True
 
     attrsvc_client.request_with_retry(
         method="GET",
@@ -179,6 +194,8 @@ def cycle_analysis_finished(
         log_path=log_path,
         on_success=on_success,
         on_client_error=lambda _error: None,
+        on_404=on_missing,
+        wait=False,
     )
     return settled
 
@@ -189,16 +206,21 @@ def analyze_completed_cycle(
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
     analysis_job_id: str | None = None,
-) -> None:
+) -> bool:
     """Analyze a cycle log that a successor cycle has proven complete.
 
     Waiting for SLURM to go terminal is the wrong trigger for a job that
     restarts in place: the allocation stays RUNNING across every cycle, so the
     alert would arrive only when some array task happens to die, hours after
     the failure it describes.
+
+    Returns whether the request was accepted, so a caller holding the claim for
+    this cycle can hand it back when it was not.
     """
     if request_terminal_analysis(job, log_path, attrsvc_client, analysis_job_id):
         state.completed_cycles_analyzed += 1
+        return True
+    return False
 
 
 def fetch_results(
