@@ -1,0 +1,9 @@
+# Runtime dependencies for the standalone Attribution Service image.
+# The root package is installed with --no-deps so workload-side dependencies,
+# notably PyTorch and CUDA, are not included in this CPU service image.
+fastapi>=0.100.0
+httpx>=0.24.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+slowapi>=0.1.9
+uvicorn[standard]>=0.20.0

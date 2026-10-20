@@ -81,7 +81,7 @@ class TestAsyncSave:
             ), "After a valid CP save, we expect async process to be running"
             assert async_process._debug_is_async_process_running(), "Valid async process expected"
 
-            # Abort the CP workers to mock the action of inprocess restarts
+            # Abort the CP workers to verify checkpoint cleanup
             abort_nvrx_checkpoint()
 
             # Validate clean-up of NVrx CP workers is done
@@ -145,7 +145,7 @@ class TestAsyncSave:
             ), "After a valid CP save, we expect async process to be running"
             assert async_process._debug_is_async_process_running(), "Valid async process expected"
 
-            # Abort the CP workers to mock the action of inprocess restarts
+            # Abort the CP workers to verify checkpoint cleanup
             # Note that the previous async CP operation has not been finalized
             # This is to test abort during ongoing async CP operations
             abort_nvrx_checkpoint()
