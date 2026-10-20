@@ -8,5 +8,4 @@ Integration Guides
    integration/heartbeats
    integration/sections
    integration/ptl
-   integration/inprocess
    integration/segment_health_check

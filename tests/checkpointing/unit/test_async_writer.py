@@ -561,7 +561,7 @@ class TestAsyncSave:
             async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
             ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
 
-            # Abort the CP workers to mock the action of inprocess restarts
+            # Abort the CP workers to verify checkpoint cleanup
             abort_nvrx_checkpoint()
 
             # validate state of the Async CP workers after abort operation
@@ -623,7 +623,7 @@ class TestAsyncSave:
     def test_async_cp_with_multiple_queue_and_abort_followed_by_delete(self, tmp_path_dist_ckpt):
         """
         Test that persistent async CP worker shuts down cleanly after an abort operation.
-        This test mocks the behavior of training exiting after an abort triggered by an inprocess restart.
+        This test mocks training exiting after checkpoint workers are aborted.
         """
         Utils.initialize_distributed()
         model = FSDP(Model((1024, 1024), 8))
@@ -645,8 +645,7 @@ class TestAsyncSave:
                     raise RuntimeError("Fake exception to mock training process exception")
                     async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
             finally:
-                # Mock behavior of an abort operation triggered by inprocess restart when exception occurs.
-                # Abort the CP workers to mock the action of inprocess restarts
+                # Abort the CP workers after a training exception to verify checkpoint cleanup.
                 abort_nvrx_checkpoint()
         # Mock training loop exit which would invoke a __del__ on async queue object
         async_queue_dist.__del__()
