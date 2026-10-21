@@ -46,7 +46,12 @@ from .data import (
     UpdateConfigMsg,
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
-from .timeout_diagnostics import ToolCapture, parse_capture_sections, parse_capture_tools
+from .timeout_diagnostics import (
+    ToolCapture,
+    parse_capture_sections,
+    parse_capture_tools,
+    staging_dir,
+)
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
 
 
@@ -340,6 +345,16 @@ class RankMonitorServer:
                 self.logger.warning("Could not stage timeout capture: %s", exc)
             finally:
                 capture.output.clear()
+        if captures:
+            self.logger.info(
+                "Timeout captures: cycle=%s global_rank=%s local_rank=%s pid=%s %s dir=%s",
+                cycle,
+                rank_info.global_rank,
+                rank_info.local_rank,
+                rank_info.pid,
+                " ".join(f"{capture.tool}={capture.status}" for capture in captures),
+                staging_dir(self.cfg) / f"cycle{cycle}",
+            )
         if cancelled:
             raise asyncio.CancelledError
 

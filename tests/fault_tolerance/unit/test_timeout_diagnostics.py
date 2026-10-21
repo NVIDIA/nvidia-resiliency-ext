@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import contextlib
 import os
 import signal
 import socket
@@ -53,10 +54,10 @@ def cfg(tmp_path, monkeypatch):
     return config
 
 
-def ready(cfg, rank=0, cycle=0, payload=None):
+def ready(cfg, rank=0, cycle=0, payload=None, tool="pyspy"):
     directory = staging_dir(cfg) / f"cycle{cycle}"
     directory.mkdir(exist_ok=True)
-    path = directory / f"rank{rank}_pid{100 + rank}_pyspy.txt.ready"
+    path = directory / f"rank{rank}_pid{100 + rank}_{tool}.txt.ready"
     path.write_text(payload or f"rank {rank}\n")
     return path
 
@@ -69,11 +70,14 @@ def final_path(cfg, cycle=0):
     return destination(cfg) / f"cycle{cycle}" / "node42_pyspy.txt"
 
 
-def fake_pyspy(cfg, tmp_path, body):
-    executable = tmp_path / "py-spy"
+def fake_tool(cfg, tmp_path, body, tool="pyspy"):
+    executable = tmp_path / tool
     executable.write_text(f"#!{sys.executable}\n" + body)
     executable.chmod(0o700)
-    cfg.timeout_dump_pyspy = str(executable)
+    cfg.timeout_dump = tool
+    setattr(cfg, "timeout_dump_" + tool.replace("-", "_"), str(executable))
+    if tool == "cuda-gdb":
+        cfg.timeout_dump_cuda_gdb_mode = "stdin"
 
 
 def monitor(cfg):
@@ -94,6 +98,103 @@ def test_publish_then_late_capture(cfg):
     assert final_path(cfg).read_text() == "rank 0\nrank 1\n"
     assert not second.exists()
     assert not final_path(cfg).with_suffix(".txt.partial").exists()
+
+
+@pytest.mark.parametrize("local_world_size", [2, 4, 8])
+def test_incomplete_batch_collects_late_ranks_on_next_poll(cfg, local_world_size):
+    collector = DiagnosticCollector(
+        cfg, destination(cfg), "node42", local_world_size=local_world_size
+    )
+    first = ready(cfg)
+    with patch.object(collector, "publish", wraps=collector.publish) as publish:
+        collector.tick()
+        publish.assert_not_called()
+        assert first.exists()
+        assert collector.batches[("cycle0", "pyspy")].attempts == 0
+        for rank in range(1, local_world_size):
+            ready(cfg, rank=rank)
+        collector.tick()
+        publish.assert_called_once()
+        assert len(publish.call_args.args[1].paths) == local_world_size
+        collector.tick()
+        publish.assert_called_once()
+    assert final_path(cfg).read_text() == "".join(
+        f"rank {rank}\n" for rank in range(local_world_size)
+    )
+    assert not list(staging_dir(cfg).glob("cycle0/*.ready"))
+
+
+def test_incomplete_batch_publishes_next_poll_even_when_more_arrive(cfg):
+    collector = DiagnosticCollector(cfg, destination(cfg), "node42", local_world_size=4)
+    ready(cfg)
+    collector.tick()
+    assert not final_path(cfg).exists()
+    ready(cfg, rank=1)
+    collector.tick()  # New arrivals must not restart the wait for missing ranks.
+    assert final_path(cfg).read_text() == "rank 0\nrank 1\n"
+    late = ready(cfg, rank=2)
+    collector.tick()
+    assert late.exists()
+    collector.tick()
+    assert final_path(cfg).read_text() == "rank 0\nrank 1\nrank 2\n"
+    assert not late.exists()
+
+
+def test_complete_tool_does_not_wait_for_incomplete_tool_or_cycle(cfg):
+    collector = DiagnosticCollector(cfg, destination(cfg), "node42", local_world_size=4)
+    for rank in range(4):
+        ready(cfg, rank=rank, tool="gdb")
+    ready(cfg)
+    ready(cfg, cycle=1)
+    collector.tick()
+    gdb = destination(cfg) / "cycle0/node42_gdb.txt"
+    assert gdb.read_text() == "rank 0\nrank 1\nrank 2\nrank 3\n"
+    assert not final_path(cfg).exists()
+    assert not final_path(cfg, cycle=1).exists()
+    collector.tick()
+    assert final_path(cfg).read_text() == "rank 0\n"
+    assert final_path(cfg, cycle=1).read_text() == "rank 0\n"
+
+
+def test_multiple_pids_of_one_rank_do_not_make_a_complete_batch(cfg):
+    collector = DiagnosticCollector(cfg, destination(cfg), "node42", local_world_size=2)
+    ready(cfg)
+    (staging_dir(cfg) / "cycle0/rank0_pid200_pyspy.txt.ready").write_text("replacement rank 0\n")
+    collector.tick()
+    assert not final_path(cfg).exists()
+    collector.tick()
+    assert final_path(cfg).read_text() == "rank 0\nreplacement rank 0\n"
+
+
+@pytest.mark.parametrize("already_deferred", [False, True])
+def test_shutdown_flush_publishes_incomplete_batches_immediately(cfg, already_deferred):
+    collector = DiagnosticCollector(cfg, destination(cfg), "node42", local_world_size=4)
+    source = ready(cfg)
+    if already_deferred:
+        collector.tick()
+    collector.tick(flush=True)
+    assert final_path(cfg).read_text() == "rank 0\n"
+    assert not source.exists()
+
+
+def test_deferred_batch_freezes_inputs_only_after_first_upload_attempt(cfg):
+    collector = DiagnosticCollector(cfg, destination(cfg), "node42", local_world_size=4)
+    first = ready(cfg)
+    collector.tick()
+    second = ready(cfg, rank=1)
+    with patch("os.replace", side_effect=OSError("Lustre unavailable")):
+        collector.tick()
+    batch = collector.batches[("cycle0", "pyspy")]
+    assert batch.attempts == 1
+    assert batch.paths == (first, second)
+    third = ready(cfg, rank=2)
+    collector.tick()
+    assert final_path(cfg).read_text() == "rank 0\nrank 1\n"
+    assert third.exists()
+    collector.tick()
+    collector.tick()
+    assert final_path(cfg).read_text() == "rank 0\nrank 1\nrank 2\n"
+    assert not third.exists()
 
 
 def test_publication_does_not_remove_directory_under_producer(cfg):
@@ -142,16 +243,22 @@ def test_late_capture_gets_new_budget_after_batch_exhaustion(cfg):
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-def test_blocked_launch_cannot_delay_worker_termination(cfg, cancel):
-    cfg.timeout_dump = "pyspy,gdb"
+@pytest.mark.parametrize("tool", ["pyspy", "cuda-gdb"])
+def test_blocked_launch_cannot_delay_worker_termination(cfg, cancel, tool):
+    cfg.timeout_dump = f"{tool},gdb"
+    cfg.timeout_dump_cuda_gdb_mode = "stdin"
     server = monitor(cfg)
+    server.rank_info.pid = os.getpid()
     server._timed_out_sections = {"step"}
     entered = threading.Event()
     release = threading.Event()
     popen = subprocess.Popen
     captures = []
+    inputs = []
 
     def blocked_launch(*args, **kwargs):
+        if tool == "cuda-gdb":
+            inputs.append(kwargs["stdin"])
         entered.set()
         assert release.wait(5), "test did not release debugger startup"
         return popen([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
@@ -199,6 +306,7 @@ def test_blocked_launch_cannot_delay_worker_termination(cfg, cancel):
             capture._launch_thread.join(timeout=3)
             assert not capture.is_running()
             assert capture.process.returncode == -signal.SIGKILL
+        assert all(stream.closed for stream in inputs)
 
 
 def test_retry_rebuilds_partial_keeps_old_final_and_fixed_inputs(cfg):
@@ -482,9 +590,13 @@ def test_reused_pid_is_not_signalled(cfg):
     kill.assert_not_called()
 
 
-def test_hanging_capture_does_not_delay_termination_or_publish_writer(cfg, tmp_path):
-    fake_pyspy(cfg, tmp_path, "import time\nprint('partial stack', flush=True)\ntime.sleep(30)\n")
+@pytest.mark.parametrize("tool", ["pyspy", "cuda-gdb"])
+def test_hanging_capture_does_not_delay_termination_or_publish_writer(cfg, tmp_path, tool):
+    fake_tool(
+        cfg, tmp_path, "import time\nprint('partial stack', flush=True)\ntime.sleep(30)\n", tool
+    )
     server = monitor(cfg)
+    server.rank_info.pid = os.getpid()
     server._timed_out_sections = {"step"}
     kill_times = []
     server._shutdown_rank_if_alive.side_effect = lambda *args: kill_times.append(time.monotonic())
@@ -499,9 +611,10 @@ def test_hanging_capture_does_not_delay_termination_or_publish_writer(cfg, tmp_p
     assert proc.returncode == -signal.SIGKILL
 
 
-def test_output_cap(cfg, tmp_path):
-    fake_pyspy(cfg, tmp_path, "import os\nwhile True: os.write(1, b'x' * 65536)\n")
-    capture = asyncio.run(ToolCapture(cfg, 123, "pyspy").run())
+@pytest.mark.parametrize("tool", ["pyspy", "cuda-gdb"])
+def test_output_cap(cfg, tmp_path, tool):
+    fake_tool(cfg, tmp_path, "import os\nwhile True: os.write(1, b'x' * 65536)\n", tool)
+    capture = asyncio.run(ToolCapture(cfg, os.getpid(), tool).run())
     assert capture.status == "output_limit"
     path = capture.publish_local(RankInfo(0, 0, "node42", os.getpid()), 0, "step")
     assert path.stat().st_size <= cfg.timeout_dump_max_capture_bytes
@@ -592,9 +705,11 @@ def test_reconnect_does_not_allow_second_capture(cfg):
         assert not server._diagnostic_attempted
 
 
-def test_cancellation_still_kills_worker(cfg, tmp_path):
-    fake_pyspy(cfg, tmp_path, "import time\ntime.sleep(30)\n")
+@pytest.mark.parametrize("tool", ["pyspy", "cuda-gdb"])
+def test_cancellation_still_kills_worker(cfg, tmp_path, tool):
+    fake_tool(cfg, tmp_path, "import time\ntime.sleep(30)\n", tool)
     server = monitor(cfg)
+    server.rank_info.pid = os.getpid()
     server._timed_out_sections = {"step"}
 
     async def cancel():
@@ -614,7 +729,7 @@ def test_cancellation_still_kills_worker(cfg, tmp_path):
 
 
 def test_monitor_shutdown_during_capture_preserves_cancellation(cfg, tmp_path):
-    fake_pyspy(cfg, tmp_path, "import time\nprint('partial stack', flush=True)\ntime.sleep(30)\n")
+    fake_tool(cfg, tmp_path, "import time\nprint('partial stack', flush=True)\ntime.sleep(30)\n")
     cfg.timeout_dump_capture_timeout = 5
     server = monitor(cfg)
     server.ipc_socket_path = str(tmp_path / "worker.sock")
@@ -722,17 +837,68 @@ def test_launcher_cli_yaml_and_root_inference(cfg, tmp_path):
         "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
     ) as collector_process:
         try:
-            launcher._start_diagnostic_collector(merged, "/shared/nvrx/123/logs/launcher.log")
-            collector_process.assert_called_once_with(merged, Path("/shared/nvrx/123/diags"))
+            launcher._start_diagnostic_collector(
+                merged, "/shared/nvrx/123/logs/launcher.log", local_world_size=4
+            )
+            collector_process.assert_called_once_with(
+                merged, Path("/shared/nvrx/123/diags"), local_world_size=4
+            )
         finally:
             launcher._stop_diagnostic_collector()
         collector_process.return_value.shutdown.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    "rank_env",
+    [
+        {
+            "SLURM_JOB_ID": "123",
+            "NVRX_INFRA_RANK_FROM_NODENAME": "1",
+            "SLURMD_NODENAME": "node42",
+        },
+        {"CROSS_SLURM_PROCID": "invalid"},
+    ],
+)
+@pytest.mark.parametrize("missing_tool", [False, True])
+def test_optional_startup_rank_failure_does_not_skip_dependency_validation(
+    cfg, rank_env, missing_tool
+):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    if missing_tool:
+        cfg.timeout_dump_pyspy = "/missing/py-spy"
+    with (
+        patch.dict(os.environ, rank_env, clear=True),
+        patch.object(launcher.logger, "isEnabledFor", return_value=True),
+        patch(
+            "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.validate_capture_dependencies",
+            wraps=validate_capture_dependencies,
+        ) as validate,
+        patch(
+            "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
+        ) as process,
+    ):
+        try:
+            if missing_tool:
+                with pytest.raises(ValueError, match="'pyspy' is missing or not executable"):
+                    launcher._start_diagnostic_collector(cfg, "/shared/nvrx/123/logs/launcher.log")
+                process.assert_not_called()
+            else:
+                launcher._start_diagnostic_collector(
+                    cfg, "/shared/nvrx/123/logs/launcher.log", local_world_size=4
+                )
+                process.assert_called_once_with(
+                    cfg, Path("/shared/nvrx/123/diags"), local_world_size=4
+                )
+            validate.assert_called_once_with(cfg, log_resolved_paths=False)
+        finally:
+            launcher._stop_diagnostic_collector()
+
+
 def test_long_poll_is_interrupted_for_shutdown_upload(cfg):
     cfg.timeout_dump_poll_interval = 30
     cfg.timeout_dump_shutdown_grace = 2
-    collector_process = DiagnosticCollectorProcess(cfg, destination(cfg))
+    collector_process = DiagnosticCollectorProcess(cfg, destination(cfg), local_world_size=4)
     try:
         # Let the fork child initialize and enter its idle wait.
         time.sleep(0.2)
@@ -800,6 +966,12 @@ def test_dump_requires_logfile_in_nvrx_layout(cfg, logfile):
 
     with pytest.raises(ValueError, match="--ft-nvrx-logfile"):
         launcher._start_diagnostic_collector(cfg, logfile)
+    args = launcher.get_args_parser().parse_args(
+        ["--ft-per-cycle-applog-prefix=/shared/train.log", "train.py"]
+    )
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(ValueError, match="--ft-nvrx-logfile"):
+            launcher._validate_args(args, cfg, logfile)
 
 
 def test_collector_initial_offset_and_retry_cadence(cfg):
@@ -825,10 +997,12 @@ def test_collector_initial_offset_and_retry_cadence(cfg):
         ) as collector,
         patch("nvidia_resiliency_ext.shared_utils.log_manager.setup_logger"),
     ):
-        _collector_main(cfg, destination(cfg), 999, [], 123)
+        _collector_main(cfg, destination(cfg), 999, [], 123, 4)
+        collector.assert_called_once_with(cfg, destination(cfg), local_world_size=4)
         jitter.assert_called_once_with(0, cfg.timeout_dump_poll_interval)
         # Two normal polls, then exactly one final shutdown collection pass.
         assert collector.return_value.tick.call_count == 3
+        assert collector.return_value.tick.call_args.kwargs == {"flush": True}
     assert sleeps == [0.007, cfg.timeout_dump_poll_interval, cfg.timeout_dump_poll_interval]
 
 
@@ -859,6 +1033,31 @@ def test_validate_all_executables_and_resolve_paths(cfg):
     cfg.timeout_dump_pyspy = cfg.timeout_dump_gdb = cfg.timeout_dump_cuda_gdb = sys.executable
     validate_capture_dependencies(cfg)
     assert cfg.timeout_dump_gdb == sys.executable
+
+
+@pytest.mark.parametrize("log_resolved_paths", [False, True])
+@pytest.mark.parametrize("debug_enabled", [False, True])
+def test_dependency_summaries_require_requested_debug_logging(
+    cfg, caplog, capture_nvrx_logs, log_resolved_paths, debug_enabled
+):
+    import logging
+
+    cfg.timeout_dump = "pyspy,gdb,cuda-gdb"
+    cfg.timeout_dump_pyspy = cfg.timeout_dump_gdb = cfg.timeout_dump_cuda_gdb = sys.executable
+    with caplog.at_level(logging.DEBUG if debug_enabled else logging.INFO, logger="nvrx"):
+        validate_capture_dependencies(cfg, log_resolved_paths=log_resolved_paths)
+    summaries = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Timeout dump ")
+    ]
+    if log_resolved_paths and debug_enabled:
+        assert len(summaries) == 2
+        assert f"cuda-gdb={sys.executable} (mode=batch)" in summaries[0]
+        assert f"gdb={cfg.timeout_dump_gdb_command_file}" in summaries[1]
+        assert f"cuda-gdb={cfg.timeout_dump_cuda_gdb_command_file}" in summaries[1]
+    else:
+        assert not summaries
 
 
 def test_disabled_configuration_does_not_validate_tools(cfg):
@@ -1054,9 +1253,189 @@ def test_debugger_command_wraps_user_file(cfg, tool):
     assert command.index("set debuginfod enabled off") < command.index("attach 123")
 
 
-@pytest.mark.parametrize("tool", ["gdb", "cuda-gdb"])
-def test_capture_command_does_not_access_shared_command_file(cfg, tool):
+@pytest.mark.parametrize("mode", ["batch", "stdin"])
+def test_cuda_gdb_mode_does_not_change_other_tools(cfg, mode):
+    cfg.timeout_dump_cuda_gdb_mode = mode
+    assert "--batch" in ToolCapture(cfg, 123, "gdb").command()
+    assert ToolCapture(cfg, 123, "pyspy").command() == [sys.executable, "dump", "--pid", "123"]
+
+
+@pytest.mark.parametrize("mode", [None, "", "interactive", "STDIN", True, []])
+def test_invalid_cuda_gdb_mode_rejected(cfg, mode):
+    cfg.timeout_dump_cuda_gdb_mode = mode
+    with pytest.raises(ValueError, match="timeout_dump_cuda_gdb_mode"):
+        validate_config(cfg)
+
+
+def test_cuda_gdb_mode_yaml_and_cli(cfg, tmp_path):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    parser = launcher.get_args_parser()
+    defaults = FaultToleranceConfig.from_args(parser.parse_args(["train.py"]))
+    assert defaults.timeout_dump_cuda_gdb_mode == "batch"
+    cfg.timeout_dump_cuda_gdb_mode = "stdin"
+    path = tmp_path / "ft.yaml"
+    cfg.to_yaml_file(path)
+    yaml_args = ["--ft-cfg-path", str(path)]
+    config = FaultToleranceConfig.from_args(parser.parse_args(yaml_args + ["train.py"]))
+    assert config.timeout_dump_cuda_gdb_mode == "stdin"
+    validate_config(config)
+    config = FaultToleranceConfig.from_args(
+        parser.parse_args(yaml_args + ["--ft-timeout-dump-cuda-gdb-mode=batch", "train.py"])
+    )
+    assert config.timeout_dump_cuda_gdb_mode == "batch"
+    config = FaultToleranceConfig.from_args(
+        parser.parse_args(["--ft-timeout-dump-cuda-gdb-mode=stdin", "train.py"])
+    )
+    assert config.timeout_dump_cuda_gdb_mode == "stdin"
+    assert not config.timeout_dump_enabled
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--ft-timeout-dump-cuda-gdb-mode=interactive", "train.py"])
+    cfg.timeout_dump_cuda_gdb_mode = "invalid"
+    cfg.to_yaml_file(path)
+    config = FaultToleranceConfig.from_args(parser.parse_args(yaml_args + ["train.py"]))
+    with pytest.raises(ValueError, match="timeout_dump_cuda_gdb_mode"):
+        validate_config(config)
+
+
+@pytest.mark.parametrize("character", ["\n", "\r"])
+@pytest.mark.parametrize("symlink", [False, True])
+@pytest.mark.parametrize("mode", ["batch", "stdin"])
+def test_command_path_newlines_are_validated_at_startup(cfg, tmp_path, character, symlink, mode):
+    cfg.timeout_dump = "cuda-gdb"
+    cfg.timeout_dump_cuda_gdb = sys.executable
+    cfg.timeout_dump_cuda_gdb_mode = mode
+    path = tmp_path / f"commands{character}quit.gdb"
+    path.write_text("info cuda kernels\n")
+    if symlink:
+        link = tmp_path / "commands.gdb"
+        link.symlink_to(path)
+        path = link
+    cfg.timeout_dump_cuda_gdb_command_file = str(path)
+    if mode == "stdin":
+        with pytest.raises(ValueError, match="single line"):
+            validate_capture_dependencies(cfg)
+    else:
+        validate_capture_dependencies(cfg)
+        command = ToolCapture(cfg, 123, "cuda-gdb").command()
+        assert command[command.index("-x") + 1] == str(path.resolve())
+
+
+@pytest.mark.parametrize(
+    "field,value,override",
+    [
+        ("timeout_dump_cuda_gdb_mode", "invalid", "--ft-timeout-dump-cuda-gdb-mode=batch"),
+        ("timeout_dump_capture_timeout", 0, "--ft-timeout-dump-capture-timeout=60"),
+    ],
+)
+def test_launcher_validates_merged_dump_settings_before_startup(
+    cfg, tmp_path, field, value, override
+):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    setattr(cfg, field, value)
+    path = tmp_path / "ft.yaml"
+    cfg.to_yaml_file(path)
+    parser = launcher.get_args_parser()
+    options = [
+        "--ft-cfg-path",
+        str(path),
+        "--ft-nvrx-logfile=/shared/nvrx/123/logs/launcher.log",
+        "--ft-per-cycle-applog-prefix=/shared/train.log",
+    ]
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch.object(launcher, "determine_local_world_size") as local_world_size,
+        patch.object(launcher, "_start_diagnostic_collector") as collector,
+    ):
+        with pytest.raises(ValueError, match=field):
+            launcher.config_from_args(parser.parse_args(options + ["train.py"]))
+        local_world_size.assert_not_called()
+        collector.assert_not_called()
+        # CLI overrides are applied before validation, including disabling dumps.
+        launcher._validate_args(parser.parse_args(options + [override, "train.py"]))
+        launcher._validate_args(
+            parser.parse_args(options + ["--ft-timeout-dump-enabled=false", "train.py"])
+        )
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_stdin_capture_preserves_commands_errors_and_exit_code(cfg, tmp_path, exit_code):
+    fake_tool(
+        cfg,
+        tmp_path,
+        "import os, stat, sys\n"
+        "assert '--batch' not in sys.argv and '-x' not in sys.argv\n"
+        "assert stat.S_ISREG(os.fstat(0).st_mode)\n"
+        "print(sys.stdin.read(), end='')\n"
+        "print('example dump command error', file=sys.stderr)\n"
+        f"sys.exit({exit_code})\n",
+        "cuda-gdb",
+    )
+    commands = tmp_path / 'custom "quoted" \\ commands.gdb'
+    commands.write_text("info cuda kernels\n")
+    cfg.timeout_dump_cuda_gdb_command_file = str(commands)
+    cfg.timeout_dump_capture_timeout = 2
+    capture = ToolCapture(cfg, os.getpid(), "cuda-gdb")
+    inputs = []
+    popen = subprocess.Popen
+
+    def launch(*args, **kwargs):
+        inputs.append(kwargs["stdin"])
+        return popen(*args, **kwargs)
+
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.subprocess.Popen", launch
+    ):
+        asyncio.run(capture.run())
+    assert inputs[0].closed
+    assert capture.process.returncode == exit_code
+    assert capture.status == ("completed" if exit_code == 0 else "exit_7")
+    assert capture.stdin_commands().encode() in capture.output
+    assert f"source {commands}\ndetach\nquit\n".encode() in capture.output
+    assert b"example dump command error" in capture.output
+    path = capture.publish_local(RankInfo(42, 0, "node42", os.getpid()), 0, "step")
+    result = path.read_text()
+    assert "mode=stdin" in result
+    assert f"exit_code={exit_code}" in result
+    DiagnosticCollector(cfg, destination(cfg), "node42").tick()
+    assert (destination(cfg) / "cycle0/node42_cuda-gdb.txt").read_text() == result
+
+
+@pytest.mark.parametrize("failure", ["popen", "commands"])
+def test_stdin_launch_failure_closes_memfd(cfg, failure):
+    cfg.timeout_dump_cuda_gdb_mode = "stdin"
+    cfg.timeout_dump_cuda_gdb = "/missing/cuda-gdb"
+    capture = ToolCapture(cfg, os.getpid(), "cuda-gdb")
+    descriptors = []
+    create = os.memfd_create
+
+    def memfd(*args, **kwargs):
+        fd = create(*args, **kwargs)
+        descriptors.append(fd)
+        return fd
+
+    with patch("os.memfd_create", memfd), contextlib.ExitStack() as stack:
+        if failure == "commands":
+            stack.enter_context(
+                patch.object(
+                    capture, "stdin_commands", side_effect=OSError("cannot prepare commands")
+                )
+            )
+        asyncio.run(capture.run())
+    assert capture.status.startswith("error:")
+    assert capture.process is None
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+@pytest.mark.parametrize(
+    "tool,mode", [("gdb", "batch"), ("cuda-gdb", "batch"), ("cuda-gdb", "stdin")]
+)
+def test_capture_command_does_not_access_shared_command_file(cfg, tool, mode):
     cfg.timeout_dump = tool
+    cfg.timeout_dump_cuda_gdb_mode = mode
     setattr(cfg, "timeout_dump_" + tool.replace("-", "_"), sys.executable)
     validate_capture_dependencies(cfg)
     expected = getattr(cfg, "timeout_dump_" + tool.replace("-", "_") + "_command_file")
@@ -1067,8 +1446,12 @@ def test_capture_command_does_not_access_shared_command_file(cfg, tool):
         patch.object(Path, "stat", side_effect=AssertionError("capture stat'ed shared path")),
         patch.object(Path, "open", side_effect=AssertionError("capture opened shared path")),
     ):
-        command = ToolCapture(cfg, 123, tool).command()
-    assert command[command.index("-x") + 1] == expected
+        capture = ToolCapture(cfg, 123, tool)
+        command = capture.command()
+        if mode == "stdin":
+            assert f"source {expected}\n" in capture.stdin_commands()
+    if mode == "batch":
+        assert command[command.index("-x") + 1] == expected
 
 
 def test_cuda_environment_matches_worker_only_selected_fields(cfg):
