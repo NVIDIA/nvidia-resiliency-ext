@@ -99,7 +99,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">signal</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">fields</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Literal</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">yaml</span>
 
@@ -206,6 +206,8 @@
 <span class="sd">      bounds. See the timeout diagnostics guide for deployment requirements.</span>
 <span class="sd">    * `timeout_dump_sections` [str] Comma-separated workload section names that</span>
 <span class="sd">      trigger capture when they time out (default: "step"). Names match exactly.</span>
+<span class="sd">    * `timeout_dump_cuda_gdb_mode` [str] CUDA-GDB command delivery: "batch"</span>
+<span class="sd">      (default) or "stdin" for automated normal command-reading mode.</span>
 
 <span class="sd">    If any timeout is None, it has no effect (as if it was +INF).</span>
 <span class="sd">    All timeouts can be deduced and set during runtime.</span>
@@ -266,6 +268,7 @@
     <span class="n">timeout_dump_pyspy</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"py-spy"</span>
     <span class="n">timeout_dump_gdb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"gdb"</span>
     <span class="n">timeout_dump_cuda_gdb</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"cuda-gdb"</span>
+    <span class="n">timeout_dump_cuda_gdb_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"batch"</span><span class="p">,</span> <span class="s2">"stdin"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"batch"</span>
     <span class="n">timeout_dump_gdb_command_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">timeout_dump_cuda_gdb_command_file</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="n">timeout_dump_capture_timeout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span>

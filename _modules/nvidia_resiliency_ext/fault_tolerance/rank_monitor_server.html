@@ -126,7 +126,12 @@
     <span class="n">UpdateConfigMsg</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.rank_monitor_state_machine</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankMonitorStateMachine</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_diagnostics</span><span class="w"> </span><span class="kn">import</span> <span class="n">ToolCapture</span><span class="p">,</span> <span class="n">parse_capture_sections</span><span class="p">,</span> <span class="n">parse_capture_tools</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_diagnostics</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">ToolCapture</span><span class="p">,</span>
+    <span class="n">parse_capture_sections</span><span class="p">,</span>
+    <span class="n">parse_capture_tools</span><span class="p">,</span>
+    <span class="n">staging_dir</span><span class="p">,</span>
+<span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">is_process_alive</span><span class="p">,</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">,</span> <span class="n">write_obj_to_ipc_stream</span>
 
 
@@ -428,6 +433,16 @@
                 <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Could not stage timeout capture: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
             <span class="k">finally</span><span class="p">:</span>
                 <span class="n">capture</span><span class="o">.</span><span class="n">output</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">captures</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                <span class="s2">"Timeout captures: cycle=</span><span class="si">%s</span><span class="s2"> global_rank=</span><span class="si">%s</span><span class="s2"> local_rank=</span><span class="si">%s</span><span class="s2"> pid=</span><span class="si">%s</span><span class="s2"> </span><span class="si">%s</span><span class="s2"> dir=</span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span>
+                <span class="n">cycle</span><span class="p">,</span>
+                <span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span>
+                <span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span><span class="p">,</span>
+                <span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">,</span>
+                <span class="s2">" "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">capture</span><span class="o">.</span><span class="n">tool</span><span class="si">}</span><span class="s2">=</span><span class="si">{</span><span class="n">capture</span><span class="o">.</span><span class="n">status</span><span class="si">}</span><span class="s2">"</span> <span class="k">for</span> <span class="n">capture</span> <span class="ow">in</span> <span class="n">captures</span><span class="p">),</span>
+                <span class="n">staging_dir</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="p">)</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">"cycle</span><span class="si">{</span><span class="n">cycle</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
+            <span class="p">)</span>
         <span class="k">if</span> <span class="n">cancelled</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">CancelledError</span>
 
