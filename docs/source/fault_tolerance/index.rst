@@ -1,23 +1,27 @@
-Fault Tolerance
-===============
+InJob restart
+=============
 
-Fault Tolerance is a Python package that features:
-   * Workload hang detection.
-   * Automatic calculation of timeouts used for hang detection.
-   * Detection of rank(s) terminated due to an error.
-   * Workload respawning in case of a failure.
+The ``nvidia_resiliency_ext.fault_tolerance`` package provides section-based
+hang detection, worker-failure detection, and coordinated worker restarting
+through ``ft_launcher``. The recommended deployment uses Megatron-LM with fixed
+section timeouts and NVRx-backed async checkpointing.
 
-Fault Tolerance is included in the ``nvidia_resiliency_ext.fault_tolerance`` package.
-
-The ``nvidia-resiliency-ext`` package also includes the PTL callback ``FaultToleranceCallback`` that simplifies FT package integration with PyTorch Lightning-based workloads.  
-``FaultToleranceCallback`` is included in the ``nvidia_resiliency_ext.ptl_resiliency`` package.
+Start with the usage guide and the GPT recovery example. A small DDP example
+demonstrates section monitoring with synchronous PyTorch checkpoints. Heartbeat
+examples are retained as legacy material and are not the recommended integration
+path. Automatic timeout calibration is
+experimental and is not sufficiently validated for the recommended deployment.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: InJob restart
 
    usage_guide
-   timeout_diagnostics
    integration
-   api
    examples
+   configuration
+   deployment
+   operations
+   services
+   timeout_diagnostics
+   api

@@ -6,17 +6,23 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
 
 ### Removals
 
-- **In-process restart has been removed**, including the `nvidia_resiliency_ext.inprocess` package, its documentation, examples, and tests. Use in-job restart through `ft_launcher`; see the [Fault Tolerance usage guide](fault_tolerance/usage_guide.rst).
+- **In-process restart has been removed**, including the `nvidia_resiliency_ext.inprocess` package, its documentation, examples, and tests. Use InJob restart through `ft_launcher`; see the [InJob restart usage guide](fault_tolerance/usage_guide.rst).
+
+- Removed the remaining deprecated `nvidia_resiliency_ext.ptl_resiliency` source
+  package, Lightning callback documentation, and its unit/NeMo functional tests
+  and Dockerfile. Integrate the underlying fault-tolerance, checkpointing, and
+  straggler APIs directly; use the Megatron GPT walkthrough for InJob training.
+  Documentation builds no longer require Lightning.
 
 ## NVIDIA Resiliency Extension v0.7.0
 
 ### Highlights
 
-- **In-job restart and resilient deployment**
+- **InJob restart and resilient deployment**
     - **Barrier rendezvous is now the only FT rendezvous implementation** ([#379](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/379)). The compatibility spelling `--ft-rdzv-impl barrier` remains accepted; `legacy` is rejected.
     - Hot-spare restart rounds prefer returning active nodes over early standbys and exclude every participant from an unhealthy Slurm array task ([#325](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/325), [#326](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/326)). Recovery is also hardened against transient over-subscription and stale participants from failed replacement groups ([#357](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/357), [#391](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/391)).
     - **Scheduler segment-health integration** lets each allocation unit publish and consume shared exclusion decisions before rendezvous, so unhealthy Slurm array tasks are omitted when eligible spares are available ([#398](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/398), [#399](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/399)). See the [Segment Health Check guide](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/integration/segment_health_check.rst).
-    - A new **singleton job-array deployment** example combines in-job hot spares with scheduler-managed replacement of an unrecoverable rendezvous-host allocation ([#383](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/383)). See the [deployment guide](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/examples/singleton_deployment.rst).
+    - A new **singleton job-array deployment** example combines InJob hot spares with scheduler-managed replacement of an unrecoverable rendezvous-host allocation ([#383](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/383)). See the [deployment guide](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/examples/singleton_deployment.rst).
     - Successful node-health responses with unusable output now fail open; only an explicit service failure or a non-empty `failed_checks` list marks the node unhealthy. The raw `fail_count` may include checks ignored by site policy ([#420](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/420)).
     - Local launcher failures no longer permanently close the shared rendezvous. Terminal worker-group failures and genuine job-wide shutdown decisions continue to close it ([#350](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/350), [#421](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/421)).
     - Progress-tracker values supplied through YAML are preserved when the corresponding CLI options are omitted ([#329](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/329)).
@@ -45,7 +51,7 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
 
 - **Legacy dynamic rendezvous has been removed.** Remove `--ft-rdzv-impl legacy`; omit the option or use `--ft-rdzv-impl barrier` ([#379](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/379)).
 - **`--ft-restart-policy` remains deprecated.** Only `any-failed` is supported and it is already the default, so remove the option from launch scripts.
-- **In-process restart remains deprecated.** New deployments should use in-job restart through `ft_launcher`.
+- **In-process restart remains deprecated.** New deployments should use InJob restart through `ft_launcher`.
 - **The `[dataflow]` extra and `nvdataflow` dependency have been removed.** Attribution export uses the configured direct HTTP endpoint instead ([9182c06](https://github.com/NVIDIA/nvidia-resiliency-ext/commit/9182c06dfc7bbf2bbe3430c13b94d9f58e84c3b0)).
 
 ### Installation
@@ -63,7 +69,7 @@ pip install 'nvidia-resiliency-ext[attribution]'
 - **Linux wheel compatibility:** published wheels target `manylinux_2_39`; systems with glibc older than 2.39, including standard Ubuntu 22.04 installations, must build from source.
 - **Python:** release wheels are published for Python 3.12 and 3.14. The package metadata still permits Python 3.10+, but Python 3.10 and 3.11 are not covered by the release wheel/CI matrix.
 - **Attribution and Restart Agent features are experimental.** APIs, service contracts, schemas, and model-route configuration may change.
-- **External attribution endpoints:** the in-job client currently submits logs over HTTP(S). Other endpoint schemes do not provide an additional transport implementation.
+- **External attribution endpoints:** the InJob client currently submits logs over HTTP(S). Other endpoint schemes do not provide an additional transport implementation.
 - **Segment-health decisions fail open** when their artifact is missing or unusable. Slurm does not evict an already running allocation merely because a node becomes drained; the decision is consumed at the next rendezvous health-check boundary.
 - **Per-cycle log aggregation is best-effort.** Failure-adjacent output may be incomplete; retain launcher/rank-monitor logs and core dumps for authoritative diagnostics.
 
@@ -71,7 +77,7 @@ pip install 'nvidia-resiliency-ext[attribution]'
 
 ### Highlights
 
-- **In-job restart**
+- **InJob restart**
     - **Barrier-based rendezvous (v2) is now the default** ([#214](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/214)). The legacy dynamic rendezvous (v1) is **deprecated** and will be removed in a future release ([#282](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282)).
     - Rendezvous protocol hardening — round-scoped keys, round-fenced CAS to prevent stale slot writes, and cleaner handling of participants exiting mid-rendezvous ([#262](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/262), [#263](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/263), [#300](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/300)).
     - Robust startup and shutdown — wait for TCPStore on initial connection ([#264](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/264)), handle signals during rendezvous ([#246](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/246)), notify peers to abort current workers on failure ([#228](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/228)), fix `terminate_mp_processes` to cover failed workers ([#270](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/270)).
@@ -79,7 +85,7 @@ pip install 'nvidia-resiliency-ext[attribution]'
         - **Simple mode** (default, `--ft-segment=None`) for H100 / non-NVSwitch systems — first `min_nodes` from `--nnodes=min:max` become active, the rest become standbys with reserved ranks. No GPU ClusterUUID required.
         - **Segment-aware mode** (`--ft-segment=N`) for NVSwitch systems (DGX H200, HGX B200) — uses GPU ClusterUUID to identify NVLink domains; nodes in the same segment get contiguous group ranks for NVLink locality. Requires `min_nodes % segment == 0`.
         - Block-aware rank assignment ([#250](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/250)) and hot-spare exit-handling fix ([#266](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/266)).
-    - **Progress-based early termination** for in-job restarts and progress-tracker enhancements ([#218](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/218), [#255](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/255)).
+    - **Progress-based early termination** for InJob restarts and progress-tracker enhancements ([#218](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/218), [#255](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/255)).
     - **External InJob control-plane (experimental)** — embed `ft_launcher` orchestration in a host control plane ([#321](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/321)). Not yet QA-validated; APIs may change.
     - Section-timeout fixes — out-of-section timeout now fires for section-less workloads, baseline iteration tracking corrected ([#261](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/261), [#299](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/299)).
     - `--max-restarts` now reflects job-level restart attempts ([#211](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/211)); `ft_launcher` runs with sensible defaults out of the box ([#205](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/205), [#271](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/271)).
@@ -126,7 +132,7 @@ pip install 'nvidia-resiliency-ext[attribution]'
 - **`--ft-restart-policy`** is deprecated ([#259](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/259)). The `min-healthy` value has been removed; only `any-failed` remains (which is also the default), so the flag is effectively a no-op in v0.6. **Migration: remove the flag from your launch scripts.** No replacement is required. The flag itself will be removed in a future release.
 - **`ptl_resiliency` package is deprecated and removed** from the wheel ([#282](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282), [#285](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/285)). PyTorch Lightning users should pin v0.5.x or migrate to the underlying `fault_tolerance` / `checkpointing` / `attribution.straggler` APIs directly.
 - **OneLogger integration** removed ([#257](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/257)).
-- **In-process restart is deprecated in v0.6** and will be removed in a future release. It is no longer the focus of the fast-restart solution. **Migration: use in-job restart via `ft_launcher`** (see the `fault_tolerance` usage guide). The existing `nvidia_resiliency_ext.inprocess` APIs continue to work in v0.6 but are no longer maintained for new feature development; bug fixes will be considered on a case-by-case basis.
+- **In-process restart is deprecated in v0.6** and will be removed in a future release. It is no longer the focus of the fast-restart solution. **Migration: use InJob restart via `ft_launcher`** (see the `fault_tolerance` usage guide). The existing `nvidia_resiliency_ext.inprocess` APIs continue to work in v0.6 but are no longer maintained for new feature development; bug fixes will be considered on a case-by-case basis.
 
 ### Installation
 
@@ -153,14 +159,14 @@ pip install nvidia-resiliency-ext[dataflow]
 
 ### Highlights
 
-- In-job restarts
-    - PRs ([185](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/185), [190](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/190), [201](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/201)) improve the scalability, profiling, and performance of in-job restarts through improvements to the rendezvous operation
+- InJob restarts
+    - PRs ([185](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/185), [190](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/190), [201](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/201)) improve the scalability, profiling, and performance of InJob restarts through improvements to the rendezvous operation
     - Key scaling and fault-tolerance improvements:
-         - **New barrier-based rendezvous operation** introduces a substantial redesign that addresses several limitations of the previous dynamic rendezvous implementation. This provides more predictable, stable, and scalable in-job behavior
+         - **New barrier-based rendezvous operation** introduces a substantial redesign that addresses several limitations of the previous dynamic rendezvous implementation. This provides more predictable, stable, and scalable InJob behavior
     - Faster termination path:
         - The worker termination timeout (--workers-stop-timeout) has been reduced from 30 seconds to 15 seconds, improving failure recovery latency and overall job responsiveness
     - New Flag for Infra-Aligned Rank Assignment:
-        - A new flag, --ft-use-infra-group-rank, allows in-job scaling to follow the infrastructure scheduler’s rank assignment, preserving topology-aware placement decisions
+        - A new flag, --ft-use-infra-group-rank, allows InJob scaling to follow the infrastructure scheduler’s rank assignment, preserving topology-aware placement decisions
     - Migration Guidance:
         - While the previous dynamic rendezvous-based implementation (v1) remains supported, users are strongly encouraged to adopt barrier-based rendezvous (v2) for improved reliability, stability, and performance
 
@@ -233,9 +239,9 @@ This hotfix release includes important bug fixes, performance improvements, and 
         - Provide opt-out configuration when creating FileSystemWriterAsync class instance to allow users to passthrough to the filesystem
     - [PR 36](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/36) - Critical bug fix to enable async checkpoint loading without errors
 
-- In-process & In-job restart
-    - [PR 35](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/35) - Nested restarter updates for in-process restart to align with in-job
-      restart, so users have a consistent experience across in-process and in-job restarts
+- In-process & InJob restart
+    - [PR 35](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/35) - Nested restarter updates for in-process restart to align with InJob
+      restart, so users have a consistent experience across in-process and InJob restarts
     - Updates to in-process nested restart functionality provided by Python Wrapper class and existing callback infrastructure with additional
       callbacks and logging
 
@@ -252,8 +258,8 @@ This hotfix release includes important bug fixes, performance improvements, and 
 
 - Support for Blackwell GPU
 - ARM based host CPU support
-- In-process & In-job restart
-    - Hierarchical in-process and in-job restart support
+- In-process & InJob restart
+    - Hierarchical in-process and InJob restart support
     - Warm spare support
 - Health checks
     - GPU health check based on NVML
@@ -300,12 +306,12 @@ We excited to introduce many new features in NVIDIA Resiliency Extension v0.2.0.
 ### Known Issues & Limitations
 
 - **For in-process restart**
-    - If there is hang, presence of SHARP raises an exception, which leads to triggering in-job restart and in-process restart.
+    - If there is hang, presence of SHARP raises an exception, which leads to triggering InJob restart and in-process restart.
     - Customer needs to disable SHARP for using in-process restart with current version.
     - Requires ENV VARs to be set as follows:
         - NCCL_NVLS_ENABLE=0 to disable SHARP.
         - NCCL_NET_PLUGIN="none" if NCCL version < 2.24.1 to avoid duplicate NCCL net plugin init.
-- **In-process and in-job restart**
+- **In-process and InJob restart**
     - These work with PyTorch version 24.07, 24.08, 24.09, and 24.10 but not with 24.11 due to a known NCCL issue.
 
 
@@ -318,4 +324,4 @@ We are excited to announce the first release of NVIDIA Resiliency Extension v0.1
 - **Straggler Detection API**
     - Provides tools for user to mark the section of code and configure the threshold to detect slow running GPU.
 - **Fault Tolerance API**
-    - Provides the rank monitor server and client, and modified torchrun launcher based on TorchElastic to automatically detect hang and ability to in-job restart the training.
+    - Provides the rank monitor server and client, and modified torchrun launcher based on TorchElastic to automatically detect hangs and restart training with InJob.

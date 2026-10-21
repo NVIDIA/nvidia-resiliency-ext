@@ -15,6 +15,8 @@
 
 #!/bin/bash
 
+set -euo pipefail
+
 NUM_TESTS=4
 RES_DIR="./ddp_test_heartbeats_results"
 WORLD_SIZE=8
@@ -79,7 +81,7 @@ do
    echo "### Starting TEST ${i}/${NUM_TESTS} ###"
    mkdir ${RES_DIR}/output_$i
 
-   echo "TEST ${i}, run ${training_parts_num}"
+   echo "TEST ${i}"
 
    # launch the training
    TRAIN_CMD="examples/fault_tolerance/train_ddp_heartbeats_api.py "

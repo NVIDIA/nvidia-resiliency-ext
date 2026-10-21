@@ -9,8 +9,9 @@ For detailed documentation and usage information about each component, please re
 ## Core Components and Capabilities
 
 - **[Fault Tolerance](https://nvidia.github.io/nvidia-resiliency-ext/fault_tolerance/index.html)**
-  - Detection of hung ranks.  
-  - Restarting training in-job, without the need to reallocate SLURM nodes.
+  - Section-based hang detection and coordinated worker restarts within a running job.
+  - [Megatron GPT recovery walkthrough](docs/source/fault_tolerance/examples/megatron_gpt.rst) with fixed CLI timeouts and NVRx-backed async checkpoints.
+  - [Small DDP example](docs/source/fault_tolerance/examples/train_ddp_sections.rst) with section monitoring and synchronous PyTorch checkpoints.
 
 - **[Async Checkpointing](https://nvidia.github.io/nvidia-resiliency-ext/checkpointing/async/index.html)**
   - Providing an efficient framework for asynchronous checkpointing.
@@ -21,10 +22,6 @@ For detailed documentation and usage information about each component, please re
 - **[Straggler Detection](https://nvidia.github.io/nvidia-resiliency-ext/straggler_det/index.html)**
   - Monitoring GPU and CPU performance of ranks.  
   - Identifying slower ranks that may impede overall training efficiency.
-
-- **Framework Integration**
-  - Facilitating seamless [fault tolerance](https://nvidia.github.io/nvidia-resiliency-ext/fault_tolerance/integration/ptl.html) and [straggler detection](https://nvidia.github.io/nvidia-resiliency-ext/straggler_det/usage_guide.html#integration-guide) integration with PyTorch Lightning based workloads.
-  - Providing integration with NVIDIA [NeMo](https://docs.nvidia.com/nemo-framework/user-guide/latest/resiliency.html) framework, a scalable and cloud-native generative AI framework built for researchers and developers working on Large Language Models, Multimodal, and Speech AI (e.g. Automatic Speech Recognition and Text-to-Speech).
 
 ## Installation
 

@@ -2,10 +2,10 @@ Straggler Detection
 ===================
 
 The **Straggler Detection** package's purpose is to detect slower ranks participating in a PyTorch distributed workload.
-The ``nvidia-resiliency-ext`` package also includes the PTL callback ``StragglerDetectionCallback`` that simplifies integration with PyTorch Lightning-based workloads.
 
-Straggler Detection is included in the ``nvidia_resiliency_ext.straggler`` package.
-``StragglerDetectionCallback`` is included in the ``nvidia_resiliency_ext.ptl_resiliency`` package.
+Straggler Detection is included in the ``nvidia_resiliency_ext.attribution.straggler``
+package. Integrate the detector directly into the training loop as described in
+the usage guide and examples.
 
 .. toctree::
    :maxdepth: 2

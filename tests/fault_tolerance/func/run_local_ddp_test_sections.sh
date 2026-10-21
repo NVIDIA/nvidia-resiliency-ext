@@ -15,6 +15,8 @@
 
 #!/bin/bash
 
+set -euo pipefail
+
 NUM_TESTS=4
 RES_DIR="./ddp_test_sections_results"
 WORLD_SIZE=8
@@ -79,13 +81,15 @@ do
    echo "### Starting TEST ${i}/${NUM_TESTS} ###"
    mkdir ${RES_DIR}/output_$i
 
-   echo "TEST ${i}, run ${training_parts_num}"
+   echo "TEST ${i}"
 
    # launch the training
    TRAIN_CMD="examples/fault_tolerance/train_ddp_sections_api.py "
    TRAIN_CMD+=" --device cuda "
    TRAIN_CMD+=" --output_dir ${RES_DIR}/output_$i "
    TRAIN_CMD+=" --logging_interval=100 "
+   # Keep coverage of the experimental calibration path separate from the fixed-timeout default.
+   TRAIN_CMD+=" --calculate_timeouts "
    
    # 1st run should be full, uninterrupted run,
    # other runs will be interrupted with simulated faults.
