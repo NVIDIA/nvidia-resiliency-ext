@@ -57,6 +57,8 @@ Details:
 * ``--ft-node-health-check-endpoint`` (alias: ``--ft-node_health_check_endpoint``) sets the optional node health check service endpoint used by InJob.
   Accepts Unix domain socket (UDS): ``/var/run/nvhcd.sock`` or ``unix:///var/run/nvhcd.sock``.
   See `Node health check service`_ for the BCM-backed and compatible-service usage model.
+* ``--ft-node-health-check-exclude`` (alias: ``--ft-node_health_check_exclude``) accepts a
+  comma-separated list of external node health checks to exclude. No checks are excluded by default.
 
 If ``--max-restarts`` is specified, the launcher restarts failed workers.
 The ``--ft-restart-policy`` parameter is deprecated; only ``any-failed`` is supported: all workers
@@ -114,6 +116,22 @@ Endpoint behavior:
   connectivity error occurs, NVRx treats the external check as unavailable and does
   not fail the job for that reason.
 * Explicit failures reported by the service mark the node unhealthy.
+
+To exclude selected checks, pass a comma-separated list before the training script:
+
+.. code-block:: bash
+
+   ft_launcher \
+     --ft-node-health-check-endpoint unix:///var/run/nvhcd.sock \
+     --ft-node-health-check-exclude hw_drv_gpu_clock_idle,another_check \
+     train.py
+
+The launcher passes these names to the service as ``--exclude`` arguments, preserving the
+default check groups. The service must support this option; DCA health check supports it.
+Exclusions apply to initial rendezvous and all restarts for this launcher. They do not change
+Slurm's independently invoked prolog or epilog health checks. Check names are defined by the
+service and are not validated against a fixed list in NVRx. Without a service endpoint,
+the external node health check remains disabled.
 
 Compatible service contract:
 

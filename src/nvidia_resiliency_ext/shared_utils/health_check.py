@@ -1442,10 +1442,13 @@ class NodeHealthCheck:
         interval: int = 60,
         on_failure: Optional[Callable] = None,
         request_timeout_sec: Optional[float] = 60,
+        exclude_checks: Optional[list[str]] = None,
     ):
         self.socket_path = socket_path
         self.endpoint = endpoint
         self.args = list(args) if args is not None else list(_DEFAULT_NODE_HEALTH_CHECK_ARGS)
+        if exclude_checks:
+            self.args.extend(["--exclude", *exclude_checks])
         self.interval = interval
         self.on_failure = on_failure
         self.request_timeout_sec = request_timeout_sec

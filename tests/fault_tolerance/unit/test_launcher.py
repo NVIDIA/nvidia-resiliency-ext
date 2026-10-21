@@ -102,6 +102,89 @@ def _config_from_launcher_cli(cli_args):
     return config, cmd, cmd_args, setup_rank_monitors_early
 
 
+@pytest.mark.parametrize(
+    ("option", "value", "expected"),
+    [
+        (None, None, None),
+        ("--ft-node-health-check-exclude", "hw_drv_gpu_clock_idle", ["hw_drv_gpu_clock_idle"]),
+        (
+            "--ft-node-health-check-exclude",
+            "hw_drv_gpu_clock_idle,another_check",
+            ["hw_drv_gpu_clock_idle", "another_check"],
+        ),
+        (
+            "--ft-node_health_check_exclude",
+            " another_check, ,third_check ",
+            ["another_check", "third_check"],
+        ),
+        ("--ft-node-health-check-exclude", "", []),
+    ],
+)
+def test_node_health_check_exclusions_from_cli(option, value, expected):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    cli_args = [option, value] if option else []
+    args = launcher.get_args_parser().parse_args([*cli_args, 'train.py', '--model', 'example'])
+
+    assert args.ft_node_health_check_exclude == expected
+    assert args.training_script == 'train.py'
+    assert args.training_script_args == ['--model', 'example']
+    with (
+        patch.object(launcher, '_NODE_HEALTH_CHECK_INSTANCE', None),
+        patch.object(launcher, 'NodeHealthCheck') as checker,
+    ):
+        launcher.init_node_health_check('/tmp/nvhcd.sock', args.ft_node_health_check_exclude)
+        checker.assert_called_once_with(endpoint='/tmp/nvhcd.sock', exclude_checks=expected)
+        assert launcher.get_node_health_check() is checker.return_value
+
+
+def test_node_health_check_exclusions_without_endpoint_keep_check_disabled():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    with (
+        patch.object(launcher, '_NODE_HEALTH_CHECK_INSTANCE', object()),
+        patch.object(launcher, 'NodeHealthCheck') as checker,
+    ):
+        launcher.init_node_health_check(None, ['hw_drv_gpu_clock_idle'])
+        checker.assert_not_called()
+        assert launcher.get_node_health_check() is None
+
+
+def test_launcher_run_passes_node_health_check_exclusions():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = launcher.get_args_parser().parse_args(
+        [
+            '--ft-node-health-check-endpoint',
+            '/tmp/nvhcd.sock',
+            '--ft-node-health-check-exclude',
+            'hw_drv_gpu_clock_idle,another_check',
+            'train.py',
+        ]
+    )
+    with (
+        patch.object(launcher, '_NODE_HEALTH_CHECK_INSTANCE', None),
+        patch.object(launcher, 'setup_logger'),
+        patch.object(launcher, '_register_ft_rdzv_handler'),
+        patch.object(launcher, 'config_from_args', return_value=(MagicMock(), 'train.py', [])),
+        patch.object(launcher, 'elastic_launch'),
+    ):
+        launcher.run(args)
+        checker = launcher.get_node_health_check()
+        assert checker.endpoint == '/tmp/nvhcd.sock'
+        assert checker.args == [
+            '--no-slurm',
+            '--group',
+            'prolog',
+            'epilog',
+            'logs',
+            'gpu',
+            '--exclude',
+            'hw_drv_gpu_clock_idle',
+            'another_check',
+        ]
+
+
 def test_register_barrier_rdzv_handler_applies_c10d_patch():
     from torch.distributed.elastic.rendezvous import rendezvous_handler_registry
 

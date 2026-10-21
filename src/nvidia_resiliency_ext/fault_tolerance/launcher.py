@@ -221,10 +221,12 @@ def _shutdown_cycle_info_reporter_safely(rdzv_handler: Any) -> None:
         logger.warning("Failed to shut down cycle info reporter", exc_info=True)
 
 
-def init_node_health_check(endpoint: Optional[str]) -> None:
+def init_node_health_check(
+    endpoint: Optional[str], exclude_checks: Optional[List[str]] = None
+) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
     if endpoint:
-        _NODE_HEALTH_CHECK_INSTANCE = NodeHealthCheck(endpoint=endpoint)
+        _NODE_HEALTH_CHECK_INSTANCE = NodeHealthCheck(endpoint=endpoint, exclude_checks=exclude_checks)
     else:
         _NODE_HEALTH_CHECK_INSTANCE = None
 
@@ -2659,6 +2661,16 @@ def get_args_parser() -> ArgumentParser:
     )
 
     parser.add_argument(
+        "--ft-node-health-check-exclude",
+        "--ft-node_health_check_exclude",
+        dest="ft_node_health_check_exclude",
+        type=lambda value: [name.strip() for name in value.split(",") if name.strip()],
+        default=None,
+        help="Comma-separated node health check names to exclude from requests to the external "
+        "health check service. Default: no exclusions. Applies to initial rendezvous and restarts.",
+    )
+
+    parser.add_argument(
         "--ft-safety-factor",
         "--ft-safety_factor",
         type=str,
@@ -4005,7 +4017,9 @@ def run(args):
     _register_ft_rdzv_handler()
     ft_hc_endpoint = getattr(args, "ft_node_health_check_endpoint", None)
     # Initialize NodeHealthCheck singleton at launcher start
-    init_node_health_check(ft_hc_endpoint)
+    init_node_health_check(
+        ft_hc_endpoint, exclude_checks=getattr(args, "ft_node_health_check_exclude", None)
+    )
 
     # Start gRPC log server if enabled and on TCP store host
     # NOTE: This is now handled earlier in config_from_args() before PipeBasedLogsSpecs creation
