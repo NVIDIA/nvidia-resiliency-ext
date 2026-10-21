@@ -30,7 +30,9 @@ from pathlib import Path
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 logger = logging.getLogger(LogConfig.name)
-CAPTURE_NAME = re.compile(r"rank\d+_pid\d+_(pyspy|gdb|cuda-gdb)\.txt\.ready\Z")
+CAPTURE_NAME = re.compile(
+    r"rank(?P<local_rank>\d+)_pid\d+_(?P<tool>pyspy|gdb|cuda-gdb)\.txt\.ready\Z"
+)
 
 
 def parse_capture_sections(section_list: str) -> frozenset[str]:
@@ -70,9 +72,10 @@ def debugger_command_file(cfg, tool):
     return Path(configured)
 
 
-def validate_capture_dependencies(cfg):
+def validate_capture_dependencies(cfg, *, log_resolved_paths=False):
     """Validate selected executables/files and store resolved paths at launcher startup."""
-    for tool in parse_capture_tools(cfg.timeout_dump):
+    tools = parse_capture_tools(cfg.timeout_dump)
+    for tool in tools:
         executable = tool_executable(cfg, tool)
         resolved = shutil.which(executable) if isinstance(executable, str) and executable else None
         if resolved is None:
@@ -81,9 +84,16 @@ def validate_capture_dependencies(cfg):
                 "Install it, set --ft-timeout-dump-" + tool + ", or adjust --ft-timeout-dump."
             )
         setattr(cfg, "timeout_dump_" + tool.replace("-", "_"), resolved)
-        logger.info("Timeout dump tool %s: %s", tool, resolved)
         if tool in ("gdb", "cuda-gdb"):
-            path = debugger_command_file(cfg, tool).resolve()
+            configured_path = debugger_command_file(cfg, tool)
+            path = configured_path.resolve()
+            if tool == "cuda-gdb" and cfg.timeout_dump_cuda_gdb_mode == "stdin":
+                # A source filename is a command line. Check both the configured
+                # path and its symlink target before storing the resolved path.
+                if any("\n" in str(p) or "\r" in str(p) for p in (configured_path, path)):
+                    raise ValueError(
+                        "Timeout dump cuda-gdb stdin command file path must be a single line"
+                    )
             try:
                 if not path.is_file():
                     raise OSError("not a regular file")
@@ -94,7 +104,19 @@ def validate_capture_dependencies(cfg):
                     f"Timeout dump {tool} command file is not readable: {path}"
                 ) from exc
             setattr(cfg, "timeout_dump_" + tool.replace("-", "_") + "_command_file", str(path))
-            logger.info("Timeout dump %s command file: %s", tool, path)
+    if log_resolved_paths and logger.isEnabledFor(logging.DEBUG):
+        tool_details = []
+        command_files = []
+        for tool in tools:
+            detail = f"{tool}={tool_executable(cfg, tool)}"
+            if tool == "cuda-gdb":
+                detail += f" (mode={cfg.timeout_dump_cuda_gdb_mode})"
+            tool_details.append(detail)
+            if tool in ("gdb", "cuda-gdb"):
+                command_files.append(f"{tool}={debugger_command_file(cfg, tool)}")
+        logger.debug("Timeout dump tools: %s", ", ".join(tool_details))
+        if command_files:
+            logger.debug("Timeout dump command files: %s", ", ".join(command_files))
 
 
 def validate_config(cfg):
@@ -104,6 +126,10 @@ def validate_config(cfg):
         return
     parse_capture_tools(cfg.timeout_dump)
     parse_capture_sections(cfg.timeout_dump_sections)
+    # YAML and programmatic configuration bypass argparse choices and Literal
+    # annotations are not enforced at runtime. Keep this a user-facing error.
+    if cfg.timeout_dump_cuda_gdb_mode not in ("batch", "stdin"):
+        raise ValueError("timeout_dump_cuda_gdb_mode must be batch or stdin")
     for name in (
         "capture_timeout",
         "poll_interval",
@@ -181,15 +207,26 @@ class ToolCapture:
 
     def _launch(self):
         try:
-            self.process = subprocess.Popen(
-                self.command(),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
-                env=self.environment(),
-            )
+            with contextlib.ExitStack() as stack:
+                stdin = subprocess.DEVNULL
+                if self._uses_stdin():
+                    # Prepare all commands on this startup thread. A regular
+                    # in-memory file avoids pipe writes or prompt handling on
+                    # the monitor event loop; the child owns its fd 0 after exec.
+                    stdin = stack.enter_context(
+                        os.fdopen(os.memfd_create("nvrx-cuda-gdb-stdin"), "w+b")
+                    )
+                    stdin.write(os.fsencode(self.stdin_commands()))
+                    stdin.seek(0)
+                self.process = subprocess.Popen(
+                    self.command(),
+                    stdin=stdin,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                    env=self.environment(),
+                )
         except Exception as exc:
             self._launch_error = exc
         finally:
@@ -210,6 +247,8 @@ class ToolCapture:
         executable = tool_executable(self.cfg, self.tool)
         if self.tool == "pyspy":
             return [executable, "dump", "--pid", str(self.worker_pid)]
+        if self._uses_stdin():
+            return [executable, "--nx", "-q", "-iex", "set debuginfod enabled off"]
         # Disable init scripts; command files are supplied by the deployment.
         command = [executable, "--nx", "--batch"]
         # Disable downloads before attach, including during shared-library loading.
@@ -219,6 +258,24 @@ class ToolCapture:
         )
         command.extend(["-ex", "detach"])
         return command
+
+    def _uses_stdin(self):
+        return self.tool == "cuda-gdb" and self.cfg.timeout_dump_cuda_gdb_mode == "stdin"
+
+    def stdin_commands(self):
+        # GDB's source command consumes the rest of the line as the filename,
+        # including spaces and quotes. Shell quoting would alter the filename.
+        # Keep attach at top level so normal command-loop events can be serviced.
+        return (
+            "set confirm off\n"
+            "set pagination off\n"
+            "set width 0\n"
+            "set height 0\n"
+            f"attach {self.worker_pid}\n"
+            f"source {debugger_command_file(self.cfg, self.tool)}\n"
+            "detach\n"
+            "quit\n"
+        )
 
     def environment(self):
         env = os.environ.copy()
@@ -272,11 +329,12 @@ class ToolCapture:
                         self.status = "output_limit"
                         break
                 elif chunk == b"" and self.process.poll() is not None:
-                    self.status = (
-                        "success"
-                        if self.process.returncode == 0
-                        else (f"exit_{self.process.returncode}")
-                    )
+                    if self.process.returncode == 0:
+                        # Stdin command errors do not necessarily set a nonzero
+                        # exit code. Completion does not certify useful GPU state.
+                        self.status = "completed" if self._uses_stdin() else "success"
+                    else:
+                        self.status = f"exit_{self.process.returncode}"
                     break
                 # Yield so the monitor can service termination timers and IPC events.
                 # Delay polling only when no output is available.
@@ -299,28 +357,24 @@ class ToolCapture:
         directory.mkdir(mode=0o700, exist_ok=True)
         name = f"rank{rank_info.local_rank}_pid{rank_info.pid}_{self.tool}.txt"
         tmp = directory / (name + ".tmp")
+        mode = f"mode={self.cfg.timeout_dump_cuda_gdb_mode} " if self.tool == "cuda-gdb" else ""
         header = (
             f"=== BEGIN host={rank_info.host} cycle={cycle} global_rank={rank_info.global_rank} "
             f"local_rank={rank_info.local_rank} pid={rank_info.pid} tool={self.tool} "
-            f"reason={reason} time={time.time():.6f} ===\n"
+            f"{mode}reason={reason} time={time.time():.6f} ===\n"
         ).encode()[:768]
-        footer = f"\n=== END status={self.status[:128]} ===\n".encode()[:256]
+        exit_code = (
+            f" exit_code={self.process.returncode}"
+            if self.tool == "cuda-gdb" and self.process is not None
+            else ""
+        )
+        footer = f"\n=== END status={self.status[:128]}{exit_code} ===\n".encode()[:256]
         with tmp.open("xb") as stream:
             stream.write(header)
             stream.write(self.output)
             stream.write(footer)
         ready = directory / (name + ".ready")
         os.replace(tmp, ready)
-        logger.info(
-            "Timeout capture: cycle=%s global_rank=%s local_rank=%s pid=%s tool=%s status=%s path=%s",
-            cycle,
-            rank_info.global_rank,
-            rank_info.local_rank,
-            rank_info.pid,
-            self.tool,
-            self.status,
-            ready,
-        )
         return ready
 
 
@@ -333,8 +387,9 @@ class UploadBatch:
 
 
 class DiagnosticCollector:
-    def __init__(self, cfg, destination, node_name=None):
+    def __init__(self, cfg, destination, node_name=None, *, local_world_size=1):
         self.cfg = cfg
+        self.local_world_size = local_world_size
         self.node_name = node_name or socket.gethostname()
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", self.node_name):
             raise ValueError("invalid diagnostic node name")
@@ -351,7 +406,7 @@ class DiagnosticCollector:
             for path in directory.glob("*.ready"):
                 match = CAPTURE_NAME.fullmatch(path.name)
                 if match and path not in self.exhausted_paths and not path.is_symlink():
-                    groups.setdefault((directory.name, match[1]), []).append(path)
+                    groups.setdefault((directory.name, match["tool"]), []).append(path)
         return {key: tuple(sorted(paths)) for key, paths in groups.items()}
 
     def publish(self, key, batch):
@@ -387,14 +442,22 @@ class DiagnosticCollector:
             path.unlink(missing_ok=True)
         logger.info("Uploaded timeout diagnostics: %s (%d captures)", final, len(batch.paths))
 
-    def tick(self):
-        # Each poll snapshots all completed files. A failed batch keeps its
-        # selected inputs; new arrivals form a later batch after it succeeds.
+    def tick(self, *, flush=False):
+        # Defer a newly discovered incomplete group once. On the next poll,
+        # refresh its inputs and publish even if some ranks are still missing.
+        deferred = set()
         for key, paths in self.discover().items():
             if key not in self.batches or self.batches[key].exhausted:
                 self.batches[key] = UploadBatch(paths)
+                ranks = {int(CAPTURE_NAME.fullmatch(path.name)["local_rank"]) for path in paths}
+                if not flush and len(ranks) < self.local_world_size:
+                    deferred.add(key)
+            elif self.batches[key].attempts == 0:
+                self.batches[key].paths = paths
+            # After the first upload attempt, preserve fixed inputs for retries;
+            # new arrivals form a later batch after it succeeds or is exhausted.
         for key, batch in list(self.batches.items()):
-            if batch.exhausted:
+            if batch.exhausted or key in deferred:
                 continue
             batch.attempts += 1
             try:
@@ -419,7 +482,7 @@ class DiagnosticCollector:
             # Uploads are serial, with at most one attempt per batch per poll.
 
 
-def _collector_main(cfg, destination, lock_fd, inherited_fds, launcher_pid):
+def _collector_main(cfg, destination, lock_fd, inherited_fds, launcher_pid, local_world_size=1):
     os.setsid()  # separate from worker process groups and their cleanup
     for fd in inherited_fds:
         if fd > 2 and fd != lock_fd:
@@ -445,7 +508,7 @@ def _collector_main(cfg, destination, lock_fd, inherited_fds, launcher_pid):
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    collector = DiagnosticCollector(cfg, destination)
+    collector = DiagnosticCollector(cfg, destination, local_world_size=local_world_size)
 
     def wait_for_poll(delay):
         nonlocal sleeping
@@ -465,9 +528,9 @@ def _collector_main(cfg, destination, lock_fd, inherited_fds, launcher_pid):
             collector.tick()
             if not stopping:
                 wait_for_poll(cfg.timeout_dump_poll_interval)
-        # Shutdown bypasses the normal polling wait for one final collection
+        # Shutdown bypasses polling and incomplete-group deferral for one final
         # pass. The launcher independently enforces the shutdown grace period.
-        collector.tick()
+        collector.tick(flush=True)
     finally:
         os.close(lock_fd)
 
@@ -475,7 +538,7 @@ def _collector_main(cfg, destination, lock_fd, inherited_fds, launcher_pid):
 class DiagnosticCollectorProcess:
     """Launcher-owned fork child. No queues, events, or additional sockets."""
 
-    def __init__(self, cfg, destination):
+    def __init__(self, cfg, destination, *, local_world_size=1):
         validate_config(cfg)
         root = staging_dir(cfg)
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -501,7 +564,7 @@ class DiagnosticCollectorProcess:
             self._reported_exit = False
             self.process = multiprocessing.get_context("fork").Process(
                 target=_collector_main,
-                args=(cfg, destination, lock_fd, inherited, os.getpid()),
+                args=(cfg, destination, lock_fd, inherited, os.getpid(), local_world_size),
                 name="nvrx-diag-collector",
                 daemon=True,
             )
