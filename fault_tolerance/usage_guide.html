@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Usage guide &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+  <title>InJob restart usage guide &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
@@ -22,8 +22,8 @@
     <script src="../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Timeout diagnostics" href="timeout_diagnostics.html" />
-    <link rel="prev" title="Fault Tolerance" href="index.html" /> 
+    <link rel="next" title="Integration guides" href="integration.html" />
+    <link rel="prev" title="InJob restart" href="index.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,22 +48,23 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Usage guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#terms">Terms</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#design-overview">Design Overview</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#usage-overview">Usage Overview</a><ul>
-<li class="toctree-l4"><a class="reference internal" href="#ft-launcher">FT launcher</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#hang-detection">Hang detection</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#workload-control">Workload control</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">InJob restart usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#recovery-responsibilities">Recovery responsibilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#processes-and-terminology">Processes and terminology</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#launch-and-monitor">Launch and monitor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#recovery-limits">Recovery limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#where-to-go-next">Where to go next</a></li>
 </ul>
 </li>
-</ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
-<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration guides</a></li>
 <li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -87,8 +88,8 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="index.html">Fault Tolerance</a></li>
-      <li class="breadcrumb-item active">Usage guide</li>
+          <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
+      <li class="breadcrumb-item active">InJob restart usage guide</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../_sources/fault_tolerance/usage_guide.rst.txt" rel="nofollow"> View page source</a>
       </li>
@@ -98,544 +99,130 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="usage-guide">
-<h1>Usage guide<a class="headerlink" href="#usage-guide" title="Link to this heading"></a></h1>
-<section id="terms">
-<h2>Terms<a class="headerlink" href="#terms" title="Link to this heading"></a></h2>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">Fault</span> <span class="pre">Tolerance</span></code>, <code class="docutils literal notranslate"><span class="pre">FT</span></code> is the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> package.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">FT</span> <span class="pre">callback</span></code>, <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> is a PTL callback that integrates FT with PTL.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> is a launcher tool included in FT, which is based on <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">heartbeat</span></code> is a lightweight message sent from a rank to its rank monitor that indicates that a rank is alive.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">section</span></code> is a user code segment with a custom name assigned.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">rank</span> <span class="pre">monitor</span></code> is a special side process started by <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> that monitors its rank.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">timeouts</span></code> are time intervals used by a rank monitor to detect that a rank is not alive.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">launcher</span> <span class="pre">script</span></code> is a bash script that invokes <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">PTL</span></code> is PyTorch Lightning.</p></li>
-</ul>
-</section>
-<section id="design-overview">
-<h2>Design Overview<a class="headerlink" href="#design-overview" title="Link to this heading"></a></h2>
-<ul class="simple">
-<li><p>Each node runs a single <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
-<li><p>FT configuration is passed to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> and propagated to other FT components.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> spawns rank monitors (once).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> spawns ranks (can also respawn if <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is greater than 0).</p></li>
-<li><p>Each rank uses <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> to connect to its monitor (<code class="docutils literal notranslate"><span class="pre">RankMonitorServer</span></code>).</p></li>
-<li><p>Each rank periodically sends updates to its rank monitor (e.g., during each training and evaluation step).</p></li>
-<li><p>In case of a hang, the rank monitor detects missing updates from its rank and terminates it.</p></li>
-<li><p>If any ranks disappear, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> detects that and terminates or restarts the workload.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> instances communicate via the <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> “rendezvous” mechanism.</p></li>
-<li><p>Rank monitors do not communicate with each other.</p></li>
-</ul>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span># Processes structure on a single node.
-# NOTE: each rank has its own separate rank monitor.
-
-[Rank_N]----(IPC)----[Rank Monitor_N]
-   |                      |
-   |                      |
-(re/spawns)            (spawns)
-   |                      |
-   |                      |
-[ft_launcher]-------------
+  <section id="injob-restart-usage-guide">
+<h1>InJob restart usage guide<a class="headerlink" href="#injob-restart-usage-guide" title="Link to this heading"></a></h1>
+<p>InJob restart detects failed or hung training workers and launches a
+new worker group within the running job. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> instead of
+<code class="docutils literal notranslate"><span class="pre">torchrun</span></code> and enable the workload’s section-monitoring integration.</p>
+<p>The recommended Megatron-LM deployment uses <strong>fixed section timeouts supplied
+on the command line</strong> and <strong>NVRx-backed asynchronous checkpointing through
+Megatron</strong>. Begin with <a class="reference internal" href="examples/megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a>. For a small CPU/GPU example
+of the monitoring API, use <a class="reference internal" href="examples/train_ddp_sections.html"><span class="doc">Section monitoring and checkpoint recovery with DDP</span></a>, which retains
+synchronous PyTorch checkpointing.</p>
+<section id="recovery-responsibilities">
+<h2>Recovery responsibilities<a class="headerlink" href="#recovery-responsibilities" title="Link to this heading"></a></h2>
+<p>If a worker fails after checkpoint 20 while training iteration 27, the next
+worker group loads checkpoint 20 and repeats subsequent training work.
+NVRx does not preserve the failed workers’ model or optimizer memory.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>worker failure or section timeout
+    -&gt; terminate the worker group
+    -&gt; health checks and barrier rendezvous
+    -&gt; assign healthy active nodes (promote spares if available)
+    -&gt; launch new training processes
+    -&gt; workload loads the latest completed checkpoint
+    -&gt; training commits another optimizer step
 </pre></div>
 </div>
-</section>
-<section id="usage-overview">
-<h2>Usage Overview<a class="headerlink" href="#usage-overview" title="Link to this heading"></a></h2>
-<section id="ft-launcher">
-<h3>FT launcher<a class="headerlink" href="#ft-launcher" title="Link to this heading"></a></h3>
-<p>Fault tolerance includes a launcher tool called <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>, which is based on <code class="docutils literal notranslate"><span class="pre">torchrun</span></code>
-and supports most <code class="docutils literal notranslate"><span class="pre">torchrun</span></code> command-line parameters. FT configuration can be specified either
-via a YAML file using <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code> or through command-line parameters
-using <code class="docutils literal notranslate"><span class="pre">--ft-&lt;parameter-name&gt;</span></code>.</p>
-<p>Details:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>) sets the optional node health check service endpoint used by InJob.
-Accepts Unix domain socket (UDS): <code class="docutils literal notranslate"><span class="pre">/var/run/nvhcd.sock</span></code> or <code class="docutils literal notranslate"><span class="pre">unix:///var/run/nvhcd.sock</span></code>.
-See <a class="reference internal" href="#node-health-check-service">Node health check service</a> for the BCM-backed and compatible-service usage model.</p></li>
+<li><p><strong>NVRx InJob</strong> monitors workers and coordinates termination, rendezvous, and
+process replacement. All workers restart when any worker fails.</p></li>
+<li><p><strong>The workload</strong> saves and restores model, optimizer, RNG, scheduler, and data
+progress as required by its training algorithm. A restart without checkpoint
+restoration starts training again.</p></li>
+<li><p><strong>The scheduler and deployment scripts</strong> allocate resources, release failed
+allocation units, admit cold replacements, and arrange continuation across
+jobs. <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> does not allocate or cancel Slurm jobs.</p></li>
 </ul>
-<p>If <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, the launcher restarts failed workers.
-The <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> parameter is deprecated; only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> is supported: all workers
-are restarted if any worker fails (torchrun-style behavior). This option may be removed in a future release.</p>
-<section id="rendezvous-implementation">
-<h4>Rendezvous implementation<a class="headerlink" href="#rendezvous-implementation" title="Link to this heading"></a></h4>
-<p>Barrier rendezvous is the only supported fault-tolerance rendezvous implementation. The
-<code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span></code> option may be omitted because it defaults to <code class="docutils literal notranslate"><span class="pre">barrier</span></code>. Existing launch
-scripts may continue to pass <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">barrier</span></code> for compatibility, but the removed
-<code class="docutils literal notranslate"><span class="pre">legacy</span></code> value is rejected.</p>
+<p>Checkpoint recovery and monitoring are separate choices. The DDP example uses
+rank-0 <code class="docutils literal notranslate"><span class="pre">torch.save</span></code> / <code class="docutils literal notranslate"><span class="pre">torch.load</span></code>. Megatron assembles distributed training
+state and uses NVRx’s asynchronous checkpoint queue and writer infrastructure.
+See <a class="reference internal" href="integration/megatron.html"><span class="doc">Megatron-LM integration</span></a> for completion and finalization semantics.</p>
 </section>
-<section id="node-health-check-service">
-<h4>Node health check service<a class="headerlink" href="#node-health-check-service" title="Link to this heading"></a></h4>
-<p>The launcher can query an optional node-local health check service before workers enter
-rendezvous. A practical public deployment model is to reuse NVIDIA Base Command
-Manager (BCM) Slurm prolog or epilog health checks behind an <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>-compatible
-daemon. The NVRx integration point is service-compatible: any equivalent daemon
-can be used if it implements the expected gRPC API over a Unix domain socket
-(UDS).</p>
-<p>To enable the external node health check with BCM:</p>
-<ul class="simple">
-<li><p>Build and deploy an <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>-compatible daemon on every allocated node.</p></li>
-<li><p>Configure the daemon to invoke a BCM health check script, or a wrapper around
-an existing BCM prolog or epilog health check.</p></li>
-<li><p>Ensure the wrapper translates the BCM result into JSON with an empty
-<code class="docutils literal notranslate"><span class="pre">failed_checks</span></code> array for a healthy node and a non-empty array containing
-the actionable check names for an unhealthy node.</p></li>
-<li><p>Make the daemon’s UDS visible from the job environment or training container.</p></li>
-<li><p>Pass the socket path to <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> with <code class="docutils literal notranslate"><span class="pre">--ft-node-health-check-endpoint</span></code>
-(alias: <code class="docutils literal notranslate"><span class="pre">--ft-node_health_check_endpoint</span></code>).</p></li>
-</ul>
-<p>For protocol details, see the <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> protobuf schema at
-<code class="docutils literal notranslate"><span class="pre">src/nvidia_resiliency_ext/shared_utils/proto/nvhcd.proto</span></code>. The functional test
-server at <code class="docutils literal notranslate"><span class="pre">tests/fault_tolerance/func/nodehc_service.py</span></code> is a minimal example
-of a UDS gRPC service that implements this API.</p>
-<p>Example:</p>
+<section id="processes-and-terminology">
+<h2>Processes and terminology<a class="headerlink" href="#processes-and-terminology" title="Link to this heading"></a></h2>
+<p>Each compute node runs one <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. It starts training workers and a
+separate rank-monitor process for each local worker. Workers connect to their
+monitors using local Unix sockets and report named section boundaries. Monitors
+do not communicate with one another; launchers coordinate through rendezvous.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>training worker &lt;-- local IPC --&gt; rank monitor
+       ^                              ^
+       | starts/restarts               | starts
+       +--------- ft_launcher --------+
+                       |
+                rendezvous store
+</pre></div>
+</div>
+<p>A <strong>cycle</strong> is one worker-group attempt: cycle 0 is the initial attempt, cycle 1
+the first restart. A <strong>generation</strong> in the singleton example is a separate
+Slurm array allocation containing multiple possible cycles. A <strong>hot spare</strong> is
+an allocated, joined launcher with no training workers. A <strong>cold spare</strong> is a
+pending scheduler allocation and is not yet available to rendezvous.</p>
+<p>The rendezvous/TCPStore host is a service role, distinct from training rank 0.
+The singleton example colocates these roles on array task 0. Training ranks can
+change across restarts; use the rank-to-node map from the failed cycle when
+investigating a failure.</p>
+</section>
+<section id="launch-and-monitor">
+<h2>Launch and monitor<a class="headerlink" href="#launch-and-monitor" title="Link to this heading"></a></h2>
+<p>Launcher options precede the training entrypoint; workload options follow it.
+For a workload that opens Megatron’s section names, the essential shape is:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-node-health-check-endpoint<span class="w"> </span>unix:///var/run/nvhcd.sock<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>train.py
+<span class="w">  </span>--nnodes<span class="o">=</span><span class="m">1</span><span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--rdzv-backend<span class="o">=</span>c10d<span class="w"> </span>--rdzv-endpoint<span class="o">=</span>localhost:0<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-restarts<span class="o">=</span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ft-rank-section-timeouts<span class="w"> </span>setup:900,step:120,checkpointing:600<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ft-rank-out-of-section-timeout<span class="o">=</span><span class="m">180</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>/path/to/Megatron-LM/pretrain_gpt.py<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--enable-ft-package<span class="w"> </span>...
 </pre></div>
 </div>
-<p>Endpoint behavior:</p>
-<ul class="simple">
-<li><p>UDS endpoints are supported. The value can be a path such as <code class="docutils literal notranslate"><span class="pre">/var/run/nvhcd.sock</span></code>
-or a <code class="docutils literal notranslate"><span class="pre">unix://</span></code> URI such as <code class="docutils literal notranslate"><span class="pre">unix:///var/run/nvhcd.sock</span></code>.</p></li>
-<li><p>If the endpoint is omitted, NVRx skips the external node health check.</p></li>
-<li><p>If the gRPC client dependencies are unavailable, the UDS socket is missing, or a
-connectivity error occurs, NVRx treats the external check as unavailable and does
-not fail the job for that reason.</p></li>
-<li><p>Explicit failures reported by the service mark the node unhealthy.</p></li>
-</ul>
-<p>Compatible service contract:</p>
-<ul class="simple">
-<li><p>The service must implement <code class="docutils literal notranslate"><span class="pre">HealthCheckService.RunHealthCheck</span></code> from the NVRx
-<code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> protobuf API and listen on the configured UDS.</p></li>
-<li><p>NVRx calls the service with the configured health check arguments, which
-default to <code class="docutils literal notranslate"><span class="pre">[&quot;--no-slurm&quot;,</span> <span class="pre">&quot;--group&quot;,</span> <span class="pre">&quot;prolog&quot;,</span> <span class="pre">&quot;epilog&quot;,</span> <span class="pre">&quot;logs&quot;,</span> <span class="pre">&quot;gpu&quot;]</span></code>.</p></li>
-<li><p>To report an unhealthy node, return <code class="docutils literal notranslate"><span class="pre">success=false</span></code>. For successful
-responses, NVRx treats JSON in <code class="docutils literal notranslate"><span class="pre">output</span></code> with a non-empty <code class="docutils literal notranslate"><span class="pre">failed_checks</span></code>
-array as unhealthy. <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> is informational and may include checks
-moved to <code class="docutils literal notranslate"><span class="pre">failed_checks_ignored</span></code> by site policy.</p></li>
-<li><p>NVRx ignores unavailable or unusable health check signals. A missing endpoint,
-missing gRPC dependency, connectivity error, non-JSON <code class="docutils literal notranslate"><span class="pre">output</span></code>, missing
-<code class="docutils literal notranslate"><span class="pre">failed_checks</span></code>, or invalid <code class="docutils literal notranslate"><span class="pre">failed_checks</span></code> value in a successful response
-is logged and does not mark the node unhealthy.</p></li>
-</ul>
-<p>Example <code class="docutils literal notranslate"><span class="pre">nvhcd</span></code> configuration for BCM:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">socket_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/var/run/nvhcd.sock</span>
-<span class="nt">healthcheck_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/usr/local/sbin/nvrx-bcm-healthcheck-wrapper.sh</span>
-<span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">info</span>
-<span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
-</pre></div>
-</div>
-<p>Start the daemon on each node with this configuration, for example as a node-level
-service or directly with:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>nvhcd<span class="w"> </span>-config<span class="w"> </span>/etc/nvhcd/config.yaml
-</pre></div>
-</div>
-<p>If the training job runs inside a container, bind mount the UDS path into the
-container so that <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can reach the daemon.</p>
-<p>The wrapper can call the same reusable health check entry point that BCM uses for
-Slurm prolog or epilog validation, then normalize the result for NVRx. When using
-<code class="docutils literal notranslate"><span class="pre">nvhcd</span></code>, the gRPC request <code class="docutils literal notranslate"><span class="pre">args</span></code> are forwarded to the configured
-<code class="docutils literal notranslate"><span class="pre">healthcheck_path</span></code> as command-line arguments, so the configured NVRx health
-check arguments will appear in the wrapper’s <code class="docutils literal notranslate"><span class="pre">&quot;$&#64;&quot;</span></code>. For example:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/usr/bin/env bash</span>
-<span class="nb">set</span><span class="w"> </span>-euo<span class="w"> </span>pipefail
-
-<span class="k">if</span><span class="w"> </span>/path/to/bcm-healthcheck<span class="w"> </span><span class="s2">"</span><span class="nv">$@</span><span class="s2">"</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
-<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'{"fail_count": 0, "failed_checks": []}\n'</span>
-<span class="w">  </span><span class="nb">exit</span><span class="w"> </span><span class="m">0</span>
-<span class="k">else</span>
-<span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'{"fail_count": 1, "failed_checks": ["bcm_healthcheck"]}\n'</span>
-<span class="w">  </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span>
-<span class="k">fi</span>
-</pre></div>
-</div>
-<p>Because NVRx invokes this check during rendezvous rather than during Slurm’s
-actual prolog or epilog phase, the wrapper should also provide any inputs that
-the BCM script expects from the Slurm lifecycle environment, or call a reusable
-health check entry point from the local BCM deployment that does not depend on
-those lifecycle-only variables.</p>
-<p>This lets NVRx run the same class of node validation during in-job restart
-rendezvous that cluster administrators may already run at Slurm prolog or epilog
-time.</p>
+<p>This illustrates argument placement; use the complete runnable example in
+<a class="reference internal" href="examples/megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a> for model, data, and checkpoint arguments.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> defaults to <strong>0</strong>. Set a positive budget to enable recovery.
+It counts restarts across the rendezvous cycles, including for replacement
+launchers joining an existing run. Only the <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> policy is supported;
+omit the deprecated <code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> option.</p>
+<p>Barrier rendezvous is the only supported InJob rendezvous implementation.
+<code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">barrier</span></code>; the removed <code class="docutils literal notranslate"><span class="pre">legacy</span></code> value is
+rejected. For multinode runs, all launchers need the same reachable rendezvous
+endpoint, run ID, and training shape. Do not use <code class="docutils literal notranslate"><span class="pre">localhost:0</span></code> across nodes.
+Under Slurm launch <strong>one task per node</strong>, with <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> starting the
+local GPU workers. See <a class="reference internal" href="deployment.html"><span class="doc">Multinode deployment</span></a>.</p>
+<p>Configure the sections the workload actually opens. Megatron uses <code class="docutils literal notranslate"><span class="pre">setup</span></code>,
+<code class="docutils literal notranslate"><span class="pre">step</span></code>, and <code class="docutils literal notranslate"><span class="pre">checkpointing</span></code>; the DDP example uses <code class="docutils literal notranslate"><span class="pre">init</span></code>, <code class="docutils literal notranslate"><span class="pre">step</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">checkpoint</span></code>. A name absent from <code class="docutils literal notranslate"><span class="pre">rank_section_timeouts</span></code> is ignored by the
+client, including timing collection. A configured <code class="docutils literal notranslate"><span class="pre">None</span></code>/<code class="docutils literal notranslate"><span class="pre">null</span></code> timeout
+has no deadline. Neither heartbeat nor section hang detection has finite
+timeouts by default. Launching a workload alone does not instrument it.</p>
+<p>Timeouts must cover the deployed model, initialization and checkpoint loading,
+evaluation, asynchronous checkpoint finalization, and observed storage delays.
+The numbers in examples are starting points, not service guarantees. See
+<a class="reference internal" href="configuration.html"><span class="doc">Configuration and timeouts</span></a> for warmup, YAML, and experimental calibration details.</p>
 </section>
-<section id="distributed-storage-health-check-lustre-nfs">
-<h4>Distributed storage health check (Lustre + NFS)<a class="headerlink" href="#distributed-storage-health-check-lustre-nfs" title="Link to this heading"></a></h4>
-<p>The launcher can perform a distributed storage health check before rendezvous.
-By default it is disabled. When enabled (via CLI or YAML), it:</p>
-<ul class="simple">
-<li><p>Verifies Lustre health via <code class="docutils literal notranslate"><span class="pre">/sys/fs/lustre/health_check</span></code> (fails if not healthy).</p></li>
-<li><p>Discovers distributed mount targets and checks that each mount is reachable.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_enable_dist_storage_healthcheck</span></code>)</p>
-<ul>
-<li><p>Accepts a boolean-like value only to enable the mount checks
-(e.g., <code class="docutils literal notranslate"><span class="pre">--ft-enable-dist-storage-healthcheck</span> <span class="pre">true</span></code>).</p></li>
-</ul>
-</li>
-</ul>
+<section id="recovery-limits">
+<h2>Recovery limits<a class="headerlink" href="#recovery-limits" title="Link to this heading"></a></h2>
+<p>InJob needs a live control/store service, enough healthy nodes for the fixed
+training shape, a readable completed checkpoint, and a remaining restart budget.
+It does not repair bad data, incompatible checkpoints, persistent storage
+outages, or deterministic training errors. Spares replace nodes without changing
+the active world size; they do not implement elastic Megatron parallelism.</p>
+<p>Loss of the colocated rendezvous host ends that generation. The
+<a class="reference internal" href="examples/singleton_deployment.html"><span class="doc">Singleton job-array deployment (SLURM)</span></a> guide explains scheduler continuation and
+cleanup, including external intervention when a hard node loss prevents
+the batch script’s exit trap from running. The experimental external control
+process is described in <a class="reference internal" href="deployment.html"><span class="doc">Multinode deployment</span></a>.</p>
 </section>
-<section id="storage-path-health-check">
-<h4>Storage path health check<a class="headerlink" href="#storage-path-health-check" title="Link to this heading"></a></h4>
-<p>Validate specific absolute paths for existence and basic readability before rendezvous.</p>
+<section id="where-to-go-next">
+<h2>Where to go next<a class="headerlink" href="#where-to-go-next" title="Link to this heading"></a></h2>
 <ul class="simple">
-<li><p>CLI: <code class="docutils literal notranslate"><span class="pre">--ft-storage-health-check-path</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_storage_health_check_path</span></code>)
-- Accepts a comma-separated list of absolute paths (each starting with <code class="docutils literal notranslate"><span class="pre">/</span></code>).
-- Example: <code class="docutils literal notranslate"><span class="pre">--ft-storage-health-check-path</span> <span class="pre">'/data/checkpoints,/mnt/dataset'</span></code></p></li>
-<li><p>YAML: <code class="docutils literal notranslate"><span class="pre">storage_healthcheck_path</span></code> under the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> section</p></li>
+<li><p><a class="reference internal" href="integration/megatron.html"><span class="doc">Megatron-LM integration</span></a>: section boundaries and async checkpoint recovery.</p></li>
+<li><p><a class="reference internal" href="examples/megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a>: small GPT recovery and multinode TP/PP variants.</p></li>
+<li><p><a class="reference internal" href="integration/sections.html"><span class="doc">Sections API integration</span></a>: integrating another training loop.</p></li>
+<li><p><a class="reference internal" href="configuration.html"><span class="doc">Configuration and timeouts</span></a>: CLI/YAML settings, defaults, and experimental features.</p></li>
+<li><p><a class="reference internal" href="operations.html"><span class="doc">Operations and troubleshooting</span></a>: checkpoint progress, cycle logs, stop decisions, and diagnosis.</p></li>
+<li><p><a class="reference internal" href="services.html"><span class="doc">Optional health checks and attribution</span></a>: optional health checks and attribution.</p></li>
+<li><p><a class="reference internal" href="timeout_diagnostics.html"><span class="doc">Timeout diagnostics</span></a>: optional timeout stack capture.</p></li>
 </ul>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="w">  </span><span class="c1"># Comma-separated absolute paths</span>
-<span class="w">  </span><span class="nt">storage_healthcheck_path</span><span class="p">:</span><span class="w"> </span><span class="s">"/data/checkpoints,/mnt/dataset"</span>
-</pre></div>
-</div>
-<dl class="simple">
-<dt>Validation behavior:</dt><dd><ul class="simple">
-<li><p>Files: attempts to read a small block (up to 4KB)</p></li>
-<li><p>Directories: lists directory contents</p></li>
-<li><p>Other existing types (e.g., devices/symlinks): performs <code class="docutils literal notranslate"><span class="pre">stat</span></code> access</p></li>
-</ul>
-</dd>
-</dl>
-</section>
-<section id="segment-health-check">
-<h4>Segment Health Check<a class="headerlink" href="#segment-health-check" title="Link to this heading"></a></h4>
-<p>Set <code class="docutils literal notranslate"><span class="pre">--ft-segment-health-check-dir</span> <span class="pre">&lt;ABSOLUTE_PATH&gt;</span></code> or
-<code class="docutils literal notranslate"><span class="pre">fault_tolerance.segment_health_check_dir</span></code> to consume segment health
-decisions before rendezvous. Omitting the setting disables the check.</p>
-<p>See the <a class="reference internal" href="integration/segment_health_check.html"><span class="doc">Segment Health Check integration guide</span></a> for the consumer contract.</p>
-</section>
-<section id="attribution-service-integration">
-<h4>Attribution service integration<a class="headerlink" href="#attribution-service-integration" title="Link to this heading"></a></h4>
-<p>Per-cycle application logs do not enable attribution by themselves. To enable attribution, set
-<code class="docutils literal notranslate"><span class="pre">--ft-attribution-endpoint</span></code>. The endpoint value <code class="docutils literal notranslate"><span class="pre">localhost</span></code> makes <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> run the
-attribution service on the TCPStore host; other endpoints are treated as externally managed
-attribution services.
-External endpoints may use schemes such as <code class="docutils literal notranslate"><span class="pre">http://</span></code>, <code class="docutils literal notranslate"><span class="pre">grpc://</span></code>, or <code class="docutils literal notranslate"><span class="pre">unix://</span></code>. The current
-in-job attribution client submits logs over HTTP(S); non-HTTP endpoint strings are preserved but do
-not add a new transport implementation.
-If <code class="docutils literal notranslate"><span class="pre">--ft-attribution-endpoint</span></code> is set, <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code> is required because the
-attribution service analyzes the per-cycle application logs.</p>
-<p>The service code and dependencies are included in the NVRx wheel. Install the wheel before running
-a launcher-managed attribution service:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>nvidia_resiliency_ext-&lt;version&gt;-&lt;tags&gt;.whl
-</pre></div>
-</div>
-<ul>
-<li><p>CLI:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-endpoint</span> <span class="pre">&lt;ENDPOINT&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_endpoint</span></code>), default disabled</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span> <span class="pre">&lt;PATH&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_api_key_file</span></code>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-base-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_base_url</span></code>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-model</span> <span class="pre">&lt;MODEL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_llm_model</span></code>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-analysis-backend</span> <span class="pre">{lib}</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_analysis_backend</span></code>)</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">{log,no-restart}</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_stop_action</span></code>), default <code class="docutils literal notranslate"><span class="pre">log</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-startup-timeout</span> <span class="pre">&lt;SECONDS&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_startup_timeout</span></code>), default <code class="docutils literal notranslate"><span class="pre">20</span></code></p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span> <span class="pre">&lt;URL&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_attribution_export_url</span></code>)</p></li>
-</ul>
-<p>The managed attribution app-log directory is derived from
-<code class="docutils literal notranslate"><span class="pre">dirname(realpath(--ft-per-cycle-applog-prefix))</span></code>. When <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> is set, the
-managed service stdout/stderr log is derived from it as <code class="docutils literal notranslate"><span class="pre">*_attribution.log</span></code> and written
-beside it. Without <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code>, the log is named from the application prefix and
-written under an <code class="docutils literal notranslate"><span class="pre">nvrx/</span></code> subdirectory of the application-log directory. The managed service
-listens on <code class="docutils literal notranslate"><span class="pre">127.0.0.1:50050</span></code> and is exposed to the in-job client as
-<code class="docutils literal notranslate"><span class="pre">http://localhost:50050</span></code>.</p>
-<p>The managed attribution API key must come from <code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span></code> or inherited
-<code class="docutils literal notranslate"><span class="pre">LLM_API_KEY_FILE</span></code>. If neither points to a readable file, the TCPStore-host launcher fails
-before starting the attribution service.</p>
-<p>To export managed attribution results, pass <code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span></code> or
-set <code class="docutils literal notranslate"><span class="pre">attribution_export_url</span></code> in the fault tolerance YAML config.</p>
-<p>Launcher-managed attribution defaults to the <code class="docutils literal notranslate"><span class="pre">lib</span></code> backend, which runs the Restart Agent
-directly in the attrsvc process. The backend flag may be left unset to use that default or set
-explicitly to <code class="docutils literal notranslate"><span class="pre">lib</span></code>. The optional MCP/LogSage analysis path is no longer selectable from
-launcher-managed attribution.</p>
-<p>Attribution never delays a restart. When a cycle ends, the rendezvous host requests
-terminal analysis and immediately closes the next round, so the workload restarts while
-analysis is still running. A background poller on the rendezvous host fetches the verdict
-and, if attribution recommends stopping, terminates the job at that point – even if the
-workload has already advanced one or more cycles past the analyzed one. A verdict that
-never arrives leaves the job running.</p>
-<p>The stop decision is global, not per-cycle: the first STOP verdict observed ends the job
-regardless of which cycle produced it.</p>
-<p>Only one terminal analysis is in flight at a time. If further cycles fail while a verdict
-is still outstanding, their terminal analysis is skipped rather than replacing the one
-already running. This keeps a fast crash loop from repeatedly discarding an analysis
-before it can finish, which would otherwise leave the job with no verdict at all.</p>
-<p><strong>Acting on a STOP verdict is opt-in.</strong> With the default
-<code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">log</span></code>, attribution runs in full and every verdict is
-polled, logged and recorded, but a STOP never terminates anything. Set
-<code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">no-restart</span></code> to make a STOP end the job.</p>
-<p>The default is deliberate because the two kinds of attribution mistake are not equally
-expensive. A missed STOP is bounded: the job crash-loops until <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> runs
-out, and the progress tracker independently catches the stuck case. An enforced false
-STOP is not bounded: the job ends with the no-restart exit code and stays down until a
-human resubmits it. Run in <code class="docutils literal notranslate"><span class="pre">log</span></code> mode first, review the recorded verdicts against what
-actually happened on your workloads, and enable <code class="docutils literal notranslate"><span class="pre">no-restart</span></code> once you trust the
-precision.</p>
-<p>In <code class="docutils literal notranslate"><span class="pre">log</span></code> mode every failed cycle is analyzed, not just the first one that produces a
-STOP, so the verdicts accumulate over the life of the job. Each unenforced STOP is logged
-at <code class="docutils literal notranslate"><span class="pre">ERROR</span></code>, says explicitly that it is not being enforced, and carries a running count
-of how many STOP verdicts have been seen so far. Comparing that count against the number
-of failed cycles is the measurement that tells you whether to enable <code class="docutils literal notranslate"><span class="pre">no-restart</span></code>.</p>
-<p>When enforcement is on, every launcher in the job exits with the no-restart exit code
-rather than the generic failure code <code class="docutils literal notranslate"><span class="pre">1</span></code>. See <a class="reference internal" href="#ft-no-restart"><span class="std std-ref">No restart: telling “do not requeue” apart from a failure</span></a> below.</p>
-<p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> sends job metadata with each attribution submission: <code class="docutils literal notranslate"><span class="pre">user</span></code> is read from
-<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_USER</span></code> or <code class="docutils literal notranslate"><span class="pre">USER</span></code>, and <code class="docutils literal notranslate"><span class="pre">job_id</span></code> is read from <code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code> or
-<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_ID</span></code>. If no corresponding environment variable is set, that field is omitted from
-the submission payload.</p>
-<p>Example:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-per-cycle-applog-prefix<span class="w"> </span>/lustre/job123/train.log<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-attribution-endpoint<span class="w"> </span>localhost<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-attribution-llm-api-key-file<span class="w"> </span>/secure/llm_api_key<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-attribution-llm-base-url<span class="w"> </span>https://integrate.api.nvidia.com/v1<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-attribution-llm-model<span class="w"> </span>nvidia/nemotron-3-super-120b-a12b<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-attribution-export-url<span class="w"> </span>https://dataflow.example.test/dataflow2/example-index/posting<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>train.py
-</pre></div>
-</div>
-<p>To use an externally managed attribution service instead, specify an explicit endpoint:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-per-cycle-applog-prefix<span class="w"> </span>/lustre/job123/train.log<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ft-attribution-endpoint<span class="w"> </span>http://attribution.service.internal:8000<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>train.py
-</pre></div>
-</div>
-</li>
-</ul>
-</section>
-<section id="no-restart-telling-do-not-requeue-apart-from-a-failure">
-<span id="ft-no-restart"></span><h4>No restart: telling “do not requeue” apart from a failure<a class="headerlink" href="#no-restart-telling-do-not-requeue-apart-from-a-failure" title="Link to this heading"></a></h4>
-<p>Two mechanisms let NVRx conclude that a job must not be restarted at all:</p>
-<ul class="simple">
-<li><p>an attribution <code class="docutils literal notranslate"><span class="pre">STOP</span></code> verdict, when <code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">no-restart</span></code> is
-set (see the attribution section above; the default <code class="docutils literal notranslate"><span class="pre">log</span></code> never terminates), and</p></li>
-<li><p>the progress tracker finding no progress across restarts
-(<code class="docutils literal notranslate"><span class="pre">--ft-max-no-progress-cycles</span></code> / <code class="docutils literal notranslate"><span class="pre">max_no_progress_cycles</span></code>, default <code class="docutils literal notranslate"><span class="pre">3</span></code>).</p></li>
-</ul>
-<p>The progress tracker reads the iteration from <code class="docutils literal notranslate"><span class="pre">--ft-checkpoint-iteration-file</span></code>; without
-that file it stays inactive and logs a one-time warning. Raise the cycle threshold, or set
-it to <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable tracking, for workloads that deliberately replay an iteration
-without advancing the checkpoint – for example Megatron-LM’s rerun state machine
-re-running a suspect result on different hardware to tell silent data corruption apart from
-a genuine data issue. Those replays look identical to a stuck job from the outside.</p>
-<p>Both answer the same scheduler-facing question, so both report the same result: every
-launcher in the job exits with <code class="docutils literal notranslate"><span class="pre">--ft-no-restart-exit-code</span></code> (default <code class="docutils literal notranslate"><span class="pre">93</span></code>) instead of
-the generic failure code <code class="docutils literal notranslate"><span class="pre">1</span></code>. Downstream tooling therefore needs a single rule – exit
-code <code class="docutils literal notranslate"><span class="pre">93</span></code> means NVRx decided, do not requeue – rather than one rule per cause.</p>
-<p>The specific cause is recorded in the rendezvous store shutdown key as <code class="docutils literal notranslate"><span class="pre">attribution_stop</span></code>
-or <code class="docutils literal notranslate"><span class="pre">no_progress</span></code>, and is named in the launcher logs, so the two remain distinguishable
-for diagnosis without complicating the scheduler contract.</p>
-<p>Running out of restarts is deliberately <em>not</em> one of these cases. Exhausting
-<code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> means this launcher used up its retry budget, not that the job is
-unrecoverable, so it still exits <code class="docutils literal notranslate"><span class="pre">1</span></code> and leaves requeueing to your scheduler policy.
-The distinction is scope: a no-restart decision is a verdict about the job, while the
-restart budget is a limit on a single allocation.</p>
-<ul class="simple">
-<li><p>CLI:</p>
-<ul>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-no-restart-exit-code</span> <span class="pre">&lt;CODE&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_no_restart_exit_code</span></code>),
-default <code class="docutils literal notranslate"><span class="pre">93</span></code></p></li>
-</ul>
-</li>
-</ul>
-<p>Note that SLURM reports the maximum exit code across tasks and that <code class="docutils literal notranslate"><span class="pre">sacct</span></code> derived exit
-codes are lossy, so treat this as a best-effort signal.</p>
-<p>Nodes other than the one that made the decision read the reason from the rendezvous store,
-so the store must outlive them. Both the store-host launcher and <code class="docutils literal notranslate"><span class="pre">nvrx-control</span></code> hold it
-open for a few seconds after shutting down, but a node that has not read the key by then
-exits <code class="docutils literal notranslate"><span class="pre">1</span></code> rather than the no-restart code. The job still stops either way.</p>
-</section>
-<section id="gpu-memory-reclaim">
-<h4>GPU Memory Reclaim<a class="headerlink" href="#gpu-memory-reclaim" title="Link to this heading"></a></h4>
-<p>When <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can optionally wait for GPU memory to be
-released before starting new workers after a restart. This helps ensure that GPU memory from
-terminated workers has been fully reclaimed before starting new processes.</p>
-<p>This feature is controlled by three parameters:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-reclaim-timeout</span></code> (default: 50.0 seconds)
-Timeout for waiting for GPU memory to drop below the tolerance threshold. Set to 0 to disable the feature.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-tolerance-mb</span></code> (default: 512.0 MB)
-Maximum allowed GPU memory usage. The launcher waits until GPU memory drops below this threshold.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-poll-interval</span></code> (default: 2.0 seconds)
-Poll interval for checking GPU memory usage during the reclaim process.</p></li>
-</ul>
-<p>On restarts, the launcher periodically checks GPU memory usage and waits until it drops below
-the tolerance threshold or the timeout is reached. Memory statistics for each GPU are collected
-and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
-restart proceeds as a best effort.</p>
-</section>
-<section id="per-cycle-logging-and-grpc-log-aggregation">
-<h4>Per-cycle logging and gRPC log aggregation<a class="headerlink" href="#per-cycle-logging-and-grpc-log-aggregation" title="Link to this heading"></a></h4>
-<p>When using consolidated per-cycle application logs (for example via <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code>)
-with optional gRPC log funneling (<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code>), worker and launcher output can be
-merged through pipes and streamed to one or more aggregators on the rendezvous host before a single
-writer appends to shared storage (for example Lustre).</p>
-<p>Two write paths are possible:</p>
-<ul class="simple">
-<li><p><strong>With log funneling</strong> (<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code>, enabled automatically when
-<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> is set): every node streams to an aggregator on the rendezvous host and
-a <em>single</em> process writes the shared file. No cross-client write guarantees are needed, so
-this works on any shared filesystem and is the recommended deployment for multi-node jobs.</p></li>
-<li><p><strong>Without log funneling</strong> (direct write): every node opens the same
-<code class="docutils literal notranslate"><span class="pre">&lt;prefix&gt;_cycleN.log</span></code> and appends to it with <code class="docutils literal notranslate"><span class="pre">O_APPEND</span></code>. This is a multi-writer
-deployment and is not recommended on any filesystem. On Lustre the appends are atomic, but
-all nodes serialise on the same extent lock, so it does not scale. On NFS- and VAST-style
-storage the append is not atomic across clients at all, so concurrent appends can interleave
-or be lost and nothing reports an error.</p></li>
-</ul>
-<div class="admonition important">
-<p class="admonition-title">Important</p>
-<p><strong>Use log funneling for multi-node jobs.</strong> The recommended configuration is to pass
-<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> alongside <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code>; that enables
-<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code> automatically. Setting <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code> on its own
-leaves the log server off and selects multi-writer direct append, which is not a supported
-multi-node deployment. If you use neither option, worker and launcher output go to
-stdout/stderr and are captured by <code class="docutils literal notranslate"><span class="pre">srun</span> <span class="pre">--output</span></code> / <code class="docutils literal notranslate"><span class="pre">--error</span></code> as usual.</p>
-</div>
-<div class="admonition important">
-<p class="admonition-title">Important</p>
-<p><strong>Best-effort semantics.</strong> Per-cycle gRPC log aggregation is best-effort. Logs around failure
-and restart may be incomplete; crash stack traces are not guaranteed to appear there. For
-critical diagnostics, use rank monitor logs (launcher log) for failure/timeout correlation and
-OS-level core dumps for reliable crash post-mortem. Do not assume aggregated logs are complete
-or reliable.</p>
-</div>
-</section>
-<section id="rank-assignment">
-<h4>Rank assignment<a class="headerlink" href="#rank-assignment" title="Link to this heading"></a></h4>
-<p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> assigns ranks to workers during the rendezvous process.</p>
-<p>Rank assignments always use infrastructure-based ordering when available:</p>
-<ul class="simple">
-<li><p>The launcher first checks <code class="docutils literal notranslate"><span class="pre">SLURM_PROCID</span></code> (automatically set in SLURM environments)</p></li>
-<li><p>If not available, it falls back to <code class="docutils literal notranslate"><span class="pre">GROUP_RANK</span></code> (set by <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> itself)</p></li>
-<li><p>If neither environment variable is set, ranks are assigned deterministically based on sorted node descriptors</p></li>
-</ul>
-<p>This ensures consistency with the infrastructure’s rank assignment, which is important
-for static deployments and proper resource allocation.</p>
-</section>
-<section id="hot-spare-nodes-and-segment-aware-rank-assignment">
-<h4>Hot Spare Nodes and Segment-Aware Rank Assignment<a class="headerlink" href="#hot-spare-nodes-and-segment-aware-rank-assignment" title="Link to this heading"></a></h4>
-<p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> supports hot spare nodes, which are standby nodes that can replace failed nodes
-during restart. Hot spare functionality is always enabled and works with <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code>.</p>
-<p>By default (<code class="docutils literal notranslate"><span class="pre">--ft-segment=None</span></code>), the launcher uses <strong>simple hot spare mode</strong>, which is suitable
-for most deployments including H100-based systems where NVLink domain segmentation is not required:</p>
-<ul class="simple">
-<li><p>The first <code class="docutils literal notranslate"><span class="pre">min_nodes</span></code> (from <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code>) are assigned as active workers</p></li>
-<li><p>Any additional nodes beyond <code class="docutils literal notranslate"><span class="pre">min_nodes</span></code> become hot spares with standby ranks</p></li>
-<li><p>Hot spares do not require GPU ClusterUUID or NVLink domain awareness</p></li>
-<li><p>This mode effectively treats each node independently for rank assignment</p></li>
-</ul>
-<p>For large-scale NVSwitch-based systems (e.g., DGX H200, HGX B200), you can enable
-<strong>segment-aware hot spare mode</strong> using <code class="docutils literal notranslate"><span class="pre">--ft-segment=N</span></code>:</p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">N</span></code> specifies the minimum number of nodes required per NVLink domain (identified by GPU ClusterUUID)</p></li>
-<li><p>Only domains with at least <code class="docutils literal notranslate"><span class="pre">N</span></code> nodes participate in training</p></li>
-<li><p>From each valid domain, as many complete segments as possible are selected</p></li>
-<li><p>Nodes in the same segment receive contiguous group ranks for optimal performance</p></li>
-<li><p>The <code class="docutils literal notranslate"><span class="pre">min_nodes</span></code> parameter (from <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code>) must be divisible by <code class="docutils literal notranslate"><span class="pre">segment</span></code></p></li>
-<li><p>GPU ClusterUUID is automatically queried via nvidia-smi to identify NVLink domains</p></li>
-</ul>
-<p><strong>Key Differences:</strong></p>
-<ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-segment=None</span></code> (default): Simple mode without domain awareness, suitable for H100 systems</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-segment=1</span></code>: Each node is a segment, similar to simple mode but requires ClusterUUID</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">--ft-segment=4</span></code> or higher: Multi-node segments for NVSwitch-based systems</p></li>
-</ul>
-<p>Example for H100 deployment (8 nodes requested, 6 needed for training):</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">6</span>:8<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
-<span class="w">            </span>--max-restarts<span class="o">=</span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
-<span class="w">            </span>training_script.py
-
-<span class="c1"># Nodes 0-5: Active workers (ranks 0-47)</span>
-<span class="c1"># Nodes 6-7: Hot spares (standby ranks 48-63)</span>
-</pre></div>
-</div>
-<p>Example for NVSwitch deployment with segment=4 (12 nodes requested, 8 needed):</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">8</span>:12<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
-<span class="w">            </span>--ft-segment<span class="o">=</span><span class="m">4</span><span class="w"> </span>--max-restarts<span class="o">=</span><span class="m">3</span><span class="w"> </span><span class="se">\</span>
-<span class="w">            </span>training_script.py
-
-<span class="c1"># Requires domains with at least 4 nodes each</span>
-<span class="c1"># 8 active nodes = 2 complete segments</span>
-<span class="c1"># 4 hot spare nodes available for restart</span>
-</pre></div>
-</div>
-</section>
-<section id="numa-binding">
-<h4>NUMA binding<a class="headerlink" href="#numa-binding" title="Link to this heading"></a></h4>
-<p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> supports automatic NUMA node binding for workers through the <code class="docutils literal notranslate"><span class="pre">NVRX_GPUS_PER_NUMA</span></code>
-environment variable. When set, the launcher automatically wraps each worker process with <code class="docutils literal notranslate"><span class="pre">numactl</span></code>
-to bind it to the appropriate NUMA node based on its local rank.</p>
-<div class="admonition important">
-<p class="admonition-title">Important</p>
-<p><strong>Prerequisites:</strong> This feature requires the <code class="docutils literal notranslate"><span class="pre">numactl</span></code> command-line tool to be installed and
-available in the system PATH. The launcher will fail to start workers if <code class="docutils literal notranslate"><span class="pre">numactl</span></code> is not found.</p>
-<p>To install on common Linux distributions:</p>
-<ul class="simple">
-<li><p><strong>Ubuntu/Debian:</strong> <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">numactl</span></code></p></li>
-<li><p><strong>RHEL/CentOS/Rocky:</strong> <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">yum</span> <span class="pre">install</span> <span class="pre">numactl</span></code></p></li>
-</ul>
-</div>
-<p><strong>How it works:</strong></p>
-<ul class="simple">
-<li><p>Set <code class="docutils literal notranslate"><span class="pre">NVRX_GPUS_PER_NUMA</span></code> to the number of GPUs per NUMA node on your system</p></li>
-<li><p>The launcher calculates the NUMA node as: <code class="docutils literal notranslate"><span class="pre">numa_node</span> <span class="pre">=</span> <span class="pre">local_rank</span> <span class="pre">//</span> <span class="pre">gpus_per_numa</span></code></p></li>
-<li><p>Each worker is automatically wrapped with: <code class="docutils literal notranslate"><span class="pre">numactl</span> <span class="pre">--cpunodebind=&lt;numa_node&gt;</span> <span class="pre">--membind=&lt;numa_node&gt;</span></code></p></li>
-<li><p>This applies only to binary/script entrypoints (not Python function entrypoints)</p></li>
-</ul>
-<p><strong>Example usage:</strong></p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># For a system with 4 GPUs per NUMA node (8 GPUs total, 2 NUMA nodes)</span>
-<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_GPUS_PER_NUMA</span><span class="o">=</span><span class="m">4</span>
-ft_launcher<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span>train.py
-
-<span class="c1"># In this configuration:</span>
-<span class="c1"># - Ranks 0-3 will be bound to NUMA node 0</span>
-<span class="c1"># - Ranks 4-7 will be bound to NUMA node 1</span>
-</pre></div>
-</div>
-<p><strong>Benefits:</strong></p>
-<p>Proper NUMA binding can significantly improve performance by ensuring memory locality
-and reducing cross-NUMA memory access overhead, which is especially important for
-multi-GPU training workloads.</p>
-</section>
-</section>
-<section id="hang-detection">
-<h3>Hang detection<a class="headerlink" href="#hang-detection" title="Link to this heading"></a></h3>
-<p>The FT package provides two fully independent mechanisms for detecting hangs in user code.
-Users can choose the API that is best suited for their needs, or use both APIs at the same time.</p>
-<ul class="simple">
-<li><p>Heartbeats API</p></li>
-</ul>
-<p>The training script periodically sends <cite>heartbeats</cite> to the monitor.
-If no heartbeat arrives in a defined time, the workload is considered hung.
-This API is the simplest to use but might require coarse timeouts
-that need to cover a wide range of possible intervals between heartbeats.
-Please find more details in <a class="reference internal" href="integration/heartbeats.html"><span class="doc">Heartbeats API Integration</span></a>.</p>
-<ul class="simple">
-<li><p>Sections API</p></li>
-</ul>
-<p>Some parts of the training scripts are wrapped in <cite>sections</cite>.
-If any section is opened for too long, the workload is considered hung.
-The sections-based API requires more changes in the user code, but timeouts
-can be defined more precisely, and hangs can be detected quicker.
-Please find more details in <a class="reference internal" href="integration/sections.html"><span class="doc">Sections API Integration</span></a>.</p>
-</section>
-<section id="workload-control">
-<h3>Workload control<a class="headerlink" href="#workload-control" title="Link to this heading"></a></h3>
-<p>In some cases, it might be useful to control the <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> behavior based on a rank state.
-For example, if an irrecoverable error is encountered in a rank, it might be reasonable to break
-the launcher restarting loop and exit instead of restarting; for other exception types, one might
-want to exclude the current node from subsequent restart attempts. <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> exposes the
-<a class="reference internal" href="api/client.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request" title="nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request"><code class="xref py py-meth docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.rank_monitor_client.RankMonitorClient.send_workload_control_request()</span></code></a>
-API, which can be used to control the workload restarting logic implemented in the launcher.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Please note that only the ft_launcher behavior is affected by this call.
-The fault tolerance package is job scheduler-agnostic,
-i.e., it does not control underlying SLURM job allocations.</p>
-</div>
-</section>
 </section>
 </section>
 
@@ -643,8 +230,8 @@ i.e., it does not control underlying SLURM job allocations.</p>
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="index.html" class="btn btn-neutral float-left" title="Fault Tolerance" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="timeout_diagnostics.html" class="btn btn-neutral float-right" title="Timeout diagnostics" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="index.html" class="btn btn-neutral float-left" title="InJob restart" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="integration.html" class="btn btn-neutral float-right" title="Integration guides" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

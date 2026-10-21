@@ -1,0 +1,260 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multinode deployment &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Operations and troubleshooting" href="operations.html" />
+    <link rel="prev" title="Configuration and timeouts" href="configuration.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration guides</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Multinode deployment</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#launch-shape-and-fixed-training-world">Launch shape and fixed training world</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#replacement-groups-and-rank-assignment">Replacement groups and rank assignment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#hot-spares-and-nvlink-segments">Hot spares and NVLink segments</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#scheduler-continuation-and-external-control">Scheduler continuation and external control</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#numa-binding">NUMA binding</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
+      <li class="breadcrumb-item active">Multinode deployment</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/fault_tolerance/deployment.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="multinode-deployment">
+<h1>Multinode deployment<a class="headerlink" href="#multinode-deployment" title="Link to this heading"></a></h1>
+<section id="launch-shape-and-fixed-training-world">
+<h2>Launch shape and fixed training world<a class="headerlink" href="#launch-shape-and-fixed-training-world" title="Link to this heading"></a></h2>
+<p>Start one <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> per node and let it spawn the local GPU workers.
+Under Slurm use <code class="docutils literal notranslate"><span class="pre">srun</span> <span class="pre">--ntasks=&lt;nodes&gt;</span> <span class="pre">--ntasks-per-node=1</span></code>; a task per GPU
+would start multiple launchers on each node and is rejected by the launcher.
+All nodes need the same reachable endpoint, run ID, environment, checkpoint
+path, and active training shape. <code class="docutils literal notranslate"><span class="pre">localhost:0</span></code> is for single-node runs only.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--nnodes</span> <span class="pre">MIN:MAX</span></code> selects an active training world of <code class="docutils literal notranslate"><span class="pre">MIN</span></code> nodes and
+admits additional joined nodes as standbys, up to <code class="docutils literal notranslate"><span class="pre">MAX</span></code>. With eight GPUs per
+node, <code class="docutils literal notranslate"><span class="pre">6:8</span></code> means 48 active workers, not a variable 48-to-64-worker model.
+For Megatron, preserve TP/PP/CP/EP, optimizer/checkpoint compatibility, and a
+global batch divisible by microbatch size times DP. Promotions replace capacity
+without resizing the model. See <a class="reference internal" href="examples/megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a> for TP/PP commands.</p>
+</section>
+<section id="replacement-groups-and-rank-assignment">
+<h2>Replacement groups and rank assignment<a class="headerlink" href="#replacement-groups-and-rank-assignment" title="Link to this heading"></a></h2>
+<p>Array tasks can contain multiple nodes. A replacement group represents that
+allocation unit: all required nodes in a group must be healthy/present before
+it becomes active. The size defaults to <code class="docutils literal notranslate"><span class="pre">SLURM_NNODES</span></code> or
+<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_NUM_NODES</span></code> in arrays and can be specified through rendezvous
+<code class="docutils literal notranslate"><span class="pre">replacement_group_size</span></code>. <code class="docutils literal notranslate"><span class="pre">NVRX_REPLACEMENT_GROUP_ID</span></code> overrides the default
+<code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_TASK_ID</span></code> identity. Segment size and replacement-group size impose
+different constraints: the first is NVLink locality, the second scheduler
+allocation completeness.</p>
+<p>Infrastructure ordering uses these sources in precedence order:</p>
+<ul class="simple">
+<li><p>Optional node-name ordering through <code class="docutils literal notranslate"><span class="pre">NVRX_INFRA_RANK_FROM_NODENAME</span></code>.</p></li>
+<li><p>Explicit cross-job ordering through <code class="docutils literal notranslate"><span class="pre">CROSS_SLURM_PROCID</span></code>.</p></li>
+<li><p>Block/node topology ordering when <code class="docutils literal notranslate"><span class="pre">SLURM_TOPOLOGY_ADDR_PATTERN=block.node</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">SLURM_PROCID</span></code>, incorporating array task ID and nodes per array task to
+obtain unique infrastructure ranks across the array.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GROUP_RANK</span></code>, then deterministic sorted node descriptors as fallback.</p></li>
+</ul>
+<p>Some allocation-boundary checks deliberately use array/node ordering rather
+than the optional topology ordering. Infrastructure rank, replacement-group
+identity, launcher group rank, and worker global rank are different values.
+Do not assume a worker rank identifies the same physical GPU after restart.
+Use the failed cycle’s rank map for diagnosis.</p>
+</section>
+<section id="hot-spares-and-nvlink-segments">
+<h2>Hot spares and NVLink segments<a class="headerlink" href="#hot-spares-and-nvlink-segments" title="Link to this heading"></a></h2>
+<p>Simple hot-spare mode is the default: <strong>omit</strong> <code class="docutils literal notranslate"><span class="pre">--ft-segment</span></code>. It does not
+require GPU ClusterUUID. The first eligible <code class="docutils literal notranslate"><span class="pre">MIN</span></code> nodes form the active world;
+additional joined nodes wait with no training workers until promotion.</p>
+<p>On systems where <code class="docutils literal notranslate"><span class="pre">nvidia-smi</span> <span class="pre">-q</span></code> reports the required GPU ClusterUUID,
+<code class="docutils literal notranslate"><span class="pre">--ft-segment</span> <span class="pre">N</span></code> selects complete N-node segments within NVLink domains.
+Only domains containing at least N eligible nodes can contribute a segment,
+nodes in a segment get contiguous group ranks, and <code class="docutils literal notranslate"><span class="pre">MIN</span> <span class="pre">%</span> <span class="pre">N</span></code> must be zero.
+<code class="docutils literal notranslate"><span class="pre">--ft-segment</span> <span class="pre">1</span></code> still requires ClusterUUID; it is not equivalent to omitting
+the option on a system without that property. Do not pass the string <code class="docutils literal notranslate"><span class="pre">None</span></code>
+or use zero to disable an integer segment option.</p>
+<p>For eight allocated nodes, six active with eight workers each, run the same
+command on every node with a shared endpoint and run ID:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">6</span>:8<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--rdzv-endpoint<span class="o">=</span><span class="s2">"</span><span class="nv">$RDZV_HOST</span><span class="s2">:29400"</span><span class="w"> </span>--rdzv-id<span class="o">=</span><span class="s2">"</span><span class="nv">$RUN_ID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--max-restarts<span class="o">=</span><span class="m">3</span><span class="w"> </span>training_script.py
+</pre></div>
+</div>
+<p>For twelve allocated nodes, eight active in complete four-node NVLink segments:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">8</span>:12<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--rdzv-endpoint<span class="o">=</span><span class="s2">"</span><span class="nv">$RDZV_HOST</span><span class="s2">:29400"</span><span class="w"> </span>--rdzv-id<span class="o">=</span><span class="s2">"</span><span class="nv">$RUN_ID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--ft-segment<span class="o">=</span><span class="m">4</span><span class="w"> </span>--max-restarts<span class="o">=</span><span class="m">3</span><span class="w"> </span>training_script.py
+</pre></div>
+</div>
+<p>These show allocation shape only. Add workload instrumentation, matching finite
+timeouts, and checkpoint restoration as in <a class="reference internal" href="examples/megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a>.
+The number of usable spares depends on complete segments/replacement groups,
+not just the count of physically healthy nodes.</p>
+</section>
+<section id="scheduler-continuation-and-external-control">
+<h2>Scheduler continuation and external control<a class="headerlink" href="#scheduler-continuation-and-external-control" title="Link to this heading"></a></h2>
+<p>The colocated design loses its rendezvous service when the store host dies.
+The <a class="reference internal" href="examples/singleton_deployment.html"><span class="doc">Singleton job-array deployment (SLURM)</span></a> script chains independent Slurm array
+generations, each with a new host. A singleton dependency serializes generations;
+it does not reserve resources or promise immediate scheduling. The array throttle
+is a concurrency ceiling, not all-or-none initial admission. Failed array units
+can be released for repair while other units continue; a normal fixed allocation
+does not provide the same independently releasable replacement behavior.</p>
+<p>The experimental <code class="docutils literal notranslate"><span class="pre">nvrx-control</span></code> command can run the long-lived TCPStore and
+control services outside compute launchers. Compute nodes connect to its endpoint
+with rendezvous <code class="docutils literal notranslate"><span class="pre">is_host=false</span></code>. The control process owns the service lifetime
+and must survive compute failures. This changes the store-host failure boundary;
+it does not make the control service itself highly available. This deployment
+path is not yet QA-qualified and APIs may change. Keep it separate from the
+recommended colocated walkthrough until qualified in your environment.</p>
+</section>
+<section id="numa-binding">
+<h2>NUMA binding<a class="headerlink" href="#numa-binding" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> supports automatic NUMA node binding for workers through the <code class="docutils literal notranslate"><span class="pre">NVRX_GPUS_PER_NUMA</span></code>
+environment variable. When set, the launcher automatically wraps each worker process with <code class="docutils literal notranslate"><span class="pre">numactl</span></code>
+to bind it to the appropriate NUMA node based on its local rank.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><strong>Prerequisites:</strong> This feature requires the <code class="docutils literal notranslate"><span class="pre">numactl</span></code> command-line tool to be installed and
+available in the system PATH. The launcher will fail to start workers if <code class="docutils literal notranslate"><span class="pre">numactl</span></code> is not found.</p>
+<p>To install on common Linux distributions:</p>
+<ul class="simple">
+<li><p><strong>Ubuntu/Debian:</strong> <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">numactl</span></code></p></li>
+<li><p><strong>RHEL/CentOS/Rocky:</strong> <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">yum</span> <span class="pre">install</span> <span class="pre">numactl</span></code></p></li>
+</ul>
+</div>
+<p><strong>How it works:</strong></p>
+<ul class="simple">
+<li><p>Set <code class="docutils literal notranslate"><span class="pre">NVRX_GPUS_PER_NUMA</span></code> to the number of GPUs per NUMA node on your system</p></li>
+<li><p>The launcher calculates the NUMA node as: <code class="docutils literal notranslate"><span class="pre">numa_node</span> <span class="pre">=</span> <span class="pre">local_rank</span> <span class="pre">//</span> <span class="pre">gpus_per_numa</span></code></p></li>
+<li><p>Each worker is automatically wrapped with: <code class="docutils literal notranslate"><span class="pre">numactl</span> <span class="pre">--cpunodebind=&lt;numa_node&gt;</span> <span class="pre">--membind=&lt;numa_node&gt;</span></code></p></li>
+<li><p>This applies only to binary/script entrypoints (not Python function entrypoints)</p></li>
+</ul>
+<p><strong>Example usage:</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># For a system with 4 GPUs per NUMA node (8 GPUs total, 2 NUMA nodes)</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_GPUS_PER_NUMA</span><span class="o">=</span><span class="m">4</span>
+ft_launcher<span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span>train.py
+
+<span class="c1"># In this configuration:</span>
+<span class="c1"># - Ranks 0-3 will be bound to NUMA node 0</span>
+<span class="c1"># - Ranks 4-7 will be bound to NUMA node 1</span>
+</pre></div>
+</div>
+<p><strong>Benefits:</strong></p>
+<p>Proper NUMA binding can significantly improve performance by ensuring memory locality
+and reducing cross-NUMA memory access overhead, which is especially important for
+multi-GPU training workloads.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="configuration.html" class="btn btn-neutral float-left" title="Configuration and timeouts" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="operations.html" class="btn btn-neutral float-right" title="Operations and troubleshooting" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Integration Guides &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+  <title>Integration guides &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
@@ -22,8 +22,8 @@
     <script src="../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Heartbeats API Integration" href="integration/heartbeats.html" />
-    <link rel="prev" title="Timeout diagnostics" href="timeout_diagnostics.html" /> 
+    <link rel="next" title="Megatron-LM integration" href="integration/megatron.html" />
+    <link rel="prev" title="InJob restart usage guide" href="usage_guide.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,18 +48,22 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Integration Guides</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="integration/heartbeats.html">Heartbeats API Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="integration/sections.html">Sections API Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="integration/ptl.html">PyTorch Lightning Integration</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Integration guides</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="integration/megatron.html">Megatron-LM integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="integration/sections.html">Sections API integration</a></li>
 <li class="toctree-l3"><a class="reference internal" href="integration/segment_health_check.html">Segment Health Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="integration/heartbeats.html">Legacy heartbeats API integration</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -83,8 +87,8 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="index.html">Fault Tolerance</a></li>
-      <li class="breadcrumb-item active">Integration Guides</li>
+          <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
+      <li class="breadcrumb-item active">Integration guides</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../_sources/fault_tolerance/integration.rst.txt" rel="nofollow"> View page source</a>
       </li>
@@ -95,26 +99,22 @@
            <div itemprop="articleBody">
              
   <section id="integration-guides">
-<h1>Integration Guides<a class="headerlink" href="#integration-guides" title="Link to this heading"></a></h1>
+<h1>Integration guides<a class="headerlink" href="#integration-guides" title="Link to this heading"></a></h1>
+<p>Use the Megatron integration for GPT training, or the sections API for another
+training loop. Fixed CLI timeouts are the recommended configuration.</p>
 <div class="toctree-wrapper compound">
-<p class="caption" role="heading"><span class="caption-text">Integration Guides</span></p>
+<p class="caption" role="heading"><span class="caption-text">Recommended integrations</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="integration/heartbeats.html">Heartbeats API Integration</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="integration/heartbeats.html#prerequisites">1. Prerequisites</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/heartbeats.html#ft-configuration">2. FT configuration</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/heartbeats.html#integration-with-pytorch-workload-code">3. Integration with PyTorch workload code</a></li>
+<li class="toctree-l1"><a class="reference internal" href="integration/megatron.html">Megatron-LM integration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="integration/megatron.html#version-and-environment-contract">Version and environment contract</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/megatron.html#section-boundaries">Section boundaries</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/megatron.html#async-checkpointing-and-recovery">Async checkpointing and recovery</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/megatron.html#timeout-state-and-shutdown">Timeout state and shutdown</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="integration/sections.html">Sections API Integration</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="integration/sections.html#prerequisites">1. Prerequisites</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/sections.html#ft-configuration">2. FT configuration</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/sections.html#integration-with-pytorch-workload-code">3. Integration with PyTorch workload code</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="integration/ptl.html">PyTorch Lightning Integration</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="integration/ptl.html#use-ft-launcher-to-start-the-workload">1. Use <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> to start the workload</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/ptl.html#add-the-ft-callback-to-the-ptl-trainer">2. Add the FT callback to the PTL trainer</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/ptl.html#implementing-auto-resume">3. Implementing auto-resume</a></li>
+<li class="toctree-l1"><a class="reference internal" href="integration/sections.html">Sections API integration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="integration/sections.html#configure-before-launch">Configure before launch</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/sections.html#instrument-the-workload">Instrument the workload</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="integration/segment_health_check.html">Segment Health Check</a><ul>
@@ -127,14 +127,20 @@
 </li>
 </ul>
 </div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Legacy heartbeat integration</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="integration/heartbeats.html">Legacy heartbeats API integration</a></li>
+</ul>
+</div>
 </section>
 
 
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="timeout_diagnostics.html" class="btn btn-neutral float-left" title="Timeout diagnostics" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="integration/heartbeats.html" class="btn btn-neutral float-right" title="Heartbeats API Integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="usage_guide.html" class="btn btn-neutral float-left" title="InJob restart usage guide" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="integration/megatron.html" class="btn btn-neutral float-right" title="Megatron-LM integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

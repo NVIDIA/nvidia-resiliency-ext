@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Heartbeats API Integration &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+  <title>Legacy heartbeats API integration &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
@@ -22,8 +22,8 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Sections API Integration" href="sections.html" />
-    <link rel="prev" title="Integration Guides" href="../integration.html" /> 
+    <link rel="next" title="Examples" href="../examples.html" />
+    <link rel="prev" title="Segment Health Check" href="segment_health_check.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,23 +48,27 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="../integration.html">Integration Guides</a><ul class="current">
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Heartbeats API Integration</a><ul>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../integration.html">Integration guides</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="megatron.html">Megatron-LM integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="sections.html">Sections API integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="segment_health_check.html">Segment Health Check</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Legacy heartbeats API integration</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#prerequisites">1. Prerequisites</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#ft-configuration">2. FT configuration</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#integration-with-pytorch-workload-code">3. Integration with PyTorch workload code</a></li>
 </ul>
 </li>
-<li class="toctree-l3"><a class="reference internal" href="sections.html">Sections API Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="ptl.html">PyTorch Lightning Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="segment_health_check.html">Segment Health Check</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -88,9 +92,9 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
-          <li class="breadcrumb-item"><a href="../integration.html">Integration Guides</a></li>
-      <li class="breadcrumb-item active">Heartbeats API Integration</li>
+          <li class="breadcrumb-item"><a href="../index.html">InJob restart</a></li>
+          <li class="breadcrumb-item"><a href="../integration.html">Integration guides</a></li>
+      <li class="breadcrumb-item active">Legacy heartbeats API integration</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../../_sources/fault_tolerance/integration/heartbeats.rst.txt" rel="nofollow"> View page source</a>
       </li>
@@ -100,8 +104,11 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="heartbeats-api-integration">
-<h1>Heartbeats API Integration<a class="headerlink" href="#heartbeats-api-integration" title="Link to this heading"></a></h1>
+  <section id="legacy-heartbeats-api-integration">
+<h1>Legacy heartbeats API integration<a class="headerlink" href="#legacy-heartbeats-api-integration" title="Link to this heading"></a></h1>
+<p>Heartbeat monitoring is being deprecated as a deployment approach. Use
+<a class="reference internal" href="sections.html"><span class="doc">Sections API integration</span></a> or <a class="reference internal" href="megatron.html"><span class="doc">Megatron-LM integration</span></a> for new deployments. These APIs remain
+available for compatibility; this page is not the recommended learning path.</p>
 <section id="prerequisites">
 <h2>1. Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading"></a></h2>
 <ul class="simple">
@@ -124,16 +131,16 @@ To avoid deadlocks and other unintended side effects, signal handling should be 
 </ul>
 </dd>
 </dl>
-<p><strong>Importantly, heartbeats are not sent during checkpoint loading and saving</strong>, so the time for checkpoint-related operations should be taken into account.</p>
+<p>The supplied example does not send heartbeats during checkpoint loading and
+saving. Account for these intervals when configuring it; other workloads control
+where their own heartbeat calls occur.</p>
 <p>Fixed timeout values can be used throughout the training runs, or timeouts can be calculated based on observed heartbeat intervals.
 <cite>null</cite> timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>When –ft-initial-rank-heartbeat-timeout and –ft-rank-heartbeat-timeout are not
-provided in the command-line arguments, the launcher defaults to FT’s predefined values. These are
-not null/None; currently, the defaults are 60 minutes for –ft-initial-rank-heartbeat-timeout
-and 45 minutes for –ft-rank-heartbeat-timeout.</p>
-</div>
+<p>Both heartbeat timeouts default to <code class="docutils literal notranslate"><span class="pre">None</span></code> (disabled), not 60/45 minutes.
+The YAML below deliberately leaves them disabled until the legacy example
+calculates or restores timeouts. Initial hangs before calibration are not
+bounded by heartbeat monitoring. Dynamic calibration is experimental and
+insufficiently tested for the recommended deployment.</p>
 <p>Configuration file example:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="linenos">1</span><span class="nt">fault_tolerance</span><span class="p">:</span>
 <span class="linenos">2</span><span class="w">    </span><span class="nt">initial_rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
@@ -153,7 +160,7 @@ and 45 minutes for –ft-rank-heartbeat-timeout.</p>
 <li><p><em>(Optional)</em> Save the <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instance’s <code class="docutils literal notranslate"><span class="pre">state_dict()</span></code> to a file so that computed timeouts can be reused in the next run.</p></li>
 <li><p>Shut down <code class="docutils literal notranslate"><span class="pre">RankMonitorClient</span></code> instances using <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.shutdown_workload_monitoring()</span></code>.</p></li>
 </ol>
-<p>Please refer to the <a class="reference internal" href="../examples/train_ddp_heartbeats.html"><span class="doc">Heartbeat API usage example with DDP</span></a> for an implementation example.</p>
+<p>Please refer to the <a class="reference internal" href="../examples/train_ddp_heartbeats.html"><span class="doc">Legacy heartbeat DDP training example</span></a> for an implementation example.</p>
 </section>
 </section>
 
@@ -161,8 +168,8 @@ and 45 minutes for –ft-rank-heartbeat-timeout.</p>
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="../integration.html" class="btn btn-neutral float-left" title="Integration Guides" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="sections.html" class="btn btn-neutral float-right" title="Sections API Integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="segment_health_check.html" class="btn btn-neutral float-left" title="Segment Health Check" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../examples.html" class="btn btn-neutral float-right" title="Examples" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

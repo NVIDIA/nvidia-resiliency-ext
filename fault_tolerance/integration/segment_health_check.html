@@ -22,8 +22,8 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="API documentation" href="../api.html" />
-    <link rel="prev" title="PyTorch Lightning Integration" href="ptl.html" /> 
+    <link rel="next" title="Legacy heartbeats API integration" href="heartbeats.html" />
+    <link rel="prev" title="Sections API integration" href="sections.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,13 +48,11 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2 current"><a class="reference internal" href="../integration.html">Integration Guides</a><ul class="current">
-<li class="toctree-l3"><a class="reference internal" href="heartbeats.html">Heartbeats API Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="sections.html">Sections API Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="ptl.html">PyTorch Lightning Integration</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../integration.html">Integration guides</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="megatron.html">Megatron-LM integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="sections.html">Sections API integration</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Segment Health Check</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#configuration">Configuration</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#supported-launch-shape">Supported Launch Shape</a></li>
@@ -63,10 +61,16 @@
 <li class="toctree-l4"><a class="reference internal" href="#observability">Observability</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="heartbeats.html">Legacy heartbeats API integration</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -90,8 +94,8 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
-          <li class="breadcrumb-item"><a href="../integration.html">Integration Guides</a></li>
+          <li class="breadcrumb-item"><a href="../index.html">InJob restart</a></li>
+          <li class="breadcrumb-item"><a href="../integration.html">Integration guides</a></li>
       <li class="breadcrumb-item active">Segment Health Check</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../../_sources/fault_tolerance/integration/segment_health_check.rst.txt" rel="nofollow"> View page source</a>
@@ -182,8 +186,8 @@ install the segment check or inspect the artifact.</p>
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="ptl.html" class="btn btn-neutral float-left" title="PyTorch Lightning Integration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="../api.html" class="btn btn-neutral float-right" title="API documentation" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="sections.html" class="btn btn-neutral float-left" title="Sections API integration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="heartbeats.html" class="btn btn-neutral float-right" title="Legacy heartbeats API integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

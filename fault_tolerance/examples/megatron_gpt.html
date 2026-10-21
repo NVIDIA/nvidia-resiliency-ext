@@ -1,0 +1,358 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GPT checkpoint recovery with Megatron-LM &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Section monitoring and checkpoint recovery with DDP" href="train_ddp_sections.html" />
+    <link rel="prev" title="Examples" href="../examples.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../release-notes.html">Release Notes</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration guides</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../examples.html">Examples</a><ul class="current">
+<li class="toctree-l3 current"><a class="current reference internal" href="#">GPT checkpoint recovery with Megatron-LM</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#requirements-and-validation-status">Requirements and validation status</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#single-node-run">Single-node run</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#fault-injection-and-repeated-runs">Fault injection and repeated runs</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#verify-recovery">Verify recovery</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#multinode-tp-pp-example">Multinode TP/PP example</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#source">Source</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section monitoring and checkpoint recovery with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="basic_example.html">Legacy heartbeat monitoring example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_heartbeats.html">Legacy heartbeat DDP training example</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">InJob restart</a></li>
+          <li class="breadcrumb-item"><a href="../examples.html">Examples</a></li>
+      <li class="breadcrumb-item active">GPT checkpoint recovery with Megatron-LM</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/fault_tolerance/examples/megatron_gpt.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="gpt-checkpoint-recovery-with-megatron-lm">
+<h1>GPT checkpoint recovery with Megatron-LM<a class="headerlink" href="#gpt-checkpoint-recovery-with-megatron-lm" title="Link to this heading"></a></h1>
+<p>This walkthrough trains a small GPT on mock data, completes an NVRx-backed
+async checkpoint, injects one worker failure, and resumes from a completed
+checkpoint. It uses fixed CLI section timeouts. There is no corpus or tokenizer
+model to download.</p>
+<section id="requirements-and-validation-status">
+<h2>Requirements and validation status<a class="headerlink" href="#requirements-and-validation-status" title="Link to this heading"></a></h2>
+<p>Provide a GPU environment with compatible PyTorch, CUDA, NCCL, Transformer
+Engine, Megatron-LM, and this NVRx checkout installed. All nodes must see the
+same source paths and work directory. The example does not build a training
+container or install Megatron’s dependencies.</p>
+<p>See <a class="reference internal" href="../integration/megatron.html"><span class="doc">Megatron-LM integration</span></a> for the reviewed Megatron revision and version
+contract. The wrapper and command construction can be tested without GPUs;
+end-to-end GPU and Slurm execution must be qualified in the target environment.
+A successful dry run or documentation build is not evidence of training recovery.</p>
+</section>
+<section id="single-node-run">
+<h2>Single-node run<a class="headerlink" href="#single-node-run" title="Link to this heading"></a></h2>
+<p>From the NVRx repository root, choose a fresh work directory:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">MEGATRON_PATH</span><span class="o">=</span>/workspace/Megatron-LM
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_WORK_DIR</span><span class="o">=</span>/shared/<span class="nv">$USER</span>/nvrx-gpt
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_RUN_ID</span><span class="o">=</span>gpt-recovery-001
+<span class="nb">export</span><span class="w"> </span><span class="nv">GPUS_PER_NODE</span><span class="o">=</span><span class="m">2</span>
+
+<span class="nv">NVRX_DRY_RUN</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>bash<span class="w"> </span>examples/fault_tolerance/run_megatron_gpt.sh
+bash<span class="w"> </span>examples/fault_tolerance/run_megatron_gpt.sh
+</pre></div>
+</div>
+<p>The default trains a four-layer, hidden-size-512 GPT for 100 iterations and saves
+every 5 iterations. It uses BF16, a distributed optimizer, <code class="docutils literal notranslate"><span class="pre">torch_dist</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--async-save</span></code>, and <code class="docutils literal notranslate"><span class="pre">--use-persistent-ckpt-worker</span></code>. Training/evaluation
+sections are enabled from the first step with <code class="docutils literal notranslate"><span class="pre">--ft-num-warmup-iters=0</span></code>.
+The fixed deadlines are <code class="docutils literal notranslate"><span class="pre">setup:900,step:120,checkpointing:600</span></code> and 180 seconds
+out of section. Qualify these values for your stack.</p>
+<p>The script prints the exact launcher/workload command in dry-run mode; it still
+validates paths and creates the artifact directories. This is not a submission
+script and does not allocate GPUs. For Slurm or containers, run it inside the
+allocated training environment.</p>
+</section>
+<section id="fault-injection-and-repeated-runs">
+<h2>Fault injection and repeated runs<a class="headerlink" href="#fault-injection-and-repeated-runs" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">NVRX_DEMO_FAULT=kill</span></code> (default) sends SIGKILL to training rank 1 after the
+latest-checkpoint iteration file advances beyond its startup baseline.
+<code class="docutils literal notranslate"><span class="pre">NVRX_DEMO_FAULT=hang</span></code> uses SIGSTOP to exercise timeout detection instead.
+<code class="docutils literal notranslate"><span class="pre">NVRX_DEMO_FAULT=none</span></code> disables injection for an uninterrupted baseline.
+For fault injection on one GPU, set <code class="docutils literal notranslate"><span class="pre">NVRX_FAULT_RANK=0</span></code>; the default rank 1
+needs at least two active GPUs. An uninterrupted baseline ignores the fault
+rank, so <code class="docutils literal notranslate"><span class="pre">NVRX_DEMO_FAULT=none</span> <span class="pre">GPUS_PER_NODE=1</span></code> needs no rank override.</p>
+<p>The wrapper runs Megatron’s unmodified entrypoint. It claims
+<code class="docutils literal notranslate"><span class="pre">runs/&lt;run-id&gt;/fault_injected.json</span></code> exclusively on shared storage before
+signalling itself, so replacement worker processes do not inject again. It does
+not modify training state, select checkpoint shards, or implement async saves.
+If the requested fault never occurs, the selected worker reports failure at
+normal exit instead of silently presenting an uninterrupted run as recovery.</p>
+<p>Use a <strong>new run ID for every separate test</strong>. The submission shell rejects an
+old ID containing an injection marker; worker restarts use that marker to avoid
+repeated injection. To resume an existing training
+checkpoint into a new launch, also set
+<code class="docutils literal notranslate"><span class="pre">NVRX_CHECKPOINT_DIR=/shared/path/to/checkpoints</span></code>. The injector then waits
+for a new checkpoint beyond that directory’s initial iteration. Ensure
+the existing tracker is readable and contains an integer at startup: an empty,
+invalid, or unreadable tracker stops the wrapper before Megatron starts, rather
+than treating its contents as zero. Only an absent tracker establishes a fresh
+run’s zero baseline. Temporary read failures during subsequent polling are
+ignored without changing that baseline. Ensure
+<code class="docutils literal notranslate"><span class="pre">TRAIN_ITERS</span></code> exceeds the restored iteration by enough to complete multiple
+checkpoints. The fixed-timeout script rejects a directory containing calculated
+<code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code>; archive that timeout-state file deliberately if appropriate.</p>
+</section>
+<section id="verify-recovery">
+<h2>Verify recovery<a class="headerlink" href="#verify-recovery" title="Link to this heading"></a></h2>
+<p>Artifacts live under <code class="docutils literal notranslate"><span class="pre">$NVRX_WORK_DIR/runs/$NVRX_RUN_ID</span></code> by default:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cat<span class="w"> </span><span class="s2">"</span><span class="nv">$NVRX_WORK_DIR</span><span class="s2">/runs/</span><span class="nv">$NVRX_RUN_ID</span><span class="s2">/fault_injected.json"</span>
+ls<span class="w"> </span><span class="s2">"</span><span class="nv">$NVRX_WORK_DIR</span><span class="s2">/runs/</span><span class="nv">$NVRX_RUN_ID</span><span class="s2">/cycle_infos"</span>
+cat<span class="w"> </span><span class="s2">"</span><span class="nv">$NVRX_WORK_DIR</span><span class="s2">/runs/</span><span class="nv">$NVRX_RUN_ID</span><span class="s2">/checkpoints/latest_checkpointed_iteration.txt"</span>
+</pre></div>
+</div>
+<p>Check all of the following, not just a launcher exit status:</p>
+<ol class="arabic simple">
+<li><p>A checkpoint completed before the injected failure; record its iteration
+from the injection marker and correlate it with Megatron’s logs.</p></li>
+<li><p>The launcher records the failed cycle and starts replacement worker processes.
+For the hang case, correlate the section-timeout message with the failed rank.</p></li>
+<li><p>Megatron reports loading a completed training checkpoint, including optimizer
+state, rather than starting from iteration zero.</p></li>
+<li><p>Training commits optimizer steps beyond the restored checkpoint, a later async
+checkpoint completes, and the intended final iteration is reached.</p></li>
+<li><p>The run finishes successfully without repeated injection or a no-progress stop.</p></li>
+</ol>
+<p>Application logs are <code class="docutils literal notranslate"><span class="pre">logs/train_cycle&lt;N&gt;.log</span></code>; launcher/monitor logs are
+routed through <code class="docutils literal notranslate"><span class="pre">logs/launcher.log</span></code>. Aggregation is best effort, so use cycle
+records and checkpoint state together. Measure failure-to-first-committed-step
+latency separately from failure detection and process startup.</p>
+</section>
+<section id="multinode-tp-pp-example">
+<h2>Multinode TP/PP example<a class="headerlink" href="#multinode-tp-pp-example" title="Link to this heading"></a></h2>
+<p>First validate single-node recovery. For two nodes with four GPUs each, this
+example uses TP=2, PP=2, DP=2; the active world stays eight GPUs after a restart.
+Use a shared reachable endpoint and a common run ID:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Inside an allocation with two nodes and four GPUs per node:</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NNODES</span><span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="nv">GPUS_PER_NODE</span><span class="o">=</span><span class="m">4</span><span class="w"> </span><span class="nv">TP</span><span class="o">=</span><span class="m">2</span><span class="w"> </span><span class="nv">PP</span><span class="o">=</span><span class="m">2</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">NVRX_RUN_ID</span><span class="o">=</span>gpt-tp2-pp2-001
+<span class="nb">export</span><span class="w"> </span><span class="nv">RDZV_ENDPOINT</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>scontrol<span class="w"> </span>show<span class="w"> </span>hostnames<span class="w"> </span><span class="s2">"</span><span class="nv">$SLURM_JOB_NODELIST</span><span class="s2">"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>head<span class="w"> </span>-n<span class="w"> </span><span class="m">1</span><span class="k">)</span><span class="s2">:29400"</span>
+srun<span class="w"> </span>--ntasks<span class="o">=</span><span class="m">2</span><span class="w"> </span>--ntasks-per-node<span class="o">=</span><span class="m">1</span><span class="w"> </span>--gpus-per-node<span class="o">=</span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>bash<span class="w"> </span>examples/fault_tolerance/run_megatron_gpt.sh
+</pre></div>
+</div>
+<p>The script sets global batch size to the active GPU count and microbatch size
+to one, satisfying divisibility by DP for these shapes. Four model layers must
+divide by PP and eight attention heads by TP. Additional workload arguments can
+be appended, but changes to batch/model/checkpoint shape need validation.</p>
+<p>This example demonstrates worker recovery within a fixed allocation; a failed
+physical node can invalidate a normal Slurm allocation. For independently
+releasable replacement groups, hot/cold spares, and rendezvous-host loss, continue
+with <a class="reference internal" href="singleton_deployment.html"><span class="doc">Singleton job-array deployment (SLURM)</span></a>. Do not substitute allocation shrinking for
+the array deployment’s replacement behavior.</p>
+</section>
+<section id="source">
+<h2>Source<a class="headerlink" href="#source" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="linenos"> 1</span><span class="ch">#!/usr/bin/env bash</span>
+<span class="linenos"> 2</span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
+<span class="linenos"> 3</span><span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
+<span class="linenos"> 4</span>
+<span class="linenos"> 5</span><span class="c1"># Small GPT recovery example. See docs/source/fault_tolerance/examples/megatron_gpt.rst.</span>
+<span class="linenos"> 6</span><span class="nb">set</span><span class="w"> </span>-euo<span class="w"> </span>pipefail
+<span class="linenos"> 7</span>
+<span class="linenos"> 8</span><span class="nv">SCRIPT_DIR</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>dirname<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">BASH_SOURCE</span><span class="p">[0]</span><span class="si">}</span><span class="s2">"</span><span class="k">)</span><span class="s2">"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="k">)</span><span class="s2">"</span>
+<span class="linenos"> 9</span>:<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MEGATRON_PATH</span><span class="p">:?Set MEGATRON_PATH to an installed Megatron-LM source checkout</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">10</span>:<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_WORK_DIR</span><span class="p">:?Set NVRX_WORK_DIR to an absolute directory visible on all nodes</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">11</span><span class="o">[[</span><span class="w"> </span><span class="s2">"</span><span class="nv">$NVRX_WORK_DIR</span><span class="s2">"</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'NVRX_WORK_DIR must be absolute'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="linenos">12</span><span class="o">[[</span><span class="w"> </span>-f<span class="w"> </span><span class="s2">"</span><span class="nv">$MEGATRON_PATH</span><span class="s2">/pretrain_gpt.py"</span><span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'pretrain_gpt.py not found'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="linenos">13</span>
+<span class="linenos">14</span><span class="nv">NNODES</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">NNODES</span><span class="k">:-</span><span class="nv">1</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">15</span><span class="nv">GPUS_PER_NODE</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">GPUS_PER_NODE</span><span class="k">:-</span><span class="nv">2</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">16</span><span class="nv">TP</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">TP</span><span class="k">:-</span><span class="nv">1</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">17</span><span class="nv">PP</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">PP</span><span class="k">:-</span><span class="nv">1</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">18</span><span class="nv">TRAIN_ITERS</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">TRAIN_ITERS</span><span class="k">:-</span><span class="nv">100</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">19</span><span class="nv">SAVE_INTERVAL</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">SAVE_INTERVAL</span><span class="k">:-</span><span class="nv">5</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">20</span><span class="nv">NVRX_DEMO_FAULT</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_DEMO_FAULT</span><span class="k">:-</span><span class="nv">kill</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">21</span><span class="k">case</span><span class="w"> </span><span class="s2">"</span><span class="nv">$NVRX_DEMO_FAULT</span><span class="s2">"</span><span class="w"> </span><span class="k">in</span>
+<span class="linenos">22</span><span class="w">    </span>none<span class="p">|</span>kill<span class="p">|</span>hang<span class="o">)</span><span class="w"> </span><span class="p">;;</span>
+<span class="linenos">23</span><span class="w">    </span>*<span class="o">)</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'NVRX_DEMO_FAULT must be none, kill, or hang'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="p">;;</span>
+<span class="linenos">24</span><span class="k">esac</span>
+<span class="linenos">25</span><span class="k">for</span><span class="w"> </span>value<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="s2">"</span><span class="nv">$NNODES</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$GPUS_PER_NODE</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$TP</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$PP</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$TRAIN_ITERS</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$SAVE_INTERVAL</span><span class="s2">"</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="linenos">26</span><span class="w">    </span><span class="o">[[</span><span class="w"> </span><span class="s2">"</span><span class="nv">$value</span><span class="s2">"</span><span class="w"> </span><span class="o">=</span>~<span class="w"> </span>^<span class="o">[</span><span class="m">1</span>-9<span class="o">][</span><span class="m">0</span>-9<span class="o">]</span>*$<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'Shape and iteration settings must be positive integers'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="linenos">27</span><span class="k">done</span>
+<span class="linenos">28</span><span class="nv">WORLD_SIZE</span><span class="o">=</span><span class="k">$((</span><span class="w"> </span><span class="nv">NNODES</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="nv">GPUS_PER_NODE</span><span class="w"> </span><span class="k">))</span>
+<span class="linenos">29</span><span class="o">((</span><span class="w"> </span>WORLD_SIZE<span class="w"> </span>%<span class="w"> </span><span class="o">(</span>TP<span class="w"> </span>*<span class="w"> </span>PP<span class="o">)</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="m">4</span><span class="w"> </span>%<span class="w"> </span><span class="nv">PP</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="m">8</span><span class="w"> </span>%<span class="w"> </span><span class="nv">TP</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="o">))</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span>
+<span class="linenos">30</span><span class="w">    </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'World size must be divisible by TP*PP; PP must divide four layers and TP eight heads'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span><span class="p">;</span>
+<span class="linenos">31</span><span class="o">}</span>
+<span class="linenos">32</span><span class="k">if</span><span class="w"> </span><span class="o">((</span><span class="w"> </span>NNODES<span class="w"> </span>&gt;<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="o">))</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="linenos">33</span><span class="w">    </span>:<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">RDZV_ENDPOINT</span><span class="p">:?Set a common reachable host:</span><span class="nv">port</span><span class="p"> for all nodes</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">34</span><span class="w">    </span>:<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_RUN_ID</span><span class="p">:=</span><span class="si">${</span><span class="nv">SLURM_JOB_ID</span><span class="k">:-</span><span class="si">}}</span><span class="s2">"</span>
+<span class="linenos">35</span><span class="w">    </span>:<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_RUN_ID</span><span class="p">:?Set the same unique run ID on all nodes</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">36</span><span class="k">else</span>
+<span class="linenos">37</span><span class="w">    </span><span class="nv">RDZV_ENDPOINT</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">RDZV_ENDPOINT</span><span class="k">:-</span><span class="nv">localhost</span><span class="p">:</span><span class="nv">0</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">38</span><span class="w">    </span><span class="nv">NVRX_RUN_ID</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_RUN_ID</span><span class="k">:-$(</span>date<span class="w"> </span>-u<span class="w"> </span>+%Y%m%dT%H%M%S<span class="k">)</span><span class="p">-</span><span class="nv">$$</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">39</span><span class="k">fi</span>
+<span class="linenos">40</span><span class="o">[[</span><span class="w"> </span><span class="s2">"</span><span class="nv">$NVRX_RUN_ID</span><span class="s2">"</span><span class="w"> </span><span class="o">=</span>~<span class="w"> </span>^<span class="o">[</span>a-zA-Z0-9_-<span class="o">]</span>+$<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'Use letters, digits, underscores or hyphens in NVRX_RUN_ID'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="linenos">41</span><span class="nv">RUN_DIR</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_WORK_DIR</span><span class="si">}</span><span class="s2">/runs/</span><span class="si">${</span><span class="nv">NVRX_RUN_ID</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">42</span><span class="nv">CHECKPOINT_DIR</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_CHECKPOINT_DIR</span><span class="k">:-</span><span class="si">${</span><span class="nv">RUN_DIR</span><span class="si">}</span><span class="p">/checkpoints</span><span class="si">}</span><span class="s2">"</span>
+<span class="linenos">43</span><span class="o">[[</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">"</span><span class="w"> </span><span class="o">==</span><span class="w"> </span>/*<span class="w"> </span><span class="o">]]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'NVRX_CHECKPOINT_DIR must be absolute'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="linenos">44</span><span class="k">if</span><span class="w"> </span><span class="o">[[</span><span class="w"> </span>-e<span class="w"> </span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">/fault_injected.json"</span><span class="w"> </span><span class="o">]]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="linenos">45</span><span class="w">    </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'This run ID already has an injection marker; use a new NVRX_RUN_ID'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span>
+<span class="linenos">46</span><span class="w">    </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span>
+<span class="linenos">47</span><span class="k">fi</span>
+<span class="linenos">48</span>mkdir<span class="w"> </span>-p<span class="w"> </span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">/logs"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">/cycle_infos"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">"</span>
+<span class="linenos">49</span><span class="k">if</span><span class="w"> </span><span class="o">[[</span><span class="w"> </span>-e<span class="w"> </span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">/ft_state.json"</span><span class="w"> </span><span class="o">]]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="linenos">50</span><span class="w">    </span><span class="nb">echo</span><span class="w"> </span><span class="s1">'This fixed-timeout example requires a checkpoint directory without calculated ft_state.json'</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span>
+<span class="linenos">51</span><span class="w">    </span><span class="nb">exit</span><span class="w"> </span><span class="m">2</span>
+<span class="linenos">52</span><span class="k">fi</span>
+<span class="linenos">53</span>
+<span class="linenos">54</span><span class="nv">launcher</span><span class="o">=(</span>
+<span class="linenos">55</span><span class="w">    </span>ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="s2">"</span><span class="nv">$NNODES</span><span class="s2">"</span><span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="s2">"</span><span class="nv">$GPUS_PER_NODE</span><span class="s2">"</span>
+<span class="linenos">56</span><span class="w">    </span>--rdzv-backend<span class="o">=</span>c10d<span class="w"> </span>--rdzv-endpoint<span class="o">=</span><span class="s2">"</span><span class="nv">$RDZV_ENDPOINT</span><span class="s2">"</span><span class="w"> </span>--rdzv-id<span class="o">=</span><span class="s2">"</span><span class="nv">$NVRX_RUN_ID</span><span class="s2">"</span>
+<span class="linenos">57</span><span class="w">    </span>--max-restarts<span class="o">=</span><span class="m">3</span>
+<span class="linenos">58</span><span class="w">    </span>--ft-rank-section-timeouts<span class="o">=</span>setup:900,step:120,checkpointing:600
+<span class="linenos">59</span><span class="w">    </span>--ft-rank-out-of-section-timeout<span class="o">=</span><span class="m">180</span>
+<span class="linenos">60</span><span class="w">    </span>--ft-checkpoint-iteration-file<span class="o">=</span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">/latest_checkpointed_iteration.txt"</span>
+<span class="linenos">61</span><span class="w">    </span>--ft-cycle-info-dir<span class="o">=</span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">/cycle_infos"</span>
+<span class="linenos">62</span><span class="w">    </span>--ft-per-cycle-applog-prefix<span class="o">=</span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">/logs/train.log"</span>
+<span class="linenos">63</span><span class="w">    </span>--ft-nvrx-logfile<span class="o">=</span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">/logs/launcher.log"</span>
+<span class="linenos">64</span><span class="o">)</span>
+<span class="linenos">65</span><span class="nv">workload</span><span class="o">=(</span>
+<span class="linenos">66</span><span class="w">    </span><span class="s2">"</span><span class="nv">$SCRIPT_DIR</span><span class="s2">/megatron_gpt_worker.py"</span>
+<span class="linenos">67</span><span class="w">    </span>--megatron-path<span class="w"> </span><span class="s2">"</span><span class="nv">$MEGATRON_PATH</span><span class="s2">"</span><span class="w"> </span>--checkpoint-dir<span class="w"> </span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">"</span>
+<span class="linenos">68</span><span class="w">    </span>--fault-marker<span class="w"> </span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">/fault_injected.json"</span><span class="w"> </span>--fault<span class="w"> </span><span class="s2">"</span><span class="nv">$NVRX_DEMO_FAULT</span><span class="s2">"</span>
+<span class="linenos">69</span><span class="w">    </span>--fault-rank<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_FAULT_RANK</span><span class="k">:-</span><span class="nv">1</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span>--
+<span class="linenos">70</span><span class="w">    </span>--enable-ft-package<span class="w"> </span>--ft-num-warmup-iters<span class="o">=</span><span class="m">0</span>
+<span class="linenos">71</span><span class="w">    </span>--mock-data<span class="w"> </span>--tokenizer-type<span class="o">=</span>NullTokenizer<span class="w"> </span>--vocab-size<span class="o">=</span><span class="m">1024</span>
+<span class="linenos">72</span><span class="w">    </span>--num-layers<span class="o">=</span><span class="m">4</span><span class="w"> </span>--hidden-size<span class="o">=</span><span class="m">512</span><span class="w"> </span>--num-attention-heads<span class="o">=</span><span class="m">8</span>
+<span class="linenos">73</span><span class="w">    </span>--seq-length<span class="o">=</span><span class="m">256</span><span class="w"> </span>--max-position-embeddings<span class="o">=</span><span class="m">256</span>
+<span class="linenos">74</span><span class="w">    </span>--tensor-model-parallel-size<span class="o">=</span><span class="s2">"</span><span class="nv">$TP</span><span class="s2">"</span><span class="w"> </span>--pipeline-model-parallel-size<span class="o">=</span><span class="s2">"</span><span class="nv">$PP</span><span class="s2">"</span>
+<span class="linenos">75</span><span class="w">    </span>--micro-batch-size<span class="o">=</span><span class="m">1</span><span class="w"> </span>--global-batch-size<span class="o">=</span><span class="s2">"</span><span class="nv">$WORLD_SIZE</span><span class="s2">"</span>
+<span class="linenos">76</span><span class="w">    </span>--train-iters<span class="o">=</span><span class="s2">"</span><span class="nv">$TRAIN_ITERS</span><span class="s2">"</span><span class="w"> </span>--lr<span class="o">=</span><span class="m">0</span>.0001<span class="w"> </span>--lr-decay-style<span class="o">=</span>constant
+<span class="linenos">77</span><span class="w">    </span>--bf16<span class="w"> </span>--use-distributed-optimizer
+<span class="linenos">78</span><span class="w">    </span>--load<span class="o">=</span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">"</span><span class="w"> </span>--save<span class="o">=</span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">"</span><span class="w"> </span>--save-interval<span class="o">=</span><span class="s2">"</span><span class="nv">$SAVE_INTERVAL</span><span class="s2">"</span>
+<span class="linenos">79</span><span class="w">    </span>--ckpt-format<span class="o">=</span>torch_dist<span class="w"> </span>--async-save<span class="w"> </span>--use-persistent-ckpt-worker
+<span class="linenos">80</span><span class="w">    </span>--eval-iters<span class="o">=</span><span class="m">0</span><span class="w"> </span>--log-interval<span class="o">=</span><span class="m">1</span>
+<span class="linenos">81</span><span class="o">)</span>
+<span class="linenos">82</span>
+<span class="linenos">83</span><span class="nb">printf</span><span class="w"> </span><span class="s1">'Run artifacts: %s\nCheckpoint directory: %s\n'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$RUN_DIR</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CHECKPOINT_DIR</span><span class="s2">"</span>
+<span class="linenos">84</span><span class="k">if</span><span class="w"> </span><span class="o">[[</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">NVRX_DRY_RUN</span><span class="k">:-</span><span class="nv">0</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="o">]]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<span class="linenos">85</span><span class="w">    </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'%q '</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">launcher</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">workload</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$@</span><span class="s2">"</span>
+<span class="linenos">86</span><span class="w">    </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'\n'</span>
+<span class="linenos">87</span><span class="w">    </span><span class="nb">exit</span><span class="w"> </span><span class="m">0</span>
+<span class="linenos">88</span><span class="k">fi</span>
+<span class="linenos">89</span><span class="nb">exec</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">launcher</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">workload</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$@</span><span class="s2">"</span>
+</pre></div>
+</div>
+<p>The once-only injection wrapper is
+<code class="docutils literal notranslate"><span class="pre">examples/fault_tolerance/megatron_gpt_worker.py</span></code>.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../examples.html" class="btn btn-neutral float-left" title="Examples" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="train_ddp_sections.html" class="btn btn-neutral float-right" title="Section monitoring and checkpoint recovery with DDP" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

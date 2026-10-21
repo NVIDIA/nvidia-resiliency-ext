@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Fault Tolerance &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+  <title>InJob restart &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
@@ -22,7 +22,7 @@
     <script src="../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Usage guide" href="usage_guide.html" />
+    <link rel="next" title="InJob restart usage guide" href="usage_guide.html" />
     <link rel="prev" title="Release Notes" href="../release-notes.html" /> 
 </head>
 
@@ -48,12 +48,16 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="current reference internal" href="#">Fault Tolerance</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
-<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">InJob restart</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration guides</a></li>
 <li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -77,7 +81,7 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
-      <li class="breadcrumb-item active">Fault Tolerance</li>
+      <li class="breadcrumb-item active">InJob restart</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../_sources/fault_tolerance/index.rst.txt" rel="nofollow"> View page source</a>
       </li>
@@ -87,27 +91,72 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="fault-tolerance">
-<h1>Fault Tolerance<a class="headerlink" href="#fault-tolerance" title="Link to this heading"></a></h1>
-<dl class="simple">
-<dt>Fault Tolerance is a Python package that features:</dt><dd><ul class="simple">
-<li><p>Workload hang detection.</p></li>
-<li><p>Automatic calculation of timeouts used for hang detection.</p></li>
-<li><p>Detection of rank(s) terminated due to an error.</p></li>
-<li><p>Workload respawning in case of a failure.</p></li>
-</ul>
-</dd>
-</dl>
-<p>Fault Tolerance is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance</span></code> package.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">nvidia-resiliency-ext</span></code> package also includes the PTL callback <code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> that simplifies FT package integration with PyTorch Lightning-based workloads.
-<code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code> is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.ptl_resiliency</span></code> package.</p>
+  <section id="injob-restart">
+<h1>InJob restart<a class="headerlink" href="#injob-restart" title="Link to this heading"></a></h1>
+<p>The <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance</span></code> package provides section-based
+hang detection, worker-failure detection, and coordinated worker restarting
+through <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>. The recommended deployment uses Megatron-LM with fixed
+section timeouts and NVRx-backed async checkpointing.</p>
+<p>Start with the usage guide and the GPT recovery example. A small DDP example
+demonstrates section monitoring with synchronous PyTorch checkpoints. Heartbeat
+examples are retained as legacy material and are not the recommended integration
+path. Automatic timeout calibration is
+experimental and is not sufficiently validated for the recommended deployment.</p>
 <div class="toctree-wrapper compound">
-<p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
+<p class="caption" role="heading"><span class="caption-text">InJob restart</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="usage_guide.html">Usage guide</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#terms">Terms</a></li>
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#design-overview">Design Overview</a></li>
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#usage-overview">Usage Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#recovery-responsibilities">Recovery responsibilities</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#processes-and-terminology">Processes and terminology</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#launch-and-monitor">Launch and monitor</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#recovery-limits">Recovery limits</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html#where-to-go-next">Where to go next</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="integration.html">Integration guides</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="integration/megatron.html">Megatron-LM integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/sections.html">Sections API integration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/segment_health_check.html">Segment Health Check</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration/heartbeats.html">Legacy heartbeats API integration</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="examples/megatron_gpt.html">GPT checkpoint recovery with Megatron-LM</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_sections.html">Section monitoring and checkpoint recovery with DDP</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/basic_example.html">Legacy heartbeat monitoring example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_heartbeats.html">Legacy heartbeat DDP training example</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="configuration.html">Configuration and timeouts</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#defaults-and-precedence">Defaults and precedence</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#optional-yaml-configuration">Optional YAML configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#warmup-and-unmonitored-intervals">Warmup and unmonitored intervals</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html#experimental-calibration-and-legacy-heartbeats">Experimental calibration and legacy heartbeats</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="deployment.html">Multinode deployment</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#launch-shape-and-fixed-training-world">Launch shape and fixed training world</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#replacement-groups-and-rank-assignment">Replacement groups and rank assignment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#hot-spares-and-nvlink-segments">Hot spares and NVLink segments</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#scheduler-continuation-and-external-control">Scheduler continuation and external control</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html#numa-binding">NUMA binding</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="operations.html">Operations and troubleshooting</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="operations.html#cycle-records-and-checkpoint-progress">Cycle records and checkpoint progress</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html#no-restart-telling-do-not-requeue-apart-from-a-failure">No restart: telling “do not requeue” apart from a failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html#gpu-memory-reclaim">GPU Memory Reclaim</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html#per-cycle-logging-and-grpc-log-aggregation">Per-cycle logging and gRPC log aggregation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html#workload-control-and-diagnosis">Workload control and diagnosis</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="services.html">Optional health checks and attribution</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="services.html#node-health-check-service">Node health check service</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html#distributed-storage-health-check-lustre-nfs">Distributed storage health check (Lustre + NFS)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html#storage-path-health-check">Storage path health check</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html#segment-health-check">Segment Health Check</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html#attribution-service-integration">Attribution service integration</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a><ul>
@@ -119,25 +168,10 @@
 <li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html#configuration">Configuration</a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="integration.html">Integration Guides</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="integration/heartbeats.html">Heartbeats API Integration</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/sections.html">Sections API Integration</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/ptl.html">PyTorch Lightning Integration</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration/segment_health_check.html">Segment Health Check</a></li>
-</ul>
-</li>
 <li class="toctree-l1"><a class="reference internal" href="api.html">API documentation</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="api/config.html">Config</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/client.html">Client</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/server.html">Server</a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/callback.html">Callback</a></li>
-</ul>
-</li>
-<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="examples/basic_example.html">Basic usage example</a></li>
-<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
-<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_sections.html">Section API usage example with DDP</a></li>
-<li class="toctree-l2"><a class="reference internal" href="examples/singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
 </ul>
 </li>
 </ul>
@@ -149,7 +183,7 @@
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="../release-notes.html" class="btn btn-neutral float-left" title="Release Notes" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="usage_guide.html" class="btn btn-neutral float-right" title="Usage guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="usage_guide.html" class="btn btn-neutral float-right" title="InJob restart usage guide" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

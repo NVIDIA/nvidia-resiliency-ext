@@ -23,7 +23,7 @@
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Config" href="api/config.html" />
-    <link rel="prev" title="Segment Health Check" href="integration/segment_health_check.html" /> 
+    <link rel="prev" title="Timeout diagnostics" href="timeout_diagnostics.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,18 +48,21 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration guides</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
 <li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">API documentation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="api/config.html">Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/client.html">Client</a></li>
 <li class="toctree-l3"><a class="reference internal" href="api/server.html">Server</a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html">Callback</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -83,7 +86,7 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
       <li class="breadcrumb-item active">API documentation</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../_sources/fault_tolerance/api.rst.txt" rel="nofollow"> View page source</a>
@@ -136,23 +139,6 @@
 <li class="toctree-l2"><a class="reference internal" href="api/server.html#nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankMonitorServer"><code class="docutils literal notranslate"><span class="pre">RankMonitorServer</span></code></a></li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="api/callback.html">Callback</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback</span></code></a><ul>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_exception"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_exception()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_load_checkpoint"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_load_checkpoint()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_save_checkpoint"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_save_checkpoint()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_batch_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_train_batch_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_train_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_train_start"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_train_start()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_batch_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_validation_batch_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_end"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_validation_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.on_validation_start"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.on_validation_start()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.setup"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.setup()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="api/callback.html#nvidia_resiliency_ext.ptl_resiliency.fault_tolerance_callback.FaultToleranceCallback.teardown"><code class="docutils literal notranslate"><span class="pre">FaultToleranceCallback.teardown()</span></code></a></li>
-</ul>
-</li>
-</ul>
-</li>
 </ul>
 </div>
 </section>
@@ -161,7 +147,7 @@
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="integration/segment_health_check.html" class="btn btn-neutral float-left" title="Segment Health Check" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="timeout_diagnostics.html" class="btn btn-neutral float-left" title="Timeout diagnostics" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
         <a href="api/config.html" class="btn btn-neutral float-right" title="Config" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 

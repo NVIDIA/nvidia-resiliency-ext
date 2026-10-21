@@ -47,7 +47,7 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="release-notes.html">Release Notes</a></li>
-<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">InJob restart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
@@ -85,7 +85,7 @@
 <section id="features">
 <h2>Features<a class="headerlink" href="#features" title="Link to this heading"></a></h2>
 <ul class="simple">
-<li><p><a class="reference external" href="fault_tolerance/index.html">Hang detection and automatic in-job restarting</a></p></li>
+<li><p><a class="reference external" href="fault_tolerance/index.html">InJob restart with section-based monitoring</a></p></li>
 <li><p><a class="reference external" href="checkpointing/async/index.html">Async checkpointing</a></p></li>
 <li><p><a class="reference external" href="checkpointing/local/index.html">Local checkpointing</a></p></li>
 <li><p><a class="reference external" href="straggler_det/index.html">Straggler (slower ranks) detection</a></p></li>
@@ -149,11 +149,59 @@
 </li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/usage_guide.html">Usage guide</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#terms">Terms</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#design-overview">Design Overview</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#usage-overview">Usage Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">InJob restart</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/usage_guide.html">InJob restart usage guide</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#recovery-responsibilities">Recovery responsibilities</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#processes-and-terminology">Processes and terminology</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#launch-and-monitor">Launch and monitor</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#recovery-limits">Recovery limits</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/usage_guide.html#where-to-go-next">Where to go next</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/integration.html">Integration guides</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/megatron.html">Megatron-LM integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/sections.html">Sections API integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/segment_health_check.html">Segment Health Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/heartbeats.html">Legacy heartbeats API integration</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/examples.html">Examples</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/megatron_gpt.html">GPT checkpoint recovery with Megatron-LM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/train_ddp_sections.html">Section monitoring and checkpoint recovery with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/basic_example.html">Legacy heartbeat monitoring example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/train_ddp_heartbeats.html">Legacy heartbeat DDP training example</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/configuration.html">Configuration and timeouts</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/configuration.html#defaults-and-precedence">Defaults and precedence</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/configuration.html#optional-yaml-configuration">Optional YAML configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/configuration.html#warmup-and-unmonitored-intervals">Warmup and unmonitored intervals</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/configuration.html#experimental-calibration-and-legacy-heartbeats">Experimental calibration and legacy heartbeats</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/deployment.html">Multinode deployment</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/deployment.html#launch-shape-and-fixed-training-world">Launch shape and fixed training world</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/deployment.html#replacement-groups-and-rank-assignment">Replacement groups and rank assignment</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/deployment.html#hot-spares-and-nvlink-segments">Hot spares and NVLink segments</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/deployment.html#scheduler-continuation-and-external-control">Scheduler continuation and external control</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/deployment.html#numa-binding">NUMA binding</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/operations.html">Operations and troubleshooting</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/operations.html#cycle-records-and-checkpoint-progress">Cycle records and checkpoint progress</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/operations.html#no-restart-telling-do-not-requeue-apart-from-a-failure">No restart: telling “do not requeue” apart from a failure</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/operations.html#gpu-memory-reclaim">GPU Memory Reclaim</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/operations.html#per-cycle-logging-and-grpc-log-aggregation">Per-cycle logging and gRPC log aggregation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/operations.html#workload-control-and-diagnosis">Workload control and diagnosis</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/services.html">Optional health checks and attribution</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/services.html#node-health-check-service">Node health check service</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/services.html#distributed-storage-health-check-lustre-nfs">Distributed storage health check (Lustre + NFS)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/services.html#storage-path-health-check">Storage path health check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/services.html#segment-health-check">Segment Health Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/services.html#attribution-service-integration">Attribution service integration</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="fault_tolerance/timeout_diagnostics.html">Timeout diagnostics</a><ul>
@@ -165,25 +213,10 @@
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/timeout_diagnostics.html#configuration">Configuration</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/integration.html">Integration Guides</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/heartbeats.html">Heartbeats API Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/sections.html">Sections API Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/ptl.html">PyTorch Lightning Integration</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/integration/segment_health_check.html">Segment Health Check</a></li>
-</ul>
-</li>
 <li class="toctree-l2"><a class="reference internal" href="fault_tolerance/api.html">API documentation</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/config.html">Config</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/client.html">Client</a></li>
 <li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/server.html">Server</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/api/callback.html">Callback</a></li>
-</ul>
-</li>
-<li class="toctree-l2"><a class="reference internal" href="fault_tolerance/examples.html">Examples</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/basic_example.html">Basic usage example</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/train_ddp_sections.html">Section API usage example with DDP</a></li>
-<li class="toctree-l3"><a class="reference internal" href="fault_tolerance/examples/singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
 </ul>
 </li>
 </ul>
@@ -218,7 +251,6 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="checkpointing/local/api.html">API documentation</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/callback.html">PTL Callback support</a></li>
 <li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/base_ckpt_manager.html">BaseCheckpointManager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/local_ckpt_manager.html">LocalCheckpointManager</a></li>
 <li class="toctree-l3"><a class="reference internal" href="checkpointing/local/api/replication.html">Replication</a></li>
@@ -243,7 +275,6 @@
 <li class="toctree-l3"><a class="reference internal" href="straggler_det/api/straggler.html">Straggler</a></li>
 <li class="toctree-l3"><a class="reference internal" href="straggler_det/api/reporting.html">Reporting</a></li>
 <li class="toctree-l3"><a class="reference internal" href="straggler_det/api/statistics.html">Statistics</a></li>
-<li class="toctree-l3"><a class="reference internal" href="straggler_det/api/callback.html">Callback</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="straggler_det/examples.html">Examples</a><ul>

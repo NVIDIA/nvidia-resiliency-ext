@@ -22,8 +22,8 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Async Checkpointing" href="../../checkpointing/async/index.html" />
-    <link rel="prev" title="Section API usage example with DDP" href="train_ddp_sections.html" /> 
+    <link rel="next" title="Legacy heartbeat monitoring example" href="basic_example.html" />
+    <link rel="prev" title="Section monitoring and checkpoint recovery with DDP" href="train_ddp_sections.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,21 +48,26 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration Guides</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration guides</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../examples.html">Examples</a><ul class="current">
-<li class="toctree-l3"><a class="reference internal" href="basic_example.html">Basic usage example</a></li>
-<li class="toctree-l3"><a class="reference internal" href="train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
-<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="megatron_gpt.html">GPT checkpoint recovery with Megatron-LM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section monitoring and checkpoint recovery with DDP</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Singleton job-array deployment (SLURM)</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#quick-start">Quick start</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="basic_example.html">Legacy heartbeat monitoring example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_heartbeats.html">Legacy heartbeat DDP training example</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -86,7 +91,7 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="../index.html">InJob restart</a></li>
           <li class="breadcrumb-item"><a href="../examples.html">Examples</a></li>
       <li class="breadcrumb-item active">Singleton job-array deployment (SLURM)</li>
       <li class="wy-breadcrumbs-aside">
@@ -100,17 +105,22 @@
              
   <section id="singleton-job-array-deployment-slurm">
 <h1>Singleton job-array deployment (SLURM)<a class="headerlink" href="#singleton-job-array-deployment-slurm" title="Link to this heading"></a></h1>
-<p>A reference deployment of <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> for large-scale training: colocated in-job
-restart with a spare pool, plus a singleton job-array chain that survives the one
-failure in-job restart cannot repair.</p>
-<p>Array task 0 is both a training rank and the rendezvous host, so its liveness is the
+<p>After validating <a class="reference internal" href="megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a>, use this advanced reference deployment of
+<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> for large-scale training: colocated InJob
+restart with a spare pool, plus a singleton job-array chain for colocated
+rendezvous-host failure. Other unrecoverable conditions still need operator action.</p>
+<p>Array task 0 runs training workers and hosts the rendezvous service, so its
+liveness is the
 generation’s liveness. Every other task can be replaced from the spare pool; task 0
 cannot, because the endpoint every other task dials is its hostname. Submitting the
-array with <code class="docutils literal notranslate"><span class="pre">--dependency=singleton</span></code> makes that loss cheap instead of fatal: losing
+array with <code class="docutils literal notranslate"><span class="pre">--dependency=singleton</span></code> provides cross-job continuation for that loss: losing
 task 0 makes the current generation unrecoverable. All remaining array tasks must exit
 or be cancelled before the dependency is satisfied; the next generation is then eligible
-to run, rendezvous on a new task 0, and resume from the last checkpoint.</p>
-<p>The example trains public <a class="reference external" href="https://github.com/NVIDIA/Megatron-LM">Megatron-LM</a> on mock
+to run when resources become available, rendezvous on a new task 0, and resume
+from the last checkpoint.</p>
+<p>The example uses NVRx-backed asynchronous checkpoints through Megatron. Pin and
+qualify both revisions as described in <a class="reference internal" href="../integration/megatron.html"><span class="doc">Megatron-LM integration</span></a>. It trains
+public <a class="reference external" href="https://github.com/NVIDIA/Megatron-LM">Megatron-LM</a> on mock
 data, so it needs no corpus and no tokenizer model.</p>
 <p>Files (under <code class="docutils literal notranslate"><span class="pre">examples/fault_tolerance/deployment/</span></code>):</p>
 <dl class="simple">
@@ -168,7 +178,7 @@ simple hot-spare mode by setting <code class="docutils literal notranslate"><spa
 ./submit_chain.sh<span class="w">                   </span><span class="c1"># default: no-restart (exit 93) demo</span>
 <span class="nv">NVRX_NO_RESTART_DEMO</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>./submit_chain.sh<span class="w">   </span><span class="c1"># hand-off demo instead</span>
 
-<span class="c1"># real training: injection off, scale up</span>
+<span class="c1"># injection-free scaled mock training: injection off, scale up</span>
 <span class="nv">NVRX_NO_RESTART_DEMO</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="nv">NVRX_FAULT_INJECT</span><span class="o">=</span><span class="m">0</span><span class="w"> </span><span class="nv">NVRX_INJECT_GPU_FAILURE</span><span class="o">=</span><span class="w"> </span><span class="se">\</span>
 <span class="nv">NVRX_MODEL_PROFILE</span><span class="o">=</span>8b<span class="w"> </span><span class="nv">NVRX_TRAIN_TASKS</span><span class="o">=</span><span class="m">32</span><span class="w"> </span><span class="nv">NVRX_HOT_SPARES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span><span class="nv">NVRX_COLD_SPARES</span><span class="o">=</span><span class="m">32</span><span class="w"> </span><span class="se">\</span>
 <span class="nv">NVRX_CHAIN_DEPTH</span><span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="nv">NVRX_TIME_LIMIT</span><span class="o">=</span><span class="m">02</span>:00:00<span class="w"> </span>./submit_chain.sh
@@ -181,6 +191,16 @@ from an orphaned generation):</p>
 python3<span class="w"> </span>-m<span class="w"> </span>nvrx_watch<span class="w"> </span>&lt;job_id&gt;
 </pre></div>
 </div>
+<p>The default is a no-progress shutdown demonstration, not a successful recovery
+test. Section timeouts and async-save settings are fixed; automatic calibration
+is experimental. See the Slurm README for timeout/warmup overrides and the
+checkpoint-before-fault checks required for the hand-off mode.</p>
+<p>Array concurrency is not atomic initial admission. The singleton dependency
+serializes generations without reserving capacity or guaranteeing a startup
+time. A hard loss of task 0 can prevent its EXIT trap from running; observe-only
+watching does not itself clean up the generation. Owner-enabled <code class="docutils literal notranslate"><span class="pre">--act</span></code> releases
+pending orphaned spares only. Confirm all old tasks have ended before expecting
+the successor to start.</p>
 </section>
 </section>
 
@@ -188,8 +208,8 @@ python3<span class="w"> </span>-m<span class="w"> </span>nvrx_watch<span class="
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="train_ddp_sections.html" class="btn btn-neutral float-left" title="Section API usage example with DDP" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="../../checkpointing/async/index.html" class="btn btn-neutral float-right" title="Async Checkpointing" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="train_ddp_sections.html" class="btn btn-neutral float-left" title="Section monitoring and checkpoint recovery with DDP" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="basic_example.html" class="btn btn-neutral float-right" title="Legacy heartbeat monitoring example" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

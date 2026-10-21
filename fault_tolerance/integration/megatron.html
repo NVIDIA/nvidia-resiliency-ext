@@ -1,0 +1,246 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Megatron-LM integration &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../../_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="Sections API integration" href="sections.html" />
+    <link rel="prev" title="Integration guides" href="../integration.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../release-notes.html">Release Notes</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="../integration.html">Integration guides</a><ul class="current">
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Megatron-LM integration</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#version-and-environment-contract">Version and environment contract</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#section-boundaries">Section boundaries</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#async-checkpointing-and-recovery">Async checkpointing and recovery</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#timeout-state-and-shutdown">Timeout state and shutdown</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="sections.html">Sections API integration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="segment_health_check.html">Segment Health Check</a></li>
+<li class="toctree-l3"><a class="reference internal" href="heartbeats.html">Legacy heartbeats API integration</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">InJob restart</a></li>
+          <li class="breadcrumb-item"><a href="../integration.html">Integration guides</a></li>
+      <li class="breadcrumb-item active">Megatron-LM integration</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../../_sources/fault_tolerance/integration/megatron.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="megatron-lm-integration">
+<h1>Megatron-LM integration<a class="headerlink" href="#megatron-lm-integration" title="Link to this heading"></a></h1>
+<p>Megatron-LM already integrates the NVRx sections API. Run its
+<code class="docutils literal notranslate"><span class="pre">pretrain_gpt.py</span></code> entrypoint with <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> and enable
+<code class="docutils literal notranslate"><span class="pre">--enable-ft-package</span></code>. Do not add a second monitoring client or another
+checkpoint loop around Megatron.</p>
+<p>The walkthrough in <a class="reference internal" href="../examples/megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a> uses fixed section timeouts
+on the launcher CLI and NVRx-backed asynchronous distributed checkpoints.
+<code class="docutils literal notranslate"><span class="pre">--calc-ft-timeouts</span></code> is experimental and is deliberately omitted.</p>
+<section id="version-and-environment-contract">
+<h2>Version and environment contract<a class="headerlink" href="#version-and-environment-contract" title="Link to this heading"></a></h2>
+<p>The source contract for this guide was reviewed against public Megatron-LM
+revision <code class="docutils literal notranslate"><span class="pre">36731acc3f0dac859ee7369bdc3a6af58bac546c</span></code>:
+<a class="reference external" href="https://github.com/NVIDIA/Megatron-LM/blob/36731acc3f0dac859ee7369bdc3a6af58bac546c/megatron/training/ft_integration.py">FT integration</a>,
+<a class="reference external" href="https://github.com/NVIDIA/Megatron-LM/blob/36731acc3f0dac859ee7369bdc3a6af58bac546c/megatron/training/async_utils.py">async orchestration</a>,
+and <a class="reference external" href="https://github.com/NVIDIA/Megatron-LM/blob/36731acc3f0dac859ee7369bdc3a6af58bac546c/megatron/core/dist_checkpointing/strategies/torch.py">distributed writer integration</a>.</p>
+<p>This is a source-reviewed recipe, not a GPU/Slurm qualification claim for that
+revision. Pin both Megatron and NVRx in the deployed container, record CUDA,
+PyTorch, Transformer Engine, and NCCL versions, and run the recovery checks in
+the example before relying on a combination. Megatron’s FT argument help still
+labels the integration internal-use; availability in its public source does not
+establish a supported combination across all releases. Older Megatron versions
+may offer an <code class="docutils literal notranslate"><span class="pre">async_strategy</span></code> selector; do not copy a backend-selection flag
+from another revision without checking its help and implementation.</p>
+</section>
+<section id="section-boundaries">
+<h2>Section boundaries<a class="headerlink" href="#section-boundaries" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Section</p></th>
+<th class="head"><p>Megatron behavior</p></th>
+<th class="head"><p>Timeout sizing</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">setup</span></code></p></td>
+<td><p>Opened before initialization; closed before the first train/eval iteration</p></td>
+<td><p>Model construction, distributed initialization, compilation, checkpoint load</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">step</span></code></p></td>
+<td><p>Training/evaluation steps after configured warmup</p></td>
+<td><p>Full step, including communication and optimizer work</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">checkpointing</span></code></p></td>
+<td><p>Save-related work and async finalization calls</p></td>
+<td><p>Preparation plus worst observed finalization stalls</p></td>
+</tr>
+<tr class="row-odd"><td><p>Out of section</p></td>
+<td><p>Work outside open monitored sections, subject to warmup suppression</p></td>
+<td><p>Data preparation, logging, and other between-section work</p></td>
+</tr>
+</tbody>
+</table>
+<p>The section names must match exactly. The DDP example’s <code class="docutils literal notranslate"><span class="pre">init</span></code> and
+<code class="docutils literal notranslate"><span class="pre">checkpoint</span></code> names are not aliases. Configure finite timeouts before launch;
+simply enabling <code class="docutils literal notranslate"><span class="pre">--enable-ft-package</span></code> does not give those sections deadlines.
+See <a class="reference internal" href="../configuration.html"><span class="doc">Configuration and timeouts</span></a> for first-step coverage and restored timeout state.</p>
+</section>
+<section id="async-checkpointing-and-recovery">
+<h2>Async checkpointing and recovery<a class="headerlink" href="#async-checkpointing-and-recovery" title="Link to this heading"></a></h2>
+<p>Megatron owns the training state and checkpoint lifecycle. For the distributed
+<code class="docutils literal notranslate"><span class="pre">torch_dist</span></code> path in the reviewed revision, NVRx supplies
+<code class="docutils literal notranslate"><span class="pre">AsyncCallsQueue</span></code>, <code class="docutils literal notranslate"><span class="pre">AsyncRequest</span></code>, and <code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync</span></code>.
+The workload arguments used in the example are:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>--load<span class="w"> </span>/shared/run/checkpoints<span class="w"> </span><span class="se">\</span>
+--save<span class="w"> </span>/shared/run/checkpoints<span class="w"> </span><span class="se">\</span>
+--save-interval<span class="w"> </span><span class="m">5</span><span class="w"> </span><span class="se">\</span>
+--ckpt-format<span class="w"> </span>torch_dist<span class="w"> </span><span class="se">\</span>
+--async-save<span class="w"> </span><span class="se">\</span>
+--use-persistent-ckpt-worker
+</pre></div>
+</div>
+<p>NVRx InJob remains responsible for process recovery; this is a different
+component from NVRx async checkpointing.</p>
+<p>A save request stages a snapshot and schedules background I/O. Training may
+continue before that save is recoverable. Finalization completes the distributed
+checkpoint and publishes its latest-checkpoint tracker. If workers die during
+an unfinished save, recovery must use the previous completed checkpoint.
+Do not advance a progress marker merely because a save was submitted.</p>
+<p>Megatron wraps save preparation and async finalization in <code class="docutils literal notranslate"><span class="pre">checkpointing</span></code>
+sections. The entire background save is not one continuously open section, and
+a stalled background operation can instead surface when finalization waits.
+A small checkpointing timeout copied from a synchronous example is unsuitable.</p>
+<p>For the distributed optimizer, restore optimizer shards and scheduler/data/RNG
+state as well as model weights. Keep the example’s active world size and TP/PP
+shape fixed through replacement. Standbys do not enlarge that world. Different
+topologies require explicit checkpoint-format and resharding validation; InJob
+does not implement live model-parallel resizing.</p>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">--ft-checkpoint-iteration-file</span></code> on the launcher CLI with the path to
+<code class="docutils literal notranslate"><span class="pre">latest_checkpointed_iteration.txt</span></code>. This tracks completed checkpoint
+progress, not the newest training iteration. Sparse checkpointing and deliberate
+Megatron reruns can look like no progress across cycles; see
+<a class="reference internal" href="../operations.html"><span class="doc">Operations and troubleshooting</span></a> for the stop threshold and unavailable-marker behavior.</p>
+</section>
+<section id="timeout-state-and-shutdown">
+<h2>Timeout state and shutdown<a class="headerlink" href="#timeout-state-and-shutdown" title="Link to this heading"></a></h2>
+<p>Megatron saves calculated timeouts to <code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> only when calibration
+runs, but restores an existing file at startup. Use a fresh directory for the
+fixed-timeout walkthrough. That file is distinct from launcher YAML and from
+the distributed training checkpoint.</p>
+<p>Let Megatron finalize outstanding async saves during normal shutdown. A forced
+worker termination can interrupt an in-flight save; the most recent completed
+checkpoint remains the recovery point. Qualification must cover failures during
+training, save preparation, and background-save/finalization windows.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../integration.html" class="btn btn-neutral float-left" title="Integration guides" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="sections.html" class="btn btn-neutral float-right" title="Sections API integration" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

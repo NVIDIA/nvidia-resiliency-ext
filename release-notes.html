@@ -22,7 +22,7 @@
     <script src="_static/js/theme.js"></script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Fault Tolerance" href="fault_tolerance/index.html" />
+    <link rel="next" title="InJob restart" href="fault_tolerance/index.html" />
     <link rel="prev" title="nvidia-resiliency-ext" href="index.html" /> 
 </head>
 
@@ -101,7 +101,7 @@
 </li>
 </ul>
 </li>
-<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="fault_tolerance/index.html">InJob restart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="straggler_det/index.html">Straggler Detection</a></li>
@@ -141,7 +141,12 @@
 <section id="removals">
 <h3>Removals<a class="headerlink" href="#removals" title="Link to this heading"></a></h3>
 <ul class="simple">
-<li><p><strong>In-process restart has been removed</strong>, including the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess</span></code> package, its documentation, examples, and tests. Use in-job restart through <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>; see the <a class="reference internal" href="fault_tolerance/usage_guide.html"><span class="std std-doc">Fault Tolerance usage guide</span></a>.</p></li>
+<li><p><strong>In-process restart has been removed</strong>, including the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess</span></code> package, its documentation, examples, and tests. Use InJob restart through <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>; see the <a class="reference internal" href="fault_tolerance/usage_guide.html"><span class="std std-doc">InJob restart usage guide</span></a>.</p></li>
+<li><p>Removed the remaining deprecated <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.ptl_resiliency</span></code> source
+package, Lightning callback documentation, and its unit/NeMo functional tests
+and Dockerfile. Integrate the underlying fault-tolerance, checkpointing, and
+straggler APIs directly; use the Megatron GPT walkthrough for InJob training.
+Documentation builds no longer require Lightning.</p></li>
 </ul>
 </section>
 </section>
@@ -150,12 +155,12 @@
 <section id="highlights">
 <h3>Highlights<a class="headerlink" href="#highlights" title="Link to this heading"></a></h3>
 <ul class="simple">
-<li><p><strong>In-job restart and resilient deployment</strong></p>
+<li><p><strong>InJob restart and resilient deployment</strong></p>
 <ul>
 <li><p><strong>Barrier rendezvous is now the only FT rendezvous implementation</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/379">#379</a>). The compatibility spelling <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">barrier</span></code> remains accepted; <code class="docutils literal notranslate"><span class="pre">legacy</span></code> is rejected.</p></li>
 <li><p>Hot-spare restart rounds prefer returning active nodes over early standbys and exclude every participant from an unhealthy Slurm array task (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/325">#325</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/326">#326</a>). Recovery is also hardened against transient over-subscription and stale participants from failed replacement groups (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/357">#357</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/391">#391</a>).</p></li>
 <li><p><strong>Scheduler segment-health integration</strong> lets each allocation unit publish and consume shared exclusion decisions before rendezvous, so unhealthy Slurm array tasks are omitted when eligible spares are available (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/398">#398</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/399">#399</a>). See the <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/integration/segment_health_check.rst">Segment Health Check guide</a>.</p></li>
-<li><p>A new <strong>singleton job-array deployment</strong> example combines in-job hot spares with scheduler-managed replacement of an unrecoverable rendezvous-host allocation (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/383">#383</a>). See the <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/examples/singleton_deployment.rst">deployment guide</a>.</p></li>
+<li><p>A new <strong>singleton job-array deployment</strong> example combines InJob hot spares with scheduler-managed replacement of an unrecoverable rendezvous-host allocation (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/383">#383</a>). See the <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/blob/v0.7.0/docs/source/fault_tolerance/examples/singleton_deployment.rst">deployment guide</a>.</p></li>
 <li><p>Successful node-health responses with unusable output now fail open; only an explicit service failure or a non-empty <code class="docutils literal notranslate"><span class="pre">failed_checks</span></code> list marks the node unhealthy. The raw <code class="docutils literal notranslate"><span class="pre">fail_count</span></code> may include checks ignored by site policy (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/420">#420</a>).</p></li>
 <li><p>Local launcher failures no longer permanently close the shared rendezvous. Terminal worker-group failures and genuine job-wide shutdown decisions continue to close it (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/350">#350</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/421">#421</a>).</p></li>
 <li><p>Progress-tracker values supplied through YAML are preserved when the corresponding CLI options are omitted (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/329">#329</a>).</p></li>
@@ -196,7 +201,7 @@
 <ul class="simple">
 <li><p><strong>Legacy dynamic rendezvous has been removed.</strong> Remove <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">legacy</span></code>; omit the option or use <code class="docutils literal notranslate"><span class="pre">--ft-rdzv-impl</span> <span class="pre">barrier</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/379">#379</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code> remains deprecated.</strong> Only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> is supported and it is already the default, so remove the option from launch scripts.</p></li>
-<li><p><strong>In-process restart remains deprecated.</strong> New deployments should use in-job restart through <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
+<li><p><strong>In-process restart remains deprecated.</strong> New deployments should use InJob restart through <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code>.</p></li>
 <li><p><strong>The <code class="docutils literal notranslate"><span class="pre">[dataflow]</span></code> extra and <code class="docutils literal notranslate"><span class="pre">nvdataflow</span></code> dependency have been removed.</strong> Attribution export uses the configured direct HTTP endpoint instead (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/commit/9182c06dfc7bbf2bbe3430c13b94d9f58e84c3b0">9182c06</a>).</p></li>
 </ul>
 </section>
@@ -216,7 +221,7 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvid
 <li><p><strong>Linux wheel compatibility:</strong> published wheels target <code class="docutils literal notranslate"><span class="pre">manylinux_2_39</span></code>; systems with glibc older than 2.39, including standard Ubuntu 22.04 installations, must build from source.</p></li>
 <li><p><strong>Python:</strong> release wheels are published for Python 3.12 and 3.14. The package metadata still permits Python 3.10+, but Python 3.10 and 3.11 are not covered by the release wheel/CI matrix.</p></li>
 <li><p><strong>Attribution and Restart Agent features are experimental.</strong> APIs, service contracts, schemas, and model-route configuration may change.</p></li>
-<li><p><strong>External attribution endpoints:</strong> the in-job client currently submits logs over HTTP(S). Other endpoint schemes do not provide an additional transport implementation.</p></li>
+<li><p><strong>External attribution endpoints:</strong> the InJob client currently submits logs over HTTP(S). Other endpoint schemes do not provide an additional transport implementation.</p></li>
 <li><p><strong>Segment-health decisions fail open</strong> when their artifact is missing or unusable. Slurm does not evict an already running allocation merely because a node becomes drained; the decision is consumed at the next rendezvous health-check boundary.</p></li>
 <li><p><strong>Per-cycle log aggregation is best-effort.</strong> Failure-adjacent output may be incomplete; retain launcher/rank-monitor logs and core dumps for authoritative diagnostics.</p></li>
 </ul>
@@ -227,7 +232,7 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvid
 <section id="id1">
 <h3>Highlights<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
 <ul>
-<li><p><strong>In-job restart</strong></p>
+<li><p><strong>InJob restart</strong></p>
 <ul class="simple">
 <li><p><strong>Barrier-based rendezvous (v2) is now the default</strong> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/214">#214</a>). The legacy dynamic rendezvous (v1) is <strong>deprecated</strong> and will be removed in a future release (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282">#282</a>).</p></li>
 <li><p>Rendezvous protocol hardening — round-scoped keys, round-fenced CAS to prevent stale slot writes, and cleaner handling of participants exiting mid-rendezvous (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/262">#262</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/263">#263</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/300">#300</a>).</p></li>
@@ -239,7 +244,7 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvid
 <li><p>Block-aware rank assignment (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/250">#250</a>) and hot-spare exit-handling fix (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/266">#266</a>).</p></li>
 </ul>
 </li>
-<li><p><strong>Progress-based early termination</strong> for in-job restarts and progress-tracker enhancements (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/218">#218</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/255">#255</a>).</p></li>
+<li><p><strong>Progress-based early termination</strong> for InJob restarts and progress-tracker enhancements (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/218">#218</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/255">#255</a>).</p></li>
 <li><p><strong>External InJob control-plane (experimental)</strong> — embed <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> orchestration in a host control plane (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/321">#321</a>). Not yet QA-validated; APIs may change.</p></li>
 <li><p>Section-timeout fixes — out-of-section timeout now fires for section-less workloads, baseline iteration tracking corrected (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/261">#261</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/299">#299</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> now reflects job-level restart attempts (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/211">#211</a>); <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> runs with sensible defaults out of the box (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/205">#205</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/271">#271</a>).</p></li>
@@ -300,7 +305,7 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvid
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--ft-restart-policy</span></code></strong> is deprecated (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/259">#259</a>). The <code class="docutils literal notranslate"><span class="pre">min-healthy</span></code> value has been removed; only <code class="docutils literal notranslate"><span class="pre">any-failed</span></code> remains (which is also the default), so the flag is effectively a no-op in v0.6. <strong>Migration: remove the flag from your launch scripts.</strong> No replacement is required. The flag itself will be removed in a future release.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">ptl_resiliency</span></code> package is deprecated and removed</strong> from the wheel (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/282">#282</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/285">#285</a>). PyTorch Lightning users should pin v0.5.x or migrate to the underlying <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> / <code class="docutils literal notranslate"><span class="pre">checkpointing</span></code> / <code class="docutils literal notranslate"><span class="pre">attribution.straggler</span></code> APIs directly.</p></li>
 <li><p><strong>OneLogger integration</strong> removed (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/257">#257</a>).</p></li>
-<li><p><strong>In-process restart is deprecated in v0.6</strong> and will be removed in a future release. It is no longer the focus of the fast-restart solution. <strong>Migration: use in-job restart via <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code></strong> (see the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> usage guide). The existing <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess</span></code> APIs continue to work in v0.6 but are no longer maintained for new feature development; bug fixes will be considered on a case-by-case basis.</p></li>
+<li><p><strong>In-process restart is deprecated in v0.6</strong> and will be removed in a future release. It is no longer the focus of the fast-restart solution. <strong>Migration: use InJob restart via <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code></strong> (see the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> usage guide). The existing <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.inprocess</span></code> APIs continue to work in v0.6 but are no longer maintained for new feature development; bug fixes will be considered on a case-by-case basis.</p></li>
 </ul>
 </section>
 <section id="id3">
@@ -332,12 +337,12 @@ pip<span class="w"> </span>install<span class="w"> </span>nvidia-resiliency-ext<
 <section id="id5">
 <h3>Highlights<a class="headerlink" href="#id5" title="Link to this heading"></a></h3>
 <ul class="simple">
-<li><p>In-job restarts</p>
+<li><p>InJob restarts</p>
 <ul>
-<li><p>PRs (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/185">185</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/190">190</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/201">201</a>) improve the scalability, profiling, and performance of in-job restarts through improvements to the rendezvous operation</p></li>
+<li><p>PRs (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/185">185</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/190">190</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/201">201</a>) improve the scalability, profiling, and performance of InJob restarts through improvements to the rendezvous operation</p></li>
 <li><p>Key scaling and fault-tolerance improvements:</p>
 <ul>
-<li><p><strong>New barrier-based rendezvous operation</strong> introduces a substantial redesign that addresses several limitations of the previous dynamic rendezvous implementation. This provides more predictable, stable, and scalable in-job behavior</p></li>
+<li><p><strong>New barrier-based rendezvous operation</strong> introduces a substantial redesign that addresses several limitations of the previous dynamic rendezvous implementation. This provides more predictable, stable, and scalable InJob behavior</p></li>
 </ul>
 </li>
 <li><p>Faster termination path:</p>
@@ -347,7 +352,7 @@ pip<span class="w"> </span>install<span class="w"> </span>nvidia-resiliency-ext<
 </li>
 <li><p>New Flag for Infra-Aligned Rank Assignment:</p>
 <ul>
-<li><p>A new flag, –ft-use-infra-group-rank, allows in-job scaling to follow the infrastructure scheduler’s rank assignment, preserving topology-aware placement decisions</p></li>
+<li><p>A new flag, –ft-use-infra-group-rank, allows InJob scaling to follow the infrastructure scheduler’s rank assignment, preserving topology-aware placement decisions</p></li>
 </ul>
 </li>
 <li><p>Migration Guidance:</p>
@@ -467,10 +472,10 @@ Storage, Google Cloud Storage and more using NVIDIA Multi-storage Client</p></li
 <li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/36">PR 36</a> - Critical bug fix to enable async checkpoint loading without errors</p></li>
 </ul>
 </li>
-<li><p>In-process &amp; In-job restart</p>
+<li><p>In-process &amp; InJob restart</p>
 <ul>
-<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/35">PR 35</a> - Nested restarter updates for in-process restart to align with in-job
-restart, so users have a consistent experience across in-process and in-job restarts</p></li>
+<li><p><a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/35">PR 35</a> - Nested restarter updates for in-process restart to align with InJob
+restart, so users have a consistent experience across in-process and InJob restarts</p></li>
 <li><p>Updates to in-process nested restart functionality provided by Python Wrapper class and existing callback infrastructure with additional
 callbacks and logging</p></li>
 </ul>
@@ -498,9 +503,9 @@ deadlock in NCCL P2P communications (used in pipeline parallel)</p></li>
 <ul class="simple">
 <li><p>Support for Blackwell GPU</p></li>
 <li><p>ARM based host CPU support</p></li>
-<li><p>In-process &amp; In-job restart</p>
+<li><p>In-process &amp; InJob restart</p>
 <ul>
-<li><p>Hierarchical in-process and in-job restart support</p></li>
+<li><p>Hierarchical in-process and InJob restart support</p></li>
 <li><p>Warm spare support</p></li>
 </ul>
 </li>
@@ -575,7 +580,7 @@ deadlock in NCCL P2P communications (used in pipeline parallel)</p></li>
 <ul class="simple">
 <li><p><strong>For in-process restart</strong></p>
 <ul>
-<li><p>If there is hang, presence of SHARP raises an exception, which leads to triggering in-job restart and in-process restart.</p></li>
+<li><p>If there is hang, presence of SHARP raises an exception, which leads to triggering InJob restart and in-process restart.</p></li>
 <li><p>Customer needs to disable SHARP for using in-process restart with current version.</p></li>
 <li><p>Requires ENV VARs to be set as follows:</p>
 <ul>
@@ -585,7 +590,7 @@ deadlock in NCCL P2P communications (used in pipeline parallel)</p></li>
 </li>
 </ul>
 </li>
-<li><p><strong>In-process and in-job restart</strong></p>
+<li><p><strong>In-process and InJob restart</strong></p>
 <ul>
 <li><p>These work with PyTorch version 24.07, 24.08, 24.09, and 24.10 but not with 24.11 due to a known NCCL issue.</p></li>
 </ul>
@@ -606,7 +611,7 @@ deadlock in NCCL P2P communications (used in pipeline parallel)</p></li>
 </li>
 <li><p><strong>Fault Tolerance API</strong></p>
 <ul>
-<li><p>Provides the rank monitor server and client, and modified torchrun launcher based on TorchElastic to automatically detect hang and ability to in-job restart the training.</p></li>
+<li><p>Provides the rank monitor server and client, and modified torchrun launcher based on TorchElastic to automatically detect hangs and restart training with InJob.</p></li>
 </ul>
 </li>
 </ul>
@@ -619,7 +624,7 @@ deadlock in NCCL P2P communications (used in pipeline parallel)</p></li>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="index.html" class="btn btn-neutral float-left" title="nvidia-resiliency-ext" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="fault_tolerance/index.html" class="btn btn-neutral float-right" title="Fault Tolerance" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="fault_tolerance/index.html" class="btn btn-neutral float-right" title="InJob restart" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

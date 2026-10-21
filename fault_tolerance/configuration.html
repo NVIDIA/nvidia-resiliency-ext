@@ -1,0 +1,249 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuration and timeouts &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Multinode deployment" href="deployment.html" />
+    <link rel="prev" title="Legacy heartbeat DDP training example" href="examples/train_ddp_heartbeats.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration guides</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Configuration and timeouts</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#defaults-and-precedence">Defaults and precedence</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#optional-yaml-configuration">Optional YAML configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#warmup-and-unmonitored-intervals">Warmup and unmonitored intervals</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#experimental-calibration-and-legacy-heartbeats">Experimental calibration and legacy heartbeats</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
+      <li class="breadcrumb-item active">Configuration and timeouts</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/fault_tolerance/configuration.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="configuration-and-timeouts">
+<h1>Configuration and timeouts<a class="headerlink" href="#configuration-and-timeouts" title="Link to this heading"></a></h1>
+<p>Use explicit launcher CLI options for the recommended deployment. For example,
+Megatron’s section configuration is:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>--ft-rank-section-timeouts<span class="w"> </span>setup:900,step:120,checkpointing:600<span class="w"> </span><span class="se">\</span>
+--ft-rank-out-of-section-timeout<span class="w"> </span><span class="m">180</span>
+</pre></div>
+</div>
+<p>These are example values to qualify on the target model and system. Initialization
+includes checkpoint loading, compilation, and model setup. The step timeout must
+cover training and evaluation. The checkpointing timeout must accommodate save
+preparation and potentially expensive async finalization; background disk I/O
+is not one continuously open checkpointing section.</p>
+<section id="defaults-and-precedence">
+<h2>Defaults and precedence<a class="headerlink" href="#defaults-and-precedence" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code> supplies defaults, then <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code> supplies YAML
+values, then explicit <code class="docutils literal notranslate"><span class="pre">--ft-*</span></code> CLI arguments override those values. The YAML
+file configures FT fields, not general launcher options such as <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code> or
+<code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code>. Use <a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig</span></code></a>
+and <code class="docutils literal notranslate"><span class="pre">ft_launcher</span> <span class="pre">--help</span></code> for the configuration fields and accepted CLI syntax.</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Effect</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rank_section_timeouts</span></code></p></td>
+<td><p>Empty mapping</p></td>
+<td><p>No named sections are monitored</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rank_out_of_section_timeout</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p>No out-of-section deadline</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">initial_rank_heartbeat_timeout</span></code> / <code class="docutils literal notranslate"><span class="pre">rank_heartbeat_timeout</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code> / <code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p>Heartbeat hang detection disabled</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">workload_check_interval</span></code></p></td>
+<td><p>5 seconds</p></td>
+<td><p>Timeout polling interval, not a recovery-time guarantee</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">skip_section_response</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Section messages do not wait for acknowledgement</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_no_progress_cycles</span></code></p></td>
+<td><p>3</p></td>
+<td><p>Stop threshold when usable checkpoint progress is available</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">segment</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p>Simple hot-spare selection without ClusterUUID requirements</p></td>
+</tr>
+</tbody>
+</table>
+<p>Only section names present in the mapping send messages and collect timing data.
+An entry with a <code class="docutils literal notranslate"><span class="pre">null</span></code> timeout enables section events without a finite deadline;
+an omitted name skips both. CLI timeout values accept <code class="docutils literal notranslate"><span class="pre">null</span></code> or <code class="docutils literal notranslate"><span class="pre">none</span></code> to
+disable a deadline. With response skipping enabled, consult the monitor logs
+for section-protocol errors; disable it while debugging integration mistakes.</p>
+</section>
+<section id="optional-yaml-configuration">
+<h2>Optional YAML configuration<a class="headerlink" href="#optional-yaml-configuration" title="Link to this heading"></a></h2>
+<p>The same Megatron timeout settings can be supplied as:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">rank_section_timeouts</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">setup</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">900</span>
+<span class="w">    </span><span class="nt">step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
+<span class="w">    </span><span class="nt">checkpointing</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span>
+<span class="w">  </span><span class="nt">rank_out_of_section_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">180</span>
+</pre></div>
+</div>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span> <span class="pre">/path/to/ft.yaml</span></code> before the workload entrypoint. Do not use
+the DDP YAML unchanged for Megatron: its section names are different. Unknown
+YAML fields may be ignored; check the effective configuration and section names
+in the startup logs.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> is <strong>not</strong> this YAML configuration file. It contains calculated
+monitoring timeouts saved by a workload through <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.state_dict()</span></code>.
+If a workload restores calculated timeouts, they can supersede configured values.
+For a fixed-timeout run use a fresh checkpoint directory or deliberately archive
+the old calculated-timeout file before launch. Preserve training checkpoints.
+Megatron currently restores an existing <code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> even when
+<code class="docutils literal notranslate"><span class="pre">--calc-ft-timeouts</span></code> is omitted.</p>
+</section>
+<section id="warmup-and-unmonitored-intervals">
+<h2>Warmup and unmonitored intervals<a class="headerlink" href="#warmup-and-unmonitored-intervals" title="Link to this heading"></a></h2>
+<p>Megatron opens <code class="docutils literal notranslate"><span class="pre">setup</span></code> before initialization and closes it before the first
+training or evaluation iteration. Its <code class="docutils literal notranslate"><span class="pre">--ft-num-warmup-iters</span></code> (default 5)
+controls when it begins opening <code class="docutils literal notranslate"><span class="pre">step</span></code>. NVRx normally suppresses out-of-section
+checking until a step section has been observed when named sections are configured
+without a <code class="docutils literal notranslate"><span class="pre">warmup</span></code> entry. Thus a finite step timeout alone does not bound hangs
+in the initial warmup window.</p>
+<p>The small GPT example uses <code class="docutils literal notranslate"><span class="pre">--ft-num-warmup-iters</span> <span class="pre">0</span></code> and a conservative fixed
+step timeout to monitor the first step too. For production, qualify startup
+latency and warmup coverage against the exact Megatron/NVRx revisions. A
+<code class="docutils literal notranslate"><span class="pre">warmup</span></code> timeout is an optional monitor behavior for workloads reporting early
+step sections; adding that key does not make Megatron open step sections it skips.</p>
+</section>
+<section id="experimental-calibration-and-legacy-heartbeats">
+<h2>Experimental calibration and legacy heartbeats<a class="headerlink" href="#experimental-calibration-and-legacy-heartbeats" title="Link to this heading"></a></h2>
+<p>Dynamic timeout calibration is experimental and insufficiently tested for the
+recommended Megatron deployment. It requires collective participation from all
+ranks, representative observations, and validation after model, hardware, or I/O
+changes. Megatron’s <code class="docutils literal notranslate"><span class="pre">--calc-ft-timeouts</span></code> cannot automatically calibrate every
+phase: setup needs a persistent checkpoint load, step calculation needs enough
+iterations, and checkpointing calibration is skipped with async saving.</p>
+<p>The DDP sections example offers <code class="docutils literal notranslate"><span class="pre">--calculate_timeouts</span></code> only for experiments;
+its default uses fixed timeouts and does not load or write <code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code>.
+Heartbeat APIs remain available for compatibility but are being deprecated as
+a deployment approach. Their examples are under the legacy navigation. Leaving
+heartbeat timeouts unset does not provide fallback protection for warmup.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="examples/train_ddp_heartbeats.html" class="btn btn-neutral float-left" title="Legacy heartbeat DDP training example" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="deployment.html" class="btn btn-neutral float-right" title="Multinode deployment" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -22,8 +22,8 @@
     <script src="../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Basic usage example" href="examples/basic_example.html" />
-    <link rel="prev" title="Callback" href="api/callback.html" /> 
+    <link rel="next" title="GPT checkpoint recovery with Megatron-LM" href="examples/megatron_gpt.html" />
+    <link rel="prev" title="Legacy heartbeats API integration" href="integration/heartbeats.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,18 +48,23 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">Usage guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration Guides</a></li>
-<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration guides</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Examples</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="examples/basic_example.html">Basic usage example</a></li>
-<li class="toctree-l3"><a class="reference internal" href="examples/train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
-<li class="toctree-l3"><a class="reference internal" href="examples/train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="examples/megatron_gpt.html">GPT checkpoint recovery with Megatron-LM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="examples/train_ddp_sections.html">Section monitoring and checkpoint recovery with DDP</a></li>
 <li class="toctree-l3"><a class="reference internal" href="examples/singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="examples/basic_example.html">Legacy heartbeat monitoring example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="examples/train_ddp_heartbeats.html">Legacy heartbeat DDP training example</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -83,7 +88,7 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
       <li class="breadcrumb-item active">Examples</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../_sources/fault_tolerance/examples.rst.txt" rel="nofollow"> View page source</a>
@@ -96,16 +101,39 @@
              
   <section id="examples">
 <h1>Examples<a class="headerlink" href="#examples" title="Link to this heading"></a></h1>
+<p>Choose an example by the recovery behavior you want to exercise. Monitoring
+and checkpoint storage are separate choices: the small DDP example keeps
+synchronous PyTorch saves, while GPT uses NVRx async saves through Megatron.</p>
 <div class="toctree-wrapper compound">
-<p class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<p class="caption" role="heading"><span class="caption-text">Recommended examples</span></p>
 <ul>
-<li class="toctree-l1"><a class="reference internal" href="examples/basic_example.html">Basic usage example</a></li>
-<li class="toctree-l1"><a class="reference internal" href="examples/train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
-<li class="toctree-l1"><a class="reference internal" href="examples/train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/megatron_gpt.html">GPT checkpoint recovery with Megatron-LM</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="examples/megatron_gpt.html#requirements-and-validation-status">Requirements and validation status</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/megatron_gpt.html#single-node-run">Single-node run</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/megatron_gpt.html#fault-injection-and-repeated-runs">Fault injection and repeated runs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/megatron_gpt.html#verify-recovery">Verify recovery</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/megatron_gpt.html#multinode-tp-pp-example">Multinode TP/PP example</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/megatron_gpt.html#source">Source</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="examples/train_ddp_sections.html">Section monitoring and checkpoint recovery with DDP</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_sections.html#what-is-monitored">What is monitored</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_sections.html#checkpoint-and-data-progress">Checkpoint and data progress</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_sections.html#exercise-a-failure">Exercise a failure</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples/train_ddp_sections.html#optional-configuration-and-experiments">Optional configuration and experiments</a></li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="examples/singleton_deployment.html">Singleton job-array deployment (SLURM)</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="examples/singleton_deployment.html#quick-start">Quick start</a></li>
 </ul>
 </li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p class="caption" role="heading"><span class="caption-text">Legacy heartbeat examples</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="examples/basic_example.html">Legacy heartbeat monitoring example</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/train_ddp_heartbeats.html">Legacy heartbeat DDP training example</a></li>
 </ul>
 </div>
 </section>
@@ -114,8 +142,8 @@
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="api/callback.html" class="btn btn-neutral float-left" title="Callback" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="examples/basic_example.html" class="btn btn-neutral float-right" title="Basic usage example" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="integration/heartbeats.html" class="btn btn-neutral float-left" title="Legacy heartbeats API integration" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="examples/megatron_gpt.html" class="btn btn-neutral float-right" title="GPT checkpoint recovery with Megatron-LM" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>

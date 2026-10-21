@@ -1,0 +1,280 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Operations and troubleshooting &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Optional health checks and attribution" href="services.html" />
+    <link rel="prev" title="Multinode deployment" href="deployment.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html" class="icon icon-home">
+            nvidia-resiliency-ext
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="integration.html">Integration guides</a></li>
+<li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
+<li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Operations and troubleshooting</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#cycle-records-and-checkpoint-progress">Cycle records and checkpoint progress</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#no-restart-telling-do-not-requeue-apart-from-a-failure">No restart: telling “do not requeue” apart from a failure</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#gpu-memory-reclaim">GPU Memory Reclaim</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#per-cycle-logging-and-grpc-log-aggregation">Per-cycle logging and gRPC log aggregation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#workload-control-and-diagnosis">Workload control and diagnosis</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../straggler_det/index.html">Straggler Detection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../attribution/index.html">Failure Attribution</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../shared_utils/index.html">Shared Utilities</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">nvidia-resiliency-ext</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+          <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
+      <li class="breadcrumb-item active">Operations and troubleshooting</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="../_sources/fault_tolerance/operations.rst.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="operations-and-troubleshooting">
+<h1>Operations and troubleshooting<a class="headerlink" href="#operations-and-troubleshooting" title="Link to this heading"></a></h1>
+<section id="cycle-records-and-checkpoint-progress">
+<h2>Cycle records and checkpoint progress<a class="headerlink" href="#cycle-records-and-checkpoint-progress" title="Link to this heading"></a></h2>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">--ft-cycle-info-dir</span></code> to retain per-cycle records and the current-cycle
+symlink. Workers receive <code class="docutils literal notranslate"><span class="pre">NVRX_CURRENT_CYCLE_INFO</span></code>. Keep each launch attempt
+or singleton generation in its own namespace so cycle numbers starting at zero
+do not overwrite an older attempt. Correlate cycle, hostname, worker rank, and
+PID rather than reading the latest cycle’s placement as an earlier map.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--ft-checkpoint-iteration-file</span></code> should point at the workload’s <strong>completed</strong>
+checkpoint marker, for Megatron <code class="docutils literal notranslate"><span class="pre">latest_checkpointed_iteration.txt</span></code>. It does
+not measure live optimizer iterations or async save requests. No new completed
+checkpoint across several failing cycles can trigger a no-progress stop even
+when workers repeatedly reach later training iterations.</p>
+<p>The tracker seeds its baseline from a readable marker at startup. A missing,
+empty, malformed, or unreadable configured marker makes that cycle’s progress
+check skip without resetting or incrementing its accumulated no-progress count.
+This is normal before the first checkpoint but also means a crash loop before
+the first completed checkpoint is bounded by <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> rather than
+the progress tracker. A readable zero value with no reported progress also
+leaves tracking inactive. <code class="docutils literal notranslate"><span class="pre">--ft-min-progress-iterations</span></code> defaults to 1.</p>
+<p>For recovery qualification, record detection, cleanup, rendezvous, initialization,
+checkpoint restoration, and first committed optimizer-step timestamps. Process
+startup alone is not recovered training. No fixed restart latency is guaranteed.</p>
+</section>
+<section id="no-restart-telling-do-not-requeue-apart-from-a-failure">
+<span id="ft-no-restart"></span><h2>No restart: telling “do not requeue” apart from a failure<a class="headerlink" href="#no-restart-telling-do-not-requeue-apart-from-a-failure" title="Link to this heading"></a></h2>
+<p>Two built-in policies report a dedicated no-restart verdict:</p>
+<ul class="simple">
+<li><p>an attribution <code class="docutils literal notranslate"><span class="pre">STOP</span></code> verdict, when <code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">no-restart</span></code> is
+set (see <a class="reference internal" href="services.html"><span class="doc">Optional health checks and attribution</span></a>; the default <code class="docutils literal notranslate"><span class="pre">log</span></code> never terminates), and</p></li>
+<li><p>the progress tracker finding no progress across restarts
+(<code class="docutils literal notranslate"><span class="pre">--ft-max-no-progress-cycles</span></code> / <code class="docutils literal notranslate"><span class="pre">max_no_progress_cycles</span></code>, default <code class="docutils literal notranslate"><span class="pre">3</span></code>).</p></li>
+</ul>
+<p>The progress tracker reads the iteration from <code class="docutils literal notranslate"><span class="pre">--ft-checkpoint-iteration-file</span></code>; without
+that file it stays inactive and logs a one-time warning. Raise the cycle threshold, or set
+it to <code class="docutils literal notranslate"><span class="pre">0</span></code> to disable tracking, for workloads that deliberately replay an iteration
+without advancing the checkpoint – for example Megatron-LM’s rerun state machine
+re-running a suspect result on different hardware to tell silent data corruption apart from
+a genuine data issue. Those replays look identical to a stuck job from the outside.</p>
+<p>Both answer the same scheduler-facing question, so both report the same result: every
+launcher in the job exits with <code class="docutils literal notranslate"><span class="pre">--ft-no-restart-exit-code</span></code> (default <code class="docutils literal notranslate"><span class="pre">93</span></code>) instead of
+the generic failure code <code class="docutils literal notranslate"><span class="pre">1</span></code>. Downstream tooling therefore needs a single rule – exit
+code <code class="docutils literal notranslate"><span class="pre">93</span></code> means NVRx decided, do not requeue – rather than one rule per cause.</p>
+<p>The specific cause is recorded in the rendezvous store shutdown key as <code class="docutils literal notranslate"><span class="pre">attribution_stop</span></code>
+or <code class="docutils literal notranslate"><span class="pre">no_progress</span></code>, and is named in the launcher logs, so the two remain distinguishable
+for diagnosis without complicating the scheduler contract.</p>
+<p>Running out of restarts is deliberately <em>not</em> one of these cases. Exhausting
+<code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> means this launcher used up its retry budget, not that the job is
+unrecoverable, so it still exits <code class="docutils literal notranslate"><span class="pre">1</span></code> and leaves requeueing to your scheduler policy.
+The distinction is scope: a no-restart decision is a verdict about the job, while the
+restart budget is a limit on a single allocation.</p>
+<ul class="simple">
+<li><p>CLI:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-no-restart-exit-code</span> <span class="pre">&lt;CODE&gt;</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_no_restart_exit_code</span></code>),
+default <code class="docutils literal notranslate"><span class="pre">93</span></code></p></li>
+</ul>
+</li>
+</ul>
+<p>Note that SLURM reports the maximum exit code across tasks and that <code class="docutils literal notranslate"><span class="pre">sacct</span></code> derived exit
+codes are lossy, so treat this as a best-effort signal.</p>
+<p>Nodes other than the one that made the decision read the reason from the rendezvous store,
+so the store must outlive them. Both the store-host launcher and <code class="docutils literal notranslate"><span class="pre">nvrx-control</span></code> hold it
+open for a few seconds after shutting down, but a node that has not read the key by then
+exits <code class="docutils literal notranslate"><span class="pre">1</span></code> rather than the no-restart code. The job still stops either way.</p>
+</section>
+<section id="gpu-memory-reclaim">
+<h2>GPU Memory Reclaim<a class="headerlink" href="#gpu-memory-reclaim" title="Link to this heading"></a></h2>
+<p>When <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> is specified, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> can optionally wait for GPU memory to be
+released before starting new workers after a restart. This helps ensure that GPU memory from
+terminated workers has been fully reclaimed before starting new processes.</p>
+<p>This feature is controlled by three parameters:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-reclaim-timeout</span></code> (default: 50.0 seconds)
+Timeout for waiting for GPU memory to drop below the tolerance threshold. Set to 0 to disable the feature.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-tolerance-mb</span></code> (default: 512.0 MB)
+Maximum allowed GPU memory usage. The launcher waits until GPU memory drops below this threshold.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--ft-gpu-memory-poll-interval</span></code> (default: 2.0 seconds)
+Poll interval for checking GPU memory usage during the reclaim process.</p></li>
+</ul>
+<p>On restarts, the launcher periodically checks GPU memory usage and waits until it drops below
+the tolerance threshold or the timeout is reached. Memory statistics for each GPU are collected
+and logged after the reclaim process completes. If the timeout is reached, an error is logged but the
+restart proceeds as a best effort.</p>
+</section>
+<section id="per-cycle-logging-and-grpc-log-aggregation">
+<h2>Per-cycle logging and gRPC log aggregation<a class="headerlink" href="#per-cycle-logging-and-grpc-log-aggregation" title="Link to this heading"></a></h2>
+<p>When using consolidated per-cycle application logs (for example via <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code>)
+with optional gRPC log funneling (<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code>), worker and launcher output can be
+merged through pipes and streamed to one or more aggregators on the rendezvous host before a single
+writer appends to shared storage (for example Lustre).</p>
+<p>Two write paths are possible:</p>
+<ul class="simple">
+<li><p><strong>With log funneling</strong> (<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code>, enabled automatically when
+<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> is set): every node streams to an aggregator on the rendezvous host and
+a <em>single</em> process writes the shared file. No cross-client write guarantees are needed, so
+this works on any shared filesystem and is the recommended deployment for multi-node jobs.</p></li>
+<li><p><strong>Without log funneling</strong> (direct write): every node opens the same
+<code class="docutils literal notranslate"><span class="pre">&lt;prefix&gt;_cycleN.log</span></code> and appends to it with <code class="docutils literal notranslate"><span class="pre">O_APPEND</span></code>. This is a multi-writer
+deployment and is not recommended on any filesystem. On Lustre the appends are atomic, but
+all nodes serialise on the same extent lock, so it does not scale. On NFS- and VAST-style
+storage the append is not atomic across clients at all, so concurrent appends can interleave
+or be lost and nothing reports an error.</p></li>
+</ul>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><strong>Use log funneling for multi-node jobs.</strong> The recommended configuration is to pass
+<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> alongside <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code>; that enables
+<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code> automatically. Setting <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code> on its own
+leaves the log server off and selects multi-writer direct append, which is not a supported
+multi-node deployment. If you use neither option, worker and launcher output go to
+stdout/stderr and are captured by <code class="docutils literal notranslate"><span class="pre">srun</span> <span class="pre">--output</span></code> / <code class="docutils literal notranslate"><span class="pre">--error</span></code> as usual.</p>
+</div>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p><strong>Best-effort semantics.</strong> Per-cycle gRPC log aggregation is best-effort. Logs around failure
+and restart may be incomplete; crash stack traces are not guaranteed to appear there. For
+critical diagnostics, use rank monitor logs (launcher log) for failure/timeout correlation and
+OS-level core dumps for reliable crash post-mortem. Do not assume aggregated logs are complete
+or reliable.</p>
+</div>
+</section>
+<section id="workload-control-and-diagnosis">
+<h2>Workload control and diagnosis<a class="headerlink" href="#workload-control-and-diagnosis" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">RankMonitorClient.send_workload_control_request()</span></code> lets a workload request
+that the launcher stop restarting or exclude a node from subsequent attempts.
+It does not release or cancel scheduler allocations. Coordinate the application
+error path rather than continuing with potentially corrupted optimizer state.</p>
+<p>When diagnosing a failed cycle:</p>
+<ul class="simple">
+<li><p>Inspect its application log, launcher/monitor log, and cycle rank map together.</p></li>
+<li><p>Distinguish an original timeout/crash from NCCL/TCPStore shutdown cascades.</p></li>
+<li><p>Check completed checkpoint progress and restored iteration, not just process
+liveness. Before the first checkpoint, progress can legitimately be unknown.</p></li>
+<li><p>For suspected host OOM or hardware failure, collect compute-node kernel/Xid/ECC
+evidence where available. Passing a later health check does not establish that
+the original node was healthy.</p></li>
+<li><p>Use <a class="reference internal" href="timeout_diagnostics.html"><span class="doc">Timeout diagnostics</span></a> for optional bounded stack capture on selected
+section timeouts. Heartbeat/out-of-section timeouts do not trigger those captures.</p></li>
+</ul>
+<p>For shared multi-node logs, configure both the application prefix and launcher
+log path so funneling is enabled. The standalone examples in <a class="reference internal" href="services.html"><span class="doc">Optional health checks and attribution</span></a>
+include the application and launcher log routes alongside attribution options.</p>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="deployment.html" class="btn btn-neutral float-left" title="Multinode deployment" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="services.html" class="btn btn-neutral float-right" title="Optional health checks and attribution" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2024, NVIDIA Corporation.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

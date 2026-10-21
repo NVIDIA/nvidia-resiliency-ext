@@ -48,7 +48,7 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">Fault Tolerance</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../fault_tolerance/index.html">InJob restart</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/async/index.html">Async Checkpointing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../checkpointing/local/index.html">Local Checkpointing</a></li>
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Straggler Detection</a><ul>
@@ -87,10 +87,10 @@
              
   <section id="straggler-detection">
 <h1>Straggler Detection<a class="headerlink" href="#straggler-detection" title="Link to this heading"></a></h1>
-<p>The <strong>Straggler Detection</strong> package’s purpose is to detect slower ranks participating in a PyTorch distributed workload.
-The <code class="docutils literal notranslate"><span class="pre">nvidia-resiliency-ext</span></code> package also includes the PTL callback <code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> that simplifies integration with PyTorch Lightning-based workloads.</p>
-<p>Straggler Detection is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.straggler</span></code> package.
-<code class="docutils literal notranslate"><span class="pre">StragglerDetectionCallback</span></code> is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.ptl_resiliency</span></code> package.</p>
+<p>The <strong>Straggler Detection</strong> package’s purpose is to detect slower ranks participating in a PyTorch distributed workload.</p>
+<p>Straggler Detection is included in the <code class="docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.attribution.straggler</span></code>
+package. Integrate the detector directly into the training loop as described in
+the usage guide and examples.</p>
 <div class="toctree-wrapper compound">
 <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul>
@@ -104,7 +104,6 @@ The <code class="docutils literal notranslate"><span class="pre">nvidia-resilien
 <li class="toctree-l2"><a class="reference internal" href="api/straggler.html">Straggler</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/reporting.html">Reporting</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api/statistics.html">Statistics</a></li>
-<li class="toctree-l2"><a class="reference internal" href="api/callback.html">Callback</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a><ul>

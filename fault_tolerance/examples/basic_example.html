@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Basic usage example &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+  <title>Legacy heartbeat monitoring example &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
@@ -22,8 +22,8 @@
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="Heartbeat API usage example with DDP" href="train_ddp_heartbeats.html" />
-    <link rel="prev" title="Examples" href="../examples.html" /> 
+    <link rel="next" title="Legacy heartbeat DDP training example" href="train_ddp_heartbeats.html" />
+    <link rel="prev" title="Singleton job-array deployment (SLURM)" href="singleton_deployment.html" /> 
 </head>
 
 <body class="wy-body-for-nav"> 
@@ -48,18 +48,23 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../release-notes.html">Release Notes</a></li>
-<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Fault Tolerance</a><ul class="current">
-<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">Usage guide</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration Guides</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">InJob restart</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../usage_guide.html">InJob restart usage guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../integration.html">Integration guides</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../examples.html">Examples</a><ul class="current">
-<li class="toctree-l3 current"><a class="current reference internal" href="#">Basic usage example</a></li>
-<li class="toctree-l3"><a class="reference internal" href="train_ddp_heartbeats.html">Heartbeat API usage example with DDP</a></li>
-<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section API usage example with DDP</a></li>
+<li class="toctree-l3"><a class="reference internal" href="megatron_gpt.html">GPT checkpoint recovery with Megatron-LM</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_sections.html">Section monitoring and checkpoint recovery with DDP</a></li>
 <li class="toctree-l3"><a class="reference internal" href="singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">Legacy heartbeat monitoring example</a></li>
+<li class="toctree-l3"><a class="reference internal" href="train_ddp_heartbeats.html">Legacy heartbeat DDP training example</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../configuration.html">Configuration and timeouts</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../deployment.html">Multinode deployment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../operations.html">Operations and troubleshooting</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../services.html">Optional health checks and attribution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../api.html">API documentation</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="../../checkpointing/async/index.html">Async Checkpointing</a></li>
@@ -83,9 +88,9 @@
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
       <li><a href="../../index.html" class="icon icon-home" aria-label="Home"></a></li>
-          <li class="breadcrumb-item"><a href="../index.html">Fault Tolerance</a></li>
+          <li class="breadcrumb-item"><a href="../index.html">InJob restart</a></li>
           <li class="breadcrumb-item"><a href="../examples.html">Examples</a></li>
-      <li class="breadcrumb-item active">Basic usage example</li>
+      <li class="breadcrumb-item active">Legacy heartbeat monitoring example</li>
       <li class="wy-breadcrumbs-aside">
             <a href="../../_sources/fault_tolerance/examples/basic_example.rst.txt" rel="nofollow"> View page source</a>
       </li>
@@ -95,8 +100,15 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="basic-usage-example">
-<h1>Basic usage example<a class="headerlink" href="#basic-usage-example" title="Link to this heading"></a></h1>
+  <section id="legacy-heartbeat-monitoring-example">
+<h1>Legacy heartbeat monitoring example<a class="headerlink" href="#legacy-heartbeat-monitoring-example" title="Link to this heading"></a></h1>
+<p>This older DDP example demonstrates heartbeat monitoring and experimental
+timeout calculation. It does <strong>not</strong> save model, optimizer, or training
+progress; a worker restart starts training again. Its <code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> holds
+calculated monitoring timeouts, not a training checkpoint or launcher YAML.</p>
+<p>Heartbeat monitoring is being deprecated as a deployment approach. Use
+<a class="reference internal" href="train_ddp_sections.html"><span class="doc">Section monitoring and checkpoint recovery with DDP</span></a> for a small section-based example with training
+checkpoint recovery, or <a class="reference internal" href="megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a> for the recommended GPT workflow.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="linenos">  1</span><span class="c1"># SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.</span>
 <span class="linenos">  2</span><span class="c1"># SPDX-License-Identifier: Apache-2.0</span>
 <span class="linenos">  3</span><span class="c1">#</span>
@@ -237,21 +249,24 @@
 <span class="linenos">138</span>        <span class="c1"># FT: calculate and set new timeouts</span>
 <span class="linenos">139</span>        <span class="n">ft_client</span><span class="o">.</span><span class="n">calculate_and_set_hb_timeouts</span><span class="p">()</span>
 <span class="linenos">140</span>        <span class="c1"># FT: save the state (calculated timeouts)</span>
-<span class="linenos">141</span>        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"ft_state.json"</span><span class="p">,</span> <span class="s2">"w"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-<span class="linenos">142</span>            <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">ft_client</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">f</span><span class="p">)</span>
-<span class="linenos">143</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">"FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="si">}</span><span class="s2"> saved to ft_state.json"</span><span class="p">)</span>
-<span class="linenos">144</span>
-<span class="linenos">145</span>    <span class="c1"># FT: shutdown the client</span>
-<span class="linenos">146</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
-<span class="linenos">147</span>    <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
-<span class="linenos">148</span>
-<span class="linenos">149</span>
-<span class="linenos">150</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">"__main__"</span><span class="p">:</span>
-<span class="linenos">151</span>    <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="linenos">141</span>        <span class="k">if</span> <span class="n">rank</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+<span class="linenos">142</span>            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"ft_state.json.tmp"</span><span class="p">,</span> <span class="s2">"w"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+<span class="linenos">143</span>                <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">ft_client</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="n">f</span><span class="p">)</span>
+<span class="linenos">144</span>            <span class="n">os</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s2">"ft_state.json.tmp"</span><span class="p">,</span> <span class="s2">"ft_state.json"</span><span class="p">)</span>
+<span class="linenos">145</span>        <span class="n">dist</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
+<span class="linenos">146</span>        <span class="n">print_on_rank0</span><span class="p">(</span><span class="sa">f</span><span class="s2">"FT timeouts </span><span class="si">{</span><span class="n">ft_client</span><span class="o">.</span><span class="n">hb_timeouts</span><span class="si">}</span><span class="s2"> saved to ft_state.json"</span><span class="p">)</span>
+<span class="linenos">147</span>
+<span class="linenos">148</span>    <span class="c1"># FT: shutdown the client</span>
+<span class="linenos">149</span>    <span class="n">ft_client</span><span class="o">.</span><span class="n">shutdown_workload_monitoring</span><span class="p">()</span>
+<span class="linenos">150</span>    <span class="n">dist</span><span class="o">.</span><span class="n">destroy_process_group</span><span class="p">()</span>
+<span class="linenos">151</span>
 <span class="linenos">152</span>
-<span class="linenos">153</span>    <span class="n">world_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">"WORLD_SIZE"</span><span class="p">])</span>
-<span class="linenos">154</span>    <span class="n">rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">"RANK"</span><span class="p">])</span>
-<span class="linenos">155</span>    <span class="n">main</span><span class="p">(</span><span class="n">rank</span><span class="p">,</span> <span class="n">world_size</span><span class="p">)</span>
+<span class="linenos">153</span><span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s2">"__main__"</span><span class="p">:</span>
+<span class="linenos">154</span>    <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="linenos">155</span>
+<span class="linenos">156</span>    <span class="n">world_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">"WORLD_SIZE"</span><span class="p">])</span>
+<span class="linenos">157</span>    <span class="n">rank</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">"RANK"</span><span class="p">])</span>
+<span class="linenos">158</span>    <span class="n">main</span><span class="p">(</span><span class="n">rank</span><span class="p">,</span> <span class="n">world_size</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -260,8 +275,8 @@
            </div>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
-        <a href="../examples.html" class="btn btn-neutral float-left" title="Examples" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="train_ddp_heartbeats.html" class="btn btn-neutral float-right" title="Heartbeat API usage example with DDP" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="singleton_deployment.html" class="btn btn-neutral float-left" title="Singleton job-array deployment (SLURM)" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="train_ddp_heartbeats.html" class="btn btn-neutral float-right" title="Legacy heartbeat DDP training example" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>
