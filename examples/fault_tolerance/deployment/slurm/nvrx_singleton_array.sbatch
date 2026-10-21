@@ -1,5 +1,5 @@
 #!/bin/bash
-# NVRx colocated in-job restart, deployed as a singleton job-array chain.
+# NVRx colocated InJob restart, deployed as a singleton job-array chain.
 #
 # Submit with submit_chain.sh, which computes --array/--nodes/--job-name from the
 # same env vars this script reads and enqueues the chain:
@@ -64,7 +64,7 @@ MEGATRON_PATH="${MEGATRON_PATH:-/workspace/megatron-lm}"
 NVRX_CONTAINER_IMAGE="${NVRX_CONTAINER_IMAGE:-}"
 NVRX_CONTAINER_MOUNTS="${NVRX_CONTAINER_MOUNTS-/lustre:/lustre}"
 
-# small (default, runs anywhere) or 8b (8B dense; ~2 nodes of GB200 is enough).
+# small (default, requires a compatible GPU training environment) or 8b (8B dense; ~2 nodes of GB200 is enough).
 NVRX_MODEL_PROFILE="${NVRX_MODEL_PROFILE:-small}"
 
 # Optional. Endpoint of the node health check daemon; omitted when empty.
@@ -89,13 +89,14 @@ NVRX_SEGMENT="${NVRX_SEGMENT-1}"
 # exits 93, and task 0's trap cancels the whole queued chain (NVRX_NO_RESTART_DEMO below;
 # raise NVRX_CHAIN_DEPTH so there are several generations to cancel). Two other modes:
 #   Hand-off demo:   NVRX_NO_RESTART_DEMO=0 ./submit_chain.sh
-#                    (workload fault -> in-job restart, then a GPU failure on task 0 ->
+#                    (workload fault -> InJob restart, then a GPU failure on task 0 ->
 #                     singleton hand-off resuming from checkpoint)
-#   Real training:   NVRX_NO_RESTART_DEMO=0 NVRX_FAULT_INJECT=0 \
+#   Injection-free mock training:
+#                    NVRX_NO_RESTART_DEMO=0 NVRX_FAULT_INJECT=0 \
 #                    NVRX_INJECT_GPU_FAILURE= ./submit_chain.sh
 # ---------------------------------------------------------------------------------
 # Workload fault: inject into rank N after M seconds via megatron.core.fault_injector
-# (public Megatron-LM). Drives an in-job restart on a training rank; it does NOT
+# (public Megatron-LM). Drives an InJob restart on a training rank; it does NOT
 # exercise the rank-0/host-failure path -- NVRX_INJECT_GPU_FAILURE below does that.
 NVRX_FAULT_INJECT="${NVRX_FAULT_INJECT:-1}"
 NVRX_FAULT_RANKS="${NVRX_FAULT_RANKS:-2}"
@@ -121,9 +122,9 @@ NVRX_INJECT_GPU_FAILURE="${NVRX_INJECT_GPU_FAILURE-1:0,2:0}"
 # startup, so every cycle -- including the first -- reads the same number and scores as
 # "no progress"; after NVRX_MAX_NO_PROGRESS_CYCLES such cycles (default 1, so the first
 # fault) NVRx exits 93, and task 0's trap runs cancel_chain -- cancelling the whole
-# queued chain instead of starting the next generation. Off by default; turn it on with
-# NVRX_NO_RESTART_DEMO=1 (it needs the workload fault for the restart and turns the
-# host-failure injector off, since that would hand off instead).
+# queued chain instead of starting the next generation. On by default; explicitly set
+# NVRX_NO_RESTART_DEMO=0 to disable it. The demo needs the workload fault for the
+# restart and turns the host-failure injector off, since that would hand off instead.
 NVRX_NO_RESTART_DEMO="${NVRX_NO_RESTART_DEMO:-1}"
 NVRX_MAX_NO_PROGRESS_CYCLES="${NVRX_MAX_NO_PROGRESS_CYCLES:-}"
 if [[ "$NVRX_NO_RESTART_DEMO" == "1" ]]; then
@@ -264,9 +265,9 @@ DATA_ARGS=" \
     --num-workers 1 "
 
 if [[ "$NVRX_MODEL_PROFILE" == "8b" ]]; then
-    # 8B dense. GLOBAL_BATCH_SIZE must be divisible by the data-parallel size, which is
-    # WORLD_SIZE/(TP*PP) -- computed from MIN_NODES, since hot spares stay standby and
-    # do not enlarge the world.
+    # 8B dense. GLOBAL_BATCH_SIZE must be divisible by microbatch size times the
+    # data-parallel size. The data-parallel size is WORLD_SIZE/(TP*PP), computed from
+    # MIN_NODES, since hot spares stay standby and do not enlarge the world.
     MODEL_ARGS=" \
         --num-layers 32 \
         --hidden-size 4096 \
@@ -315,6 +316,7 @@ fi
 # --ft-rank-section-timeouts below actually bound setup, step and checkpointing.
 options=" \
     --enable-ft-package \
+    --ft-num-warmup-iters ${NVRX_FT_WARMUP_ITERS:-0} \
     ${DATA_ARGS} \
     ${MODEL_ARGS} \
     ${FAULT_ARGS} \
@@ -633,8 +635,8 @@ LAUNCHER_ARGS=" \
     --ft-per-cycle-applog-prefix=${NVRX_PER_CYCLE_APPLOG_PREFIX} \
     --ft-nvrx-logfile=${NVRX_LOGFILE} \
     --ft-checkpoint-iteration-file=${FT_CKPT_ITER_FILE} \
-    --ft-rank-section-timeouts setup:900,step:60,checkpointing:300 \
-    --ft-rank-out-of-section-timeout 90 \
+    --ft-rank-section-timeouts setup:${NVRX_SETUP_TIMEOUT:-900},step:${NVRX_STEP_TIMEOUT:-120},checkpointing:${NVRX_CHECKPOINT_TIMEOUT:-600} \
+    --ft-rank-out-of-section-timeout ${NVRX_OUT_OF_SECTION_TIMEOUT:-180} \
     ${OPTIONAL_ARGS} "
 
 # The trailing shell is what carries the no-restart verdict out of the step teardown: the
