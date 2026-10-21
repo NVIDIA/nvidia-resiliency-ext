@@ -575,8 +575,9 @@ class TestNodeHealthCheck(unittest.TestCase):
         output='{"fail_count": 0, "failed_checks": []}',
         exit_code=0,
         error="",
+        exclude_checks=None,
     ):
-        checker = NodeHealthCheck(args=args)
+        checker = NodeHealthCheck(args=args, exclude_checks=exclude_checks)
         checker._channel_target = "unix:///tmp/nvhcd.sock"
 
         channel = MagicMock()
@@ -624,6 +625,37 @@ class TestNodeHealthCheck(unittest.TestCase):
         checker._pb2.HealthCheckRequest.assert_called_once_with(args=["--group", "epilog"])
         request = stub.RunHealthCheck.call_args.args[0]
         self.assertEqual(request.args, ["--group", "epilog"])
+
+    def test_perform_health_check_passes_exclusions_to_rpc(self):
+        for exclusions in (
+            [],
+            ["hw_drv_gpu_clock_idle"],
+            ["hw_drv_gpu_clock_idle", "another_check"],
+        ):
+            with self.subTest(exclusions=exclusions):
+                checker, stub = self._checker_with_mocked_grpc(exclude_checks=exclusions)
+
+                self.assertTrue(checker())
+
+                expected = ["--no-slurm", "--group", "prolog", "epilog", "logs", "gpu"]
+                if exclusions:
+                    expected += ["--exclude", *exclusions]
+                self.assertEqual(stub.RunHealthCheck.call_args.args[0].args, expected)
+                self.assertEqual(NodeHealthCheck().args, expected[:6])
+
+    def test_perform_health_check_exclusions_preserve_custom_args(self):
+        args = ["--group", "epilog"]
+        exclusions = ["hw_drv_gpu_clock_idle", "another_check"]
+        checker, stub = self._checker_with_mocked_grpc(args=args, exclude_checks=exclusions)
+
+        self.assertTrue(checker())
+
+        self.assertEqual(
+            stub.RunHealthCheck.call_args.args[0].args,
+            ["--group", "epilog", "--exclude", *exclusions],
+        )
+        self.assertEqual(args, ["--group", "epilog"])
+        self.assertEqual(exclusions, ["hw_drv_gpu_clock_idle", "another_check"])
 
     def test_perform_health_check_fails_for_nonempty_failed_checks(self):
         checker, _ = self._checker_with_mocked_grpc(
