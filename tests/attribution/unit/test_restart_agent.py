@@ -8287,6 +8287,75 @@ def test_failure_episode_separates_teardown_process_and_scheduler_lines(tmp_path
     assert "first_cancellation_line" not in prompt_episode
 
 
+def test_l0_links_nccl_device_oom_confirmation_to_unhandled_cuda_error_episode(tmp_path):
+    """NCCL reports device exhaustion; the collective reports only that it failed.
+
+    "unhandled cuda error" names the operation, not the cause, the same way a
+    bare "Killed" says a process died without saying why. The allocation
+    failure is the evidence that explains it, so it takes the identity rather
+    than being filed as a cascade of an earlier capture error.
+    """
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-10-19 04:00:00] iteration 2000/601014 | lm loss: 1.0 |",
+                "3070: [rank3070]: Traceback (most recent call last):",
+                '3070: [rank3070]:   File "/code/training.py", line 1031, in save_checkpoint',
+                "3070: [rank3070]:     torch.distributed.barrier(group=data_parallel_group)",
+                (
+                    "3070: [rank3070]: torch.distributed.DistBackendError: NCCL error in: "
+                    "NCCLUtils.cpp:117, unhandled cuda error"
+                ),
+                "3070: [rank3070]: ncclUnhandledCudaError: Call to CUDA function failed.",
+                "3070: [rank3070]: Last error:",
+                "3070: [rank3070]: Failed to CUDA calloc async 16384 bytes",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+
+    assert primary is not None
+    assert primary.failure_class == "cuda_oom_confirmation"
+    assert primary.causal_role == "initiating"
+    assert bundle.selection_summary["primary_selection_basis"] == "explicit_cause_confirmation"
+    # The mechanism travels with the identity, so attempts of one wedged job
+    # share a root rather than being fingerprinted on the surfacing exception.
+    assert "allocation_failure" in (primary.root_fingerprint or "")
+
+
+def test_l0_leaves_a_non_oom_nccl_cuda_failure_as_a_cascade(tmp_path):
+    # The catch-all "NCCL WARN Cuda failure" must still own the capture-error
+    # case; only the out-of-memory variant is a cause in its own right.
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-10-19 04:00:00] iteration 2000/601014 | lm loss: 1.0 |",
+                (
+                    "3070: NCCL WARN Cuda failure 700 operation failed due to a "
+                    "previous error during capture"
+                ),
+                "3070: [rank3070]: Traceback (most recent call last):",
+                (
+                    "3070: [rank3070]: torch.distributed.DistBackendError: NCCL error in: "
+                    "NCCLUtils.cpp:117, unhandled cuda error"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+
+    assert primary is not None
+    assert primary.failure_class != "cuda_oom_confirmation"
+
+
 def test_l0_links_late_explicit_oom_confirmation_to_abrupt_kill_episode(tmp_path):
     log_path = tmp_path / "job.log"
     log_path.write_text(
@@ -10979,3 +11048,44 @@ def test_runtime_closes_each_unique_route_extractor_once():
     runtime.close()
 
     assert extractor.close_count == 1
+
+
+def test_a_confirmed_nccl_device_oom_gets_the_no_retry_policy(tmp_path):
+    """The deterministic path must stop on a confirmed OOM, not budget a retry.
+
+    cuda_oom_no_retry is configured to STOP on first occurrence. It keys on the
+    cuda_oom classifier, which a confirmation identity does not supply by name,
+    so this is the seam where an explicitly typed OOM could still be retried.
+    """
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-10-19 04:00:00] iteration 2000/601014 | lm loss: 1.0 |",
+                "3070: [rank3070]: Traceback (most recent call last):",
+                '3070: [rank3070]:   File "/code/training.py", line 1031, in save_checkpoint',
+                (
+                    "3070: [rank3070]: torch.distributed.DistBackendError: NCCL error in: "
+                    "NCCLUtils.cpp:117, unhandled cuda error"
+                ),
+                "3070: [rank3070]: Last error:",
+                "3070: [rank3070]: Failed to CUDA calloc async 16384 bytes",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    from nvidia_resiliency_ext.attribution.restart_agent.l0.decision import build_decision_evidence
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+    evidence = build_decision_evidence(bundle)
+
+    assert primary is not None
+    assert primary.failure_class == "cuda_oom_confirmation"
+    # What cuda_oom_no_retry actually tests for. The identity is named
+    # "cuda_oom_confirmation", which that policy would not recognise, so the
+    # classifier is the only thing carrying the OOM through to the decision.
+    assert FailureClassifier.CUDA_OOM.value in (
+        evidence.canonical_observed_identity.get("classifiers") or ()
+    )
