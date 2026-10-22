@@ -156,7 +156,7 @@ _DIAGNOSTIC_COLLECTOR = None
 
 def _start_diagnostic_collector(cfg, launcher_log_file, *, local_world_size=1):
     global _DIAGNOSTIC_COLLECTOR
-    from .timeout_diagnostics import (
+    from .timeout_dump import (
         DiagnosticCollectorProcess,
         diagnostics_directory,
         validate_capture_dependencies,
@@ -3159,7 +3159,7 @@ def _validate_args(
         raise ValueError(
             "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
         )
-    from .timeout_diagnostics import diagnostics_directory, validate_config
+    from .timeout_dump import diagnostics_directory, validate_config
 
     if fault_tol_cfg is None:
         fault_tol_cfg = FaultToleranceConfig.from_args(args)

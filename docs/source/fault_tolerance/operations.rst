@@ -158,7 +158,7 @@ When diagnosing a failed cycle:
 * For suspected host OOM or hardware failure, collect compute-node kernel/Xid/ECC
   evidence where available. Passing a later health check does not establish that
   the original node was healthy.
-* Use :doc:`timeout_diagnostics` for optional bounded stack capture on selected
+* Use :doc:`timeout_dump` for optional bounded stack capture on selected
   section timeouts. Heartbeat/out-of-section timeouts do not trigger those captures.
 
 For shared multi-node logs, configure both the application prefix and launcher

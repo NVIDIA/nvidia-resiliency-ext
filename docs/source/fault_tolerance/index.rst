@@ -23,5 +23,5 @@ experimental and is not sufficiently validated for the recommended deployment.
    deployment
    operations
    services
-   timeout_diagnostics
+   timeout_dump
    api
