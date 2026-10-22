@@ -138,4 +138,4 @@ Where to go next
 * :doc:`configuration`: CLI settings, defaults, and experimental features.
 * :doc:`operations`: checkpoint progress, cycle logs, stop decisions, and diagnosis.
 * :doc:`services`: optional health checks and attribution.
-* :doc:`timeout_diagnostics`: optional timeout stack capture.
+* :doc:`timeout_dump`: optional timeout stack capture.
