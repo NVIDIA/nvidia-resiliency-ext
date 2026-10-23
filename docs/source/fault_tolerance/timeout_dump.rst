@@ -15,8 +15,7 @@ on the launcher:
 .. code-block:: bash
 
     ft_launcher \
-        --ft-timeout-dump-enabled=true \
-        --ft-timeout-dump=pyspy,gdb,cuda-gdb \
+        --ft-timeout-dump-tools=pyspy,gdb,cuda-gdb \
         --ft-timeout-dump-gdb-command-file=/lustre/config/gdb-timeout.txt \
         --ft-timeout-dump-cuda-gdb-command-file=/lustre/config/cuda-gdb-timeout.txt \
         --ft-nvrx-logfile /lustre/run/nvrx/12345/logs/launcher.log \
@@ -38,13 +37,22 @@ enable diagnostics or configure its timeout: it must also have a finite timeout
 in ``rank_section_timeouts`` and actually expire. Heartbeat and out-of-section
 timeouts are separate detection paths, not section names in this option.
 
-Selecting tools alone does not enable diagnostics. The default tool list is
-``pyspy,gdb,cuda-gdb``, in that order. There is no automatic detection or
-silent skipping: when enabled, the launcher validates every requested executable
-and fails before starting workers if any is missing or not executable. Each
-selected debugger also requires a readable command file. Supply a smaller tool
-list or install/configure the missing tools. Disabled diagnostics skip tool
-and command-file validation and collector setup. Dumps require
+Selecting tools with ``--ft-timeout-dump-tools`` enables capture;
+``--ft-timeout-dump-enabled`` enables it with the default tools,
+``pyspy,gdb,cuda-gdb``, in that order. ``--no-ft-timeout-dump-enabled`` wins over
+``--ft-timeout-dump-tools``. Options for a tool that is not listed, such as
+``--ft-timeout-dump-cuda-gdb-mode`` without ``cuda-gdb``, are unused; they never
+select the tool.
+
+Option values are checked when the command line is parsed: an invalid value, such
+as an unknown tool name or a relative local root, fails the launch like any other
+bad flag. Problems with the node itself never stop training. When dumps are
+enabled, the launcher checks every requested executable, each selected debugger's
+command file, the log layout below, and the local staging root before starting
+workers. If any check fails, the launcher logs an error on node0 and runs without
+dumps. There is no automatic detection or partial fallback: a missing tool disables
+dumps on that node rather than being skipped. Supply a smaller tool list or
+install/configure the missing tools. Dumps require
 an absolute ``--ft-nvrx-logfile=<nvrx-root>/logs/<filename>`` and always use
 ``<nvrx-root>/diags/``. The existing requirement for
 ``--ft-per-cycle-applog-prefix`` with ``--ft-nvrx-logfile`` still applies.
@@ -54,14 +62,15 @@ Deployment scripts choose ``<work-dir>/nvrx/<job-id>`` for ordinary jobs and
 namespace without reconstructing Slurm IDs. A root must distinguish launch
 attempts whose cycle numbers restart at zero.
 
-Successful startup validation logs resolved paths only from node0 at DEBUG
-(``NVRX_LOG_DEBUG=1``): one summary for selected tools (including the CUDA-GDB
-mode) and one for debugger command files, if any. Node0 uses the launcher's
-infrastructure rank with hostname/topology-derived IDs disabled; Slurm job-array
-offsets still apply. If the startup rank is unknown, the summaries are omitted.
-Every node still validates its own dependencies. INFO is reserved for actual
-capture results and upload completion. Validation errors, runtime warnings, and
-capture/upload results remain visible from every node at their existing levels.
+Successful startup validation logs one summary of the resolved tools (executable,
+CUDA-GDB mode, and command files) only from node0 at DEBUG (``NVRX_LOG_DEBUG=1``).
+Node0 uses the launcher's infrastructure rank with hostname/topology-derived IDs
+disabled; Slurm job-array offsets still apply. If the startup rank is unknown, the
+summary is omitted.
+Every node still checks its own dependencies, but only node0 logs startup errors,
+since every node normally runs the same image. INFO is reserved for actual capture
+results and upload completion. Runtime warnings and capture/upload results remain
+visible from every node at their existing levels.
 
 The worker obtains its monitor PID from the existing Unix socket and calls
 ``PR_SET_PTRACER`` to permit the monitor and its descendants to attach under
@@ -86,7 +95,7 @@ and ``-x`` invocation. To use its normal stdin command reader instead::
 
     --ft-timeout-dump-cuda-gdb-mode=stdin
 
-Selecting a mode does not enable diagnostics or add CUDA-GDB to the tool list.
+The mode option applies only when CUDA-GDB is a selected tool; it does not add it.
 Native GDB and py-spy are unaffected. Switch back with
 ``--ft-timeout-dump-cuda-gdb-mode=batch``; there is no automatic fallback.
 
@@ -104,7 +113,8 @@ state, after qualifying it in the deployed debugger/driver/container combination
 A zero exit code in stdin mode is recorded as ``completed``, not ``success``:
 command errors can be printed while the debugger continues to ``detach`` and
 ``quit`` and exits zero. NVRx retains merged stdout/stderr and partial output,
-and records the selected CUDA-GDB mode and process exit code in the capture.
+and records the selected CUDA-GDB mode in the capture header; every capture's footer
+records the tool's process exit code.
 It does not parse command errors or certify GPU-state availability. Nonzero exits,
 timeouts, and output limits retain their existing failure statuses. Diagnostic
 failure does not add retries or extend recovery beyond the capture budget.
@@ -113,7 +123,7 @@ Debugger command files
 ----------------------
 
 Users must supply a command file for each selected debugger. NVRx does not
-bundle default GDB or CUDA-GDB commands. Set the paths through the CLI::
+bundle default GDB or CUDA-GDB commands. Set the paths on the command line::
 
     --ft-timeout-dump-gdb-command-file=/lustre/config/gdb-timeout.txt
     --ft-timeout-dump-cuda-gdb-command-file=/lustre/config/cuda-gdb-timeout.txt
@@ -292,7 +302,8 @@ After requesting worker termination, the monitor stages the output locally::
 
 Each file contains the host, cycle, global/local rank, PID, timeout reason,
 timestamp, and capture outcome. The monitor closes the file before renaming it
-to ``.ready``. Failed or truncated output is retained with its status. A
+to ``.ready``. Failed or truncated output is retained with its status and, once the
+tool has started, its exit code. A
 still-running diagnostic child only has a pipe, never a writable staging file.
 
 After staging, the monitor emits one INFO summary per rank and capture sequence,
@@ -354,10 +365,11 @@ Failures and retention
   GDB use at most 8 MiB per cycle on a four-worker node or 16 MiB on an
   eight-worker node. Failed uploads can accumulate across cycles. Local write
   failures are logged after worker termination has been requested.
-* An ownership lock prevents two collectors using the same local staging root.
-  Existing captures cause diagnostics to be disabled with a warning, rather
-  than uploaded into a new job or deleted. Collect them or select another local
-  root. Concurrent launchers on one node need distinct roots and destinations.
+* An ownership lock prevents two collectors using the same local staging root;
+  a second launcher using the same root runs without dumps. Existing captures
+  also disable dumps on that node, rather than being uploaded into a new job or
+  deleted. Collect them or select another local root. Concurrent launchers on one
+  node need distinct roots and destinations.
 * The collector is not automatically restarted. Uploads do not delay training
   restart. Shutdown wakes the collector immediately for one final collection
   pass (including pending retries within their attempt limit). It grants a
@@ -402,58 +414,84 @@ local teardown is in progress.
 Configuration
 -------------
 
-These ``FaultToleranceConfig`` fields are set on the command line.
-``timeout_dump`` corresponds to ``--ft-timeout-dump``; other fields use matching
-``--ft-timeout-dump-...`` options, replacing underscores with hyphens. Enable
-diagnostics with ``--ft-timeout-dump-enabled=true`` and select tools with
-``--ft-timeout-dump`` in addition to the existing log configuration.
+Timeout dumps are configured with the options below. Each corresponds to a field of
+``TimeoutDumpConfig``, the ``timeout_dump`` field of ``FaultToleranceConfig``; tool
+options configure that tool's entry in ``tools``, whose order is the execution order.
 
-.. list-table::
+.. list-table:: Shared fields
    :header-rows: 1
-   :widths: 45 20 35
+   :widths: 25 20 25 30
 
    * - Field
      - Default
+     - Option
      - Meaning
-   * - ``timeout_dump_enabled``
-     - ``false``
+   * - ``enabled``
+     - ``false``, or ``true`` when ``--ft-timeout-dump-tools`` is given
+     - ``--[no-]ft-timeout-dump-enabled``
      - Enable or disable diagnostics
-   * - ``timeout_dump``
-     - ``pyspy,gdb,cuda-gdb``
-     - Ordered comma-separated tools; all must be executable when enabled
-   * - ``timeout_dump_sections``
-     - ``step``
-     - Comma-separated workload section names that trigger capture on timeout
-   * - ``timeout_dump_local_root``
+   * - ``tools``
+     - every tool, with defaults
+     - ``--ft-timeout-dump-tools`` (comma-separated names)
+     - Ordered tool entries; all must be executable when enabled
+   * - ``sections``
+     - ``[step]``
+     - ``--ft-timeout-dump-sections`` (comma-separated)
+     - Workload section names that trigger capture on timeout
+   * - ``local_root``
      - ``/tmp``
+     - ``--ft-timeout-dump-local-root``
      - Node-local parent of ``nvrx-diags/``
-   * - ``timeout_dump_pyspy``
-     - ``py-spy``
-     - Executable name or path
-   * - ``timeout_dump_gdb``
-     - ``gdb``
-     - GDB executable name or path
-   * - ``timeout_dump_cuda_gdb``
-     - ``cuda-gdb``
-     - CUDA-GDB executable name or path
-   * - ``timeout_dump_gdb_command_file``
-     - ``null``
-     - User-supplied command file; required when gdb is selected
-   * - ``timeout_dump_cuda_gdb_command_file``
-     - ``null``
-     - User-supplied command file; required when cuda-gdb is selected
-   * - ``timeout_dump_capture_timeout``
+   * - ``capture_timeout``
      - ``30`` seconds
+     - ``--ft-timeout-dump-capture-timeout``
      - Total capture grace across all tools, including cleanup
-   * - ``timeout_dump_max_capture_bytes``
+   * - ``max_capture_bytes``
      - ``1048576``
+     - ``--ft-timeout-dump-max-capture-bytes``
      - Output cap per tool, including headers
-   * - ``timeout_dump_poll_interval``
+   * - ``poll_interval``
      - ``30`` seconds
+     - ``--ft-timeout-dump-poll-interval``
      - Collection and retry interval; filesystem I/O can extend the cadence
-   * - ``timeout_dump_upload_attempts``
+   * - ``upload_attempts``
      - ``3``
+     - ``--ft-timeout-dump-upload-attempts``
      - Total attempts per batch, including the first upload
-   * - ``timeout_dump_shutdown_grace``
+   * - ``shutdown_grace``
      - ``10`` seconds
+     - ``--ft-timeout-dump-shutdown-grace``
      - Maximum launcher wait for the collector to finish its final pass
+
+.. list-table:: Tool entry fields
+   :header-rows: 1
+   :widths: 25 20 25 30
+
+   * - Tool and field
+     - Default
+     - Option
+     - Meaning
+   * - ``pyspy``: ``executable``
+     - ``py-spy``
+     - ``--ft-timeout-dump-pyspy``
+     - Executable name or path
+   * - ``gdb``: ``executable``
+     - ``gdb``
+     - ``--ft-timeout-dump-gdb``
+     - GDB executable name or path
+   * - ``gdb``: ``command_file``
+     - ``null``
+     - ``--ft-timeout-dump-gdb-command-file``
+     - User-supplied command file; required when gdb is selected
+   * - ``cuda-gdb``: ``executable``
+     - ``cuda-gdb``
+     - ``--ft-timeout-dump-cuda-gdb``
+     - CUDA-GDB executable name or path
+   * - ``cuda-gdb``: ``command_file``
+     - ``null``
+     - ``--ft-timeout-dump-cuda-gdb-command-file``
+     - User-supplied command file; required when cuda-gdb is selected
+   * - ``cuda-gdb``: ``mode``
+     - ``batch``
+     - ``--ft-timeout-dump-cuda-gdb-mode``
+     - ``batch`` or ``stdin`` command delivery

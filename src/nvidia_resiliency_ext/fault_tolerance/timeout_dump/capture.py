@@ -4,29 +4,131 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import os
+import shutil
 import signal
 import subprocess
 import threading
 import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import ClassVar
 
-from .config import debugger_command_file, staging_dir, tool_executable
+# Staged capture framing: the header and footer are truncated to these sizes, and
+# max_capture_bytes reserves room for both.
+HEADER_LIMIT = 768
+FOOTER_LIMIT = 256
 
 
-class ToolCapture:
-    """Bounded in-memory collection; never wait indefinitely for a killed child.
+def staging_dir(cfg):
+    return Path(cfg.local_root) / "nvrx-diags"
 
-    Output goes to a pipe, not the staging file. A child stuck after SIGKILL
-    therefore cannot continue writing a published .ready file.
+
+def options_given(args, prefix, config_class):
+    """Fields of `config_class` given on the command line, as options with dest prefix+field."""
+    values = {
+        field.name: getattr(args, prefix + field.name, None)
+        for field in dataclasses.fields(config_class)
+    }
+    return {name: value for name, value in values.items() if value is not None}
+
+
+def resolve_executable(executable, *, tool, flag):
+    """Return the executable's absolute path; the launcher checks this once at startup."""
+    resolved = shutil.which(executable)
+    if resolved is None:
+        raise ValueError(
+            f"Timeout dump tool {tool!r} is missing or not executable: {executable!r}. "
+            f"Install it, set {flag}, or adjust --ft-timeout-dump-tools."
+        )
+    return resolved
+
+
+def resolve_command_file(path, *, tool, flag):
+    """Return the command file's absolute path after checking that it can be read."""
+    if not path or not path.strip():
+        raise ValueError(
+            f"Timeout dump {tool} command file is required: set {flag} to a readable file"
+        )
+    resolved = Path(path).resolve()
+    try:
+        if not resolved.is_file():
+            raise OSError("not a regular file")
+        with resolved.open("rb") as stream:
+            stream.read(1)
+    except OSError as exc:
+        raise ValueError(f"Timeout dump {tool} command file is not readable: {resolved}") from exc
+    return str(resolved)
+
+
+class CaptureStatus(Enum):
+    CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+    OUTPUT_LIMIT = "output_limit"
+    SUCCESS = "success"
+    # Exited 0 without certifying success, e.g. CUDA-GDB stdin mode, which does not
+    # necessarily turn command errors into a nonzero exit.
+    COMPLETED = "completed"
+    EXITED = "exit"  # nonzero exit code
+    ERROR = "error"  # could not start or read the tool
+
+
+class ToolCapture(ABC):
+    """One diagnostic tool run against one worker, with its settings in `Config`.
+
+    The base class owns the lifecycle: startup off the event loop, deadlines, the
+    output cap, process-group cleanup, and staging. Subclasses supply the command
+    line and any tool-specific environment, stdin, and capture details.
+
+    Collection is bounded and in memory; never wait indefinitely for a killed
+    child. Output goes to a pipe, not the staging file, so a child stuck after
+    SIGKILL cannot continue writing a published .ready file.
     """
 
-    def __init__(self, cfg, worker_pid, tool):
-        self.cfg = cfg
+    name: ClassVar[str]  # identifies the tool in --ft-timeout-dump-tools and capture files
+
+    @dataclass
+    class Config(ABC):
+        """A tool's settings; `name` identifies the tool in --ft-timeout-dump-tools."""
+
+        name: ClassVar[str]
+        executable: str
+
+        @abstractmethod
+        def resolve(self) -> "ToolCapture.Config":
+            """A copy with absolute paths, checked once at launcher startup."""
+
+        @abstractmethod
+        def describe(self) -> str:
+            """One-line summary of the resolved settings for the startup log."""
+
+        @classmethod
+        @abstractmethod
+        def add_arguments(cls, group) -> None:
+            """Add this tool's options to its own argument group, with dest
+            ``timeout_dump.<name>.<field>``."""
+
+        @classmethod
+        def from_args(cls, args) -> "ToolCapture.Config":
+            """This tool's settings from the command line, whose values argparse has checked."""
+            return cls(**options_given(args, f"timeout_dump.{cls.name}.", cls))
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # Config.name is the one definition.
+        cls.name = cls.Config.name
+
+    def __init__(self, cfg, worker_pid, tool_cfg):
+        self.cfg = cfg  # TimeoutDumpConfig
+        self.tool_cfg = tool_cfg
         self.worker_pid = worker_pid
-        self.tool = tool
         self.process = None  # Diagnostic subprocess, not the training worker.
         self.output = bytearray()
-        self.status = "cancelled"
+        self.status = CaptureStatus.CANCELLED
+        self.error = None  # message for CaptureStatus.ERROR
         self._launch_thread = None
         self._launch_error = None
         self._launch_abandoned = threading.Event()
@@ -38,27 +140,15 @@ class ToolCapture:
         )
 
     def _launch(self):
+        """Start the tool on the launch thread and hand the result to `run()`.
+
+        This thread only writes `process` or `_launch_error`; `run()` reads them after
+        the thread exits. If `run()` stops waiting first, it sets `_launch_abandoned`,
+        and this thread then kills and reaps a late child itself. Subclasses customize
+        `spawn()`, not this method, so that hand-off stays in one place.
+        """
         try:
-            with contextlib.ExitStack() as stack:
-                stdin = subprocess.DEVNULL
-                if self._uses_stdin():
-                    # Prepare all commands on this startup thread. A regular
-                    # in-memory file avoids pipe writes or prompt handling on
-                    # the monitor event loop; the child owns its fd 0 after exec.
-                    stdin = stack.enter_context(
-                        os.fdopen(os.memfd_create("nvrx-cuda-gdb-stdin"), "w+b")
-                    )
-                    stdin.write(os.fsencode(self.stdin_commands()))
-                    stdin.seek(0)
-                self.process = subprocess.Popen(
-                    self.command(),
-                    stdin=stdin,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                    close_fds=True,
-                    env=self.environment(),
-                )
+            self.process = self.spawn()
         except Exception as exc:
             self._launch_error = exc
         finally:
@@ -75,132 +165,120 @@ class ToolCapture:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self.process.pid, signal.SIGKILL)
 
-    def command(self):
-        executable = tool_executable(self.cfg, self.tool)
-        if self.tool == "pyspy":
-            return [executable, "dump", "--pid", str(self.worker_pid)]
-        if self._uses_stdin():
-            return [executable, "--nx", "-q", "-iex", "set debuginfod enabled off"]
-        # Disable init scripts; command files are supplied by the deployment.
-        command = [executable, "--nx", "--batch"]
-        # Disable downloads before attach, including during shared-library loading.
-        command.extend(["-iex", "set debuginfod enabled off", "-ex", f"attach {self.worker_pid}"])
-        command.extend(
-            ["-ex", "set pagination off", "-x", str(debugger_command_file(self.cfg, self.tool))]
-        )
-        command.extend(["-ex", "detach"])
-        return command
+    @abstractmethod
+    def command(self) -> list[str]:
+        """The tool's argv; it must not touch shared storage (the tool reads its files)."""
 
-    def _uses_stdin(self):
-        return self.tool == "cuda-gdb" and self.cfg.timeout_dump_cuda_gdb_mode == "stdin"
+    def spawn(self) -> subprocess.Popen:
+        """Start the tool on the launch thread; override for tool-specific stdin or env."""
+        return self._popen(stdin=subprocess.DEVNULL)
 
-    def stdin_commands(self):
-        # GDB's source command consumes the rest of the line as the filename,
-        # including spaces and quotes. Shell quoting would alter the filename.
-        # Keep attach at top level so normal command-loop events can be serviced.
-        return (
-            "set confirm off\n"
-            "set pagination off\n"
-            "set width 0\n"
-            "set height 0\n"
-            f"attach {self.worker_pid}\n"
-            f"source {debugger_command_file(self.cfg, self.tool)}\n"
-            "detach\n"
-            "quit\n"
+    def _popen(self, **kwargs) -> subprocess.Popen:
+        # run() reads the pipe, and kill() signals the new session's process group.
+        return subprocess.Popen(
+            self.command(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+            **kwargs,
         )
 
-    def environment(self):
-        env = os.environ.copy()
-        if self.tool == "cuda-gdb":
-            # The monitor may have a different CUDA_VISIBLE_DEVICES or TMPDIR.
-            # Read only these settings, with a bounded read; never log the worker environment.
-            with open(f"/proc/{self.worker_pid}/environ", "rb") as stream:
-                entries = stream.read(65537)
-            if len(entries) > 65536:
-                raise OSError("Worker environment exceeds diagnostic read limit")
-            values = dict(entry.split(b"=", 1) for entry in entries.split(b"\0") if b"=" in entry)
-            for name in ("TMPDIR", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"):
-                if name.encode() in values:
-                    env[name] = os.fsdecode(values[name.encode()])
-                else:
-                    env.pop(name, None)
-        return env
+    def exit_status(self, returncode) -> CaptureStatus:
+        return CaptureStatus.SUCCESS if returncode == 0 else CaptureStatus.EXITED
+
+    def status_text(self) -> str:
+        """The status as written to the capture footer, e.g. ``timeout`` or ``exit_7``."""
+        if self.status is CaptureStatus.EXITED:
+            return f"exit_{self.process.returncode}"
+        if self.status is CaptureStatus.ERROR:
+            return f"error: {self.error}"
+        return self.status.value
+
+    def header_details(self) -> str:
+        """Extra ``key=value `` fields for the capture header."""
+        return ""
 
     async def run(self, timeout=None):
-        timeout = self.cfg.timeout_dump_capture_timeout if timeout is None else timeout
+        """Capture for at most `timeout` seconds, then kill and (boundedly) reap the tool."""
+        timeout = self.cfg.capture_timeout if timeout is None else timeout
         deadline = time.monotonic() + timeout
         # Reserve some of this tool's allocation for kill/reap before attaching
         # another debugger. Cleanup also stays within the shared overall deadline.
         capture_deadline = deadline - min(0.1, timeout / 10)
-        limit = self.cfg.timeout_dump_max_capture_bytes - 1024  # header/footer allowance
         try:
-            # Do not use asyncio's default executor: its shutdown waits for
-            # threads. A stalled executable lookup must not block monitor exit.
-            self._launch_thread = threading.Thread(target=self._launch, daemon=True)
-            self._launch_thread.start()
-            while self._launch_thread.is_alive():
-                if time.monotonic() >= capture_deadline:
-                    self.status = "timeout"
-                    return self
-                await asyncio.sleep(0.01)
-            if self._launch_error is not None:
-                raise self._launch_error
-            os.set_blocking(self.process.stdout.fileno(), False)
-            while True:
-                if time.monotonic() >= capture_deadline:
-                    self.status = "timeout"
-                    break
-                try:
-                    chunk = os.read(self.process.stdout.fileno(), min(65536, limit + 1))
-                except BlockingIOError:
-                    chunk = None
-                if chunk:
-                    remaining = limit - len(self.output)
-                    self.output.extend(chunk[:remaining])
-                    if len(chunk) > remaining:
-                        self.status = "output_limit"
-                        break
-                elif chunk == b"" and self.process.poll() is not None:
-                    if self.process.returncode == 0:
-                        # Stdin command errors do not necessarily set a nonzero
-                        # exit code. Completion does not certify useful GPU state.
-                        self.status = "completed" if self._uses_stdin() else "success"
-                    else:
-                        self.status = f"exit_{self.process.returncode}"
-                    break
-                # Yield so the monitor can service termination timers and IPC events.
-                # Delay polling only when no output is available.
-                await asyncio.sleep(0 if chunk else 0.01)
+            if await self._await_launch(capture_deadline):
+                await self._drain_output(capture_deadline)
         except OSError as exc:
-            self.status = f"error: {exc}"
+            self.status = CaptureStatus.ERROR
+            self.error = str(exc)
         finally:
-            self._launch_abandoned.set()
-            self.kill()
-            if self.process is not None:
-                self.process.stdout.close()
-                # WNOHANG polling yields to worker termination timers. If a
-                # diagnostic child cannot exit, the monitor skips later tools.
-                while self.process.poll() is None and time.monotonic() < deadline:
-                    await asyncio.sleep(min(0.01, max(0, deadline - time.monotonic())))
-        return self
+            await self._stop(deadline)
+
+    async def _await_launch(self, deadline):
+        """Start the tool on a launch thread; False if it is still starting at `deadline`."""
+        # Do not use asyncio's default executor: its shutdown waits for
+        # threads. A stalled executable lookup must not block monitor exit.
+        self._launch_thread = threading.Thread(target=self._launch, daemon=True)
+        self._launch_thread.start()
+        while self._launch_thread.is_alive():
+            if time.monotonic() >= deadline:
+                self.status = CaptureStatus.TIMEOUT
+                return False
+            await asyncio.sleep(0.01)
+        if self._launch_error is not None:
+            raise self._launch_error
+        return True
+
+    async def _drain_output(self, deadline):
+        """Read the tool's output until it exits, fills the cap, or `deadline` passes."""
+        limit = self.cfg.max_capture_bytes - HEADER_LIMIT - FOOTER_LIMIT
+        stdout = self.process.stdout.fileno()
+        os.set_blocking(stdout, False)
+        while time.monotonic() < deadline:
+            try:
+                chunk = os.read(stdout, min(65536, limit + 1))
+            except BlockingIOError:
+                chunk = None
+            if chunk:
+                remaining = limit - len(self.output)
+                self.output.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    self.status = CaptureStatus.OUTPUT_LIMIT
+                    return
+            elif chunk == b"" and self.process.poll() is not None:
+                self.status = self.exit_status(self.process.returncode)
+                return
+            # Yield so the monitor can service termination timers and IPC events.
+            # Delay polling only when no output is available.
+            await asyncio.sleep(0 if chunk else 0.01)
+        self.status = CaptureStatus.TIMEOUT
+
+    async def _stop(self, deadline):
+        """Kill the tool's process group and reap it without waiting past `deadline`."""
+        self._launch_abandoned.set()
+        self.kill()
+        if self.process is not None:
+            self.process.stdout.close()
+            # WNOHANG polling yields to worker termination timers. If a
+            # diagnostic child cannot exit, the monitor skips later tools.
+            while self.process.poll() is None and time.monotonic() < deadline:
+                await asyncio.sleep(min(0.01, max(0, deadline - time.monotonic())))
 
     def publish_local(self, rank_info, cycle, reason):
         directory = staging_dir(self.cfg) / f"cycle{cycle}"
         directory.mkdir(mode=0o700, exist_ok=True)
-        name = f"rank{rank_info.local_rank}_pid{rank_info.pid}_{self.tool}.txt"
+        name = f"rank{rank_info.local_rank}_pid{rank_info.pid}_{self.name}.txt"
         tmp = directory / (name + ".tmp")
-        mode = f"mode={self.cfg.timeout_dump_cuda_gdb_mode} " if self.tool == "cuda-gdb" else ""
         header = (
             f"=== BEGIN host={rank_info.host} cycle={cycle} global_rank={rank_info.global_rank} "
-            f"local_rank={rank_info.local_rank} pid={rank_info.pid} tool={self.tool} "
-            f"{mode}reason={reason} time={time.time():.6f} ===\n"
-        ).encode()[:768]
-        exit_code = (
-            f" exit_code={self.process.returncode}"
-            if self.tool == "cuda-gdb" and self.process is not None
-            else ""
-        )
-        footer = f"\n=== END status={self.status[:128]}{exit_code} ===\n".encode()[:256]
+            f"local_rank={rank_info.local_rank} pid={rank_info.pid} tool={self.name} "
+            f"{self.header_details()}reason={reason} time={time.time():.6f} ===\n"
+        ).encode()[:HEADER_LIMIT]
+        returncode = self.process.returncode if self.process is not None else None
+        exit_code = f" exit_code={returncode}" if returncode is not None else ""
+        footer = f"\n=== END status={self.status_text()[:128]}{exit_code} ===\n"
+        footer = footer.encode()[:FOOTER_LIMIT]
         with tmp.open("xb") as stream:
             stream.write(header)
             stream.write(self.output)
