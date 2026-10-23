@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -84,15 +83,6 @@ class _StubClient:
 def summary_ts(client):
     """The ts the stub returned for the summary, which replies must thread onto."""
     return "171000000.000001"
-
-
-def root_ts(client):
-    """The ts of the run's first message; later cycles thread onto it."""
-    return client.messages[0]["thread_ts"] or "171000000.000001"
-
-
-def _job_identity(job_id="123", run_name="nemotron_pretrain", user="alice", cycle_id=None):
-    return AnalysisIdentity(job_id=job_id, run_name=run_name, user=user, cycle_id=cycle_id)
 
 
 def _notifier(monkeypatch, client=None, **config_kwargs):
@@ -1290,55 +1280,6 @@ def test_placeholder_owners_are_omitted():
 # ─── one run, one thread ───
 
 
-def test_later_cycles_of_a_run_reply_in_the_first_cycles_thread(monkeypatch):
-    # Otherwise one job becomes N unrelated top-level alerts and its history
-    # is scattered across the channel.
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-
-    for cycle in (0, 1, 2):
-        notifier.notify(
-            _job_identity(cycle_id=cycle), parse_attrsvc_response(_response(), log_path="/x.log")
-        )
-
-    assert len(client.summaries) == 1, "only the first cycle opens a top-level message"
-    root = client.summaries[0]
-    assert all(m["thread_ts"] == root_ts(client) for m in client.messages if m is not root)
-
-
-def test_a_different_run_starts_its_own_thread(monkeypatch):
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-
-    notifier.notify(
-        _job_identity(run_name="run-a"), parse_attrsvc_response(_response(), log_path="/a.log")
-    )
-    notifier.notify(
-        _job_identity(run_name="run-b"), parse_attrsvc_response(_response(), log_path="/b.log")
-    )
-
-    assert len(client.summaries) == 2
-
-
-def test_the_remembered_thread_table_is_bounded(monkeypatch):
-    # A long-lived service sees many runs; forgetting the oldest just starts a
-    # new thread, which is better than growing without limit.
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-    monkeypatch.setattr(type(notifier), "MAX_TRACKED_RUNS", 4)
-
-    for i in range(10):
-        notifier.notify(
-            _job_identity(run_name=f"run-{i}"),
-            parse_attrsvc_response(_response(), log_path=f"/{i}.log"),
-        )
-
-    assert len(notifier._run_threads) <= 4
-
-
-# ─── a ceiling that is not the rule's own budget ───
-
-
 def test_a_general_ceiling_with_a_different_budget_is_reported_separately(monkeypatch):
     # The selected policy allows 3, the general ceiling stops at 2. Saying the
     # rule exhausted its budget would attach the stop to a number it never hit.
@@ -1412,44 +1353,6 @@ def test_the_environment_still_applies_when_settings_are_silent(monkeypatch):
 # ─── two jobs of one experiment are two runs ───
 
 
-def test_two_jobs_of_one_experiment_do_not_share_a_thread(monkeypatch):
-    # Run names come from the log filename and belong to the experiment, so
-    # 4621054 and 4621055 of one recipe both resolve to the same run name.
-    # Threading on that alone files the second job under the first job's alert.
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-    stem = "nemotron4_ultra_60t_phase1_v0"
-
-    for job in ("4621054", "4621055"):
-        log = f"/l/{stem}_{job}_date_26-10-19_time_00-08-19_cycle0.log"
-        notifier.notify(
-            AnalysisIdentity(
-                job_id=job, run_name=run_name_from_log_path(log, job), user="u", cycle_id=0
-            ),
-            parse_attrsvc_response(_response(), log_path=log),
-        )
-
-    assert run_name_from_log_path(f"/l/{stem}_4621054_date_x_cycle0.log", "4621054") == stem
-    assert len(client.summaries) == 2, "each job keeps its own thread"
-
-
-def test_array_tasks_of_one_job_share_a_thread(monkeypatch):
-    # The tasks of one array are one run, so the suffix is not part of identity.
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-
-    for task in ("4621054_0", "4621054_1"):
-        notifier.notify(
-            AnalysisIdentity(job_id=task, run_name="run", user="u", cycle_id=0),
-            parse_attrsvc_response(_response(), log_path="/l/run_4621054_date_x_cycle0.log"),
-        )
-
-    assert len(client.summaries) == 1
-
-
-# ─── the reason has to match the decision ───
-
-
 def test_a_policy_that_overrode_the_category_is_named_as_the_reason():
     # Otherwise the channel reads "Why RESTART: category 26 - CUDA OOM...",
     # quoting a STOP category as the reason for a restart.
@@ -1517,83 +1420,3 @@ def test_identity_fields_from_the_wire_are_escaped():
 
 
 # ─── one run opens exactly one thread ───
-
-
-def test_two_cycles_finishing_together_open_only_one_thread(monkeypatch):
-    """Both workers would otherwise read "no thread yet" before either posts.
-
-    The second worker should block until the first publishes the run's
-    timestamp, then reply into that thread, rather than opening its own.
-    """
-    import threading
-
-    client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client)
-    real_post = client.chat_postMessage
-    in_post = threading.Event()
-
-    def slow_post(channel, text, thread_ts=None):
-        # Hold the first post open long enough that, unserialized, the second
-        # worker would read an empty thread table and open its own message.
-        if thread_ts is None:
-            in_post.set()
-            time.sleep(0.4)
-        return real_post(channel=channel, text=text, thread_ts=thread_ts)
-
-    client.chat_postMessage = slow_post
-
-    def fire(cycle):
-        notifier.notify(
-            _job_identity(cycle_id=cycle),
-            parse_attrsvc_response(_response(), log_path=f"/x{cycle}.log"),
-        )
-
-    first = threading.Thread(target=fire, args=(0,))
-    first.start()
-    assert in_post.wait(timeout=5), "first worker never reached the post"
-    second = threading.Thread(target=fire, args=(1,))
-    second.start()
-    for t in (first, second):
-        t.join(timeout=20)
-
-    assert len(client.summaries) == 1, "a run must not split across two threads"
-    assert len(client.replies) >= 1, "the second cycle should land in the thread"
-
-
-@pytest.mark.parametrize(
-    "error",
-    (
-        ConnectionError("transport died"),
-        TimeoutError("timed out"),
-    ),
-)
-def test_a_transport_error_does_not_strand_the_thread_marker(monkeypatch, error):
-    """Only SlackApiError reached the handler that released the marker.
-
-    A connection or timeout error left the opening marker behind, so the next
-    cycle of that run waited the full timeout for a worker that had already
-    stopped — and with few notification workers those waits back up unrelated
-    alerts too.
-    """
-    notifier = _notifier(monkeypatch)
-
-    class _Dead:
-        def chat_postMessage(self, **_kw):
-            raise error
-
-    notifier._client = _Dead()
-    identity = _job_identity(cycle_id=0)
-
-    with pytest.raises(type(error)):
-        notifier.notify(identity, parse_attrsvc_response(_response(), log_path="/x.log"))
-
-    assert notifier._run_opening == {}, "a later cycle would wait on a worker that is gone"
-
-
-def test_a_failed_post_does_not_publish_a_thread_to_join():
-    # Releasing the marker must not also record an empty timestamp as the
-    # run's thread, or later cycles would reply into nothing.
-    notifier = SlackNotifier(SlackConfig(token="x", channel="#c"))
-    notifier._remember_thread("run/1", "")
-
-    assert "run/1" not in notifier._run_threads

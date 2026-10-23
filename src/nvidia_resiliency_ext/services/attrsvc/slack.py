@@ -37,9 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections import OrderedDict
 from dataclasses import dataclass, field
-from threading import Event, Lock
 from typing import Any, Mapping, Optional, Sequence
 
 from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
@@ -792,84 +790,6 @@ class SlackNotifier:
         self.config = SlackConfig.from_env() if config is None else config
         self.stats = SlackStats()
         self._client: Any = None
-        # First message timestamp per run, so a run's cycles collect into one
-        # thread instead of one top-level alert each. Keyed by run rather than
-        # by cycle, and bounded because a long-lived service sees many runs.
-        self._run_threads: "OrderedDict[str, str]" = OrderedDict()
-        # Runs whose first message is in flight, so siblings wait rather than
-        # each opening a thread of their own.
-        self._run_opening: dict[str, Event] = {}
-        self._run_threads_lock = Lock()
-
-    #: How many runs keep a remembered thread. Oldest are forgotten first; a
-    #: forgotten run simply starts a new thread rather than failing to post.
-    MAX_TRACKED_RUNS = 512
-
-    def _thread_key(self, identity: "AnalysisIdentity") -> str:
-        """Identify the run a cycle belongs to, or "" when it cannot be known.
-
-        The job ID carries the identity, not the run name: run names come from
-        the log filename and are the experiment's, so two separate submissions
-        of one experiment share it (``..._phase1_v0_4621054_...`` and
-        ``..._4621055_...`` both yield ``..._phase1_v0``) and would otherwise
-        collapse into one thread. Array task suffixes are dropped, because the
-        tasks of one array are one run.
-        """
-        job = (identity.job_id or "").strip()
-        base = job.split("_", 1)[0].split("+", 1)[0].strip()
-        run = (identity.run_name or "").strip()
-        if base:
-            return f"{run}/{base}" if run else base
-        return run
-
-    #: How long a worker waits for a sibling that is already opening this run's
-    #: thread. Bounded: a lost opener must not strand every later cycle, and
-    #: posting a second top-level message is a better failure than posting none.
-    THREAD_OPEN_WAIT_SECONDS = 30.0
-
-    def _remembered_thread(self, key: str) -> Optional[str]:
-        """The run's thread, waiting if a sibling is mid-way through opening it.
-
-        Two cycles of one run can complete together, and both workers would
-        otherwise read "no thread yet" before either post returns - each opens a
-        its own channel message and the run's history splits in two. The first
-        worker publishes an opening marker; the rest wait on it rather than
-        racing it.
-        """
-        if not key:
-            return None
-        while True:
-            with self._run_threads_lock:
-                ts = self._run_threads.get(key)
-                if ts is not None:
-                    self._run_threads.move_to_end(key)
-                    return ts
-                opening = self._run_opening.get(key)
-                if opening is None:
-                    # This caller opens the thread; others will wait on this.
-                    self._run_opening[key] = Event()
-                    return None
-            if not opening.wait(self.THREAD_OPEN_WAIT_SECONDS):
-                return None  # opener never finished; post standalone rather than hang
-
-    def _remember_thread(self, key: str, ts: str) -> None:
-        """Publish the run's thread and release anyone waiting to join it.
-
-        Always called by the opener, including when the post failed and ``ts``
-        is empty, so a waiter is never left blocked on a thread that will not
-        arrive.
-        """
-        if not key:
-            return
-        with self._run_threads_lock:
-            if ts:
-                self._run_threads[key] = ts
-                self._run_threads.move_to_end(key)
-                while len(self._run_threads) > self.MAX_TRACKED_RUNS:
-                    self._run_threads.popitem(last=False)
-            opening = self._run_opening.pop(key, None)
-        if opening is not None:
-            opening.set()
 
     @property
     def enabled(self) -> bool:
@@ -923,39 +843,12 @@ class SlackNotifier:
         summary = format_summary(identity, result, self.config.cluster)
         summary += self._mention(identity.user)
 
-        # A later cycle of a run replies under that run's first alert, so one
-        # job reads as one thread rather than as N unrelated channel messages.
-        run_key = self._thread_key(identity)
-        run_thread = self._remembered_thread(run_key)
-        opened_by_this_call = run_thread is None
-
-        try:
-            return self._post(identity, result, summary, run_key, run_thread)
-        finally:
-            # Every exit releases a sibling waiting to join the thread this
-            # call was opening - including the transport errors that never
-            # reach the SlackApiError handler. Leaving the marker behind would
-            # park the next cycle for the full wait on a worker that has
-            # already gone, and with few notification workers that backs up
-            # unrelated alerts too. Idempotent: a successful post has already
-            # published the timestamp, and this second call finds nothing.
-            if opened_by_this_call:
-                self._remember_thread(run_key, "")
-
-    def _post(
-        self,
-        identity: "AnalysisIdentity",
-        result: AttrSvcResult,
-        summary: str,
-        run_key: str,
-        run_thread: Optional[str],
-    ) -> bool:
-        """Post the summary and its detail reply. See :meth:`notify`."""
+        # One top-level message per cycle. Each failure is its own event and
+        # stands on its own in the channel; the detail hangs off it so the
+        # channel view stays one scannable line per alert.
         self.stats.attempts += 1
         try:
-            posted = self._web_client().chat_postMessage(
-                channel=self.config.channel, text=summary, thread_ts=run_thread
-            )
+            posted = self._web_client().chat_postMessage(channel=self.config.channel, text=summary)
         except SlackApiError as e:
             self.stats.failed += 1
             logger.error(f"[{identity.job_id}] Slack notification failed: {e}")
@@ -963,15 +856,8 @@ class SlackNotifier:
         self.stats.sent += 1
         logger.info(f"[{identity.job_id}] Slack notification sent to {self.config.channel}")
 
-        posted_ts = posted.get("ts") if hasattr(posted, "get") else None
-        if run_thread is None:
-            # This cycle opened the run's thread; later cycles join it.
-            self._remember_thread(run_key, str(posted_ts or ""))
-
         details = format_details(identity, result)
-        # Detail hangs off this cycle's own message when it started the thread,
-        # and off the run thread otherwise, so replies stay in one place.
-        thread_ts = run_thread or posted_ts
+        thread_ts = posted.get("ts") if hasattr(posted, "get") else None
         if details and thread_ts:
             # The alert is already delivered; a failed thread reply costs detail,
             # not the notification, so it must not be reported as a failure.
