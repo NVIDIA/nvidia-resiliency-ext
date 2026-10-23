@@ -1558,3 +1558,42 @@ def test_two_cycles_finishing_together_open_only_one_thread(monkeypatch):
 
     assert len(client.summaries) == 1, "a run must not split across two threads"
     assert len(client.replies) >= 1, "the second cycle should land in the thread"
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        ConnectionError("transport died"),
+        TimeoutError("timed out"),
+    ),
+)
+def test_a_transport_error_does_not_strand_the_thread_marker(monkeypatch, error):
+    """Only SlackApiError reached the handler that released the marker.
+
+    A connection or timeout error left the opening marker behind, so the next
+    cycle of that run waited the full timeout for a worker that had already
+    stopped — and with few notification workers those waits back up unrelated
+    alerts too.
+    """
+    notifier = _notifier(monkeypatch)
+
+    class _Dead:
+        def chat_postMessage(self, **_kw):
+            raise error
+
+    notifier._client = _Dead()
+    identity = _job_identity(cycle_id=0)
+
+    with pytest.raises(type(error)):
+        notifier.notify(identity, parse_attrsvc_response(_response(), log_path="/x.log"))
+
+    assert notifier._run_opening == {}, "a later cycle would wait on a worker that is gone"
+
+
+def test_a_failed_post_does_not_publish_a_thread_to_join():
+    # Releasing the marker must not also record an empty timestamp as the
+    # run's thread, or later cycles would reply into nothing.
+    notifier = SlackNotifier(SlackConfig(token="x", channel="#c"))
+    notifier._remember_thread("run/1", "")
+
+    assert "run/1" not in notifier._run_threads

@@ -927,7 +927,30 @@ class SlackNotifier:
         # job reads as one thread rather than as N unrelated channel messages.
         run_key = self._thread_key(identity)
         run_thread = self._remembered_thread(run_key)
+        opened_by_this_call = run_thread is None
 
+        try:
+            return self._post(identity, result, summary, run_key, run_thread)
+        finally:
+            # Every exit releases a sibling waiting to join the thread this
+            # call was opening - including the transport errors that never
+            # reach the SlackApiError handler. Leaving the marker behind would
+            # park the next cycle for the full wait on a worker that has
+            # already gone, and with few notification workers that backs up
+            # unrelated alerts too. Idempotent: a successful post has already
+            # published the timestamp, and this second call finds nothing.
+            if opened_by_this_call:
+                self._remember_thread(run_key, "")
+
+    def _post(
+        self,
+        identity: "AnalysisIdentity",
+        result: AttrSvcResult,
+        summary: str,
+        run_key: str,
+        run_thread: Optional[str],
+    ) -> bool:
+        """Post the summary and its detail reply. See :meth:`notify`."""
         self.stats.attempts += 1
         try:
             posted = self._web_client().chat_postMessage(
@@ -935,10 +958,6 @@ class SlackNotifier:
             )
         except SlackApiError as e:
             self.stats.failed += 1
-            # Release any sibling waiting to join a thread this call was going
-            # to open, so a failed post costs one alert rather than stalling
-            # every later cycle of the run for the full wait.
-            self._remember_thread(run_key, "")
             logger.error(f"[{identity.job_id}] Slack notification failed: {e}")
             return False
         self.stats.sent += 1
