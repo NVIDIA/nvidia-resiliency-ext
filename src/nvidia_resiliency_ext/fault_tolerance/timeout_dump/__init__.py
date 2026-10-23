@@ -7,17 +7,15 @@ storage. Debugger command files may be read from shared storage by the tools.
 Completed captures are the queue; no socket protocol or metadata sidecar is required.
 """
 
-from .capture import ToolCapture, staging_dir
 from .collector import DiagnosticCollectorProcess
-from .config import TimeoutDumpConfig, create_capture, diagnostics_directory
+from .config import TimeoutDumpConfig, diagnostics_directory
+from .monitor import TimeoutDumpMonitor
 from .ptrace import authorize_monitor_ptrace
 
 __all__ = [
     "DiagnosticCollectorProcess",
     "TimeoutDumpConfig",
-    "ToolCapture",
+    "TimeoutDumpMonitor",
     "authorize_monitor_ptrace",
-    "create_capture",
     "diagnostics_directory",
-    "staging_dir",
 ]
