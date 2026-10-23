@@ -126,7 +126,7 @@ def validate_config(cfg):
         return
     parse_capture_tools(cfg.timeout_dump)
     parse_capture_sections(cfg.timeout_dump_sections)
-    # YAML and programmatic configuration bypass argparse choices and Literal
+    # Programmatic configuration bypasses argparse choices, and Literal
     # annotations are not enforced at runtime. Keep this a user-facing error.
     if cfg.timeout_dump_cuda_gdb_mode not in ("batch", "stdin"):
         raise ValueError("timeout_dump_cuda_gdb_mode must be batch or stdin")

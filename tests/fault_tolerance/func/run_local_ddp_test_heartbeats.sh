@@ -110,7 +110,8 @@ do
 
    ft_launcher --nproc-per-node=${WORLD_SIZE} --max-restarts=${MAX_RESTARTS} \
       --rdzv-backend=c10d --rdzv-endpoint=localhost:0 --ft-restart-check-interval=0.5 \
-      --ft-cfg-path="examples/fault_tolerance/fault_tol_cfg_heartbeats.yaml" --term-timeout=15 \
+      --ft-initial-rank-heartbeat-timeout=None --ft-rank-heartbeat-timeout=None \
+      --ft-log-level=DEBUG --term-timeout=15 \
       ${TRAIN_CMD} 2>&1 | tee -a ${RES_DIR}/output_$i/log.log
 
    if [ $? -ne 0 ]

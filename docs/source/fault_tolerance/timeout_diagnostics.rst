@@ -38,9 +38,8 @@ enable diagnostics or configure its timeout: it must also have a finite timeout
 in ``rank_section_timeouts`` and actually expire. Heartbeat and out-of-section
 timeouts are separate detection paths, not section names in this option.
 
-Use ``--ft-timeout-dump-enabled=false`` to disable capture, including when YAML
-enables it. Selecting tools alone does not enable diagnostics. The default tool
-list is ``pyspy,gdb,cuda-gdb``, in that order. There is no automatic detection or
+Selecting tools alone does not enable diagnostics. The default tool list is
+``pyspy,gdb,cuda-gdb``, in that order. There is no automatic detection or
 silent skipping: when enabled, the launcher validates every requested executable
 and fails before starting workers if any is missing or not executable. Each
 selected debugger also requires a readable command file. Supply a smaller tool
@@ -87,15 +86,8 @@ and ``-x`` invocation. To use its normal stdin command reader instead::
 
     --ft-timeout-dump-cuda-gdb-mode=stdin
 
-The equivalent YAML setting is:
-
-.. code-block:: yaml
-
-    fault_tolerance:
-      timeout_dump_cuda_gdb_mode: stdin
-
-CLI values override YAML. Selecting a mode does not enable diagnostics or add
-CUDA-GDB to the tool list. Native GDB and py-spy are unaffected. Switch back with
+Selecting a mode does not enable diagnostics or add CUDA-GDB to the tool list.
+Native GDB and py-spy are unaffected. Switch back with
 ``--ft-timeout-dump-cuda-gdb-mode=batch``; there is no automatic fallback.
 
 ``stdin`` is fully automated: no terminal, prompts, or monitor command exchange
@@ -121,7 +113,7 @@ Debugger command files
 ----------------------
 
 Users must supply a command file for each selected debugger. NVRx does not
-bundle default GDB or CUDA-GDB commands. Set the paths through CLI or YAML::
+bundle default GDB or CUDA-GDB commands. Set the paths through the CLI::
 
     --ft-timeout-dump-gdb-command-file=/lustre/config/gdb-timeout.txt
     --ft-timeout-dump-cuda-gdb-command-file=/lustre/config/cuda-gdb-timeout.txt
@@ -385,12 +377,11 @@ left by an interrupted upload is not a published snapshot.
 Configuration
 -------------
 
-These fields work in the ``fault_tolerance`` YAML section. ``timeout_dump``
-corresponds to ``--ft-timeout-dump``; other fields use matching
-``--ft-timeout-dump-...`` options, replacing underscores with hyphens. Explicit
-CLI values override YAML. Enable diagnostics with
-``--ft-timeout-dump-enabled=true`` and select tools with ``--ft-timeout-dump``
-in addition to the existing log configuration.
+These ``FaultToleranceConfig`` fields are set on the command line.
+``timeout_dump`` corresponds to ``--ft-timeout-dump``; other fields use matching
+``--ft-timeout-dump-...`` options, replacing underscores with hyphens. Enable
+diagnostics with ``--ft-timeout-dump-enabled=true`` and select tools with
+``--ft-timeout-dump`` in addition to the existing log configuration.
 
 .. list-table::
    :header-rows: 1

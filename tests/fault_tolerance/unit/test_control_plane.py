@@ -39,6 +39,10 @@ def test_nvrx_control_starts_owned_services_without_worker_agent(tmp_path):
             "true",
             "--ft-attribution-endpoint",
             "localhost",
+            "--ft-attribution-stop-action",
+            "no-restart",
+            "--ft-attribution-export-url",
+            "https://dataflow.example.test/posting",
             "--ft-cycle-info-dir",
             str(tmp_path / "nvrx"),
             "--ft-cycle-info-job-id",
@@ -69,6 +73,10 @@ def test_nvrx_control_starts_owned_services_without_worker_agent(tmp_path):
 
     create_store.assert_called_once()
     manager_cls.assert_called_once()
+    attribution_cfg = manager_cls.call_args.args[0]
+    assert attribution_cfg.endpoint == "localhost"
+    assert attribution_cfg.enforce_stop
+    assert attribution_cfg.export_url == "https://dataflow.example.test/posting"
     manager.start_if_needed.assert_called_once()
     start_grpc.assert_called_once()
     assert start_grpc.call_args.args[1] == str(tmp_path / "train_grpc")
@@ -383,24 +391,6 @@ def test_control_parser_rejects_cycle_info_dir_without_job_id(tmp_path):
         assert "--ft-cycle-info-job-id" in str(exc)
     else:
         raise AssertionError("expected missing cycle-info job id to be rejected")
-
-
-def test_control_parser_uses_launcher_config_file_alias(tmp_path):
-    cfg_path = tmp_path / "ft.yaml"
-    args = control_plane.parse_args(
-        [
-            "--nnodes",
-            "2",
-            "--rdzv-endpoint",
-            "127.0.0.1:29500",
-            "--ft-log-server-log-prefix",
-            str(tmp_path / "grpc"),
-            "--ft-cfg_path",
-            str(cfg_path),
-        ]
-    )
-
-    assert args.ft_cfg_path == str(cfg_path)
 
 
 def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
