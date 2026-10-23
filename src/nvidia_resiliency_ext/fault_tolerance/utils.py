@@ -16,6 +16,7 @@
 import asyncio
 import contextlib
 import ctypes
+import functools
 import hashlib
 import logging
 import multiprocessing
@@ -277,6 +278,15 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
         "Neither SLURM_PROCID nor GROUP_RANK is set. Infrastructure rank will be assigned deterministically."
     )
     return -1
+
+
+@functools.cache
+def is_infra_rank_zero() -> bool:
+    """Whether this node is infrastructure rank 0, the one node that logs job-wide messages."""
+    # Hostname/topology ranks need not include zero, so the rank may be unavailable.
+    with contextlib.suppress(ValueError, RuntimeError):
+        return get_infrastructure_rank(skip_nodename_logic=True) == 0
+    return False
 
 
 def is_slurm_job_array() -> bool:
