@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1481,3 +1482,79 @@ def test_an_exhausted_budget_still_outranks_everything():
         retry_budget_exhausted=True,
     )
     assert "job_no_progress_guard" in slack_mod.decision_rationale(payload).headline("STOP")
+
+
+# ─── caller-supplied text is not Slack markup ───
+
+
+@pytest.mark.parametrize(
+    "owner",
+    (
+        "alice`  <!channel> `",
+        "bob` <@U12345> `",
+        "carol<!here>",
+    ),
+)
+def test_an_owner_name_cannot_smuggle_a_mention(owner):
+    """``user`` arrives from POST /logs and lands inside a code span.
+
+    A backtick closes that span, after which <!channel> renders as a real
+    mention — so an alert could page the whole channel even though mentions
+    are a separate, deliberately-off switch.
+    """
+    line = AnalysisIdentity(job_id="123", run_name="run", user=owner, cycle_id=0).as_line()
+
+    assert "<!channel>" not in line
+    assert "<!here>" not in line
+    assert "<@U12345>" not in line
+
+
+def test_identity_fields_from_the_wire_are_escaped():
+    line = AnalysisIdentity(job_id="9`9", run_name="run<&>name", user="dave", cycle_id=0).as_line()
+
+    assert "`9`9`" not in line
+    assert "&lt;&amp;&gt;" in line
+
+
+# ─── one run opens exactly one thread ───
+
+
+def test_two_cycles_finishing_together_open_only_one_thread(monkeypatch):
+    """Both workers would otherwise read "no thread yet" before either posts.
+
+    The second worker should block until the first publishes the run's
+    timestamp, then reply into that thread, rather than opening its own.
+    """
+    import threading
+
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client)
+    real_post = client.chat_postMessage
+    in_post = threading.Event()
+
+    def slow_post(channel, text, thread_ts=None):
+        # Hold the first post open long enough that, unserialized, the second
+        # worker would read an empty thread table and open its own message.
+        if thread_ts is None:
+            in_post.set()
+            time.sleep(0.4)
+        return real_post(channel=channel, text=text, thread_ts=thread_ts)
+
+    client.chat_postMessage = slow_post
+
+    def fire(cycle):
+        notifier.notify(
+            _job_identity(cycle_id=cycle),
+            parse_attrsvc_response(_response(), log_path=f"/x{cycle}.log"),
+        )
+
+    first = threading.Thread(target=fire, args=(0,))
+    first.start()
+    assert in_post.wait(timeout=5), "first worker never reached the post"
+    second = threading.Thread(target=fire, args=(1,))
+    second.start()
+    for t in (first, second):
+        t.join(timeout=20)
+
+    assert len(client.summaries) == 1, "a run must not split across two threads"
+    assert len(client.replies) >= 1, "the second cycle should land in the thread"

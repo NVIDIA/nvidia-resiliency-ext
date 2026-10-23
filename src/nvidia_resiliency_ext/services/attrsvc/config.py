@@ -243,6 +243,13 @@ class Settings(BaseSettings):
         description="Slack channel for alerts",
         validation_alias="SLACK_CHANNEL",
     )
+    SLACK_BOT_TOKEN_FILE: str = Field(
+        default="",
+        description="Path to a file holding the Slack bot token. Declared so it can "
+        "be set in .env; load_slack_bot_token() otherwise reads only the process "
+        "environment, leaving a token configured there silently unused",
+        validation_alias="SLACK_BOT_TOKEN_FILE",
+    )
     SLACK_NOTIFY_ACTIONS: str = Field(
         default="",
         description="Comma-separated recommendation actions that alert "

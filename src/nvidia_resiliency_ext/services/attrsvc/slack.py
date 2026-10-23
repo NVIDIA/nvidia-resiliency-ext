@@ -39,7 +39,7 @@ import logging
 import os
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Event, Lock
 from typing import Any, Mapping, Optional, Sequence
 
 from nvidia_resiliency_ext.attribution.api_keys import load_slack_bot_token
@@ -125,6 +125,13 @@ class SlackConfig:
         an empty token defers to ``SLACK_BOT_TOKEN_FILE`` and the default paths.
         """
         token = str(getattr(settings, "SLACK_BOT_TOKEN", "") or "").strip()
+        # A token file named only in .env would otherwise be ignored: the loader
+        # reads the process environment and the default paths, not Settings. Set
+        # it for the loader rather than reading it here, so one code path still
+        # owns how a token file is found and validated.
+        token_file = str(getattr(settings, "SLACK_BOT_TOKEN_FILE", "") or "").strip()
+        if not token and token_file and not os.environ.get("SLACK_BOT_TOKEN_FILE"):
+            os.environ["SLACK_BOT_TOKEN_FILE"] = token_file
         # Read through ``settings`` rather than ``os.environ`` so a value set in
         # ``.env`` is honored; falling back to the environment keeps a bare
         # Settings stand-in (and the older call sites) working.
@@ -137,6 +144,21 @@ class SlackConfig:
             cluster=str(getattr(settings, "CLUSTER_NAME", "") or "").strip(),
             email_domain=(domain_raw or os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
         )
+
+
+def escape_identity(value: Any) -> str:
+    """Render caller-supplied text so it cannot become Slack markup.
+
+    Job ID, run name and owner all arrive on the wire from ``POST /logs`` and
+    are placed inside a code span. A backtick closes that span, after which
+    ``<!channel>`` or ``<@U...>`` is rendered as a real mention - so an alert
+    could page everyone in the channel regardless of whether mentions are
+    configured. Angle brackets and ampersands carry Slack's control syntax and
+    are escaped; backticks are dropped, since no identity legitimately has one.
+    """
+    text = str(value or "")
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return text.replace("`", "")
 
 
 def parse_notify_actions(raw: Optional[str]) -> frozenset[str]:
@@ -620,9 +642,9 @@ class AnalysisIdentity:
         Cycle is omitted rather than shown empty: logs without cycle numbers
         come from runs that never restarted in place, where "cycle" is noise.
         """
-        parts = [f"*Job ID:* `{self.job_id or 'unknown'}`"]
+        parts = [f"*Job ID:* `{escape_identity(self.job_id) or 'unknown'}`"]
         if self.run_name:
-            parts.append(f"*Job Name:* `{self.run_name}`")
+            parts.append(f"*Job Name:* `{escape_identity(self.run_name)}`")
         if self.cycle_id is not None:
             parts.append(f"*Cycle:* {self.cycle_id}")
         # Named as plain text, independently of whether an @-mention is
@@ -630,7 +652,7 @@ class AnalysisIdentity:
         # tagging is a decision about who gets interrupted.
         owner = (self.user or "").strip()
         if owner and owner.lower() not in ("unknown", "none"):
-            parts.append(f"*Owner:* `{owner}`")
+            parts.append(f"*Owner:* `{escape_identity(owner)}`")
         return " | ".join(parts)
 
 
@@ -774,6 +796,9 @@ class SlackNotifier:
         # thread instead of one top-level alert each. Keyed by run rather than
         # by cycle, and bounded because a long-lived service sees many runs.
         self._run_threads: "OrderedDict[str, str]" = OrderedDict()
+        # Runs whose first message is in flight, so siblings wait rather than
+        # each opening a thread of their own.
+        self._run_opening: dict[str, Event] = {}
         self._run_threads_lock = Lock()
 
     #: How many runs keep a remembered thread. Oldest are forgotten first; a
@@ -797,23 +822,54 @@ class SlackNotifier:
             return f"{run}/{base}" if run else base
         return run
 
+    #: How long a worker waits for a sibling that is already opening this run's
+    #: thread. Bounded: a lost opener must not strand every later cycle, and
+    #: posting a second top-level message is a better failure than posting none.
+    THREAD_OPEN_WAIT_SECONDS = 30.0
+
     def _remembered_thread(self, key: str) -> Optional[str]:
+        """The run's thread, waiting if a sibling is mid-way through opening it.
+
+        Two cycles of one run can complete together, and both workers would
+        otherwise read "no thread yet" before either post returns - each opens a
+        its own channel message and the run's history splits in two. The first
+        worker publishes an opening marker; the rest wait on it rather than
+        racing it.
+        """
         if not key:
             return None
-        with self._run_threads_lock:
-            ts = self._run_threads.get(key)
-            if ts is not None:
-                self._run_threads.move_to_end(key)
-            return ts
+        while True:
+            with self._run_threads_lock:
+                ts = self._run_threads.get(key)
+                if ts is not None:
+                    self._run_threads.move_to_end(key)
+                    return ts
+                opening = self._run_opening.get(key)
+                if opening is None:
+                    # This caller opens the thread; others will wait on this.
+                    self._run_opening[key] = Event()
+                    return None
+            if not opening.wait(self.THREAD_OPEN_WAIT_SECONDS):
+                return None  # opener never finished; post standalone rather than hang
 
     def _remember_thread(self, key: str, ts: str) -> None:
-        if not key or not ts:
+        """Publish the run's thread and release anyone waiting to join it.
+
+        Always called by the opener, including when the post failed and ``ts``
+        is empty, so a waiter is never left blocked on a thread that will not
+        arrive.
+        """
+        if not key:
             return
         with self._run_threads_lock:
-            self._run_threads[key] = ts
-            self._run_threads.move_to_end(key)
-            while len(self._run_threads) > self.MAX_TRACKED_RUNS:
-                self._run_threads.popitem(last=False)
+            if ts:
+                self._run_threads[key] = ts
+                self._run_threads.move_to_end(key)
+                while len(self._run_threads) > self.MAX_TRACKED_RUNS:
+                    self._run_threads.popitem(last=False)
+            opening = self._run_opening.pop(key, None)
+        if opening is not None:
+            opening.set()
 
     @property
     def enabled(self) -> bool:
@@ -879,6 +935,10 @@ class SlackNotifier:
             )
         except SlackApiError as e:
             self.stats.failed += 1
+            # Release any sibling waiting to join a thread this call was going
+            # to open, so a failed post costs one alert rather than stalling
+            # every later cycle of the run for the full wait.
+            self._remember_thread(run_key, "")
             logger.error(f"[{identity.job_id}] Slack notification failed: {e}")
             return False
         self.stats.sent += 1
