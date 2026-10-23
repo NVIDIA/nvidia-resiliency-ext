@@ -15,21 +15,12 @@ from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 
 
-def _args(**overrides):
-    defaults = {
-        "ft_attribution_endpoint": None,
-        "ft_attribution_startup_timeout": 20.0,
-        "ft_attribution_llm_api_key_file": None,
-        "ft_attribution_llm_base_url": None,
-        "ft_attribution_llm_model": None,
-        "ft_attribution_analysis_backend": None,
-        "ft_attribution_stop_action": None,
-        "ft_attribution_log_level": None,
-        "ft_attribution_export_url": None,
-        "ft_nvrx_logfile": None,
-    }
-    defaults.update(overrides)
-    return SimpleNamespace(**defaults)
+def _config(tmp_path, base_log="train.log", **flags):
+    """The attribution config for these --ft-* values, built as the launcher builds it."""
+    args = SimpleNamespace(**flags)
+    return AttributionConfig.from_args(
+        args, str(tmp_path / base_log), FaultToleranceConfig.from_args(args)
+    )
 
 
 class _FakeProcess:
@@ -53,19 +44,15 @@ class _FakeResponse:
 
 
 def _managed_cfg(tmp_path, *, startup_timeout=1.0):
-    return AttributionConfig.from_args(
-        _args(
-            ft_attribution_endpoint="localhost",
-            ft_attribution_startup_timeout=startup_timeout,
-        ),
-        str(tmp_path / "train.log"),
-        FaultToleranceConfig(),
+    return _config(
+        tmp_path,
+        ft_attribution_endpoint="localhost",
+        ft_attribution_startup_timeout=startup_timeout,
     )
 
 
 def test_attribution_default_is_disabled_and_does_not_start(tmp_path, monkeypatch):
-    base_log = tmp_path / "logs" / "train.log"
-    cfg = AttributionConfig.from_args(_args(), str(base_log), FaultToleranceConfig())
+    cfg = _config(tmp_path, base_log="logs/train.log")
 
     assert cfg.endpoint is None
     assert cfg.applog_dir is None
@@ -87,10 +74,7 @@ def test_attribution_default_is_disabled_and_does_not_start(tmp_path, monkeypatc
 
 
 def test_managed_attribution_config_derives_applog_dir_and_log_file(tmp_path):
-    base_log = tmp_path / "logs" / "train.log"
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"), str(base_log), FaultToleranceConfig()
-    )
+    cfg = _config(tmp_path, base_log="logs/train.log", ft_attribution_endpoint="localhost")
 
     assert cfg.endpoint == "localhost"
     assert cfg.client_endpoint.endpoint == f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}"
@@ -101,15 +85,12 @@ def test_managed_attribution_config_derives_applog_dir_and_log_file(tmp_path):
 
 
 def test_managed_attribution_log_uses_nvrx_log_stem_and_directory(tmp_path):
-    base_log = tmp_path / "application" / "train.log"
     nvrx_log = tmp_path / "nvrx" / "job" / "logs" / "launcher.log"
-    cfg = AttributionConfig.from_args(
-        _args(
-            ft_attribution_endpoint="localhost",
-            ft_nvrx_logfile=str(nvrx_log),
-        ),
-        str(base_log),
-        FaultToleranceConfig(),
+    cfg = _config(
+        tmp_path,
+        base_log="application/train.log",
+        ft_attribution_endpoint="localhost",
+        ft_nvrx_logfile=str(nvrx_log),
     )
 
     assert cfg.applog_dir == str(tmp_path / "application")
@@ -117,45 +98,29 @@ def test_managed_attribution_log_uses_nvrx_log_stem_and_directory(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "endpoint",
-    ["0.0.0.0", "::", "[::]", "http://0.0.0.0:50050", "grpc://[::]:50050"],
-)
-def test_attribution_endpoint_rejects_bind_all_addresses(tmp_path, endpoint):
-    with pytest.raises(ValueError, match="bind-all address"):
-        AttributionConfig.from_args(
-            _args(ft_attribution_endpoint=endpoint),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
-        )
-
-
-@pytest.mark.parametrize(
-    "endpoint",
+    "endpoint,match",
     [
-        "locahlost",
-        "localhost:50050",
-        "http://:50050",
-        "http://localhost:not-a-port",
-        "grpc://attribution.external",
-        "ftp://attribution.external:50050",
-        "unix://",
+        ("0.0.0.0", "bind-all address"),
+        ("::", "bind-all address"),
+        ("[::]", "bind-all address"),
+        ("http://0.0.0.0:50050", "bind-all address"),
+        ("grpc://[::]:50050", "bind-all address"),
+        ("locahlost", "--ft-attribution-endpoint"),
+        ("localhost:50050", "--ft-attribution-endpoint"),
+        ("http://:50050", "--ft-attribution-endpoint"),
+        ("http://localhost:not-a-port", "--ft-attribution-endpoint"),
+        ("grpc://attribution.external", "--ft-attribution-endpoint"),
+        ("ftp://attribution.external:50050", "--ft-attribution-endpoint"),
+        ("unix://", "--ft-attribution-endpoint"),
     ],
 )
-def test_attribution_endpoint_rejects_invalid_endpoint_strings(tmp_path, endpoint):
-    with pytest.raises(ValueError, match="--ft-attribution-endpoint"):
-        AttributionConfig.from_args(
-            _args(ft_attribution_endpoint=endpoint),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
-        )
+def test_attribution_endpoint_rejects_invalid_values(tmp_path, endpoint, match):
+    with pytest.raises(ValueError, match=match):
+        _config(tmp_path, ft_attribution_endpoint=endpoint)
 
 
 def test_attribution_endpoint_localhost_is_managed(tmp_path):
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"),
-        str(tmp_path / "train.log"),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="localhost")
 
     assert cfg.endpoint == "localhost"
     assert cfg.is_managed
@@ -170,11 +135,7 @@ def test_attribution_endpoint_localhost_is_managed(tmp_path):
     ],
 )
 def test_attribution_endpoint_external_strings_are_not_managed(tmp_path, endpoint):
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint=endpoint),
-        str(tmp_path / "train.log"),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint=endpoint)
 
     assert cfg.endpoint == endpoint
     assert cfg.client_endpoint.endpoint == endpoint
@@ -187,22 +148,17 @@ def test_attribution_config_maps_launcher_args(tmp_path):
     api_key_file.write_text("secret")
     applog_dir = tmp_path / "allowed"
     applog_dir.mkdir()
-    base_log = applog_dir / "train.log"
 
-    cfg = AttributionConfig.from_args(
-        _args(
-            ft_attribution_endpoint="localhost",
-            ft_attribution_llm_api_key_file=str(api_key_file),
-            ft_attribution_llm_base_url="https://llm.example/v1",
-            ft_attribution_llm_model="model-a",
-            ft_attribution_analysis_backend="lib",
-            ft_attribution_log_level="DEBUG",
-            ft_attribution_export_url=(
-                "https://dataflow.example.test/dataflow2/example-index/posting"
-            ),
-        ),
-        str(base_log),
-        FaultToleranceConfig(),
+    cfg = _config(
+        tmp_path,
+        base_log="allowed/train.log",
+        ft_attribution_endpoint="localhost",
+        ft_attribution_llm_api_key_file=str(api_key_file),
+        ft_attribution_llm_base_url="https://llm.example/v1",
+        ft_attribution_llm_model="model-a",
+        ft_attribution_analysis_backend="lib",
+        ft_attribution_log_level="DEBUG",
+        ft_attribution_export_url=("https://dataflow.example.test/dataflow2/example-index/posting"),
     )
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
@@ -220,13 +176,8 @@ def test_attribution_config_maps_launcher_args(tmp_path):
 
 
 def test_attribution_config_accepts_lib_analysis_backend(tmp_path):
-    cfg = AttributionConfig.from_args(
-        _args(
-            ft_attribution_endpoint="localhost",
-            ft_attribution_analysis_backend="lib",
-        ),
-        str(tmp_path / "train.log"),
-        FaultToleranceConfig(),
+    cfg = _config(
+        tmp_path, ft_attribution_endpoint="localhost", ft_attribution_analysis_backend="lib"
     )
 
     assert cfg.analysis_backend == "lib"
@@ -234,13 +185,8 @@ def test_attribution_config_accepts_lib_analysis_backend(tmp_path):
 
 def test_attribution_config_rejects_mcp_analysis_backend(tmp_path):
     with pytest.raises(ValueError, match="only supports 'lib'"):
-        AttributionConfig.from_args(
-            _args(
-                ft_attribution_endpoint="localhost",
-                ft_attribution_analysis_backend="mcp",
-            ),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
+        _config(
+            tmp_path, ft_attribution_endpoint="localhost", ft_attribution_analysis_backend="mcp"
         )
 
 
@@ -257,11 +203,7 @@ def test_managed_attrsvc_inherits_log_convergence_overrides(tmp_path, monkeypatc
 
 def test_attribution_stop_action_defaults_to_log_only(tmp_path):
     """Enabling attribution must not implicitly enable acting on its verdicts."""
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"),
-        str(tmp_path / "train.log"),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="localhost")
 
     assert cfg.stop_action == "log"
     assert cfg.enforce_stop is False
@@ -269,49 +211,28 @@ def test_attribution_stop_action_defaults_to_log_only(tmp_path):
 
 
 def test_attribution_stop_action_no_restart_enables_enforcement(tmp_path):
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost", ft_attribution_stop_action="no-restart"),
-        str(tmp_path / "train.log"),
-        FaultToleranceConfig(),
+    cfg = _config(
+        tmp_path, ft_attribution_endpoint="localhost", ft_attribution_stop_action="no-restart"
     )
 
     assert cfg.enforce_stop is True
     assert cfg.client_endpoint.enforce_stop is True
 
 
-def test_yaml_attribution_stop_action_is_used(tmp_path):
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"),
-        str(tmp_path / "train.log"),
-        FaultToleranceConfig(attribution_stop_action="no-restart"),
-    )
-
-    assert cfg.client_endpoint.enforce_stop is True
-
-
 @pytest.mark.parametrize("value", ["restart", "stop", ""])
 def test_attribution_stop_action_rejects_unknown_values(tmp_path, value):
     with pytest.raises(ValueError, match="--ft-attribution-stop-action"):
-        AttributionConfig.from_args(
-            _args(ft_attribution_endpoint="localhost", ft_attribution_stop_action=value),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
-        )
+        _config(tmp_path, ft_attribution_endpoint="localhost", ft_attribution_stop_action=value)
 
 
 def test_attribution_child_env_does_not_inherit_export_url_from_launcher_env(tmp_path, monkeypatch):
     api_key_file = tmp_path / "key"
     api_key_file.write_text("secret")
-    base_log = tmp_path / "train.log"
     monkeypatch.setenv(
         "NVRX_ATTRSVC_EXPORT_URL",
         "https://dataflow.example.test/dataflow2/launcher-env/posting",
     )
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"),
-        str(base_log),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="localhost")
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
 
@@ -322,44 +243,20 @@ def test_attribution_child_env_does_not_inherit_export_url_from_launcher_env(tmp
 def test_cli_export_url_overrides_launcher_env(tmp_path, monkeypatch):
     api_key_file = tmp_path / "key"
     api_key_file.write_text("secret")
-    base_log = tmp_path / "train.log"
     monkeypatch.setenv(
         "NVRX_ATTRSVC_EXPORT_URL",
         "https://dataflow.example.test/old/posting",
     )
-    cfg = AttributionConfig.from_args(
-        _args(
-            ft_attribution_endpoint="localhost",
-            ft_attribution_export_url="https://dataflow.example.test/new/posting",
-        ),
-        str(base_log),
-        FaultToleranceConfig(),
+    cfg = _config(
+        tmp_path,
+        ft_attribution_endpoint="localhost",
+        ft_attribution_export_url="https://dataflow.example.test/new/posting",
     )
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
 
     assert cfg.export_url == "https://dataflow.example.test/new/posting"
     assert env["NVRX_ATTRSVC_EXPORT_URL"] == "https://dataflow.example.test/new/posting"
-
-
-def test_yaml_export_url_overrides_launcher_env(tmp_path, monkeypatch):
-    api_key_file = tmp_path / "key"
-    api_key_file.write_text("secret")
-    base_log = tmp_path / "train.log"
-    monkeypatch.setenv(
-        "NVRX_ATTRSVC_EXPORT_URL",
-        "https://dataflow.example.test/old/posting",
-    )
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"),
-        str(base_log),
-        FaultToleranceConfig(attribution_export_url="https://dataflow.example.test/yaml/posting"),
-    )
-
-    env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
-
-    assert cfg.export_url == "https://dataflow.example.test/yaml/posting"
-    assert env["NVRX_ATTRSVC_EXPORT_URL"] == "https://dataflow.example.test/yaml/posting"
 
 
 @pytest.mark.parametrize(
@@ -372,56 +269,28 @@ def test_yaml_export_url_overrides_launcher_env(tmp_path, monkeypatch):
 )
 def test_export_url_rejects_invalid_values(tmp_path, url):
     with pytest.raises(ValueError, match="--ft-attribution-export-url"):
-        AttributionConfig.from_args(
-            _args(
-                ft_attribution_endpoint="localhost",
-                ft_attribution_export_url=url,
-            ),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
-        )
+        _config(tmp_path, ft_attribution_endpoint="localhost", ft_attribution_export_url=url)
 
 
 def test_export_url_rejects_external_attribution_endpoint(tmp_path):
     with pytest.raises(ValueError, match="launcher-managed attribution"):
-        AttributionConfig.from_args(
-            _args(
-                ft_attribution_endpoint="http://attribution.external:50123",
-                ft_attribution_export_url="https://dataflow.example.test/posting",
-            ),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
-        )
-
-
-def test_yaml_export_url_rejects_external_attribution_endpoint(tmp_path):
-    with pytest.raises(ValueError, match="launcher-managed attribution"):
-        AttributionConfig.from_args(
-            _args(ft_attribution_endpoint="http://attribution.external:50123"),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(attribution_export_url="https://dataflow.example.test/posting"),
+        _config(
+            tmp_path,
+            ft_attribution_endpoint="http://attribution.external:50123",
+            ft_attribution_export_url="https://dataflow.example.test/posting",
         )
 
 
 def test_export_url_rejects_disabled_attribution(tmp_path):
     with pytest.raises(ValueError, match="--ft-attribution-endpoint localhost"):
-        AttributionConfig.from_args(
-            _args(ft_attribution_export_url="https://dataflow.example.test/posting"),
-            str(tmp_path / "train.log"),
-            FaultToleranceConfig(),
-        )
+        _config(tmp_path, ft_attribution_export_url="https://dataflow.example.test/posting")
 
 
 def test_child_env_overrides_inherited_attrsvc_endpoint(tmp_path, monkeypatch):
     api_key_file = tmp_path / "key"
     api_key_file.write_text("secret")
-    base_log = tmp_path / "train.log"
     monkeypatch.setenv("NVRX_ATTRSVC_ENDPOINT", "/tmp/nvrx-attrsvc.sock")
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"),
-        str(base_log),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="localhost")
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
 
@@ -431,13 +300,8 @@ def test_child_env_overrides_inherited_attrsvc_endpoint(tmp_path, monkeypatch):
 def test_child_env_preserves_existing_pythonpath(tmp_path, monkeypatch):
     api_key_file = tmp_path / "key"
     api_key_file.write_text("secret")
-    base_log = tmp_path / "train.log"
     monkeypatch.setenv("PYTHONPATH", "/existing")
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"),
-        str(base_log),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="localhost")
 
     env = AttributionManager(cfg, is_store_host=True)._child_env(str(api_key_file))
 
@@ -467,10 +331,7 @@ def test_attribution_command_falls_back_to_service_module(monkeypatch):
 
 
 def test_managed_attribution_requires_api_key_file_before_popen(tmp_path, monkeypatch):
-    base_log = tmp_path / "train.log"
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="localhost"), str(base_log), FaultToleranceConfig()
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="localhost")
     manager = AttributionManager(cfg, is_store_host=True)
     monkeypatch.delenv("LLM_API_KEY_FILE", raising=False)
 
@@ -487,12 +348,7 @@ def test_managed_attribution_requires_api_key_file_before_popen(tmp_path, monkey
 
 
 def test_external_attribution_does_not_require_key_or_start_process(tmp_path, monkeypatch):
-    base_log = tmp_path / "train.log"
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="http://attribution.external:50123"),
-        str(base_log),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="http://attribution.external:50123")
     manager = AttributionManager(cfg, is_store_host=True)
     monkeypatch.delenv("LLM_API_KEY_FILE", raising=False)
 
@@ -511,14 +367,9 @@ def test_external_attribution_does_not_require_key_or_start_process(tmp_path, mo
 
 
 def test_external_attribution_ignores_launcher_export_env(tmp_path, monkeypatch):
-    base_log = tmp_path / "train.log"
     monkeypatch.setenv("NVRX_ATTRSVC_EXPORT_URL", "not-a-url")
 
-    cfg = AttributionConfig.from_args(
-        _args(ft_attribution_endpoint="http://attribution.external:50123"),
-        str(base_log),
-        FaultToleranceConfig(),
-    )
+    cfg = _config(tmp_path, ft_attribution_endpoint="http://attribution.external:50123")
 
     assert cfg.export_url is None
 

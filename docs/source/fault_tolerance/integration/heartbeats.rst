@@ -30,16 +30,16 @@ Fixed timeout values can be used throughout the training runs, or timeouts can b
 `null` timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.
 
 Both heartbeat timeouts default to ``None`` (disabled), not 60/45 minutes.
-The YAML below deliberately leaves them disabled until the legacy example
-calculates or restores timeouts. Initial hangs before calibration are not
+The legacy example's launcher options deliberately leave them disabled until
+it calculates or restores timeouts. Initial hangs before calibration are not
 bounded by heartbeat monitoring. Dynamic calibration is experimental and
 insufficiently tested for the recommended deployment.
 
-Configuration file example:
+Launcher options used by the example:
 
-.. literalinclude:: ../../../../examples/fault_tolerance/fault_tol_cfg_heartbeats.yaml
-   :language: yaml
-   :linenos:
+.. code-block:: bash
+
+   --ft-initial-rank-heartbeat-timeout=None --ft-rank-heartbeat-timeout=None --ft-log-level=DEBUG
 
 
 A summary of all FT configuration items can be found in :class:`nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig`
