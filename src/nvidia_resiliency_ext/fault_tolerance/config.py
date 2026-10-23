@@ -19,7 +19,7 @@ import dataclasses
 import logging
 import signal
 from dataclasses import dataclass, fields
-from typing import Mapping, Optional
+from typing import Literal, Mapping, Optional
 
 import yaml
 
@@ -124,6 +124,8 @@ class FaultToleranceConfig:
       bounds. See the timeout diagnostics guide for deployment requirements.
     * `timeout_dump_sections` [str] Comma-separated workload section names that
       trigger capture when they time out (default: "step"). Names match exactly.
+    * `timeout_dump_cuda_gdb_mode` [str] CUDA-GDB command delivery: "batch"
+      (default) or "stdin" for automated normal command-reading mode.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -184,6 +186,7 @@ class FaultToleranceConfig:
     timeout_dump_pyspy: str = "py-spy"
     timeout_dump_gdb: str = "gdb"
     timeout_dump_cuda_gdb: str = "cuda-gdb"
+    timeout_dump_cuda_gdb_mode: Literal["batch", "stdin"] = "batch"
     timeout_dump_gdb_command_file: Optional[str] = None
     timeout_dump_cuda_gdb_command_file: Optional[str] = None
     timeout_dump_capture_timeout: float = 30.0

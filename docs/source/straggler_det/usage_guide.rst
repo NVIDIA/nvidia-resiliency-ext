@@ -186,33 +186,11 @@ Hence, the following initialization parameters can be used to avoid any inter-ra
 In that case, all ranks compute and report their own, individual results only. 
 
 Integration Guide
-******************
+*****************
 
-This section describes integration with a PTL-based workload (e.g., NeMo) using ``StragglerDetectionCallback``.
-All that is needed is to include :class:`StragglerDetectionCallback <nvidia_resiliency_ext.ptl_resiliency.straggler_det_callback.StragglerDetectionCallback>` in the PTL trainer callbacks. 
-
-.. code-block:: python
-
-   from nvidia_resiliency_ext.ptl_resiliency import StragglerDetectionCallback
-
-   straggler_cb_args = dict(
-      report_time_interval=300.0,
-      calc_relative_gpu_perf=True,
-      calc_individual_gpu_perf=True,
-      num_gpu_perf_scores_to_log=3,
-      gpu_relative_perf_threshold=0.7,
-      gpu_individual_perf_threshold=0.7,
-      stop_if_detected=False,
-      logger_name="test_logger",
-   )
-
-   straggler_det_cb = StragglerDetectionCallback(**straggler_cb_args)
-
-   trainer = pl.Trainer(
-      ...
-      callbacks=[..., straggler_det_cb],
-   )
-
-``StragglerDetectionCallback`` initialization parameters:
-   
-   .. automethod:: nvidia_resiliency_ext.ptl_resiliency.StragglerDetectionCallback.__init__
+Use ``nvidia_resiliency_ext.attribution.straggler.Detector`` directly in the
+training loop: initialize the detector, wrap work in detection sections, generate
+reports at a consistent cadence across ranks, and shut down on normal exit.
+See :doc:`examples/basic_example` for the DDP integration and :doc:`api` for the
+reporting API. Application code owns logging and any response to a detected
+straggler.

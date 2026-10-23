@@ -1,49 +1,77 @@
-Sections API Integration
-************************
+Sections API integration
+========================
 
-1. Prerequisites
-=================
-* Run ranks using ``ft_launcher``. The command line is mostly compatible with ``torchrun``. 
-* Pass the FT config to the ``ft_launcher``.
+Use named sections to give setup, training/evaluation, and checkpoint work
+separate fixed deadlines. Megatron already provides this instrumentation; see
+:doc:`megatron`. This page describes integrating another training loop.
 
-.. note::
-   Some clusters (e.g., SLURM) use SIGTERM as a default method of requesting a graceful workload shutdown.
-   It is recommended to implement appropriate signal handling in a fault-tolerant workload.
-   To avoid deadlocks and other unintended side effects, signal handling should be synchronized across all ranks.
+Configure before launch
+-----------------------
 
-2. FT configuration
-====================
+For the small DDP example:
 
-With the section-based API, timeouts must be set for all defined sections, which wrap operations like
-training/eval steps, checkpoint saving, and initialization. Additionally, an out-of-section timeout
-applies when no section is active.
+.. code-block:: bash
 
-.. note::
-    Ensure out-of-section timeout is long enough to accommodate restart overhead, as excessively small values can cause imbalance.
-    If needed, consider merging sections (e.g., moving 'init' into 'out-of-section') to provide more buffer time.
+   ft_launcher --nproc-per-node=2 --rdzv-endpoint=localhost:0 --max-restarts=3 \
+     --ft-rank-section-timeouts init:120,step:30,checkpoint:120 \
+     --ft-rank-out-of-section-timeout 60 \
+     examples/fault_tolerance/train_ddp_sections_api.py --device=cpu
 
-Relevant FT configuration items are:
-   * ``rank_section_timeouts`` is a map of a section name to its timeout.
-   * ``rank_out_of_section_timeout`` is the out-of-section timeout.
+The section names are application-defined and must match configuration exactly.
+An omitted name skips both monitoring messages and timing collection; a name
+mapped to ``null`` sends events but has no finite deadline. Finite timeouts must
+cover the slowest expected operation in each phase.
 
-Fixed timeout values can be used throughout the training runs, or timeouts can be calculated based on observed intervals.  
-`null` timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.
+Sections can be nested or overlap, but a section cannot be opened twice without
+being closed. Out-of-section time is checked only when no monitored section is
+open, with the warmup rules described in :doc:`../configuration`. It bounds
+worker execution after monitoring begins, not launcher/rendezvous startup time.
+Work before the client connects is outside this monitor's coverage.
 
-Config file example:
+Instrument the workload
+-----------------------
+
+On every worker, initialize a ``RankMonitorClient``, then report section
+boundaries at equivalent training phases. Shut monitoring down on normal exit.
+For example, after distributed initialization:
+
+.. code-block:: python
+
+   from nvidia_resiliency_ext.fault_tolerance import RankMonitorClient
+
+   monitor = RankMonitorClient()
+   monitor.init_workload_monitoring()
+   monitor.start_section("init")
+   # construct model/optimizer and restore checkpoint
+   monitor.end_section("init")
+
+   monitor.start_section("step")
+   # forward, backward, optimizer step
+   monitor.end_section("step")
+
+   monitor.start_section("checkpoint")
+   # save training state; synchronize peers as required by the checkpoint backend
+   monitor.end_section("checkpoint")
+   monitor.shutdown_workload_monitoring()
+
+Monitoring is independent from checkpoint storage. The DDP example keeps
+synchronous rank-0 PyTorch save/load; Megatron uses NVRx async save/finalization
+through its own checkpoint lifecycle. All ranks must participate consistently in
+checkpoint collectives and any optional timeout-calculation collectives.
+
+Do not blindly close a failed section and continue training after an exception;
+the workload must either establish a valid recovery path or let workers fail so
+the launcher can restart the group. For graceful scheduler shutdown, record the
+signal locally and handle it at a synchronized safe point in the training loop,
+rather than running distributed operations inside a signal handler.
+
+Fixed configuration is the default. The experimental
+``calculate_and_set_section_timeouts()`` and timeout-state persistence APIs
+remain available but are not needed for this integration. See
+:doc:`../configuration` before experimenting with them.
+
+See :doc:`../examples/train_ddp_sections` for runnable commands and checkpoint
+recovery checks. The optional YAML equivalent is:
 
 .. literalinclude:: ../../../../examples/fault_tolerance/fault_tol_cfg_sections.yaml
    :language: yaml
-   :linenos:
-
-A summary of all FT configuration items can be found in :class:`nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig`
-
-3. Integration with PyTorch workload code
-============================================
-1. Initialize a ``RankMonitorClient`` instance on each rank with ``RankMonitorClient.init_workload_monitoring()``.  
-2. *(Optional)* Restore the state of ``RankMonitorClient`` instances using ``RankMonitorClient.load_state_dict()``.  
-3. Mark some sections of the code with ``RankMonitorClient.start_section('<section name>')`` and ``RankMonitorClient.end_section('<section name>')``.
-4. *(Optional)* After a sufficient range of section intervals has been observed, call ``RankMonitorClient.calculate_and_set_section_timeouts()`` to estimate timeouts.  
-5. *(Optional)* Save the ``RankMonitorClient`` instance's ``state_dict()`` to a file so that computed timeouts can be reused in the next run.
-6. Shut down ``RankMonitorClient`` instances using ``RankMonitorClient.shutdown_workload_monitoring()``.
-
-Please refer to the :doc:`../examples/train_ddp_sections` for an implementation example.

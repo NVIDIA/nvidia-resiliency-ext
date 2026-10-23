@@ -1,19 +1,24 @@
 Singleton job-array deployment (SLURM)
 ======================================
 
-A reference deployment of ``ft_launcher`` for large-scale training: colocated in-job
-restart with a spare pool, plus a singleton job-array chain that survives the one
-failure in-job restart cannot repair.
+After validating :doc:`megatron_gpt`, use this advanced reference deployment of
+``ft_launcher`` for large-scale training: colocated InJob
+restart with a spare pool, plus a singleton job-array chain for colocated
+rendezvous-host failure. Other unrecoverable conditions still need operator action.
 
-Array task 0 is both a training rank and the rendezvous host, so its liveness is the
+Array task 0 runs training workers and hosts the rendezvous service, so its
+liveness is the
 generation's liveness. Every other task can be replaced from the spare pool; task 0
 cannot, because the endpoint every other task dials is its hostname. Submitting the
-array with ``--dependency=singleton`` makes that loss cheap instead of fatal: losing
+array with ``--dependency=singleton`` provides cross-job continuation for that loss: losing
 task 0 makes the current generation unrecoverable. All remaining array tasks must exit
 or be cancelled before the dependency is satisfied; the next generation is then eligible
-to run, rendezvous on a new task 0, and resume from the last checkpoint.
+to run when resources become available, rendezvous on a new task 0, and resume
+from the last checkpoint.
 
-The example trains public `Megatron-LM <https://github.com/NVIDIA/Megatron-LM>`_ on mock
+The example uses NVRx-backed asynchronous checkpoints through Megatron. Pin and
+qualify both revisions as described in :doc:`../integration/megatron`. It trains
+public `Megatron-LM <https://github.com/NVIDIA/Megatron-LM>`_ on mock
 data, so it needs no corpus and no tokenizer model.
 
 Files (under ``examples/fault_tolerance/deployment/``):
@@ -83,7 +88,7 @@ Submit the chain:
    ./submit_chain.sh                   # default: no-restart (exit 93) demo
    NVRX_NO_RESTART_DEMO=0 ./submit_chain.sh   # hand-off demo instead
 
-   # real training: injection off, scale up
+   # injection-free scaled mock training: injection off, scale up
    NVRX_NO_RESTART_DEMO=0 NVRX_FAULT_INJECT=0 NVRX_INJECT_GPU_FAILURE= \
    NVRX_MODEL_PROFILE=8b NVRX_TRAIN_TASKS=32 NVRX_HOT_SPARES=1 NVRX_COLD_SPARES=32 \
    NVRX_CHAIN_DEPTH=8 NVRX_TIME_LIMIT=02:00:00 ./submit_chain.sh
@@ -96,3 +101,15 @@ from an orphaned generation):
 
    cd ../watch
    python3 -m nvrx_watch <job_id>
+
+The default is a no-progress shutdown demonstration, not a successful recovery
+test. Section timeouts and async-save settings are fixed; automatic calibration
+is experimental. See the Slurm README for timeout/warmup overrides and the
+checkpoint-before-fault checks required for the hand-off mode.
+
+Array concurrency is not atomic initial admission. The singleton dependency
+serializes generations without reserving capacity or guaranteeing a startup
+time. A hard loss of task 0 can prevent its EXIT trap from running; observe-only
+watching does not itself clean up the generation. Owner-enabled ``--act`` releases
+pending orphaned spares only. Confirm all old tasks have ended before expecting
+the successor to start.

@@ -8,4 +8,3 @@ API documentation
    api/config
    api/client
    api/server
-   api/callback
