@@ -23,6 +23,7 @@ import os
 import subprocess  # nosec B404
 import sys
 import threading
+import time
 import traceback
 from collections import defaultdict, deque
 from enum import Enum
@@ -1434,6 +1435,9 @@ class NodeHealthCheck:
     Node-level health check that queries the node health check service used by InJob via gRPC over a Unix domain socket (UDS).
     """
 
+    _GPU_CLOCK_IDLE_CHECK = "hw_drv_gpu_clock_idle"
+    _GPU_CLOCK_IDLE_RETRY_WAIT_SEC = 5
+
     def __init__(
         self,
         socket_path: Optional[str] = None,
@@ -1449,6 +1453,7 @@ class NodeHealthCheck:
         self.interval = interval
         self.on_failure = on_failure
         self.request_timeout_sec = request_timeout_sec
+        self.gpu_memory_reclaimed = False
         self._channel_target: Optional[str] = None
 
         # Optional imports; health check becomes a no-op if gRPC/protos aren't available
@@ -1526,6 +1531,7 @@ class NodeHealthCheck:
           - On gRPC connectivity errors, return True.
           - A success=false response marks the node unhealthy.
           - For successful responses, JSON output with a non-empty failed_checks list marks the node unhealthy.
+          - If memory cleanup did not time out, retry a sole GPU clock-idle failure within a 30s window.
         """
         # Use pre-validated target computed during initialization
         target = self._channel_target
@@ -1535,12 +1541,11 @@ class NodeHealthCheck:
         try:
             with self._grpc.insecure_channel(target) as channel:
                 stub = self._pb2_grpc.HealthCheckServiceStub(channel)
-                logger.debug("Node health check request args: %s", list(self.args))
-                request = self._pb2.HealthCheckRequest(args=list(self.args))
-                if self.request_timeout_sec is not None:
-                    response = stub.RunHealthCheck(request, timeout=self.request_timeout_sec)
-                else:
-                    response = stub.RunHealthCheck(request)
+                try:
+                    response, result = self._run_health_check(stub, self.args)
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Node health check: failed to parse JSON output: {e}")
+                    return True
 
                 if not response.success:
                     msg = (
@@ -1552,31 +1557,34 @@ class NodeHealthCheck:
                     logger.warning(msg)
                     return False
 
-                # Parse JSON output and check actionable failures.
-                try:
-                    result = json.loads(getattr(response, "output", None))
-                    if not isinstance(result, dict):
-                        logger.warning(
-                            "Node health check: JSON output is not a dictionary; "
-                            "ignoring health check result"
-                        )
-                        return True
-                    failed_checks = result.get("failed_checks")
-                    if not isinstance(failed_checks, list):
-                        logger.warning(
-                            "Node health check: 'failed_checks' field is missing or invalid; "
-                            "ignoring health check result"
-                        )
-                        return True
-                    if failed_checks:
-                        logger.warning(
-                            f"Node health check failed: fail_count={result.get('fail_count')}, "
-                            f"failed_checks={failed_checks}"
-                        )
-                        return False
-                except (json.JSONDecodeError, TypeError) as e:
-                    logger.warning(f"Node health check: failed to parse JSON output: {e}")
+                if not isinstance(result, dict):
+                    logger.warning(
+                        "Node health check: JSON output is not a dictionary; "
+                        "ignoring health check result"
+                    )
                     return True
+                failed_checks = result.get("failed_checks")
+                if not isinstance(failed_checks, list):
+                    logger.warning(
+                        "Node health check: 'failed_checks' field is missing or invalid; "
+                        "ignoring health check result"
+                    )
+                    return True
+                if failed_checks:
+                    if self.gpu_memory_reclaimed and failed_checks == [self._GPU_CLOCK_IDLE_CHECK]:
+                        logger.warning(
+                            "Node health check: clock-idle failure after memory cleanup; "
+                            "retrying; failed_detail=%s",
+                            result.get("failed_detail"),
+                        )
+                        if self._retry_gpu_clock_idle(stub):
+                            return True
+                    logger.warning(
+                        f"Node health check failed: fail_count={result.get('fail_count')}, "
+                        f"failed_checks={failed_checks}, "
+                        f"failed_detail={result.get('failed_detail')}"
+                    )
+                    return False
 
                 logger.debug(
                     f"Node health check: success (fail_count={result.get('fail_count')}, "
@@ -1588,6 +1596,61 @@ class NodeHealthCheck:
                 f"Node health check gRPC connectivity error: {str(e)}; treating as healthy (skip)."
             )
             return True
+
+    def _run_health_check(self, stub, args):
+        logger.debug("Node health check request args: %s", list(args))
+        request = self._pb2.HealthCheckRequest(args=list(args))
+        if self.request_timeout_sec is not None:
+            response = stub.RunHealthCheck(request, timeout=self.request_timeout_sec)
+        else:
+            response = stub.RunHealthCheck(request)
+        # Invalid output must not mask an execution failure in the initial call.
+        result = json.loads(getattr(response, "output", None)) if response.success else None
+        return response, result
+
+    def _retry_gpu_clock_idle(self, stub) -> bool:
+        check_name = self._GPU_CLOCK_IDLE_CHECK
+        # Allow one second for the invocation; keep the existing RPC timeout.
+        deadline = time.monotonic() + 30
+        attempt = 0
+        while deadline - time.monotonic() > self._GPU_CLOCK_IDLE_RETRY_WAIT_SEC + 1:
+            time.sleep(self._GPU_CLOCK_IDLE_RETRY_WAIT_SEC)
+            started = time.monotonic()
+            attempt += 1
+            try:
+                response, result = self._run_health_check(
+                    stub, ["--no-slurm", "--checks", check_name]
+                )
+            except Exception as e:
+                logger.warning(
+                    "Node health check: clock-idle retry %d failed after %.3fs; "
+                    "retaining original failure: %s",
+                    attempt,
+                    time.monotonic() - started,
+                    e,
+                    exc_info=True,
+                )
+                return False
+
+            logger.info(
+                "Node health check: clock-idle retry %d completed in %.3fs; "
+                "success=%s, exit_code=%s, error=%s, result=%s",
+                attempt,
+                time.monotonic() - started,
+                response.success,
+                response.exit_code,
+                response.error,
+                result if response.success else response.output,
+            )
+            if not response.success or not isinstance(result, dict):
+                return False
+            failed_checks = result.get("failed_checks")
+            if failed_checks == []:
+                return True
+            if failed_checks != [check_name]:
+                return False
+
+        return False
 
     def _validate_and_get_target(self) -> Optional[str]:
         """
