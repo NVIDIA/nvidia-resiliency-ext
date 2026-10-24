@@ -206,6 +206,11 @@ _TEARDOWN_RE = re.compile(
     re.I,
 )
 _BARE_PROCESS_KILLED_RE = re.compile(r"^\s*(?:\d+:\s*)?Killed\s*$", re.I)
+#: A collective that failed without saying why. NCCL reports the CUDA error it
+#: could not handle on separate lines, so this surface names the operation and
+#: not the cause - the same shape as a bare "Killed", which says a process died
+#: and leaves the oom_kill record to explain it.
+_UNHANDLED_CUDA_ERROR_RE = re.compile(r"\bunhandled cuda error\b|\bncclUnhandledCudaError\b", re.I)
 _PROCESS_TERMINATION_RE = re.compile(
     r"\b(?:Producer process has been terminated|process has been terminated|terminated)\b"
     r"|Fatal Python error:\s*(?:Aborted|Segmentation fault)\b",
@@ -3821,6 +3826,7 @@ def _attach_cause_confirmations(
             item
             for item in eligible
             if _BARE_PROCESS_KILLED_RE.search(item[1].terminal_exception_quote or "")
+            or _UNHANDLED_CUDA_ERROR_RE.search(item[1].terminal_exception_quote or "")
             or (
                 item[1].first_process_termination_line is not None
                 and item[1].first_process_termination_line <= confirmation.line
@@ -3878,6 +3884,11 @@ def _episode_identity_is_cause_unknown(
     identity_line = episode.identity_anchor_line or episode.terminal_exception_line
     identity_text = _text_for_line(lines, identity_line) if identity_line is not None else ""
     if _BARE_PROCESS_KILLED_RE.search(identity_text):
+        return True
+    # "unhandled cuda error" states outright that the operation does not know
+    # what failed. A linked confirmation is strictly more informative, so it
+    # may take the identity - as the oom_kill record does for a bare "Killed".
+    if _UNHANDLED_CUDA_ERROR_RE.search(identity_text):
         return True
     if not _PROCESS_TERMINATION_RE.search(identity_text):
         return False
