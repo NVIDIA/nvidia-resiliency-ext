@@ -38,8 +38,8 @@ in ``rank_section_timeouts`` and actually expire. Heartbeat and out-of-section
 timeouts are separate detection paths, not section names in this option.
 
 Selecting tools with ``--ft-timeout-dump-tools`` enables capture;
-``--ft-timeout-dump-enabled`` enables it with the default tools,
-``pyspy,gdb,cuda-gdb``, in that order. ``--no-ft-timeout-dump-enabled`` wins over
+``--ft-timeout-dump-enabled=true`` enables it with the default tools,
+``pyspy,gdb,cuda-gdb``, in that order. ``--ft-timeout-dump-enabled=false`` wins over
 ``--ft-timeout-dump-tools``. Options for a tool that is not listed, such as
 ``--ft-timeout-dump-cuda-gdb-mode`` without ``cuda-gdb``, are unused; they never
 select the tool.
@@ -428,7 +428,7 @@ options configure that tool's entry in ``tools``, whose order is the execution o
      - Meaning
    * - ``enabled``
      - ``false``, or ``true`` when ``--ft-timeout-dump-tools`` is given
-     - ``--[no-]ft-timeout-dump-enabled``
+     - ``--ft-timeout-dump-enabled`` (``true``/``false``)
      - Enable or disable diagnostics
    * - ``tools``
      - every tool, with defaults

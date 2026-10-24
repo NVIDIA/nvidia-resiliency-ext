@@ -1064,7 +1064,7 @@ def test_disabled_configuration_does_not_resolve_tools(cfg):
 @pytest.mark.parametrize(
     "option",
     [
-        "--ft-timeout-dump-enabled=true",
+        "--ft-timeout-dump-enabled=maybe",
         "--ft-timeout-dump-capture-timeout=0",
         "--ft-timeout-dump-capture-timeout=-1",
         "--ft-timeout-dump-capture-timeout=inf",
@@ -1119,9 +1119,9 @@ def test_tool_list_enables_and_keeps_tool_options():
     "cli,expected",
     [
         ([], False),
-        (["--ft-timeout-dump-enabled"], True),
+        (["--ft-timeout-dump-enabled=true"], True),
         (["--ft-timeout-dump-tools=pyspy"], True),
-        (["--no-ft-timeout-dump-enabled", "--ft-timeout-dump-tools=pyspy"], False),
+        (["--ft-timeout-dump-enabled=false", "--ft-timeout-dump-tools=pyspy"], False),
     ],
 )
 def test_enable_rules(cli, expected):
@@ -1133,7 +1133,7 @@ def test_enable_rules(cli, expected):
     [
         (["--ft-timeout-dump-cuda-gdb-mode=stdin"], None),
         (["--ft-timeout-dump-tools=pyspy", "--ft-timeout-dump-gdb-command-file=x.gdb"], ["pyspy"]),
-        (["--no-ft-timeout-dump-enabled", "--ft-timeout-dump-pyspy=py-spy"], None),
+        (["--ft-timeout-dump-enabled=false", "--ft-timeout-dump-pyspy=py-spy"], None),
     ],
 )
 def test_options_for_unlisted_tools_are_unused(caplog, cli, tools):
@@ -1143,7 +1143,7 @@ def test_options_for_unlisted_tools_are_unused(caplog, cli, tools):
 
 
 def test_options_apply_to_the_default_tool_list(caplog):
-    config = from_cli("--ft-timeout-dump-enabled", "--ft-timeout-dump-gdb-command-file=x.gdb")
+    config = from_cli("--ft-timeout-dump-enabled=true", "--ft-timeout-dump-gdb-command-file=x.gdb")
     assert [tool.name for tool in config.tools] == ["pyspy", "gdb", "cuda-gdb"]
     assert config.tools[1].command_file == "x.gdb"
     assert not errors(caplog)
