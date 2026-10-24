@@ -29,7 +29,6 @@ import pytest
 from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
 from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
-from nvidia_resiliency_ext import fault_tolerance
 from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
@@ -76,12 +75,11 @@ def _run_launcher(cmd_to_run, timeout):
         assert False, f"ft_launcher was still running after {timeout} seconds\n{output}"
 
 
-def _save_ft_cfg(cfg, dirpath):
-    # These subprocess scenarios use CPU/Gloo and allocate no GPU memory.
-    cfg.gpu_memory_reclaim_timeout = 0
-    cfg_path = os.path.join(dirpath, "_tmp_ft_cfg.yaml")
-    cfg.to_yaml_file(cfg_path)
-    return cfg_path
+# These subprocess scenarios use CPU/Gloo and allocate no GPU memory.
+FT_ARGS = (
+    "--ft-initial-rank-heartbeat-timeout=3.0 --ft-rank-heartbeat-timeout=3.0"
+    " --ft-workload-check-interval=1.0 --ft-gpu-memory-reclaim-timeout=0"
+)
 
 
 def _get_util_script_path():
@@ -157,15 +155,9 @@ def test_ft_rdzv_impl_rejects_legacy():
 def test_rank_not_send_initial_hb(tmp_dir):
     # If one rank does not send initial heartbeat,
     # FT should terminate the rank, and launcher should kill all other ranks
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -176,15 +168,9 @@ def test_rank_not_send_initial_hb(tmp_dir):
 def test_rank_failed(tmp_dir):
     # If one rank failed (returns non-zero exit code),
     # launcher should kill other ranks
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -194,15 +180,9 @@ def test_rank_failed(tmp_dir):
 
 def test_ranks_exit_gracefully(tmp_dir):
     # All ranks exit gracefully, there should be no error
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()}"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -214,15 +194,9 @@ def test_launcher_sigterm_graceful_exit(tmp_dir):
     # Simulated preemption:
     # Launcher get SIGTERM, ranks exit gracefully with code 0.
     # No error should be returned by the launcher.
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=return0"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -235,16 +209,8 @@ def test_launcher_sigterm_ignored(tmp_dir):
     # Simulated preemption:
     # Launcher get SIGTERM, ranks do not exit
     # FT launcher should forcefuly kill all ranks after `--term-timeout`
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=ignore"
-    launcher_cmd = (
-        "ft_launcher --term-timeout=5 --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
+    launcher_cmd = f"ft_launcher --term-timeout=5 --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
     assert "SIGTERM SENT TO LAUNCHER" in output
@@ -256,16 +222,8 @@ def test_ranks_restart(tmp_dir):
     # Run 0 is `test_rank_not_send_initial_hb`
     # Run 1 is `test_rank_failed`
     # Run 2 is `test_ranks_exit_gracefully`
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --tmp_dir={tmp_dir}"
-    launcher_cmd = (
-        "ft_launcher --max-restarts=2 --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
+    launcher_cmd = f"ft_launcher --max-restarts=2 --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
     assert "RESTART #0" in output
@@ -277,40 +235,7 @@ def test_ranks_restart(tmp_dir):
     assert ret_code == 0
 
 
-def test_missing_cfg(tmp_dir):
-    # Empty config file, cant be parsed
-    empty_ft_cfg_path = os.path.join(tmp_dir, "_empty_ft_cfg.yaml")
-    with open(empty_ft_cfg_path, 'a'):
-        pass  # touch file
-    # Empty config file again, But this time there are FT args in CLI, so should be fine
-    config, _, _, setup_rank_monitors = _config_from_launcher_cli(
-        [
-            "--monitor-interval=1",
-            f"--ft-cfg-path={empty_ft_cfg_path}",
-            f"--nproc-per-node={WORLD_SIZE}",
-            "--ft-rank-heartbeat-timeout=1.0",
-            _get_util_script_path(),
-            "--scenario=test_ranks_exit_gracefully",
-        ]
-    )
-    assert config.fault_tol_cfg.rank_heartbeat_timeout == 1.0
-    assert setup_rank_monitors.call_args.kwargs["ft_cfg"] is config.fault_tol_cfg
-
-    # Invalid config file path - should fail despite FT args specified via CLI
-    with pytest.raises(FileNotFoundError):
-        _config_from_launcher_cli(
-            [
-                "--monitor-interval=1",
-                "--ft-cfg-path=/not/there.yaml",
-                "--ft-rank-heartbeat-timeout=1.0",
-                f"--nproc-per-node={WORLD_SIZE}",
-                _get_util_script_path(),
-                "--scenario=test_ranks_exit_gracefully",
-            ]
-        )
-
-
-def test_config_provided_via_cli(tmp_dir):
+def test_config_provided_via_cli():
     # Check if FT args passed via CLI were propagated to the FT monitor process
     config, _, _, setup_rank_monitors = _config_from_launcher_cli(
         [
@@ -321,8 +246,7 @@ def test_config_provided_via_cli(tmp_dir):
             "--ft-log-level=WARNING",
             f"--nproc-per-node={WORLD_SIZE}",
             _get_util_script_path(),
-            "--scenario=dump_cfg",
-            f"--tmp_dir={tmp_dir}",
+            "--scenario=test_ranks_exit_gracefully",
         ]
     )
 
@@ -332,47 +256,6 @@ def test_config_provided_via_cli(tmp_dir):
     assert config.fault_tol_cfg.rank_termination_signal == signal.SIGUSR2
     assert config.fault_tol_cfg.log_level == logging.WARNING
     assert setup_rank_monitors.call_args.kwargs["ft_cfg"] is config.fault_tol_cfg
-
-
-def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
-    # Check if FT args passed via CLI were propagated to the FT monitor process
-    # Args provided via CLI should overwrite the ones from the config file
-    base_cfg = fault_tolerance.FaultToleranceConfig(
-        workload_check_interval=321.0,
-        initial_rank_heartbeat_timeout=111.0,
-        rank_heartbeat_timeout=222.0,
-        rank_termination_signal=signal.SIGTSTP,
-        log_level=logging.INFO,
-    )
-    ft_cfg_path = os.path.join(tmp_dir, "ft_cfg.yaml")
-    base_cfg.to_yaml_file(ft_cfg_path)
-
-    config, _, _, setup_rank_monitors = _config_from_launcher_cli(
-        [
-            "--ft-rank-heartbeat-timeout=123.0",
-            "--ft-safety-factor=7.7",
-            "--ft-rank-termination-signal=SIGUSR1",
-            "--ft-log-level=CRITICAL",
-            f"--ft-cfg-path={ft_cfg_path}",
-            f"--nproc-per-node={WORLD_SIZE}",
-            _get_util_script_path(),
-            "--scenario=dump_cfg",
-            f"--tmp_dir={tmp_dir}",
-        ]
-    )
-
-    assert config.fault_tol_cfg.workload_check_interval == 321.0
-    assert config.fault_tol_cfg.initial_rank_heartbeat_timeout == 111.0
-    assert config.fault_tol_cfg.rank_heartbeat_timeout == 123.0
-    assert config.fault_tol_cfg.safety_factor == 7.7
-    assert config.fault_tol_cfg.rank_termination_signal == signal.SIGUSR1
-    assert config.fault_tol_cfg.log_level == logging.CRITICAL
-    assert setup_rank_monitors.call_args.kwargs["ft_cfg"] is config.fault_tol_cfg
-
-
-# ==============================================================================
-# Unit tests for launcher cycle-info env path interaction
-# ==============================================================================
 
 
 def _make_agent_spec(rdzv_round=1):
@@ -1038,21 +921,7 @@ def test_cli_attribution_endpoint_requires_per_cycle_applog():
     args = parser.parse_args(['--ft-attribution-endpoint', 'localhost', 'train.py'])
 
     with pytest.raises(ValueError, match='--ft-attribution-endpoint requires'):
-        _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig())
-
-
-def test_yaml_attribution_endpoint_requires_per_cycle_applog():
-    from types import SimpleNamespace
-
-    from nvidia_resiliency_ext.fault_tolerance.launcher import (
-        _validate_attribution_requires_per_cycle_applog,
-    )
-
-    args = SimpleNamespace(ft_attribution_endpoint=None, ft_per_cycle_applog_prefix=None)
-    cfg = FaultToleranceConfig(attribution_endpoint='localhost')
-
-    with pytest.raises(ValueError, match='--ft-attribution-endpoint requires'):
-        _validate_attribution_requires_per_cycle_applog(args, cfg)
+        _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig.from_args(args))
 
 
 def test_per_cycle_applog_without_attribution_is_valid():
@@ -1087,7 +956,7 @@ def test_attribution_endpoint_with_per_cycle_applog_is_valid():
         ]
     )
 
-    _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig())
+    _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig.from_args(args))
 
 
 def test_log_funnel_ports_from_launcher_args_auto():
