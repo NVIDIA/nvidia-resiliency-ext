@@ -241,6 +241,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         # Intermediate state between preparation and finalization
         self.has_data_to_write: bool = False
+        self._staging_payload_taken: bool = False
         self.results_queue: Optional[mp.Queue] = None
         self.separation_hint = separation_hint
         self.use_cached_data_structure = use_cached_data_structure
@@ -511,6 +512,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         # Setup results queue if there's data to write
         self.has_data_to_write = len(plan.items) > 0
         self.results_queue = get_write_results_queue() if self.has_data_to_write else None
+        self._staging_payload_taken = False
         end = time()
         logger.debug(f"prepare_write_data, time: {end - start}")
 
@@ -544,10 +546,39 @@ class FileSystemWriterAsync(FileSystemWriter):
         """
         cls._shm_drain_callback = fn
 
+    def _take_staging_payload(self) -> Tuple:
+        """Transfer prepared source data to the preload callable once per preparation.
+
+        Finalization retains this writer but only needs metadata and write results.
+        Persistent IPC caches have separate ownership and are not released here.
+        """
+        if self._staging_payload_taken:
+            raise RuntimeError(
+                "Staging payload has already been transferred. "
+                "Call prepare_write_data() before requesting another save."
+            )
+        data = (
+            self.consistent_data_identifier,
+            (
+                self.separation_hint,
+                self.cached_tensor_data,
+                self.uncached_tensor_data,
+                self.byte_io_data,
+                self.thread_count,
+                self.storage_plan,
+            ),
+        )
+        self.cached_tensor_data = None
+        self.uncached_tensor_data = None
+        self.byte_io_data = None
+        self._staging_payload_taken = True
+        return data
+
     def get_save_function_and_args(self) -> Tuple[Optional[Callable], Optional[Callable], List]:
         """
         Get function that saves the data to storage along with its arguments.
         Allows the external caller to apply the save function synchronously or asynchronously.
+        Transfers ownership of the staging payload; call once per prepare_write_data().
 
         Returns: None (if there is nothing to write on this rank) or a tuple of:
             1) the function that saves the data.
@@ -567,22 +598,6 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
 
-        # Format: (identifier, (separation_hint, cached_tensor_data,
-        # uncached_tensor_data, byte_io_data, thread_count, storage_plan))
-        # identifier is None when caching is disabled
-        # uncached_tensor_data is always passed fresh (like ByteIO), never cached
-        data_to_pass = (
-            self.consistent_data_identifier,
-            (
-                self.separation_hint,
-                self.cached_tensor_data,
-                self.uncached_tensor_data,
-                self.byte_io_data,
-                self.thread_count,
-                self.storage_plan,
-            ),
-        )
-
         # Select write function based on IO mode
         if self.is_multi_proc_io:
             write_func = partial(
@@ -593,12 +608,14 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
             )
 
+        rank = torch.distributed.get_rank()
+        data_to_pass = self._take_staging_payload()
         preload_fn = partial(self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True)
 
         return (
             write_func,
             preload_fn,
-            [torch.distributed.get_rank(), None, self.results_queue],
+            [rank, None, self.results_queue],
         )
 
     @staticmethod
