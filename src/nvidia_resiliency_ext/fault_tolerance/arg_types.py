@@ -11,6 +11,17 @@ import math
 import os
 
 
+def str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes"}:
+        return True
+    if normalized in {"0", "false", "no"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected a boolean value, got {value!r}")
+
+
 def positive_float(text):
     value = float(text)
     if not math.isfinite(value) or value <= 0:
