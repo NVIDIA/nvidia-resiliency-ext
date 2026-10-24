@@ -46,12 +46,7 @@ from .data import (
     UpdateConfigMsg,
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
-from .timeout_diagnostics import (
-    ToolCapture,
-    parse_capture_sections,
-    parse_capture_tools,
-    staging_dir,
-)
+from .timeout_dump import ToolCapture, parse_capture_sections, parse_capture_tools, staging_dir
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
 
 
