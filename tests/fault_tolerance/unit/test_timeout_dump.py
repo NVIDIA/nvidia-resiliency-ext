@@ -24,11 +24,10 @@ from nvidia_resiliency_ext.fault_tolerance.timeout_dump import (
     DiagnosticCollectorProcess,
     TimeoutDumpConfig,
     authorize_monitor_ptrace,
-    create_capture,
-    staging_dir,
 )
-from nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture import CaptureStatus
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture import CaptureStatus, staging_dir
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.collector import DiagnosticCollector
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump.config import create_capture
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.cuda_gdb import CudaGdb, Mode
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.gdb import Gdb
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.pyspy import PySpy
@@ -309,7 +308,6 @@ def test_blocked_launch_cannot_delay_worker_termination(cfg, cancel, tool):
         tool_entry(cfg, tool).mode = Mode.STDIN
     server = monitor(cfg)
     server.rank_info.pid = os.getpid()
-    server._timed_out_sections = {"step"}
     entered = threading.Event()
     release = threading.Event()
     popen = subprocess.Popen
@@ -324,10 +322,10 @@ def test_blocked_launch_cannot_delay_worker_termination(cfg, cancel, tool):
         return popen([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
 
     async def run():
-        task = asyncio.create_task(server._handle_timeout())
+        task = asyncio.create_task(server._handle_timeout({"step"}))
         while not entered.is_set():
             await asyncio.sleep(0.001)
-        captures.append(server._diagnostic_child)
+        captures.append(server.timeout_dump.child)
         if cancel:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -341,15 +339,15 @@ def test_blocked_launch_cannot_delay_worker_termination(cfg, cancel, tool):
         rank_info, server.rank_info = server.rank_info, None
         periodic = asyncio.create_task(server._periodic_rank_check())
         await asyncio.sleep(0)
-        assert server._diagnostic_child is captures[0]
+        assert server.timeout_dump.child is captures[0]
         periodic.cancel()
         with pytest.raises(asyncio.CancelledError):
             await periodic
         server.rank_info = rank_info
         # A replacement incarnation must not start another debugger either.
-        server._diagnostic_attempted = False
-        await server._handle_timeout()
-        assert server._diagnostic_child is captures[0]
+        server.timeout_dump.attempted = False
+        await server._handle_timeout({"step"})
+        assert server.timeout_dump.child is captures[0]
 
     try:
         with patch(
@@ -436,12 +434,11 @@ def test_ignore_incomplete_and_unknown_files(cfg, collector):
 
 def test_capture_only_once_on_step_timeout(cfg):
     server = monitor(cfg)
-    server._timed_out_sections = {"step"}
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
         capture = cls.return_value
         capture.run = AsyncMock()
-        asyncio.run(server._handle_timeout())
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout({"step"}))
+        asyncio.run(server._handle_timeout({"step"}))
         assert capture.run.await_count == 1
         capture.publish_local.assert_called_once()
         assert server._shutdown_rank_if_alive.call_count == 2
@@ -450,12 +447,11 @@ def test_capture_only_once_on_step_timeout(cfg):
 @pytest.mark.parametrize("sections", [set(), {"setup"}, {"checkpoint"}, {"checkpointing"}])
 def test_other_timeouts_kill_without_capture(cfg, sections):
     server = monitor(cfg)
-    server._timed_out_sections = sections
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
-        asyncio.run(server._handle_timeout())
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+        asyncio.run(server._handle_timeout(sections))
         cls.assert_not_called()
     server._shutdown_rank_if_alive.assert_called_once()
-    assert not server._diagnostic_attempted
+    assert not server.timeout_dump.attempted
     assert not list(staging_dir(cfg.timeout_dump).glob("cycle*/*.ready"))
 
 
@@ -465,11 +461,12 @@ def test_selected_section_timeout_captures(cfg, section):
     cfg.rank_section_timeouts = {section: 1}
     server = monitor(cfg)
     server.open_sections = {section: 0}
-    assert server._is_section_timeout_elapsed(2)
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
+    expired = server._expired_sections(2)
+    assert expired == {section}
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
         cls.return_value.run = AsyncMock()
         cls.return_value.is_running.return_value = False
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout(expired))
         cls.return_value.run.assert_awaited_once()
         assert cls.return_value.publish_local.call_args.args[2] == section
     server._shutdown_rank_if_alive.assert_called_once()
@@ -480,9 +477,10 @@ def test_selection_requires_exact_expired_section(cfg):
     cfg.rank_section_timeouts = {"step": 1, "checkpoint": 10, "checkpointing": 1}
     server = monitor(cfg)
     server.open_sections = {"step": 0, "checkpoint": 0, "checkpointing": 0}
-    assert server._is_section_timeout_elapsed(2)
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
-        asyncio.run(server._handle_timeout())
+    expired = server._expired_sections(2)
+    assert expired == {"step", "checkpointing"}
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+        asyncio.run(server._handle_timeout(expired))
         cls.assert_not_called()
     server._shutdown_rank_if_alive.assert_called_once()
 
@@ -503,11 +501,12 @@ def test_section_names_do_not_enable_non_section_timeouts(cfg, timeout_type):
     server.start_time = server.out_of_section_time = 0
     if timeout_type == "heartbeat":
         assert server._is_hb_timeout_elapsed(2)
-        assert not server._is_section_timeout_elapsed(0.5)
+        assert not server._is_out_of_section_timeout_elapsed(0.5)
     else:
-        assert server._is_section_timeout_elapsed(2)
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
-        asyncio.run(server._handle_timeout())
+        assert server._is_out_of_section_timeout_elapsed(2)
+    assert server._expired_sections(2) == set()
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+        asyncio.run(server._handle_timeout(set()))
         cls.assert_not_called()
     server._shutdown_rank_if_alive.assert_called_once()
 
@@ -516,8 +515,7 @@ def test_nested_nonexpired_section_cannot_hide_timeout(cfg):
     server = monitor(cfg)
     cfg.rank_section_timeouts = {"step": 1, "checkpointing": 100}
     server.open_sections = {"step": 0, "checkpointing": 9}
-    assert server._is_section_timeout_elapsed(10)
-    assert server._timed_out_sections == {"step"}
+    assert server._expired_sections(10) == {"step"}
 
 
 @pytest.mark.parametrize("section", ["checkpoint", "checkpointing", None])
@@ -528,13 +526,13 @@ def test_non_step_detection_path_terminates_without_dump(cfg, section):
     cfg.rank_out_of_section_timeout = 1
     server.open_sections = {section: 0} if section is not None else {}
     server.out_of_section_time = 0
-    # Clear any reason retained from an earlier check before classifying timeout.
-    server._timed_out_sections = {"step"}
-    assert server._is_section_timeout_elapsed(10)
+    expired = server._expired_sections(10)
+    assert expired == ({section} if section is not None else set())
+    assert expired or server._is_out_of_section_timeout_elapsed(10)
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture"
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture"
     ) as capture:
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout(expired))
         capture.assert_not_called()
     server._shutdown_rank_if_alive.assert_called_once()
 
@@ -542,28 +540,27 @@ def test_non_step_detection_path_terminates_without_dump(cfg, section):
 def test_replacement_worker_not_killed(cfg):
     server = monitor(cfg)
     old = server.rank_info
-    server._timed_out_sections = {"step"}
 
     async def replace(**kwargs):
         server.rank_info = RankInfo(global_rank=42, local_rank=0, pid=67890, host="node42")
 
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
         cls.return_value.run = replace
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout({"step"}))
         assert cls.return_value.publish_local.call_args.args[0] is old
     server._shutdown_rank_if_alive.assert_called_once()
 
 
 def test_new_worker_can_capture(cfg):
     server = monitor(cfg)
-    server._diagnostic_attempted = True
+    server.timeout_dump.attempted = True
     msg = InitMsg(rank_info=server.rank_info)
     with patch(
         "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.write_obj_to_ipc_stream",
         new=AsyncMock(),
     ):
         asyncio.run(server._handle_init_msg(msg, Mock()))
-    assert not server._diagnostic_attempted
+    assert not server.timeout_dump.attempted
 
 
 @pytest.mark.parametrize("connection", ["disconnect", "reconnect", "replacement"])
@@ -580,7 +577,6 @@ def test_original_worker_terminated_across_connection_changes(
     replacement = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     server = monitor(cfg)
     server.rank_info.pid = worker.pid
-    server._timed_out_sections = {"step"}
     server._shutdown_rank_if_alive = RankMonitorServer._shutdown_rank_if_alive.__get__(server)
 
     async def change_connection(**kwargs):
@@ -601,11 +597,11 @@ def test_original_worker_terminated_across_connection_changes(
 
     try:
         with patch(
-            "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture"
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture"
         ) as cls:
             cls.return_value.run = change_connection
             cls.return_value.is_running.return_value = False
-            asyncio.run(server._handle_timeout())
+            asyncio.run(server._handle_timeout({"step"}))
         assert worker.wait(timeout=2) == -signal.SIGKILL
         assert replacement.poll() is None
     finally:
@@ -634,16 +630,15 @@ def test_hanging_capture_does_not_delay_termination_or_publish_writer(cfg, tmp_p
     )
     server = monitor(cfg)
     server.rank_info.pid = os.getpid()
-    server._timed_out_sections = {"step"}
     kill_times = []
     server._shutdown_rank_if_alive.side_effect = lambda *args: kill_times.append(time.monotonic())
     started = time.monotonic()
-    asyncio.run(server._handle_timeout())
+    asyncio.run(server._handle_timeout({"step"}))
     assert kill_times[0] - started < cfg.timeout_dump.capture_timeout + 0.3
     output = next(staging_dir(cfg.timeout_dump).glob("cycle0/*.ready")).read_text()
     assert "partial stack" in output
     assert "status=timeout" in output
-    proc = server._diagnostic_child.process
+    proc = server.timeout_dump.child.process
     proc.wait(timeout=2)  # test cleanup only; production never waits unbounded
     assert proc.returncode == -signal.SIGKILL
 
@@ -662,8 +657,7 @@ def test_output_cap(cfg, tmp_path, tool):
 def test_missing_pyspy_still_terminates(cfg):
     tool_entry(cfg, "pyspy").executable = "/does-not-exist/py-spy"
     server = monitor(cfg)
-    server._timed_out_sections = {"step"}
-    asyncio.run(server._handle_timeout())
+    asyncio.run(server._handle_timeout({"step"}))
     server._shutdown_rank_if_alive.assert_called_once()
     assert "status=error:" in next(staging_dir(cfg.timeout_dump).glob("cycle0/*.ready")).read_text()
 
@@ -743,12 +737,12 @@ def test_reconnect_does_not_allow_second_capture(cfg):
         new=AsyncMock(),
     ):
         asyncio.run(server._handle_init_msg(msg, Mock()))
-        server._diagnostic_attempted = True
+        server.timeout_dump.attempted = True
         asyncio.run(server._handle_init_msg(msg, Mock()))
-        assert server._diagnostic_attempted
+        assert server.timeout_dump.attempted
         msg.rank_info = RankInfo(42, 0, "node42", 67890)
         asyncio.run(server._handle_init_msg(msg, Mock()))
-        assert not server._diagnostic_attempted
+        assert not server.timeout_dump.attempted
 
 
 @pytest.mark.parametrize("tool", ["pyspy", "cuda-gdb"])
@@ -756,10 +750,9 @@ def test_cancellation_still_kills_worker(cfg, tmp_path, tool):
     fake_tool(cfg, tmp_path, "import time\ntime.sleep(30)\n", tool)
     server = monitor(cfg)
     server.rank_info.pid = os.getpid()
-    server._timed_out_sections = {"step"}
 
     async def cancel():
-        task = asyncio.create_task(server._handle_timeout())
+        task = asyncio.create_task(server._handle_timeout({"step"}))
         await asyncio.sleep(0.02)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -769,7 +762,7 @@ def test_cancellation_still_kills_worker(cfg, tmp_path, tool):
     server._shutdown_rank_if_alive.assert_called_once()
     output = next(staging_dir(cfg.timeout_dump).glob("cycle0/*.ready")).read_text()
     assert "status=cancelled" in output
-    proc = server._diagnostic_child.process
+    proc = server.timeout_dump.child.process
     proc.wait(timeout=2)
     assert proc.returncode == -signal.SIGKILL
 
@@ -780,9 +773,9 @@ def test_monitor_shutdown_during_capture_preserves_cancellation(cfg, tmp_path):
     server = monitor(cfg)
     server.ipc_socket_path = str(tmp_path / "worker.sock")
     server.launcher_ipc_socket_path = str(tmp_path / "launcher.sock")
-    server._timed_out_sections = {"step"}
     server._is_hb_timeout_elapsed = Mock(return_value=False)
-    server._is_section_timeout_elapsed = Mock(return_value=True)
+    server._expired_sections = Mock(return_value={"step"})
+    server._is_out_of_section_timeout_elapsed = Mock(return_value=False)
     errors = []
     interrupted_capture = []
 
@@ -795,7 +788,7 @@ def test_monitor_shutdown_during_capture_preserves_cancellation(cfg, tmp_path):
         deadline = loop.time() + 3
 
         def shutdown_when_capturing():
-            child = server._diagnostic_child
+            child = server.timeout_dump.child
             if child is not None and b"partial stack" in child.output:
                 interrupted_capture.append(child)
                 server._handle_signal(signal.SIGTERM)
@@ -1155,7 +1148,6 @@ def test_sequence_shares_remaining_budget_and_stages_after_termination(cfg):
     select_tools(cfg, "pyspy", "gdb", "cuda-gdb")
     cfg.timeout_dump.capture_timeout = 30
     server = monitor(cfg)
-    server._timed_out_sections = {"step"}
     now = [100.0]
     captures = []
     budgets = []
@@ -1178,15 +1170,15 @@ def test_sequence_shares_remaining_budget_and_stages_after_termination(cfg):
 
     with (
         patch(
-            "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture",
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture",
             capture_factory,
         ),
         patch(
-            "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.time",
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.time",
             SimpleNamespace(monotonic=lambda: now[0]),
         ),
     ):
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout({"step"}))
     assert [tool for tool, _ in captures] == ["pyspy", "gdb", "cuda-gdb"]
     assert budgets == [10, 14, 20]
     for _, capture in captures:
@@ -1196,27 +1188,25 @@ def test_sequence_shares_remaining_budget_and_stages_after_termination(cfg):
 def test_unreaped_diagnostic_prevents_next_attachment(cfg):
     select_tools(cfg, "gdb", "cuda-gdb")
     server = monitor(cfg)
-    server._timed_out_sections = {"step"}
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
         capture = cls.return_value
         capture.run = AsyncMock()
         capture.process.poll.return_value = None
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout({"step"}))
         cls.assert_called_once_with(cfg.timeout_dump, 12345, tool_entry(cfg, "gdb"))
     server._shutdown_rank_if_alive.assert_called_once()
 
 
 def test_previous_worker_live_debugger_blocks_capture_until_exit(cfg):
     server = monitor(cfg)
-    server._timed_out_sections = {"step"}
     old_child = Mock()
     old_child.process.poll.return_value = None
-    server._diagnostic_child = old_child
-    with patch("nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture") as cls:
-        asyncio.run(server._handle_timeout())
+    server.timeout_dump.child = old_child
+    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+        asyncio.run(server._handle_timeout({"step"}))
         cls.assert_not_called()
         server._shutdown_rank_if_alive.assert_called_once()
-        assert server._diagnostic_child is old_child
+        assert server.timeout_dump.child is old_child
 
         # A replacement worker gets an attempt after the old debugger exits.
         old_child.process.poll.return_value = -signal.SIGKILL
@@ -1229,9 +1219,9 @@ def test_previous_worker_live_debugger_blocks_capture_until_exit(cfg):
             asyncio.run(server._handle_init_msg(msg, Mock()))
         cls.return_value.run = AsyncMock()
         cls.return_value.process.poll.return_value = 0
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout({"step"}))
         cls.assert_called_once_with(cfg.timeout_dump, 67890, tool_entry(cfg, "pyspy"))
-        assert server._diagnostic_child is cls.return_value
+        assert server.timeout_dump.child is cls.return_value
 
 
 def test_three_hanging_tools_are_sequential_and_bounded(cfg, tmp_path):
@@ -1247,7 +1237,6 @@ def test_three_hanging_tools_are_sequential_and_bounded(cfg, tmp_path):
         entry.executable = str(executable)
     server = monitor(cfg)
     server.rank_info.pid = os.getpid()
-    server._timed_out_sections = {"step"}
     captures = []
 
     def make_capture(*args):
@@ -1259,13 +1248,13 @@ def test_three_hanging_tools_are_sequential_and_bounded(cfg, tmp_path):
 
     started = time.monotonic()
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.create_capture",
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture",
         side_effect=make_capture,
     ):
-        asyncio.run(server._handle_timeout())
+        asyncio.run(server._handle_timeout({"step"}))
     assert time.monotonic() - started < cfg.timeout_dump.capture_timeout + 0.3
     assert len(captures) == 3
-    assert server._diagnostic_child is captures[-1]
+    assert server.timeout_dump.child is captures[-1]
     assert all(capture.process.poll() is not None for capture in captures)
     outputs = list(staging_dir(cfg.timeout_dump).glob("cycle0/*.ready"))
     assert len(outputs) == 3
@@ -1279,10 +1268,9 @@ def test_runtime_failure_continues_to_next_tool(cfg):
     tool_entry(cfg, "pyspy").executable = "/missing/py-spy"
     tool_entry(cfg, "gdb").executable = "/missing/gdb"
     server = monitor(cfg)
-    server._timed_out_sections = {"step"}
-    asyncio.run(server._handle_timeout())
-    assert server._diagnostic_child.name == "gdb"
-    assert server._diagnostic_child.process is None
+    asyncio.run(server._handle_timeout({"step"}))
+    assert server.timeout_dump.child.name == "gdb"
+    assert server.timeout_dump.child.process is None
     assert len(list(staging_dir(cfg.timeout_dump).glob("cycle0/*.ready"))) == 2
     server._shutdown_rank_if_alive.assert_called_once()
 
