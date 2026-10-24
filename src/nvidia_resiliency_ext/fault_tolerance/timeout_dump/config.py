@@ -12,7 +12,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..arg_types import absolute_path, names, positive_float, positive_int
+from ..arg_types import absolute_path, names, positive_float, positive_int, str_to_bool
 from .capture import ToolCapture, options_given
 from .cuda_gdb import CudaGdb
 from .gdb import Gdb
@@ -77,9 +77,10 @@ class TimeoutDumpConfig:
         group.add_argument(
             "--ft-timeout-dump-enabled",
             dest="timeout_dump.enabled",
-            action=argparse.BooleanOptionalAction,
-            help="Capture stacks when a selected section times out (default: off). "
-            "--ft-timeout-dump-tools also enables capture.",
+            type=str_to_bool,
+            metavar="BOOL",
+            help="Capture stacks when a selected section times out (default: false). "
+            "--ft-timeout-dump-tools also enables capture unless this is false.",
         )
         group.add_argument(
             "--ft-timeout-dump-tools",
@@ -146,7 +147,7 @@ class TimeoutDumpConfig:
     def from_args(cls, args) -> "TimeoutDumpConfig":
         """Settings from the command line, whose values argparse has checked.
 
-        Listing tools enables dumps unless --no-ft-timeout-dump-enabled is also given. Options
+        Listing tools enables dumps unless --ft-timeout-dump-enabled=false is also given. Options
         for a tool that is not listed are unused.
         """
         settings = options_given(args, "timeout_dump.", cls)
