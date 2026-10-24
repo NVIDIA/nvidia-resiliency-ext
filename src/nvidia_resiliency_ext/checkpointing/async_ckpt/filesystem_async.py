@@ -1092,6 +1092,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                         ),
                         kwargs=kwargs,
                     )
+                    t.start()
                     thread_list.append(t)
                 else:
                     # Run last bucket on the calling thread (no thread overhead)
@@ -1114,9 +1115,6 @@ class FileSystemWriterAsync(FileSystemWriter):
                 write_results_or_exc = RuntimeError(err_msg)
 
         if not isinstance(write_results_or_exc, Exception) and len(thread_list) > 0:
-            for t in thread_list:
-                t.start()
-
             logger.debug("FileSystemWriterAsync: collecting worker results...")
 
             count_queue.join()
@@ -1136,10 +1134,10 @@ class FileSystemWriterAsync(FileSystemWriter):
                         write_results_or_exc = worker_exc
                         break
                     write_results_or_exc[local_thread_idx] = local_results_or_exc
-            for t in thread_list:
-                t.join()
             logger.debug('FileSystemWriterAsync: collected worker results successfully')
 
+        for t in thread_list:
+            t.join()
         if isinstance(write_results_or_exc, dict) and len(write_results_or_exc) != len(
             write_buckets
         ):
