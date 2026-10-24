@@ -18,7 +18,9 @@ import dataclasses
 import logging
 import signal
 from dataclasses import dataclass, fields
-from typing import Literal, Mapping, Optional
+from typing import Mapping, Optional
+
+from .timeout_dump.config import TimeoutDumpConfig
 
 
 @dataclass
@@ -111,18 +113,10 @@ class FaultToleranceConfig:
     * `segment_health_check_dir` [str|None] Shared directory containing per-task
       segment health decision artifacts. Allocation-unit process 0 checks its artifact
       before joining a rendezvous. Default: None (disabled).
-    * `timeout_dump_enabled` [bool] Enable timeout diagnostics (default: False).
-    * `timeout_dump` [str] Ordered, comma-separated tools (default:
-      "pyspy,gdb,cuda-gdb") to capture stacks on selected section
-      timeouts and automatically upload per-node,
-      per-cycle text files. ``timeout_dump_local_root`` defaults to /tmp; the
-      shared destination is derived from ``--ft-nvrx-logfile``. The remaining
-      ``timeout_dump_*`` fields control capture, storage, collection, and shutdown
-      bounds. See the timeout diagnostics guide for deployment requirements.
-    * `timeout_dump_sections` [str] Comma-separated workload section names that
-      trigger capture when they time out (default: "step"). Names match exactly.
-    * `timeout_dump_cuda_gdb_mode` [str] CUDA-GDB command delivery: "batch"
-      (default) or "stdin" for automated normal command-reading mode.
+    * `timeout_dump` [TimeoutDumpConfig] Optional stack captures on selected section
+      timeouts, uploaded as per-node, per-cycle text files (disabled by default). Set by
+      the ``--ft-timeout-dump-*`` options; the shared destination is derived from
+      ``--ft-nvrx-logfile``. See the timeout dumps guide.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -176,21 +170,7 @@ class FaultToleranceConfig:
     segment_health_check_dir: Optional[str] = None
 
     # Optional timeout dumps; shared destination is derived from --ft-nvrx-logfile.
-    timeout_dump_enabled: bool = False
-    timeout_dump: str = "pyspy,gdb,cuda-gdb"
-    timeout_dump_sections: str = "step"
-    timeout_dump_local_root: str = "/tmp"
-    timeout_dump_pyspy: str = "py-spy"
-    timeout_dump_gdb: str = "gdb"
-    timeout_dump_cuda_gdb: str = "cuda-gdb"
-    timeout_dump_cuda_gdb_mode: Literal["batch", "stdin"] = "batch"
-    timeout_dump_gdb_command_file: Optional[str] = None
-    timeout_dump_cuda_gdb_command_file: Optional[str] = None
-    timeout_dump_capture_timeout: float = 30.0
-    timeout_dump_max_capture_bytes: int = 1024 * 1024
-    timeout_dump_poll_interval: float = 30.0
-    timeout_dump_upload_attempts: int = 3
-    timeout_dump_shutdown_grace: float = 10.0
+    timeout_dump: TimeoutDumpConfig = dataclasses.field(default_factory=TimeoutDumpConfig)
 
     @property
     def is_progress_tracking_enabled(self) -> bool:
@@ -301,6 +281,7 @@ class FaultToleranceConfig:
         # Update config with CLI args
         for arg_name, arg_val in cli_ft_args.items():
             setattr(ft_cfg, arg_name, arg_val)
+        ft_cfg.timeout_dump = TimeoutDumpConfig.from_args(args)
 
         # Fix any type issues
         ft_cfg._fix_log_level_type()
