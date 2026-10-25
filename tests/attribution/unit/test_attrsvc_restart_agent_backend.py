@@ -4,9 +4,11 @@
 """Behavioral tests for attrsvc's direct Restart Agent backend."""
 
 import asyncio
+import json
 import logging
 import threading
 import time
+from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
@@ -1294,5 +1296,179 @@ def test_outside_root_and_missing_parent_are_rejected(tmp_path):
         assert outside.error_code.value == "outside_root"
         assert isinstance(missing_parent, LogAnalyzerError)
         assert missing_parent.error_code.value == "not_found"
+    finally:
+        backend.shutdown()
+
+
+def test_a_slow_slack_call_does_not_hold_back_the_analysis_result(tmp_path):
+    """GET /logs awaits the analysis future, so Slack must not run inside it.
+
+    Delivery used to happen on the analysis worker, which meant a client
+    waiting for restart advice also waited out the Slack lookup, summary and
+    reply - and a slow Slack occupied a worker that could be analyzing.
+    """
+    import threading
+
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    entered = threading.Event()
+    release = threading.Event()
+    SLACK_BLOCK_S = 30.0
+
+    def blocking_notify(_key):
+        entered.set()
+        release.wait(timeout=SLACK_BLOCK_S)
+
+    backend._notify_slack = blocking_notify
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        started = time.monotonic()
+        result = asyncio.run(run())
+        elapsed = time.monotonic() - started
+
+        assert result.status == "completed"
+        assert entered.wait(timeout=10), "notification was never attempted"
+        # The point of the fix: the caller is not made to wait out Slack. On
+        # the analysis worker this would take SLACK_BLOCK_S instead.
+        assert elapsed < SLACK_BLOCK_S / 3, f"result waited {elapsed:.1f}s on the notification"
+        assert not release.is_set()
+    finally:
+        release.set()
+        backend.shutdown()
+
+
+def test_shutdown_waits_for_a_queued_notification(tmp_path):
+    # Dropping a queued alert would silently lose the notification that the
+    # whole feature exists to send.
+    import threading
+
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    delivered = threading.Event()
+
+    backend._notify_executor.submit(lambda: (time.sleep(0.2), delivered.set()))
+    backend.shutdown()
+
+    assert delivered.is_set()
+
+
+def test_an_evicted_entry_still_gets_its_alert(tmp_path):
+    """A queued alert must survive the entry being trimmed from the table.
+
+    Notifications carried only a key, and a later completion can evict the
+    entry through ``_trim_completed_results`` while the alert is still queued.
+    The lookup then found nothing and the alert vanished with no trace.
+    """
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime, max_total_records=1)
+    sent = []
+    backend._slack_notifier = SimpleNamespace(
+        enabled=True, notify=lambda identity, result: sent.append(identity) or True
+    )
+    backend._public_result = lambda entry: SimpleNamespace(
+        result={}, status="completed", recommendation={"action": "STOP", "reason": "", "source": ""}
+    )
+
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    # Occupy every notification worker so the alert is still queued, not
+    # running, when the entry is evicted. Otherwise it delivers immediately
+    # and the race never happens.
+    release = threading.Event()
+    busy = [
+        backend._notify_executor.submit(release.wait, 30)
+        for _ in range(backend._notify_executor._max_workers)
+    ]
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        assert asyncio.run(run()).status == "completed"
+        # Evict everything, as a later completion would through
+        # _trim_completed_results, while the alert is still queued.
+        with backend._lock:
+            backend._entries.clear()
+            backend._path_index.clear()
+        release.set()
+        for f in busy:
+            f.result(timeout=10)
+        backend.shutdown()  # drains the notification pool
+        assert len(sent) == 1, "the alert was dropped when its entry went away"
+        assert sent[0].job_id == "job-7"
+    finally:
+        release.set()
+        with suppress(Exception):
+            backend.shutdown()
+
+
+def test_a_result_is_persisted_even_if_the_alert_cannot_be_scheduled(tmp_path):
+    # Scheduling ran before the save, so a notification pool that was already
+    # closed raised and took the save down with it, losing the result.
+    runtime = _FakeRuntime()
+    backend = _backend(tmp_path, runtime)
+    cache = tmp_path / "cache.json"
+    backend._cache_file = str(cache)
+    backend._notify_executor.shutdown(wait=True)  # as shutdown() leaves it
+
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        assert asyncio.run(run()).status == "completed"
+        assert cache.exists(), "the completed result was never written"
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        assert [e["job_id"] for e in saved["entries"]] == ["job-7"]
+    finally:
+        backend.shutdown()
+
+
+def test_a_log_that_grows_during_the_analysis_is_not_cached(tmp_path):
+    """The verdict describes the bytes the analyzer read, not later ones.
+
+    Stat'ing only after the run records the log's newer identity beside a
+    result drawn from the earlier content, so the staleness check passes on
+    restart and a verdict for different bytes is served as current.
+    """
+    log_path = tmp_path / "train_cycle2.log"
+    log_path.write_text("RuntimeError: failure\n", encoding="utf-8")
+
+    class _GrowingRuntime(_FakeRuntime):
+        def analyze(self, request, **kwargs):
+            # The job is still running and appends while we are analyzing.
+            with open(request.log_path, "a", encoding="utf-8") as handle:
+                handle.write("another rank failed after we started reading\n")
+            return super().analyze(request, **kwargs)
+
+        def analyze_prepared(self, request, prepared, **kwargs):
+            with open(request.log_path, "a", encoding="utf-8") as handle:
+                handle.write("another rank failed after we started reading\n")
+            return super().analyze_prepared(request, prepared, **kwargs)
+
+    backend = _backend(tmp_path, _GrowingRuntime())
+    cache = tmp_path / "cache.json"
+    backend._cache_file = str(cache)
+
+    async def run():
+        await backend.submit_log(str(log_path), job_id="job-7", analysis_intent="terminal")
+        return await backend.analyze_log(str(log_path), wait=True)
+
+    try:
+        assert asyncio.run(run()).status == "completed"
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        assert saved["entries"] == [], "a verdict for superseded bytes was cached"
     finally:
         backend.shutdown()

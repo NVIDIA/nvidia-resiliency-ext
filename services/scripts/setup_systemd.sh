@@ -318,6 +318,10 @@ NVRX_SMONSVC_PORT=8100
 NVRX_SMONSVC_PARTITIONS=batch batch_long
 NVRX_SMONSVC_INTERVAL=180
 NVRX_SMONSVC_LOG_LEVEL=DEBUG
+# Slack alerts (requires slack-sdk; needs both a token and a channel)
+# SLACK_BOT_TOKEN_FILE=${CONFIG_DIR}/slack_bot_token
+# SLACK_CHANNEL="#trng-alerts"
+# NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS=STOP
 EOF
         if [[ "$USER_MODE" == false ]]; then
             chmod 640 "${CONFIG_DIR}/nvrx.env"
