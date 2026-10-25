@@ -96,19 +96,30 @@ def _send_sig(sig, pids):
         os.kill(pid, sig)
 
 
-def _rank_main_with_step(*args, rank_ready_events, **kwargs):
+def _rank_main_with_step(*args, rank_ready_events, start_step_event, **kwargs):
     # Capture FT termination signal, and exit with custom code
     def _sig_handler(*args, **kwargs):
         sys.exit(TERM_BY_FT_EXIT_CODE)
 
     signal.signal(FT_TERM_SIGNAL, _sig_handler)
 
-    # Notify main process that worker is initialized
-    rank_ready_events[torch.distributed.get_rank()].set()
-
     _set_rmon_socket_env_var_for_this_rank()
     rank_mon_cli = fault_tolerance.RankMonitorClient()
     rank_mon_cli.init_workload_monitoring()
+
+    # Do not arm the short step timeout until the parent has killed rank 0.
+    # Readiness must include FT initialization so startup skew cannot time out
+    # an early rank waiting for another rank to reach the first barrier.
+    rank = torch.distributed.get_rank()
+    rank_ready_events[rank].set()
+    if rank == 0:
+        # Killing a waiter on a multiprocessing Event can leave its condition
+        # waiting for an acknowledgement from the dead process during set().
+        while True:
+            signal.pause()
+    assert start_step_event.wait(
+        timeout=60
+    ), "Parent did not release the step after fault injection"
 
     # Infinite loop to simulate training, all work is wrapped in "step" section
     while True:
@@ -126,6 +137,7 @@ def _rank_main_with_step(*args, rank_ready_events, **kwargs):
 def test_shutdown_due_to_step_section_timeout():
     mp_ctx = torch.multiprocessing.get_context("spawn")
     rank_ready_events = [mp_ctx.Event() for _ in range(TEST_WORLD_SIZE)]
+    start_step_event = mp_ctx.Event()
 
     rank_processes = multiprocessing_execute_start(
         worker_fn=_rank_main_with_step,
@@ -135,15 +147,25 @@ def test_shutdown_due_to_step_section_timeout():
         dist_store_type="file",
         test_scenario=_rank_main_with_step,
         rank_ready_events=rank_ready_events,
+        start_step_event=start_step_event,
     )
 
-    wait_for_mp_events(rank_ready_events, timeout=60)
+    try:
+        wait_for_mp_events(rank_ready_events, timeout=60)
 
-    rank_pids = {r: p.pid for r, p in enumerate(rank_processes)}
+        _send_sig(signal.SIGTERM, [rank_processes[0].pid])
+        rank_processes[0].join(timeout=60)
+        assert rank_processes[0].exitcode == -signal.SIGTERM
 
-    time.sleep(2.0)
-    _send_sig(signal.SIGTERM, [rank_pids[0]])
+        # Surviving ranks now enter a step whose barrier cannot complete.
+        start_step_event.set()
+        ret_codes = multiprocessing_execute_join(rank_processes, timeout=60)
 
-    ret_codes = multiprocessing_execute_join(rank_processes, timeout=60)
-
-    assert ret_codes == ([-signal.SIGTERM] + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE])
+        assert ret_codes == ([-signal.SIGTERM] + (TEST_WORLD_SIZE - 1) * [TERM_BY_FT_EXIT_CODE])
+    finally:
+        # A failed readiness/exit assertion must not leave worker processes behind.
+        for process in rank_processes:
+            if process.is_alive():
+                process.kill()
+        for process in rank_processes:
+            process.join(timeout=10)
