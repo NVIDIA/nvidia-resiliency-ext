@@ -382,6 +382,31 @@ be correlated with a rank in that cycle's application log without consulting
 the launcher log. Dump contents remain in the diagnostic files. A ``.partial``
 left by an interrupted upload is not a published snapshot.
 
+Known Issues
+------------
+
+The launcher and the rank monitors do not coordinate worker teardown with
+timeout captures. A launcher can therefore send SIGTERM, and SIGKILL after
+``--workers-stop-timeout``, to workers whose captures are still running.
+Depending on the capture phase the signal reaches, the published dump can be
+incomplete or incorrect. The debugger and the launcher's worker teardown can
+also stall. A stall lasts at most until the rank monitor's capture deadline
+(``--ft-timeout-dump-capture-timeout``), when the monitor kills the debugger.
+GDB and CUDA-GDB are affected most often.
+
+Examples:
+
+* A rank finishes its capture early and its monitor terminates it. The local
+  launcher detects the exit and sends SIGTERM to the remaining local workers, some of which
+  are still being captured.
+* A launcher detects a failure on a peer node through the opened rendezvous
+  round and starts stopping its local workers while their captures are running.
+
+Addressing this requires coordination between the launcher and the rank monitors.
+Before starting a local teardown, the launcher should detect and wait for any
+local captures in progress. A rank monitor should not start a capture while a
+local teardown is in progress.
+
 Configuration
 -------------
 
