@@ -2982,7 +2982,8 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_checkpoint_iteration_file",
         help="Path to file containing the latest checkpoint iteration (single integer). "
-        "Used for progress tracking. Example: phase1/latest_checkpointed_iteration.txt",
+        "When progress tracking is enabled, a missing file counts as no progress. "
+        "Example: phase1/latest_checkpointed_iteration.txt",
     )
 
     #
