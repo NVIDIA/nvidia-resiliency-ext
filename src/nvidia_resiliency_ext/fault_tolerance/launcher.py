@@ -2939,13 +2939,6 @@ def get_args_parser() -> ArgumentParser:
     add_no_restart_args(parser)
     add_cycle_info_args(parser)
 
-    parser.add_argument(
-        "--ft-ignore-missing-cfg",
-        action='store_true',
-        dest="ft_ignore_missing_cfg",
-        help="(Deprecated.) Has no effect.",
-    )
-
     #
     # Progress tracking arguments
     #
