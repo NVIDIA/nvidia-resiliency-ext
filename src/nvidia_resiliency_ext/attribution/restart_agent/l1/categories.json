@@ -112,7 +112,7 @@
     {
       "id": 19,
       "name": "Checkpoint failure / transient async-write I/O",
-      "description": "Transient I/O failure during the checkpoint async-save path on a checkpoint directory: filesystem_async 'Local process 0 encountered an error', PyTorch inline_container position mismatch, BrokenPipeError Errno 108 from a writer, OSError Errno 5 (Input/output error). Prefer this over cat 16 whenever the failing path is a checkpoint directory and the mechanism is on the write side, even if the surface is generic filesystem I/O. Load-side checkpoint I/O errors that do not fit cat 10 (early/startup timeout) route to cat 16 (Filesystem I/O) instead.",
+      "description": "Transient I/O failure during the checkpoint async-save path on a checkpoint directory: filesystem_async 'Local process 0 encountered an error', PyTorch inline_container position mismatch, BrokenPipeError Errno 108 from a writer, OSError Errno 5 (Input/output error). Prefer this over cat 16 whenever the failing path is a checkpoint directory and the mechanism is on the write side, even if the surface is generic filesystem I/O. Load-side checkpoint I/O errors that do not fit cat 10 (early/startup timeout) route to cat 16 (Filesystem I/O) instead. This category does not cover failures whose mechanism is memory exhaustion: if the checkpoint path fails because a CUDA or NCCL allocation could not be satisfied, that is a CUDA OOM category even though the failing path is the checkpoint path.",
       "decision": "RESTART"
     },
     {
