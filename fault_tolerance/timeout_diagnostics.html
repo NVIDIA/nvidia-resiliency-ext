@@ -66,6 +66,7 @@
 </li>
 <li class="toctree-l3"><a class="reference internal" href="#capture-and-upload">Capture and upload</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#failures-and-retention">Failures and retention</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#known-issues">Known Issues</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#configuration">Configuration</a></li>
 </ul>
 </li>
@@ -449,6 +450,29 @@ header supplies the hostname. Dump block headers independently include <code cla
 be correlated with a rank in that cycle’s application log without consulting
 the launcher log. Dump contents remain in the diagnostic files. A <code class="docutils literal notranslate"><span class="pre">.partial</span></code>
 left by an interrupted upload is not a published snapshot.</p>
+</section>
+<section id="known-issues">
+<h2>Known Issues<a class="headerlink" href="#known-issues" title="Link to this heading"></a></h2>
+<p>The launcher and the rank monitors do not coordinate worker teardown with
+timeout captures. A launcher can therefore send SIGTERM, and SIGKILL after
+<code class="docutils literal notranslate"><span class="pre">--workers-stop-timeout</span></code>, to workers whose captures are still running.
+Depending on the capture phase the signal reaches, the published dump can be
+incomplete or incorrect. The debugger and the launcher’s worker teardown can
+also stall. A stall lasts at most until the rank monitor’s capture deadline
+(<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-capture-timeout</span></code>), when the monitor kills the debugger.
+GDB and CUDA-GDB are affected most often.</p>
+<p>Examples:</p>
+<ul class="simple">
+<li><p>A rank finishes its capture early and its monitor terminates it. The local
+launcher detects the exit and sends SIGTERM to the remaining local workers, some of which
+are still being captured.</p></li>
+<li><p>A launcher detects a failure on a peer node through the opened rendezvous
+round and starts stopping its local workers while their captures are running.</p></li>
+</ul>
+<p>Addressing this requires coordination between the launcher and the rank monitors.
+Before starting a local teardown, the launcher should detect and wait for any
+local captures in progress. A rank monitor should not start a capture while a
+local teardown is in progress.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
