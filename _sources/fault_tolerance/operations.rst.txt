@@ -16,13 +16,15 @@ not measure live optimizer iterations or async save requests. No new completed
 checkpoint across several failing cycles can trigger a no-progress stop even
 when workers repeatedly reach later training iterations.
 
-The tracker seeds its baseline from a readable marker at startup. A missing,
-empty, malformed, or unreadable configured marker makes that cycle's progress
-check skip without resetting or incrementing its accumulated no-progress count.
-This is normal before the first checkpoint but also means a crash loop before
-the first completed checkpoint is bounded by ``--max-restarts`` rather than
-the progress tracker. A readable zero value with no reported progress also
-leaves tracking inactive. ``--ft-min-progress-iterations`` defaults to 1.
+The tracker seeds its baseline from a readable marker at startup. When tracking
+is enabled, a missing configured marker counts as no progress for each failed
+cycle, including before the first checkpoint. A readable marker containing zero
+also counts as no progress. With the default threshold of three, failed cycles
+0, 1, and 2 without a checkpoint cause termination before cycle 3 starts.
+If a marker disappears after a checkpoint, the tracker preserves the last known
+iteration while counting the failed cycle as no progress. An empty, malformed,
+or otherwise unreadable marker instead skips that cycle's check without changing
+the count or baseline. ``--ft-min-progress-iterations`` defaults to 1.
 
 For recovery qualification, record detection, cleanup, rendezvous, initialization,
 checkpoint restoration, and first committed optimizer-step timestamps. Process
@@ -40,9 +42,11 @@ Two built-in policies report a dedicated no-restart verdict:
 * the progress tracker finding no progress across restarts
   (``--ft-max-no-progress-cycles`` / ``max_no_progress_cycles``, default ``3``).
 
-The progress tracker reads the iteration from ``--ft-checkpoint-iteration-file``; without
-that file it stays inactive and logs a one-time warning. Raise the cycle threshold, or set
-it to ``0`` to disable tracking, for workloads that deliberately replay an iteration
+The progress tracker reads the iteration from ``--ft-checkpoint-iteration-file``;
+if no path is configured and no iterations are otherwise reported, it stays
+inactive and logs a one-time warning. A configured but missing file counts as
+no progress. Raise the cycle threshold, or set it to ``0`` to disable tracking,
+for workloads that deliberately replay an iteration
 without advancing the checkpoint -- for example Megatron-LM's rerun state machine
 re-running a suspect result on different hardware to tell silent data corruption apart from
 a genuine data issue. Those replays look identical to a stuck job from the outside.
