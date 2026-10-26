@@ -1,5 +1,9 @@
-Heartbeats API Integration
-**************************
+Legacy heartbeats API integration
+*********************************
+
+Heartbeat monitoring is being deprecated as a deployment approach. Use
+:doc:`sections` or :doc:`megatron` for new deployments. These APIs remain
+available for compatibility; this page is not the recommended learning path.
 
 1. Prerequisites
 =================
@@ -18,16 +22,18 @@ Timeouts for fault detection need to be adjusted for each workload:
    * ``initial_rank_heartbeat_timeout`` should be long enough to allow for workload initialization.
    * ``rank_heartbeat_timeout`` should be at least as long as the longest possible interval between steps.
 
-**Importantly, heartbeats are not sent during checkpoint loading and saving**, so the time for checkpoint-related operations should be taken into account.
+The supplied example does not send heartbeats during checkpoint loading and
+saving. Account for these intervals when configuring it; other workloads control
+where their own heartbeat calls occur.
 
 Fixed timeout values can be used throughout the training runs, or timeouts can be calculated based on observed heartbeat intervals.  
 `null` timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.
 
-.. note::
-    When --ft-initial-rank-heartbeat-timeout and --ft-rank-heartbeat-timeout are not
-    provided in the command-line arguments, the launcher defaults to FT's predefined values. These are
-    not null/None; currently, the defaults are 60 minutes for --ft-initial-rank-heartbeat-timeout
-    and 45 minutes for --ft-rank-heartbeat-timeout.
+Both heartbeat timeouts default to ``None`` (disabled), not 60/45 minutes.
+The YAML below deliberately leaves them disabled until the legacy example
+calculates or restores timeouts. Initial hangs before calibration are not
+bounded by heartbeat monitoring. Dynamic calibration is experimental and
+insufficiently tested for the recommended deployment.
 
 Configuration file example:
 

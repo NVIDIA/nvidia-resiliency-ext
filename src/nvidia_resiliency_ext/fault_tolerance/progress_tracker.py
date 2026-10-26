@@ -24,6 +24,7 @@ be early terminated to save resources.
 Progress is defined as the iteration from the checkpoint file having increased
 by at least min_progress_iterations (default 1) since the start of the cycle.
 When checkpoint_iteration_file is set, the tracker reads it in analyze_previous_cycle().
+A missing configured marker counts as no progress, including before the first checkpoint.
 
 Note: The launcher agent process runs continuously, so all state is kept in memory.
 Only worker processes restart.
@@ -76,6 +77,7 @@ class TrainingProgressTracker:
                                   Cycle 0 = initial attempt, cycle 1 = first restart, etc.
             checkpoint_iteration_file: Optional path to file containing latest checkpoint iteration.
                                       When set, read at startup for baseline and in analyze_previous_cycle().
+                                      A missing file counts as no progress for the completed cycle.
         """
         self.min_progress_iterations = min_progress_iterations
         self.max_no_progress_cycles = max_no_progress_cycles
@@ -123,10 +125,10 @@ class TrainingProgressTracker:
     def _read_iteration_from_checkpoint_file(self) -> bool:
         """Read the checkpoint iteration file into current_max_iteration.
 
-        Returns whether a usable iteration value was obtained. Callers must distinguish
-        "the iteration is unknown" from "the iteration is 0": current_max_iteration is
-        reset to 0 after every cycle, so a failed read leaves it at 0 and would otherwise
-        be scored as the workload having gone backwards.
+        Returns whether progress can be evaluated. A missing marker counts as no
+        progress against the last known baseline. Other read failures leave the
+        iteration unknown: scoring the reset current_max_iteration of 0 would
+        incorrectly treat them as backwards progress.
         """
         if not self.checkpoint_iteration_file:
             return False
@@ -139,8 +141,10 @@ class TrainingProgressTracker:
             self.update_iteration(iteration)
             return True
         except FileNotFoundError:
-            # Normal before the first checkpoint is written.
-            return False
+            # No checkpoint progress is available. Preserve the baseline so a
+            # disappearing marker cannot make its reappearance look like progress.
+            self.current_max_iteration = self.last_restart_iteration
+            return True
         except (ValueError, OSError) as e:
             # Logged at warning rather than debug: this suppresses a progress check, and
             # a transient filesystem error is most likely exactly when the tracker is
@@ -160,15 +164,14 @@ class TrainingProgressTracker:
         is set, reads it to get the iteration reached in the previous cycle, then checks if
         that cycle made meaningful progress and updates tracking state.
 
-        If no iteration source is available (no file and both current and last are 0),
+        If no iteration source is configured and both current and last are 0,
         the progress check is skipped and a warning is logged once.
 
-        If a checkpoint iteration file is configured but cannot be read, the cycle is
-        skipped entirely and no tracking state is touched. Scoring it would be wrong in
-        both directions: the unknown iteration reads as 0, which counts as a large
-        backwards step now, and it also clears last_restart_iteration, so the following
-        successful read looks like a large jump forwards and resets no_progress_count on
-        a genuinely stuck job.
+        A missing configured checkpoint marker counts as no progress, preserving
+        the last known baseline. An empty, malformed, or otherwise unreadable marker
+        leaves progress unknown, so the cycle is skipped without changing the count
+        or baseline. Resetting the baseline on a failed read would make the next
+        successful read look like a large jump forwards on a genuinely stuck job.
         """
         # Skip if tracking is disabled
         if self.max_no_progress_cycles <= 0:
@@ -177,8 +180,7 @@ class TrainingProgressTracker:
         # When using checkpoint file, read it now (before new workers start)
         iteration_known = self._read_iteration_from_checkpoint_file()
         if self.checkpoint_iteration_file and not iteration_known:
-            # Logged once per run of unknowns so the expected pre-first-checkpoint phase
-            # does not warn on every cycle.
+            # Log once per run of unknowns rather than on every cycle.
             if not self._iteration_unknown_warned:
                 logger.warning(
                     "Training cycle #%s progress check skipped: the checkpoint iteration "
@@ -195,7 +197,11 @@ class TrainingProgressTracker:
         self._iteration_unknown_warned = False
 
         # Check if previous cycle made progress (includes cycle 0; last_restart_iteration starts at 0)
-        if self.last_restart_iteration == 0 and self.current_max_iteration == 0:
+        if (
+            not self.checkpoint_iteration_file
+            and self.last_restart_iteration == 0
+            and self.current_max_iteration == 0
+        ):
             # Iterations are not being reported - skip progress check
             if not self._iterations_not_reported_warned:
                 logger.warning(

@@ -6,14 +6,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import stat
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from queue import SimpleQueue
-from threading import Event, RLock, Thread
+from threading import Event, Lock, RLock, Thread
 from typing import Any, Callable, Hashable, Mapping
 
 from nvidia_resiliency_ext.attribution.coalescing import (
@@ -21,7 +23,13 @@ from nvidia_resiliency_ext.attribution.coalescing import (
     InflightResult,
     SubmittedResult,
 )
-from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode
+from nvidia_resiliency_ext.attribution.orchestration.client_response import parse_attrsvc_response
+from nvidia_resiliency_ext.attribution.orchestration.config import (
+    RESP_RECOMMENDATION,
+    RESP_RESULT,
+    RESP_STATUS,
+    ErrorCode,
+)
 from nvidia_resiliency_ext.attribution.orchestration.log_path_metadata import (
     CYCLE_NUM_PATTERN,
     extract_job_metadata,
@@ -54,8 +62,12 @@ from nvidia_resiliency_ext.attribution.restart_agent import (
 )
 
 from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperationalLogger
+from .slack import AnalysisIdentity, SlackNotifier, run_name_from_log_path
 
 logger = logging.getLogger(__name__)
+
+#: Cache layout version. A mismatch is ignored rather than guessed at.
+_CACHE_SCHEMA = "restart_agent_cache.v1"
 
 _STATUS_REGISTERED = "registered"
 _STATUS_ANALYZING = "analyzing"
@@ -166,6 +178,11 @@ class _AttemptExecution:
     progressive_phase: str = "not_started"
     progressive_error: str | None = None
     progressive_evicted: bool = False
+    # Size/mtime of the log as it was when this result was produced. Captured
+    # at completion rather than at save time: the newest cycle log keeps being
+    # appended to, and pairing an old verdict with the file's later identity
+    # would make a stale result look byte-for-byte current on restore.
+    source_identity: dict[str, Any] = field(default_factory=dict)
 
 
 class RestartAgentServiceBackend:
@@ -184,7 +201,10 @@ class RestartAgentServiceBackend:
         executor: ThreadPoolExecutor | None = None,
         precompute_executor: ThreadPoolExecutor | None = None,
         accumulator_factory: Callable[[str], ProgressiveL0Accumulator] = (ProgressiveL0Accumulator),
+        slack_notifier: SlackNotifier | None = None,
+        cache_file: str = "",
     ) -> None:
+        self._cache_file = (cache_file or "").strip()
         self._allowed_root = os.path.realpath(allowed_root)
         self._runtime = runtime
         self._config = config
@@ -192,6 +212,8 @@ class RestartAgentServiceBackend:
         self._convergence = convergence
         self._progressive = progressive
         self._accumulator_factory = accumulator_factory
+        # Always present; reports itself disabled when Slack is not configured.
+        self._slack_notifier = SlackNotifier() if slack_notifier is None else slack_notifier
         self._max_completed_results = progressive.max_completed_results
         self._lock = RLock()
         self._entries: dict[Hashable, _AttemptExecution] = {}
@@ -206,6 +228,14 @@ class RestartAgentServiceBackend:
             thread_name_prefix="nvrx-restart-agent-l0",
         )
         self._owns_precompute_executor = precompute_executor is None
+        # Slack delivery runs here, off the analysis workers: a slow Slack call
+        # must not hold an analysis future open, because GET /logs awaits it.
+        self._notify_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="nvrx-restart-agent-notify"
+        )
+        # Writes are serialized end to end. The analysis workers are threads in
+        # one process, so a pid-qualified temp name is shared, not private.
+        self._save_lock = Lock()
         self._scheduler_wakeup = Event()
         self._scheduler = Thread(
             target=self._schedule_progressive,
@@ -220,6 +250,7 @@ class RestartAgentServiceBackend:
         self._scheduler.start()
 
     def shutdown(self) -> None:
+        self._save_cache(self._cache_file)
         with self._lock:
             self._shutdown = True
         self._scheduler_wakeup.set()
@@ -228,6 +259,9 @@ class RestartAgentServiceBackend:
             self._executor.shutdown(wait=False, cancel_futures=True)
         if self._owns_precompute_executor:
             self._precompute_executor.shutdown(wait=False, cancel_futures=True)
+        # Drained, not cancelled: a queued alert is the whole point of the
+        # notification, and shutdown already wrote the cache above.
+        self._notify_executor.shutdown(wait=True)
         close_runtime = getattr(self._runtime, "close", None)
         if close_runtime is not None:
             close_runtime()
@@ -237,15 +271,172 @@ class RestartAgentServiceBackend:
 
     async def start(self, loop: asyncio.AbstractEventLoop | None = None) -> dict[str, Any]:
         del loop
-        return {"cache_entries_loaded": 0, "backend": "lib"}
+        return {"cache_entries_loaded": self._load_cache(self._cache_file), "backend": "lib"}
 
     async def save_cache(self, cache_file: str | None = None) -> bool:
-        del cache_file
-        return False
+        return self._save_cache(cache_file if cache_file is not None else self._cache_file)
 
     async def load_cache(self, cache_file: str | None = None) -> int:
-        del cache_file
-        return 0
+        return self._load_cache(cache_file if cache_file is not None else self._cache_file)
+
+    def _file_identity(self, log_path: str) -> dict[str, Any]:
+        try:
+            stat = os.stat(log_path)
+        except OSError:
+            return {}
+        return {"mtime": stat.st_mtime, "size": stat.st_size}
+
+    def _save_cache(self, cache_file: str) -> bool:
+        """Persist completed analyses and attempt history to ``cache_file``.
+
+        Both halves matter on restart: without the analyses every complete
+        cycle of every running job is re-analyzed, and without the attempt
+        records L3 evaluates each of those as a first attempt.
+        """
+        path = (cache_file or "").strip()
+        if not path:
+            return False
+        # Held across snapshot, write and replace. Concurrent savers would
+        # otherwise interleave in one temp file and publish a truncated one.
+        with self._save_lock:
+            with self._lock:
+                entries = [
+                    {
+                        "log_path": entry.log_path,
+                        "user": entry.user,
+                        "job_id": entry.job_id,
+                        "cycle_id": entry.cycle_id,
+                        "source": entry.best_source,
+                        "result": (entry.final_result or entry.best_result).to_payload(),
+                        **entry.source_identity,
+                    }
+                    for entry in self._entries.values()
+                    if entry.status == _STATUS_COMPLETED
+                    and (entry.final_result or entry.best_result) is not None
+                    and entry.source_identity
+                ]
+            try:
+                records = [
+                    record.to_payload() for record in self._runtime.attempt_record_control.records()
+                ]
+            except Exception:  # history disabled, or a runtime without the control seam
+                records = []
+            payload = {
+                "schema": _CACHE_SCHEMA,
+                "saved_at": time.time(),
+                "config_fingerprint": self._config.config_fingerprint,
+                "entries": entries,
+                "attempt_records": records,
+            }
+            tmp = f"{path}.tmp.{os.getpid()}"
+            try:
+                with open(tmp, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+                os.replace(tmp, path)
+            except OSError as exc:
+                logger.warning("Could not write attribution cache %s: %s", path, exc)
+                with suppress(OSError):
+                    os.unlink(tmp)
+                return False
+        return True
+
+    def _load_cache(self, cache_file: str) -> int:
+        path = (cache_file or "").strip()
+        if not path or not os.path.exists(path):
+            return 0
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not read attribution cache %s: %s", path, exc)
+            return 0
+        if not isinstance(payload, Mapping) or payload.get("schema") != _CACHE_SCHEMA:
+            logger.warning("Ignoring attribution cache %s: unrecognized schema", path)
+            return 0
+        # A cached decision is only valid under the policy that produced it.
+        # Restoring across a budget or policy change would keep handing back
+        # the old advice, because a completed entry is never re-analyzed.
+        saved_fingerprint = str(payload.get("config_fingerprint") or "")
+        if saved_fingerprint != self._config.config_fingerprint:
+            logger.info(
+                "Ignoring cached analyses in %s: restart-agent config changed "
+                "(cache %s, current %s); attempt history is still restored",
+                path,
+                saved_fingerprint or "unset",
+                self._config.config_fingerprint,
+            )
+            records = payload.get("attempt_records")
+            if isinstance(records, list) and records:
+                try:
+                    self._runtime.attempt_record_control.seed(records, mode="replace")
+                except Exception as exc:
+                    logger.warning("Could not restore attempt history: %s", exc)
+            return 0
+
+        # Seed history first: it is useful even for entries whose log has moved
+        # on and whose cached analysis is therefore dropped below.
+        records = payload.get("attempt_records")
+        if isinstance(records, list) and records:
+            try:
+                self._runtime.attempt_record_control.seed(records, mode="replace")
+            except Exception as exc:
+                logger.warning("Could not restore attempt history: %s", exc)
+
+        loaded = 0
+        for item in payload.get("entries") or []:
+            if self._restore_entry(item):
+                loaded += 1
+        return loaded
+
+    def _restore_entry(self, item: Any) -> bool:
+        """Rebuild one completed analysis, if its log is byte-for-byte unchanged.
+
+        Validation is unconditional rather than honoring CACHE_GRACE_PERIOD_SECONDS:
+        that window exists to skip stat() on a hot in-process cache, and a
+        restart invalidates any such freshness assumption. It also matters
+        here - the newest cycle log is still being appended to, and serving a
+        stale verdict for it would attribute a failure from minutes ago.
+        """
+        if not isinstance(item, Mapping):
+            return False
+        log_path = str(item.get("log_path") or "")
+        result_payload = item.get("result")
+        if not log_path or not isinstance(result_payload, Mapping):
+            return False
+        identity = self._file_identity(log_path)
+        if not identity:
+            return False  # log is gone
+        if identity.get("size") != item.get("size") or identity.get("mtime") != item.get("mtime"):
+            return False  # grew or was rewritten since it was analyzed
+        try:
+            result = AnalysisResult(**dict(result_payload))
+        except TypeError:
+            return False
+        job_id = item.get("job_id")
+        cycle_id = item.get("cycle_id")
+        key: Hashable = (
+            (job_id, cycle_id) if job_id is not None and cycle_id is not None else log_path
+        )
+        entry = _AttemptExecution(
+            key=key,
+            log_path=log_path,
+            user=str(item.get("user") or "unknown"),
+            job_id=None if job_id is None else str(job_id),
+            cycle_id=None if cycle_id is None else int(cycle_id),
+            status=_STATUS_COMPLETED,
+            best_result=result,
+            final_result=result,
+            best_source=str(item.get("source") or ""),
+            progressive_phase="completed",
+            completed_at=time.monotonic(),
+            source_identity=dict(identity),
+        )
+        with self._lock:
+            if key in self._entries or log_path in self._path_index:
+                return False
+            self._entries[key] = entry
+            self._path_index[log_path] = key
+        return True
 
     async def check_mcp_health(self, timeout_seconds: float = 5.0) -> tuple[str, str]:
         del timeout_seconds
@@ -733,6 +924,11 @@ class RestartAgentServiceBackend:
                             current.precompute_future = None
                             current.next_poll_at = None
                     accumulator = None
+            # Identity of the source as the analyzer is about to read it. The
+            # stat after the run is not enough on its own: a log that grew
+            # while the analysis was in flight would be recorded with its
+            # later identity beside a verdict drawn from the earlier bytes.
+            identity_before = self._file_identity(request.log_path)
             if finalized_l0a is not None and hasattr(self._runtime, "analyze_prepared"):
                 run = self._runtime.analyze_prepared(
                     request,
@@ -754,9 +950,17 @@ class RestartAgentServiceBackend:
             final = model_results[0].analysis_result if model_results else run.result
             if not isinstance(final, AnalysisResult):
                 raise TypeError("Restart Agent service run did not produce AnalysisResult")
+            # Cache the verdict only when the source did not move under it.
+            # An empty identity keeps the entry out of the cache, so a restart
+            # re-analyzes rather than serving a result for bytes that changed.
+            identity_after = self._file_identity(request.log_path)
+            analyzed_identity = identity_after if identity_after == identity_before else {}
+            if not analyzed_identity:
+                logger.debug("Not caching %s: the log changed during analysis", request.log_path)
             with self._lock:
                 current = self._entries.get(key)
                 if current is not None:
+                    current.source_identity = analyzed_identity
                     current.final_result = final
                     current.best_result = final
                     if not current.best_source:
@@ -788,6 +992,10 @@ class RestartAgentServiceBackend:
                 terminal_total_s=completed_total_s,
                 route_count=completed_route_count,
             )
+            # Persist before alerting: durability must not depend on whether a
+            # notification could be scheduled.
+            self._save_cache(self._cache_file)
+            self._schedule_notification(key)
         except Exception as exc:
             with self._lock:
                 self._execution_errors += 1
@@ -809,6 +1017,60 @@ class RestartAgentServiceBackend:
                 "restart_agent.analysis.failed",
                 log_context,
                 error_classification=type(exc).__name__,
+            )
+
+    def _schedule_notification(self, key: Hashable) -> None:
+        """Hand a completed analysis to the notification pool.
+
+        The entry is passed by reference rather than by key: a later completion
+        can evict it from the table through ``_trim_completed_results`` while
+        the alert is still queued, and a key lookup would then find nothing and
+        drop the notification silently.
+        """
+        with self._lock:
+            entry = self._entries.get(key)
+        if entry is None:
+            return
+        try:
+            self._notify_executor.submit(self._notify_slack, entry)
+        except RuntimeError:
+            # Shutting down. The result is already persisted; the alert is
+            # best effort and must not surface as an analysis failure.
+            logger.debug("Slack notification not scheduled for %s: shutting down", entry.log_path)
+
+    def _notify_slack(self, entry: "_AttemptExecution") -> None:
+        """Alert on a completed terminal analysis, never failing the analysis.
+
+        Runs off the public result so the message matches exactly what a client
+        would read back from ``GET /logs``.
+        """
+        if entry is None or not self._slack_notifier.enabled:
+            return
+        with self._lock:
+            job_id = entry.job_id or ""
+            user = entry.user or ""
+            log_path = entry.log_path
+            cycle_id = entry.cycle_id
+        try:
+            public = self._public_result(entry)
+            parsed = parse_attrsvc_response(
+                {
+                    RESP_RESULT: public.result,
+                    RESP_STATUS: public.status,
+                    RESP_RECOMMENDATION: public.recommendation,
+                },
+                log_path=log_path,
+            )
+            identity = AnalysisIdentity(
+                job_id=job_id,
+                user=user,
+                run_name=run_name_from_log_path(log_path, job_id),
+                cycle_id=cycle_id,
+            )
+            self._slack_notifier.notify(identity, parsed)
+        except Exception as exc:  # alerting is best effort
+            logger.warning(
+                "Slack notification failed for %s: %s: %s", log_path, type(exc).__name__, exc
             )
 
     def _public_result(self, entry: _AttemptExecution) -> LogAnalysisCycleResult:

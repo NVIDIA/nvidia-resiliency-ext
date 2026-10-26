@@ -17,6 +17,7 @@
 This module provides an async utilities which allow to start
 a checkpoint save process in the background.
 """
+import functools
 import gc
 import logging
 import os
@@ -119,6 +120,19 @@ def _set_process_qos(cpu_priority: int, io_priority: Optional[int]) -> None:
                 logger.warning(f"PID {pid}: Failed to set I/O priority: {e}")
 
 
+def _callable_name(fn: Callable) -> str:
+    """Best-effort fully qualified name of an arbitrary callable, for span attributes."""
+    while isinstance(fn, functools.partial):
+        fn = fn.func
+    qualname = getattr(fn, "__qualname__", None)
+    if not isinstance(qualname, str):
+        # Callable instances (objects defining __call__) have no __qualname__.
+        fn = type(fn)
+        qualname = fn.__qualname__
+    module = getattr(fn, "__module__", None)
+    return f"{module}.{qualname}" if isinstance(module, str) else qualname
+
+
 class AsyncRequest(NamedTuple):
     """Represents an async request that needs to be scheduled for execution.
 
@@ -203,7 +217,12 @@ class AsyncRequest(NamedTuple):
         """
         with debug_time("finalize", logger):
             for finalize_fn in self.finalize_fns:
-                finalize_fn()
+                with telemetry.span(
+                    semconv.SPAN_GROUP_CKPT_PROFILING,
+                    "nv.nvrx.ckpt.save.finalize_fn",
+                    {"code.function.name": _callable_name(finalize_fn)},
+                ):
+                    finalize_fn()
 
             # Validate that matching call_idx are invoked from all ranks.
             # This ensures all ranks are correctly participating in CP save invocations
@@ -211,7 +230,11 @@ class AsyncRequest(NamedTuple):
                 ten = torch.tensor(
                     [self.call_idx], dtype=torch.int, device=torch.cuda.current_device()
                 )
-                torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
+                with telemetry.span(
+                    semconv.SPAN_GROUP_CKPT_PROFILING,
+                    "nv.nvrx.ckpt.save.validate_call_idx_all_reduce",
+                ):
+                    torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
                 assert ten.item() == self.call_idx, "Unmatched async calls. "
                 "That probably means not all ranks are participating in async finalization"
         return self.call_idx

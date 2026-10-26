@@ -76,16 +76,76 @@ Restart Agent backend.
 Restart Agent config may name another key-file environment variable through its
 `credential_ref`.
 
-**Slack Notifications** (optional; no `NVRX_ATTRSVC_` prefix):
+### Slack Notifications
 
-These settings are retained for the controller/manual path. The current
-`nvrx-attrsvc` direct backend does not send Slack notifications.
+attrsvc posts completed terminal analyses to Slack. Alerting lives here, rather
+than in a client, so both deployment shapes are covered by one implementation:
+
+| Mode | Submits logs | Slack |
+|------|--------------|-------|
+| As a service | `nvrx-smonsvc` + `nvrx-attrsvc` | ✅ |
+| Inline | NVRx + `nvrx-attrsvc` (no monitor) | ✅ |
+
+Both submit through the same `POST /logs` and both carry `user` and `job_id`, so
+the alert is identical. One analysis produces exactly one message no matter how
+many clients fetch the result.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SLACK_BOT_TOKEN` | `""` | Bot token (empty = controller path tries file fallbacks below) |
-| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token (checked before `~/.slack_bot_token` / `~/.slack_token`) |
-| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env`, quote values that start with `#`: `SLACK_CHANNEL="#trng-alerts"` |
+| `SLACK_BOT_TOKEN` | `""` | Bot token. If empty, falls back to `SLACK_BOT_TOKEN_FILE`, then `~/.slack_bot_token`, `~/.slack_token`, `~/.config/nvrx/slack_bot_token` |
+| `SLACK_BOT_TOKEN_FILE` | — | Path to a file containing the token |
+| `SLACK_CHANNEL` | `""` | Channel ID or name (e.g. `#trng-alerts`). In `.env` files, quote values starting with `#` |
+| `NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS` | `STOP` | Comma- or space-separated actions that trigger a message. Valid: `STOP`, `RESTART`, `CONTINUE`, `UNKNOWN`, `TIMEOUT` |
+| `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN` | `""` | Domain used to turn a job owner into an address for an `@` mention, e.g. `example.com`. Unset means no mention is attempted |
+
+`slack-sdk` ships as a regular dependency, so no extra is needed.
+
+Notifications are **off by default**, activating only when both a token and a
+channel are configured; otherwise attrsvc logs `Slack alerts: disabled (...)` at
+startup and behaves unchanged. Delivery is best
+effort — a Slack outage is logged, never propagated into the analysis path.
+
+Each alert is **two messages**: a three-line summary in the channel and the
+analysis as a threaded reply. A channel of full attributions is unscannable, so
+the channel keeps one line per job and the detail stays one click away.
+
+```
+*NVRx attribution:* `RESTART` on *aws-cmh-slurm-1* _(source: l1_enriched:eccn-gpt-5.4)_
+*Job ID:* `4103814_0 (nemotron4_ultra_60t_phase1_v0) cycle 3`
+*Log path:* `/scratch/.../logs/..._cycle3.log`
+```
+
+The job line carries the restart cycle when the logs are numbered
+(`..._cycle<N>.log`); logs without cycle numbers have no attempt ordering, so
+nothing is shown rather than an invented zero.
+
+The owner mention rides on the summary so the ping carries the visible line. A
+failed reply is logged but does not count as a failed notification — the alert
+is already delivered and only the detail is lost.
+
+The threaded reply carries the recommendation and its source, the cluster
+(`NVRX_ATTRSVC_CLUSTER_NAME`, so alerts from several clusters in one channel are
+distinguishable), the job ID, the narrative root cause, the L4 decision trail
+(rule, category, retry outlook), an evidence line locating the failure, the
+first three log lines at that failure, and — when the cause is unconfirmed —
+the plausible causes and missing evidence.
+
+The decision cites a line number; quoting the lines there saves opening a
+multi-megabyte log to see what it actually says. Overlong lines are truncated,
+and the section is omitted when the log cannot be read.
+
+A category of `0` is L1's sanctioned "no listed category matches" and is
+reported as such. That is a different fact from no category at all, which
+happens on deterministic-only results where L1 never ran.
+
+The job owner is named in every message. Turning that owner into an `@` mention
+additionally requires `NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN`, since a SLURM account
+name is not an email address and the domain is site-specific. Without it the
+alert is sent unmentioned; a failed lookup never blocks delivery.
+
+attrsvc never sees the SLURM job name, so the run name is recovered from the
+application log filename (`<run>_<jobid>_date_...`) to keep alerts
+self-describing in both modes.
 
 **Processed Files Ledger** (optional cache persistence):
 
@@ -104,8 +164,8 @@ Example: `NVRX_ATTRSVC_CACHE_FILE=/var/lib/nvrx/attrsvc_cache.json`
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/healthz` | GET | Health check |
-| `/stats` | GET | Cache and request statistics |
-| `/jobs` | GET | All tracked jobs (pending, single, splitlog modes) |
+| `/stats` | GET | Service and request statistics |
+| `/jobs` | GET | All tracked jobs and attempts |
 | `/logs` | POST | Submit log for analysis |
 | `/logs` | GET | Retrieve analysis results |
 | `/print` | GET | Preview first 4KB of file |
@@ -125,9 +185,10 @@ Example: `NVRX_ATTRSVC_CACHE_FILE=/var/lib/nvrx/attrsvc_cache.json`
 
 **GET /logs** query params:
 - `log_path` (required): Path to job output file
-- `file` (optional): Filename for splitlog mode
-- `wl_restart` (optional): Workload restart index within file (0-based; single-file supports multiple cycles)
 - `wait` (optional, default `true`): Set `false` to probe cache/in-flight state without starting or waiting for analysis.
+
+The direct Restart Agent backend does not support the legacy `file` or
+`wl_restart` selectors.
 
 ---
 
@@ -141,7 +202,7 @@ All success responses use HTTP 200. Interpret outcome from the response body onl
 |--------------------|------|----------|-------------|
 | `log_path` | string | Yes | Absolute path to job output file under allowed root |
 | `user` | string | Yes | Job owner |
-| `job_id` | string | No | Job ID (used for splitlog detection) |
+| `job_id` | string | No | Job identity used for same-job history |
 | `cycle_id` | integer | No | Explicit restart-attempt order. The direct Restart Agent backend infers `_cycle<N>.log` only when absent. |
 | `analysis_intent` | string | No | `track_only` (default), `progressive`, or `terminal`. |
 
@@ -149,10 +210,10 @@ All success responses use HTTP 200. Interpret outcome from the response body onl
 |----------------|------|-------------|
 | `submitted` | bool | Always true on success |
 | `normalized_path` | string | Resolved path used as job key |
-| `mode` | string | `"PENDING"` \| `"SINGLE"` \| `"SPLITLOG"` |
-| `logs_dir` | string \| null | Set when mode is SPLITLOG |
-| `sched_restarts` | int | Scheduler restart count (SPLITLOG) |
-| `files_analyzed` | int \| null | Number of files analyzed (SPLITLOG only; null for PENDING/SINGLE) |
+| `mode` | string | Compatibility field; `"SINGLE"` for the direct backend |
+| `logs_dir` | null | Legacy compatibility field |
+| `sched_restarts` | int | Legacy compatibility field; `0` for the direct backend |
+| `files_analyzed` | int | Legacy compatibility field; `0` for the direct backend |
 
 4xx/5xx return `{ "error_code": string, "message": string }`.
 
@@ -161,66 +222,31 @@ All success responses use HTTP 200. Interpret outcome from the response body onl
 | Query | Type | Required | Description |
 |-------|------|----------|-------------|
 | `log_path` | string | Yes | Same path as used in POST |
-| `file` | string | No | Filename for splitlog (e.g. `model_12345_cycle0.log`) |
-| `wl_restart` | int | No | Workload restart index within file (0-based). Omit to get all cycles (single-file) or use default. |
-| `wait` | bool | No | Default `true`. Set `false` to return immediately with cached result, `in_flight`, or `pending`. |
+| `wait` | bool | No | Default `true`. Set `false` to return immediately with the registered result, `in_flight`, or `pending`. |
 
-**Response (200)** — same top-level shape for single-file and splitlog; splitlog adds extra fields.
+The direct backend rejects the legacy `file` and `wl_restart` selectors.
+
+**Response (200)**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `result` | object | **Inner result** from the analysis pipeline (see below). |
+| `result` | object | Restart Agent response when available; empty while no result exists. |
 | `status` | string | `"completed"` for a result. With `wait=false`, may be `"in_flight"` or `"pending"`. |
-| `recommendation` | object | Normalized client contract for restart/stop decisions. |
-| `wl_restart` | int | Which workload cycle this result is for (0 when returning all). |
-| `wl_restart_count` | int \| null | Total workload cycles in the file (single-file; null if N/A). |
-| `mode` | string | Only for splitlog: `"splitlog"`. |
-| `sched_restarts` | int | Only for splitlog. |
-| `log_file` | string | Only for splitlog: path to the analyzed log file. |
+| `recommendation` | object | Completed recommendation consumed by NVRx. |
+| `candidate_recommendation` | object | Early deterministic candidate for observation only; NVRx does not act on it. |
+| `wl_restart` | int | Attempt cycle ID, or `0` when unavailable. |
 
 **`recommendation` object** — clients should branch on this field:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `action` | string | One of `"STOP"` \| `"RESTART"` \| `"CONTINUE"` \| `"UNKNOWN"` \| `"TIMEOUT"`. |
-| `source` | string | Backend/module that produced the recommendation, e.g. `"log_analyzer"`. |
+| `action` | string | `"STOP"`, `"RESTART"`, or `"UNKNOWN"`. |
+| `reason` | string | Restart Agent justification or lifecycle reason. |
+| `source` | string | Result source, such as `"deterministic"` or `"l1_enriched:<route>"`. |
 
-`"STOP"` means the client should not restart immediately. `"RESTART"` means
-the client may restart a failed run. `"CONTINUE"` means no stop/restart
-intervention is recommended. `"UNKNOWN"` and `"TIMEOUT"` are not actionable stop
-signals.
-
-**Inner `result` object** — raw backend result, retained for debugging:
-
-| Field | Type | When | Description |
-|-------|------|------|-------------|
-| `module` | string | Always | e.g. `"log_analyzer"`, `"log_fr_analyzer"`, or `"fr_analyzer"`. |
-| `result` | array \| object | Always | LogSage attribution items, or FR monitor output for `fr_analyzer`. Empty for timeout/error markers. |
-| `recommendation` | object | Always | Compact decision contract: `action` and `source`. |
-| `state` | string | Timeout/error only | Execution marker such as `"timeout"`; normal LogSage success results omit this. |
-| `error` | string | When `state === "timeout"` | Human-readable timeout message. |
-
-Each attribution item carries the exact `raw_text` and the parsed LogSage fields
-used by postprocessing: `auto_resume`, `auto_resume_explanation`,
-`attribution_text`, `checkpoint_saved_flag`, `primary_issues`, and
-`secondary_issues`. Each item also carries the parsed cycle `action`; the
-overall client decision is kept separately in `recommendation.action` /
-`recommendation.source`.
-
-Flight-recorder analysis is monitor-only: missing/hanging ranks are surfaced in
-`fr_analysis` and the `s_fr_*` dataflow fields. When FR is returned as its own
-MCP result, its recommendation is `UNKNOWN`; it does not decide stop/restart
-policy.
-
-Other fields (e.g. `result_id`, `resource_uri`, `fr`) may be present.
-`llm_merged_summary` appears only when the `LOG_AND_TRACE_WITH_LLM` merge ran with FR data.
-
-**Timeout marker:**
-
-`result.state === "timeout"` means analysis did not complete. Use `result.error`
-for the message; do not treat it as successful attribution.
-
-Clients should use `recommendation.action` for restart/stop decisions.
+Only completed `"STOP"` is actionable at the NVRx boundary. Every other completed
+action is non-stopping. Terminal analysis failure is also a completed request:
+`result.analysis_outcome` is `"failed"` and the recommendation is `"UNKNOWN"`.
 
 4xx/5xx return `{ "error_code": string, "message": string }`.
 
@@ -253,6 +279,28 @@ All deployment and run scripts live under `deploy/`:
 - **Snapshot (debug)**: `deploy/snapshot_attrsvc.sh [host] [port]`
 
 For combined deployment with monitor, see `../scripts/nvrx_services.sbatch`
+
+### Slurm process supervision
+
+An externally deployed attrsvc needs to remain reachable at the endpoint given
+to NVRx even if the service process crashes. The attrsvc-only Slurm deployment
+therefore runs a supervisor as the batch payload. The supervisor retains the
+same CPU-node allocation and endpoint while restarting attrsvc after `1`, `2`,
+`5`, `10`, and `20` seconds. If all five restarted processes exit before
+becoming stable, the supervisor exits nonzero and Slurm marks the job failed.
+Running continuously for five minutes resets the consecutive restart count.
+
+Slurm cancellation, timeout, and preemption signals are forwarded to attrsvc
+and do not trigger a restart. The following optional environment variables
+override the deployment defaults:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NVRX_ATTRSVC_SUPERVISOR_BACKOFF_SECONDS` | `1 2 5 10 20` | Space-separated base-10 delay before each allowed restart. The number of entries is the maximum restart count. |
+| `NVRX_ATTRSVC_SUPERVISOR_STABLE_SECONDS` | `300` | Positive base-10 continuous runtime that resets the consecutive restart count. |
+
+The supervisor preserves the Slurm allocation and network endpoint, but attrsvc
+runtime state remains in memory and is not restored after a process restart.
 
 ## Python API
 
@@ -287,9 +335,12 @@ asyncio.run(main())
 | `config.py` | `Settings` (pydantic), `setup()` loads settings and configures logging |
 | `restart_agent_config.py` | Resolves attrsvc settings into `RestartAgentConfig` |
 | `restart_agent_backend.py` | Direct progressive/terminal HTTP lifecycle over `RestartAgentRuntime` |
+| `slack.py` | Slack alerts for completed terminal analyses |
 | `deploy/run_attrsvc.sh` | Run service with logging (background) |
+| `deploy/supervise_attrsvc.sh` | Restart an attrsvc Slurm child after transient exits |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |
+| `deploy/requirements.txt` | Standalone attrsvc image dependencies; excludes workload-side PyTorch/CUDA |
 | `deploy/kubernetes.yaml` | Kubernetes deployment manifest |
 | `deploy/slurm.sbatch` | SLURM batch script |
 
@@ -307,5 +358,6 @@ asyncio.run(main())
 - **`setup()`** in `config.py` loads settings and configures logging only.
 - **`AttributionHttpAdapter`** translates `Settings` into `RestartAgentConfig`
   for the direct Restart Agent backend.
-- Dataflow and Slack postprocessing remain on the controller/manual path;
-  the direct backend does not invoke them.
+- Dataflow postprocessing remains on the controller/manual path; the direct
+  backend does not invoke it. Slack alerting is implemented in `slack.py` and
+  fires from the direct backend on terminal completion.

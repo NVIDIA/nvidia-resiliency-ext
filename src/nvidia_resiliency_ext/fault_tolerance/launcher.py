@@ -152,6 +152,45 @@ _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 # [root, leaf0, ..., leaf_{N-1}] when ft_log_aggregator_count > 1.
 _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 _ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
+_DIAGNOSTIC_COLLECTOR = None
+
+
+def _start_diagnostic_collector(cfg, launcher_log_file, *, local_world_size=1):
+    global _DIAGNOSTIC_COLLECTOR
+    from .timeout_diagnostics import (
+        DiagnosticCollectorProcess,
+        diagnostics_directory,
+        validate_capture_dependencies,
+        validate_config,
+    )
+
+    validate_config(cfg)
+    if not cfg.timeout_dump_enabled:
+        return
+    destination = diagnostics_directory(launcher_log_file)
+    # Startup summaries are optional. Hostname/topology ranks need not include
+    # zero, and skipping those paths can leave the infrastructure rank unavailable.
+    log_resolved_paths = False
+    if logger.isEnabledFor(logging.DEBUG):
+        with contextlib.suppress(ValueError, RuntimeError):
+            log_resolved_paths = get_infrastructure_rank(skip_nodename_logic=True) == 0
+    validate_capture_dependencies(cfg, log_resolved_paths=log_resolved_paths)
+    if _DIAGNOSTIC_COLLECTOR is not None:
+        raise RuntimeError("Diagnostic collector is already running")
+    try:
+        _DIAGNOSTIC_COLLECTOR = DiagnosticCollectorProcess(
+            cfg, destination, local_world_size=local_world_size
+        )
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Timeout diagnostics disabled: %s", exc)
+        cfg.timeout_dump_enabled = False
+
+
+def _stop_diagnostic_collector():
+    global _DIAGNOSTIC_COLLECTOR
+    if _DIAGNOSTIC_COLLECTOR is not None:
+        _DIAGNOSTIC_COLLECTOR.shutdown()
+        _DIAGNOSTIC_COLLECTOR = None
 
 
 def _append_attribution_startup_failure(log_file: Optional[str], error: Exception) -> None:
@@ -1442,6 +1481,8 @@ class LocalElasticAgent(SimpleElasticAgent):
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
     def _monitor_workers(self, worker_group: WorkerGroup) -> RunResult:
+        if _DIAGNOSTIC_COLLECTOR is not None:
+            _DIAGNOSTIC_COLLECTOR.check_health()
         role = worker_group.spec.role
         worker_pids = {w.id for w in worker_group.workers}
         assert self._pcontext is not None
@@ -1953,6 +1994,7 @@ def launch_agent(
             else:
                 agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
+        _stop_diagnostic_collector()
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
         # ends. Wait a short grace period so other nodes can read final state (e.g. permanent close key,
@@ -2848,6 +2890,43 @@ def get_args_parser() -> ArgumentParser:
         "Useful for debugging process cleanup issues. Default: False.",
     )
 
+    def dump_enabled(value):
+        if value.lower() not in ("true", "false"):
+            raise ValueError("expected true or false")
+        return value.lower() == "true"
+
+    timeout_dump_group = parser.add_argument_group("Timeout diagnostics")
+    timeout_dump_group.add_argument(
+        "--ft-timeout-dump-enabled", type=dump_enabled, default=None,
+        help="Enable section timeout dumps (true or false; default: false).",
+    )
+    timeout_dump_group.add_argument(
+        "--ft-timeout-dump", default=None,
+        help="Ordered comma-separated tools (default: pyspy,gdb,cuda-gdb). Requires --ft-timeout-dump-enabled=true.",
+    )
+    timeout_dump_group.add_argument(
+        "--ft-timeout-dump-sections", default=None,
+        help="Comma-separated workload section names to capture on timeout (default: step). Does not enable diagnostics.",
+    )
+    timeout_dump_group.add_argument(
+        "--ft-timeout-dump-cuda-gdb-mode", choices=("batch", "stdin"), default=None,
+        help="CUDA-GDB command delivery: batch (default) or automated stdin mode. Does not enable diagnostics.",
+    )
+    for name, value_type, description in (
+        ("local-root", str, "Node-local scratch root (default: /tmp)"),
+        ("pyspy", str, "py-spy executable (default: py-spy)"),
+        ("gdb", str, "GDB executable (default: gdb)"),
+        ("cuda-gdb", str, "CUDA-GDB executable (default: cuda-gdb)"),
+        ("gdb-command-file", str, "GDB diagnostic command file (required when gdb is selected)"),
+        ("cuda-gdb-command-file", str, "CUDA-GDB diagnostic command file (required when cuda-gdb is selected)"),
+        ("capture-timeout", float, "Total capture grace for all tools in seconds (default: 30)"),
+        ("max-capture-bytes", int, "Maximum capture size per tool including headers (default: 1048576)"),
+        ("poll-interval", float, "Collector interval in seconds (default: 30)"),
+        ("upload-attempts", int, "Maximum attempts per batch, one per collection poll (default: 3)"),
+        ("shutdown-grace", float, "Collector shutdown grace in seconds (default: 10)"),
+    ):
+        timeout_dump_group.add_argument(f"--ft-timeout-dump-{name}", type=value_type, default=None, help=description)
+
     parser.add_argument(
         "--ft-install-exception-hook",
         "--ft-install_exception_hook",
@@ -2903,7 +2982,8 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_checkpoint_iteration_file",
         help="Path to file containing the latest checkpoint iteration (single integer). "
-        "Used for progress tracking. Example: phase1/latest_checkpointed_iteration.txt",
+        "When progress tracking is enabled, a missing file counts as no progress. "
+        "Example: phase1/latest_checkpointed_iteration.txt",
     )
 
     #
@@ -3069,8 +3149,12 @@ def _validate_slurm_single_launcher_per_node() -> None:
             "  NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE=1"
         )
 
-def _validate_args(args: Any) -> None:
-    """Centralized validation of CLI args (cross-flag consistency). Raises ValueError if invalid."""
+def _validate_args(
+    args: Any,
+    fault_tol_cfg: Optional[FaultToleranceConfig] = None,
+    launcher_log_file: Optional[str] = None,
+) -> None:
+    """Validate CLI consistency and merged timeout-dump settings before startup."""
     n_log_agg = int(getattr(args, "ft_log_aggregator_count", 0))
     if n_log_agg < 0:
         raise ValueError(
@@ -3085,6 +3169,13 @@ def _validate_args(args: Any) -> None:
         raise ValueError(
             "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
         )
+    from .timeout_diagnostics import diagnostics_directory, validate_config
+
+    if fault_tol_cfg is None:
+        fault_tol_cfg = FaultToleranceConfig.from_args(args)
+    validate_config(fault_tol_cfg)
+    if fault_tol_cfg.timeout_dump_enabled:
+        diagnostics_directory(launcher_log_file or getattr(args, "ft_nvrx_logfile", None))
 
 
 def _resolve_attribution_endpoint(args: Any, fault_tol_cfg: FaultToleranceConfig) -> Optional[str]:
@@ -3109,7 +3200,8 @@ def _validate_attribution_requires_per_cycle_applog(
 
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
-    _validate_args(args)
+    fault_tol_cfg = FaultToleranceConfig.from_args(args)
+    _validate_args(args, fault_tol_cfg, launcher_log_file)
     if getattr(args, "ft_nvrx_logfile", None):
         if getattr(args, "ft_enable_log_server", None) is None:
             logger.info(
@@ -3170,8 +3262,14 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         )
 
 
-    fault_tol_cfg = FaultToleranceConfig.from_args(args)
     _validate_attribution_requires_per_cycle_applog(args, fault_tol_cfg)
+    # Fork before attribution/logging services create background threads. The
+    # child keeps only its ownership lock and the launcher's stdout/stderr.
+    _start_diagnostic_collector(
+        fault_tol_cfg,
+        launcher_log_file or getattr(args, "ft_nvrx_logfile", None),
+        local_world_size=nproc_per_node,
+    )
 
     if fault_tol_cfg.segment_health_check_dir:
         if not os.path.isabs(fault_tol_cfg.segment_health_check_dir):
@@ -3948,6 +4046,7 @@ def main(args=None):
     finally:
         # Clean up gRPC server AFTER all logging is done
         # (logging cleanup already happened in run()'s finally block)
+        _stop_diagnostic_collector()  # also covers failure during configuration/startup
         global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER
         if _GRPC_SERVER_PROCESSES:
             grpc_graceful_shutdown_timeout = float(

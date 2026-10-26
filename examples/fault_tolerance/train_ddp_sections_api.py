@@ -17,16 +17,16 @@
 Demo of DDP training with fault tolerance, using FT package sections API
 
 It should be run with `ft_launcher`. E.g.
-`ft_launcher --nproc-per-node=2 --ft-cfg-path=./examples/fault_tolerance/fault_tol_cfg_sections.yaml examples/fault_tolerance/train_ddp_sections_api.py --device=cpu`
+`ft_launcher --nproc-per-node=2 --rdzv-endpoint=localhost:0 --max-restarts=3 --ft-rank-section-timeouts=init:120,step:30,checkpoint:120 --ft-rank-out-of-section-timeout=60 examples/fault_tolerance/train_ddp_sections_api.py --device=cpu`
 
 This example uses following custom FT sections
 - 'init' - covers workload initialization
 - 'step' - covers training/evaluation step (fwd/bwd, loss calculation etc)
 - 'checkpoint' - covers checkpoint saving
 
-Timeout for each section is calculated when enough data is collected.
-FT "out-of-section" timeout is calculated when the training run ends normally.
-FT state is saved in a JSON file.
+Fixed section timeouts supplied by the launcher are used by default. Experimental
+calculation and ft_state.json persistence require --calculate_timeouts.
+Training checkpoints use synchronous rank-0 torch.save / torch.load.
 
 This example allows to simulate a training fault:
 - selected rank hung
@@ -129,9 +129,13 @@ def parse_args():
                         default=os.getenv('LOCAL_RANK', 0))
     parser.add_argument('--simulated_fault', type=fault_desc,
                         help='Description of a fault to be simulated')
+    parser.add_argument('--calculate_timeouts', action='store_true',
+                        help='Experimentally calculate and persist timeouts; not recommended for deployment')
     # fmt: on
 
     args = parser.parse_args()
+    if args.save_interval == 0 or args.save_interval < -1:
+        parser.error('--save_interval must be positive, or -1 for epoch-end saves only')
     return args
 
 
@@ -170,7 +174,10 @@ def save_checkpoint(
     with dist_utils.sync_workers() as rank:
         if rank == 0:
             logging.info(f'Saving checkpoint to {checkpoint_path}')
-            torch.save(state, checkpoint_path)
+            # Publish only a completed checkpoint; preserve the previous one if killed mid-save.
+            temporary_path = checkpoint_path + '.tmp'
+            torch.save(state, temporary_path)
+            os.replace(temporary_path, checkpoint_path)
 
     ft_client.end_section('checkpoint')
 
@@ -192,8 +199,9 @@ def save_ft_state(ft_client, path):
         if rank == 0:
             logging.info(f'Saving FT state into: {path}')
             ft_state = ft_client.state_dict()
-            with open(path, 'w') as f:
+            with open(path + '.tmp', 'w') as f:
                 json.dump(ft_state, f)
+            os.replace(path + '.tmp', path)
 
 
 def update_ft_section_timeouts(ft_client, selected_sections, calc_out_of_section, ft_state_path):
@@ -214,12 +222,15 @@ def training_loop(
     optimizer,
     device,
     dataloader,
+    sampler,
     progress,
     args,
 ):
     # Training epoch implementation
 
     epoch_idx = progress['epoch_idx']
+    sampler.start_sample_idx = progress['iter_idx'] * args.batch
+    sampler.set_epoch(epoch_idx)
 
     para_model.train()
 
@@ -252,14 +263,13 @@ def training_loop(
                 last_log_time = time.monotonic()
                 logging.debug(f'Avg time per iter: {time_per_iter:.3f} [sec]')
 
-        progress['iter_idx'] = iter_idx + 1
-
         optimizer.step()
+        progress['iter_idx'] = iter_idx + 1
 
         ft_client.end_section('step')
 
         # Whether to do a periodic checkpointing
-        periodic_save = iter_idx % args.save_interval == args.save_interval - 1
+        periodic_save = args.save_interval > 0 and (iter_idx + 1) % args.save_interval == 0
         if periodic_save:
             save_checkpoint(
                 progress=progress,
@@ -410,7 +420,7 @@ def main():
     train_dataset = Dataset(args.train_dataset_size, args.hidden)
     val_dataset = Dataset(args.val_dataset_size, args.hidden)
 
-    train_sampler = torch.utils.data.DistributedSampler(
+    train_sampler = dist_utils.ResumableDistributedSampler(
         train_dataset,
         drop_last=True,
     )
@@ -437,9 +447,10 @@ def main():
 
     # try to load FT state from a JSON file
     ft_state_path = os.path.join(args.output_dir, 'ft_state.json')
-    ft_state = maybe_load_ft_state(ft_state_path)
-    if ft_state:
-        ft_client.load_state_dict(ft_state)
+    if args.calculate_timeouts:
+        ft_state = maybe_load_ft_state(ft_state_path)
+        if ft_state:
+            ft_client.load_state_dict(ft_state)
 
     # Open "init" FT section that covers workload initialization
     ft_client.start_section('init')
@@ -503,7 +514,7 @@ def main():
     # "init" FT section ends here
     ft_client.end_section('init')
 
-    if is_checkpoint_loaded:
+    if is_checkpoint_loaded and args.calculate_timeouts:
         # init time can be longer if there was checkpoint loading
         # so we update "init" secton timeout if a checkpoint was loaded
         update_ft_section_timeouts(ft_client, ['init'], False, ft_state_path)
@@ -519,12 +530,13 @@ def main():
             optimizer,
             device,
             train_dataloader,
+            train_sampler,
             progress,
             args,
         )
 
         # If there were some training iterations observed, update "step" section timeout
-        if num_tr_iters_made > 0:
+        if num_tr_iters_made > 0 and args.calculate_timeouts:
             update_ft_section_timeouts(ft_client, ['step'], False, ft_state_path)
 
         # epoch_idx is incremented because the current epoch is finished
@@ -534,8 +546,8 @@ def main():
 
         validation_loop(ft_client, model, val_dataloader, epoch_idx, device)
 
-        # Checkpoint contains everything needed for deterministic resume:
-        # state of the model, optimizer and other components,
+        # This deterministic dummy dataset/model needs model, optimizer, and sample progress.
+        # General workloads also need per-rank RNG and any other state affecting training.
         save_checkpoint(
             progress=progress,
             model=model,
@@ -546,7 +558,8 @@ def main():
         )
 
         # Update checkpointing section timeout after checkpoint saving was seen
-        update_ft_section_timeouts(ft_client, ['checkpoint'], False, ft_state_path)
+        if args.calculate_timeouts:
+            update_ft_section_timeouts(ft_client, ['checkpoint'], False, ft_state_path)
 
         # NOTE: SIGTERM is used by SLURM to initiate graceful job termination
         # if _any_ rank received SIGTERM, we leave the main loop
@@ -561,7 +574,8 @@ def main():
     _cancel_simulated_fault()
 
     # update "out-of-section" FT timeout when the training run ends normally
-    update_ft_section_timeouts(ft_client, [], True, ft_state_path)
+    if args.calculate_timeouts:
+        update_ft_section_timeouts(ft_client, [], True, ft_state_path)
     ft_client.shutdown_workload_monitoring()
     torch.distributed.destroy_process_group()
     logging.info('Leaving main, ret_code=0')
