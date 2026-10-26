@@ -47,7 +47,7 @@ and ``ft_launcher --help`` for the configuration fields and accepted CLI syntax.
      - Section messages do not wait for acknowledgement
    * - ``max_no_progress_cycles``
      - 3
-     - Stop threshold when usable checkpoint progress is available
+     - Stop after consecutive cycles without checkpoint progress; a missing configured marker counts
    * - ``segment``
      - ``None``
      - Simple hot-spare selection without ClusterUUID requirements

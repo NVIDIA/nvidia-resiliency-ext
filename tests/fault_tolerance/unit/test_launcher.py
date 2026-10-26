@@ -650,6 +650,35 @@ class TestHandleRestartDecision(unittest.TestCase):
         # The restart budget is untouched: this is a stop, not a consumed retry.
         self.assertEqual(agent._remaining_restarts, 2)
 
+    def test_missing_checkpoint_stops_before_restart_budget_is_exhausted(self):
+        """The real tracker must stop a startup crash loop through the no-restart path."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.fault_tol_cfg.checkpoint_iteration_file = os.path.join(directory, "missing.txt")
+            agent = self._make_agent()
+            agent._remaining_restarts = 100
+
+            with (
+                patch.object(agent, '_restart_workers') as restart,
+                patch.object(agent, '_stop_workers') as stop,
+            ):
+                for _ in range(2):
+                    self.assertTrue(
+                        agent._handle_restart_decision("test", self.spec, "[%s] restarting")
+                    )
+                with self.assertRaises(NoRestartRequested) as ctx:
+                    agent._handle_restart_decision("test", self.spec, "[%s] restarting")
+
+            self.assertEqual(ctx.exception.reason, RDZV_SHUTDOWN_REASON_NO_PROGRESS)
+            agent._rdzv_handler.signal_no_restart.assert_called_once_with(
+                RDZV_SHUTDOWN_REASON_NO_PROGRESS
+            )
+            self.assertEqual(restart.call_count, 2)
+            self.assertEqual(agent._remaining_restarts, 98)
+            self.assertEqual(agent._worker_group.state, WorkerState.FAILED)
+            stop.assert_called_once_with(agent._worker_group)
+
     def test_handle_restart_decision_restarts_remaining(self):
         """Returns True and decrements _remaining_restarts when restarts are available."""
         agent = self._make_agent()
