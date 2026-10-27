@@ -79,17 +79,6 @@ def test_with_sigterm(args):
         rank_mon_cli.send_heartbeat()
 
 
-def test_dump_ft_config(args):
-    rank = dist.get_rank()
-    rank_mon_cli = fault_tolerance.RankMonitorClient()
-    rank_mon_cli.init_workload_monitoring()
-    if rank == 0:
-        # dump FT config that was obtained from the monitor during initialization
-        cfg_dump_path = os.path.join(args.tmp_dir, "cfg_dump.yaml")
-        rank_mon_cli.cfg.to_yaml_file(cfg_dump_path)
-    sys.exit(0)
-
-
 def _get_restart_cnt(tmp_dir, update=False):
     if tmp_dir is None:
         return 0
@@ -166,7 +155,5 @@ if __name__ == '__main__':
             test_ranks_exit_gracefully(args)
         else:
             raise ValueError(f"restart_cnt should be <= 2, it is {restart_cnt}")
-    elif args.scenario == "dump_cfg":
-        test_dump_ft_config(args)
     else:
         raise ValueError(f"Unknown scenario: {args.scenario}")

@@ -116,7 +116,7 @@ Distributed storage health check (Lustre + NFS)
 -----------------------------------------------
 
 The launcher can perform a distributed storage health check before rendezvous.
-By default it is disabled. When enabled (via CLI or YAML), it:
+By default it is disabled. When enabled, it:
 
 * Verifies Lustre health via ``/sys/fs/lustre/health_check`` (fails if not healthy).
 * Discovers distributed mount targets and checks that each mount is reachable.
@@ -134,13 +134,6 @@ Validate specific absolute paths for existence and basic readability before rend
 * CLI: ``--ft-storage-health-check-path`` (alias: ``--ft_storage_health_check_path``)
   - Accepts a comma-separated list of absolute paths (each starting with ``/``).
   - Example: ``--ft-storage-health-check-path '/data/checkpoints,/mnt/dataset'``
-* YAML: ``storage_healthcheck_path`` under the ``fault_tolerance`` section
-
-.. code-block:: yaml
-
-   fault_tolerance:
-     # Comma-separated absolute paths
-     storage_healthcheck_path: "/data/checkpoints,/mnt/dataset"
 
 Validation behavior:
   - Files: attempts to read a small block (up to 4KB)
@@ -151,8 +144,7 @@ Validation behavior:
 Segment Health Check
 --------------------
 
-Set ``--ft-segment-health-check-dir <ABSOLUTE_PATH>`` or
-``fault_tolerance.segment_health_check_dir`` to consume segment health
+Set ``--ft-segment-health-check-dir <ABSOLUTE_PATH>`` to consume segment health
 decisions before rendezvous. Omitting the setting disables the check.
 
 See the :doc:`Segment Health Check integration guide
@@ -202,8 +194,7 @@ a launcher-managed attribution service:
   ``LLM_API_KEY_FILE``. If neither points to a readable file, the TCPStore-host launcher fails
   before starting the attribution service.
 
-  To export managed attribution results, pass ``--ft-attribution-export-url`` or
-  set ``attribution_export_url`` in the fault tolerance YAML config.
+  To export managed attribution results, pass ``--ft-attribution-export-url``.
 
   Launcher-managed attribution defaults to the ``lib`` backend, which runs the Restart Agent
   directly in the attrsvc process. The backend flag may be left unset to use that default or set

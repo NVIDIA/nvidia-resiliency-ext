@@ -4,7 +4,7 @@ Legacy heartbeat DDP training example
 Heartbeat monitoring and dynamic calibration are legacy/experimental paths.
 For section monitoring with fixed CLI timeouts and the same synchronous PyTorch
 checkpoint approach, use :doc:`train_ddp_sections`. For GPT, use
-:doc:`megatron_gpt`. The included YAML has no finite initial heartbeat deadline.
+:doc:`megatron_gpt`. The example command sets no finite heartbeat deadline.
 
 .. warning::
 

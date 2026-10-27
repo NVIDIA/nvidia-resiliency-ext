@@ -38,7 +38,6 @@ from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
 )
 from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_control_services_args,
-    add_ft_config_file_args,
     add_log_funnel_args,
     add_rendezvous_args,
     str_to_bool,
@@ -88,7 +87,6 @@ def get_args_parser() -> argparse.ArgumentParser:
         include_local_addr=True,
         include_ft_segment=True,
     )
-    add_ft_config_file_args(parser, aliases=("--ft-cfg-path", "--ft-cfg_path"))
     add_log_funnel_args(parser, enable_default=True, enable_type=str_to_bool)
     add_control_services_args(parser)
     return parser
@@ -111,9 +109,7 @@ def _validate_args(args: argparse.Namespace, ft_cfg: FaultToleranceConfig) -> No
             "--ft-nvrx-logfile, or --ft-per-cycle-applog-prefix when log funneling is enabled."
         )
 
-    if (args.ft_attribution_endpoint or ft_cfg.attribution_endpoint) and (
-        not args.ft_per_cycle_applog_prefix
-    ):
+    if ft_cfg.attribution_endpoint and not args.ft_per_cycle_applog_prefix:
         raise ValueError(
             "nvrx-control requires --ft-per-cycle-applog-prefix when attribution is enabled."
         )
@@ -183,7 +179,7 @@ def _start_control_services(
             assert grpc_log_prefix is not None
             log_funnel_ports = LogFunnelPorts.from_launcher_args(args)
 
-        if args.ft_attribution_endpoint or ft_cfg.attribution_endpoint:
+        if ft_cfg.attribution_endpoint:
             assert applog_prefix is not None
             attribution_cfg = AttributionConfig.from_args(args, applog_prefix, ft_cfg)
             if log_funnel_ports is not None and attribution_cfg.is_managed:

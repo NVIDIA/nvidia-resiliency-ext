@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional
 
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     ATTRIBUTION_STOP_ACTIONS,
@@ -331,33 +331,6 @@ def add_log_funnel_args(
         "waiting for downstream clients and drain to root first. "
         "Default: 60.0",
     )
-
-
-def _add_ft_config_file_arg(
-    parser: argparse.ArgumentParser,
-    *,
-    aliases: Sequence[str],
-    action: Optional[Callable[..., Any]] = None,
-) -> None:
-    _add_argument(
-        parser,
-        *aliases,
-        action=action,
-        default=None,
-        type=str,
-        dest="ft_cfg_path",
-        help="Path to a YAML file that contains Fault Tolerance pkg config (`fault_tolerance` section)."
-        " NOTE: config items from the file can be overwritten by `--ft-param-*` args.",
-    )
-
-
-def add_ft_config_file_args(
-    parser: argparse.ArgumentParser,
-    *,
-    aliases: Sequence[str],
-    action: Optional[Callable[..., Any]] = None,
-) -> None:
-    _add_ft_config_file_arg(parser, aliases=aliases, action=action)
 
 
 def _add_attribution_args(parser: argparse.ArgumentParser) -> None:

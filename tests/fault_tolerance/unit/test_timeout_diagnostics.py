@@ -439,25 +439,16 @@ def test_invalid_capture_sections_rejected(cfg, sections):
         validate_config(cfg)
 
 
-def test_section_selection_yaml_and_cli(cfg, tmp_path):
+def test_section_selection_cli():
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     parser = launcher.get_args_parser()
     defaults = FaultToleranceConfig.from_args(parser.parse_args(["train.py"]))
     assert defaults.timeout_dump_sections == "step"
-    cfg.timeout_dump_sections = "step,checkpointing"
-    path = tmp_path / "ft.yaml"
-    cfg.to_yaml_file(path)
-    yaml_args = ["--ft-cfg-path", str(path)]
-    config = FaultToleranceConfig.from_args(parser.parse_args(yaml_args + ["train.py"]))
-    assert parse_capture_sections(config.timeout_dump_sections) == {"step", "checkpointing"}
     config = FaultToleranceConfig.from_args(
-        parser.parse_args(yaml_args + ["--ft-timeout-dump-sections=setup,custom", "train.py"])
+        parser.parse_args(["--ft-timeout-dump-sections=setup,custom", "train.py"])
     )
     assert parse_capture_sections(config.timeout_dump_sections) == {"setup", "custom"}
-    config = FaultToleranceConfig.from_args(
-        parser.parse_args(["--ft-timeout-dump-sections=checkpoint", "train.py"])
-    )
     assert not config.timeout_dump_enabled
 
 
@@ -815,15 +806,15 @@ def test_collector_process_shutdown_does_not_join_uninterruptible_child(cfg):
     ]
 
 
-def test_launcher_cli_yaml_and_root_inference(cfg, tmp_path):
+def test_launcher_cli_and_root_inference(cfg):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
-    config_file = tmp_path / "ft.yaml"
-    cfg.to_yaml_file(config_file)
     args = launcher.get_args_parser().parse_args(
         [
-            "--ft-cfg-path",
-            str(config_file),
+            "--ft-timeout-dump-enabled=true",
+            "--ft-timeout-dump=pyspy",
+            f"--ft-timeout-dump-pyspy={sys.executable}",
+            f"--ft-timeout-dump-local-root={cfg.timeout_dump_local_root}",
             "--ft-timeout-dump-capture-timeout",
             "7",
             "train.py",
@@ -832,7 +823,6 @@ def test_launcher_cli_yaml_and_root_inference(cfg, tmp_path):
     merged = FaultToleranceConfig.from_args(args)
     assert merged.timeout_dump == "pyspy"
     assert merged.timeout_dump_capture_timeout == 7
-    assert merged.timeout_dump_max_capture_bytes == cfg.timeout_dump_max_capture_bytes
     with patch(
         "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
     ) as collector_process:
@@ -915,16 +905,14 @@ def test_long_poll_is_interrupted_for_shutdown_upload(cfg):
             collector_process.shutdown()
 
 
-def test_cli_can_disable_yaml_and_has_no_removed_options(cfg, tmp_path):
+def test_cli_can_disable_and_has_no_removed_options():
     from dataclasses import fields
 
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
-    path = tmp_path / "ft.yaml"
-    cfg.to_yaml_file(path)
     parser = launcher.get_args_parser()
     args = parser.parse_args(
-        ["--ft-cfg-path", str(path), "--ft-timeout-dump-enabled=false", "train.py"]
+        ["--ft-timeout-dump=pyspy", "--ft-timeout-dump-enabled=false", "train.py"]
     )
     merged = FaultToleranceConfig.from_args(args)
     assert not merged.timeout_dump_enabled
@@ -1081,7 +1069,7 @@ def test_enable_cli_requires_explicit_boolean(value):
         launcher.get_args_parser().parse_args(["--ft-timeout-dump-enabled=" + value, "train.py"])
 
 
-def test_tool_list_does_not_enable_and_cli_overrides_yaml(cfg, tmp_path):
+def test_tool_list_does_not_enable():
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     parser = launcher.get_args_parser()
@@ -1089,10 +1077,8 @@ def test_tool_list_does_not_enable_and_cli_overrides_yaml(cfg, tmp_path):
     config = FaultToleranceConfig.from_args(args)
     assert config.timeout_dump == "gdb"
     assert not config.timeout_dump_enabled
-    path = tmp_path / "ft.yaml"
-    cfg.to_yaml_file(path)
     args = parser.parse_args(
-        ["--ft-cfg-path", str(path), "--ft-timeout-dump=cuda-gdb,gdb", "train.py"]
+        ["--ft-timeout-dump-enabled=true", "--ft-timeout-dump=cuda-gdb,gdb", "train.py"]
     )
     config = FaultToleranceConfig.from_args(args)
     assert config.timeout_dump_enabled
@@ -1267,23 +1253,12 @@ def test_invalid_cuda_gdb_mode_rejected(cfg, mode):
         validate_config(cfg)
 
 
-def test_cuda_gdb_mode_yaml_and_cli(cfg, tmp_path):
+def test_cuda_gdb_mode_cli(cfg):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     parser = launcher.get_args_parser()
     defaults = FaultToleranceConfig.from_args(parser.parse_args(["train.py"]))
     assert defaults.timeout_dump_cuda_gdb_mode == "batch"
-    cfg.timeout_dump_cuda_gdb_mode = "stdin"
-    path = tmp_path / "ft.yaml"
-    cfg.to_yaml_file(path)
-    yaml_args = ["--ft-cfg-path", str(path)]
-    config = FaultToleranceConfig.from_args(parser.parse_args(yaml_args + ["train.py"]))
-    assert config.timeout_dump_cuda_gdb_mode == "stdin"
-    validate_config(config)
-    config = FaultToleranceConfig.from_args(
-        parser.parse_args(yaml_args + ["--ft-timeout-dump-cuda-gdb-mode=batch", "train.py"])
-    )
-    assert config.timeout_dump_cuda_gdb_mode == "batch"
     config = FaultToleranceConfig.from_args(
         parser.parse_args(["--ft-timeout-dump-cuda-gdb-mode=stdin", "train.py"])
     )
@@ -1291,11 +1266,11 @@ def test_cuda_gdb_mode_yaml_and_cli(cfg, tmp_path):
     assert not config.timeout_dump_enabled
     with pytest.raises(SystemExit):
         parser.parse_args(["--ft-timeout-dump-cuda-gdb-mode=interactive", "train.py"])
+    cfg.timeout_dump_cuda_gdb_mode = "stdin"
+    validate_config(cfg)
     cfg.timeout_dump_cuda_gdb_mode = "invalid"
-    cfg.to_yaml_file(path)
-    config = FaultToleranceConfig.from_args(parser.parse_args(yaml_args + ["train.py"]))
     with pytest.raises(ValueError, match="timeout_dump_cuda_gdb_mode"):
-        validate_config(config)
+        validate_config(cfg)
 
 
 @pytest.mark.parametrize("character", ["\n", "\r"])
@@ -1321,39 +1296,27 @@ def test_command_path_newlines_are_validated_at_startup(cfg, tmp_path, character
         assert command[command.index("-x") + 1] == str(path.resolve())
 
 
-@pytest.mark.parametrize(
-    "field,value,override",
-    [
-        ("timeout_dump_cuda_gdb_mode", "invalid", "--ft-timeout-dump-cuda-gdb-mode=batch"),
-        ("timeout_dump_capture_timeout", 0, "--ft-timeout-dump-capture-timeout=60"),
-    ],
-)
-def test_launcher_validates_merged_dump_settings_before_startup(
-    cfg, tmp_path, field, value, override
-):
+def test_launcher_validates_dump_settings_before_startup():
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
-    setattr(cfg, field, value)
-    path = tmp_path / "ft.yaml"
-    cfg.to_yaml_file(path)
     parser = launcher.get_args_parser()
     options = [
-        "--ft-cfg-path",
-        str(path),
         "--ft-nvrx-logfile=/shared/nvrx/123/logs/launcher.log",
         "--ft-per-cycle-applog-prefix=/shared/train.log",
+        "--ft-timeout-dump-enabled=true",
+        "--ft-timeout-dump=pyspy",
+        "--ft-timeout-dump-capture-timeout=0",
     ]
     with (
         patch.dict(os.environ, {}, clear=True),
         patch.object(launcher, "determine_local_world_size") as local_world_size,
         patch.object(launcher, "_start_diagnostic_collector") as collector,
     ):
-        with pytest.raises(ValueError, match=field):
+        with pytest.raises(ValueError, match="timeout_dump_capture_timeout"):
             launcher.config_from_args(parser.parse_args(options + ["train.py"]))
         local_world_size.assert_not_called()
         collector.assert_not_called()
-        # CLI overrides are applied before validation, including disabling dumps.
-        launcher._validate_args(parser.parse_args(options + [override, "train.py"]))
+        # Disabled dumps are not validated.
         launcher._validate_args(
             parser.parse_args(options + ["--ft-timeout-dump-enabled=false", "train.py"])
         )
@@ -1518,31 +1481,29 @@ def test_unused_command_file_is_not_validated(cfg):
     validate_capture_dependencies(cfg)  # pyspy only
 
 
-def test_command_files_yaml_cli_override_and_path_resolution(cfg, tmp_path, monkeypatch):
+def test_command_files_cli_path_resolution(tmp_path, monkeypatch):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
-    cfg.timeout_dump = "gdb,cuda-gdb"
-    cfg.timeout_dump_gdb = cfg.timeout_dump_cuda_gdb = sys.executable
-    cfg.timeout_dump_gdb_command_file = "unused-yaml.gdb"
-    cfg.timeout_dump_cuda_gdb_command_file = str(tmp_path / "cuda.gdb")
-    Path(cfg.timeout_dump_cuda_gdb_command_file).write_text("info cuda kernels\n")
+    cuda_commands = tmp_path / "cuda.gdb"
+    cuda_commands.write_text("info cuda kernels\n")
     (tmp_path / "cpu.gdb").write_text("info threads\n")
-    yaml_path = tmp_path / "config.yaml"
-    cfg.to_yaml_file(yaml_path)
     monkeypatch.chdir(tmp_path)
     args = launcher.get_args_parser().parse_args(
         [
-            "--ft-cfg-path",
-            str(yaml_path),
+            "--ft-timeout-dump-enabled=true",
+            "--ft-timeout-dump=gdb,cuda-gdb",
+            f"--ft-timeout-dump-gdb={sys.executable}",
+            f"--ft-timeout-dump-cuda-gdb={sys.executable}",
             "--ft-timeout-dump-gdb-command-file",
             "cpu.gdb",
+            f"--ft-timeout-dump-cuda-gdb-command-file={cuda_commands}",
             "train.py",
         ]
     )
     merged = FaultToleranceConfig.from_args(args)
     validate_capture_dependencies(merged)
     assert merged.timeout_dump_gdb_command_file == str(tmp_path / "cpu.gdb")
-    assert merged.timeout_dump_cuda_gdb_command_file == cfg.timeout_dump_cuda_gdb_command_file
+    assert merged.timeout_dump_cuda_gdb_command_file == str(cuda_commands)
 
 
 def test_custom_file_output_uses_existing_capture_and_upload(cfg, tmp_path):

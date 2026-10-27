@@ -14,6 +14,18 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   straggler APIs directly; use the Megatron GPT walkthrough for InJob training.
   Documentation builds no longer require Lightning.
 
+- **YAML configuration for fault tolerance has been removed.** `ft_launcher` and
+  `nvrx-control` no longer accept `--ft-cfg-path`, and
+  `FaultToleranceConfig.from_yaml_file`/`to_yaml_file` are gone, along with the
+  `pyyaml` dependency. `ft_launcher` also no longer reads `--ft-cfg-path`'s
+  environment form, `PET_FT_CFG_PATH`: a job that sets only that variable now runs
+  with default settings, without an error. Pass the equivalent `--ft-*` options
+  instead, or build the config in code with `FaultToleranceConfig(...)` or
+  `FaultToleranceConfig.from_kwargs(...)`. Workloads set warmup iterations
+  through `RankMonitorClient.init_workload_monitoring(num_warmup_iters=...)`.
+  The `--ft-ignore-missing-cfg` flag, which has had no effect since v0.4, is
+  removed as well; drop it from launch scripts.
+
 ## NVIDIA Resiliency Extension v0.7.0
 
 ### Highlights

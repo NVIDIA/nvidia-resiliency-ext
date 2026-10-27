@@ -18,10 +18,8 @@ is not one continuously open checkpointing section.
 Defaults and precedence
 -----------------------
 
-``FaultToleranceConfig`` supplies defaults, then ``--ft-cfg-path`` supplies YAML
-values, then explicit ``--ft-*`` CLI arguments override those values. The YAML
-file configures FT fields, not general launcher options such as ``--nnodes`` or
-``--max-restarts``. Use :class:`nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig`
+``FaultToleranceConfig`` supplies defaults, and explicit ``--ft-*`` CLI arguments
+override them. Use :class:`nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig`
 and ``ft_launcher --help`` for the configuration fields and accepted CLI syntax.
 
 .. list-table::
@@ -58,26 +56,10 @@ an omitted name skips both. CLI timeout values accept ``null`` or ``none`` to
 disable a deadline. With response skipping enabled, consult the monitor logs
 for section-protocol errors; disable it while debugging integration mistakes.
 
-Optional YAML configuration
----------------------------
+Calculated timeouts file
+------------------------
 
-The same Megatron timeout settings can be supplied as:
-
-.. code-block:: yaml
-
-   fault_tolerance:
-     rank_section_timeouts:
-       setup: 900
-       step: 120
-       checkpointing: 600
-     rank_out_of_section_timeout: 180
-
-Pass ``--ft-cfg-path /path/to/ft.yaml`` before the workload entrypoint. Do not use
-the DDP YAML unchanged for Megatron: its section names are different. Unknown
-YAML fields may be ignored; check the effective configuration and section names
-in the startup logs.
-
-``ft_state.json`` is **not** this YAML configuration file. It contains calculated
+``ft_state.json`` is not a configuration file. It contains calculated
 monitoring timeouts saved by a workload through ``RankMonitorClient.state_dict()``.
 If a workload restores calculated timeouts, they can supersede configured values.
 For a fixed-timeout run use a fresh checkpoint directory or deliberately archive
