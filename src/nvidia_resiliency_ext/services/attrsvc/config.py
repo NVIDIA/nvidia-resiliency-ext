@@ -479,6 +479,20 @@ class Settings(BaseSettings):
         return path
 
 
+def _has_file_handler(log_file: str) -> bool:
+    """Is the root logger already writing to ``log_file``?
+
+    ``configure_logging`` runs more than once -- once for the startup window and
+    again once Settings is built -- and ``addHandler`` is not idempotent the way
+    ``basicConfig`` is, so without this every record lands in the file twice.
+    """
+    target = os.path.abspath(log_file)
+    return any(
+        isinstance(h, logging.FileHandler) and os.path.abspath(h.baseFilename) == target
+        for h in logging.getLogger().handlers
+    )
+
+
 def configure_logging(log_level: str = "INFO") -> None:
     """Configure attrsvc logging, including the pre-configuration startup window."""
 
@@ -487,7 +501,7 @@ def configure_logging(log_level: str = "INFO") -> None:
     # Read straight from the environment: this runs before Settings is built,
     # and a standalone function should not need one passed in just for this.
     log_file = (os.environ.get("NVRX_ATTRSVC_LOG_FILE") or "").strip()
-    if log_file:
+    if log_file and not _has_file_handler(log_file):
         try:
             os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
             handler = logging.FileHandler(log_file)
