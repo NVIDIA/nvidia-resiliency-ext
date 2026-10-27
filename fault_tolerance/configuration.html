@@ -54,7 +54,7 @@
 <li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Configuration and timeouts</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#defaults-and-precedence">Defaults and precedence</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#optional-yaml-configuration">Optional YAML configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#calculated-timeouts-file">Calculated timeouts file</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#warmup-and-unmonitored-intervals">Warmup and unmonitored intervals</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#experimental-calibration-and-legacy-heartbeats">Experimental calibration and legacy heartbeats</a></li>
 </ul>
@@ -113,10 +113,8 @@ preparation and potentially expensive async finalization; background disk I/O
 is not one continuously open checkpointing section.</p>
 <section id="defaults-and-precedence">
 <h2>Defaults and precedence<a class="headerlink" href="#defaults-and-precedence" title="Link to this heading"></a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code> supplies defaults, then <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code> supplies YAML
-values, then explicit <code class="docutils literal notranslate"><span class="pre">--ft-*</span></code> CLI arguments override those values. The YAML
-file configures FT fields, not general launcher options such as <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code> or
-<code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code>. Use <a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig</span></code></a>
+<p><code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code> supplies defaults, and explicit <code class="docutils literal notranslate"><span class="pre">--ft-*</span></code> CLI arguments
+override them. Use <a class="reference internal" href="api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig</span></code></a>
 and <code class="docutils literal notranslate"><span class="pre">ft_launcher</span> <span class="pre">--help</span></code> for the configuration fields and accepted CLI syntax.</p>
 <table class="docutils align-default">
 <thead>
@@ -162,22 +160,9 @@ an omitted name skips both. CLI timeout values accept <code class="docutils lite
 disable a deadline. With response skipping enabled, consult the monitor logs
 for section-protocol errors; disable it while debugging integration mistakes.</p>
 </section>
-<section id="optional-yaml-configuration">
-<h2>Optional YAML configuration<a class="headerlink" href="#optional-yaml-configuration" title="Link to this heading"></a></h2>
-<p>The same Megatron timeout settings can be supplied as:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">rank_section_timeouts</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">setup</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">900</span>
-<span class="w">    </span><span class="nt">step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
-<span class="w">    </span><span class="nt">checkpointing</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span>
-<span class="w">  </span><span class="nt">rank_out_of_section_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">180</span>
-</pre></div>
-</div>
-<p>Pass <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span> <span class="pre">/path/to/ft.yaml</span></code> before the workload entrypoint. Do not use
-the DDP YAML unchanged for Megatron: its section names are different. Unknown
-YAML fields may be ignored; check the effective configuration and section names
-in the startup logs.</p>
-<p><code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> is <strong>not</strong> this YAML configuration file. It contains calculated
+<section id="calculated-timeouts-file">
+<h2>Calculated timeouts file<a class="headerlink" href="#calculated-timeouts-file" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> is not a configuration file. It contains calculated
 monitoring timeouts saved by a workload through <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.state_dict()</span></code>.
 If a workload restores calculated timeouts, they can supersede configured values.
 For a fixed-timeout run use a fresh checkpoint directory or deliberately archive

@@ -103,7 +103,7 @@ Timeout state and shutdown
 
 Megatron saves calculated timeouts to ``ft_state.json`` only when calibration
 runs, but restores an existing file at startup. Use a fresh directory for the
-fixed-timeout walkthrough. That file is distinct from launcher YAML and from
+fixed-timeout walkthrough. That file is distinct from launcher configuration and from
 the distributed training checkpoint.
 
 Let Megatron finalize outstanding async saves during normal shutdown. A forced

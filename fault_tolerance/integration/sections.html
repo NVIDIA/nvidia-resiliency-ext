@@ -164,19 +164,7 @@ rather than running distributed operations inside a signal handler.</p>
 remain available but are not needed for this integration. See
 <a class="reference internal" href="../configuration.html"><span class="doc">Configuration and timeouts</span></a> before experimenting with them.</p>
 <p>See <a class="reference internal" href="../examples/train_ddp_sections.html"><span class="doc">Section monitoring and checkpoint recovery with DDP</span></a> for runnable commands and checkpoint
-recovery checks. The optional YAML equivalent is:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># Optional YAML equivalent of the fixed-timeout DDP launcher example.</span>
-<span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">initial_rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="w">    </span><span class="nt">rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="w">    </span><span class="nt">rank_section_timeouts</span><span class="p">:</span>
-<span class="w">        </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
-<span class="w">        </span><span class="nt">step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
-<span class="w">        </span><span class="nt">checkpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
-<span class="w">    </span><span class="nt">rank_out_of_section_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
-<span class="w">    </span><span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="s">"DEBUG"</span>
-</pre></div>
-</div>
+recovery checks.</p>
 </section>
 </section>
 

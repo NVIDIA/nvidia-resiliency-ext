@@ -105,7 +105,7 @@
 <p>This older DDP example demonstrates heartbeat monitoring and experimental
 timeout calculation. It does <strong>not</strong> save model, optimizer, or training
 progress; a worker restart starts training again. Its <code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> holds
-calculated monitoring timeouts, not a training checkpoint or launcher YAML.</p>
+calculated monitoring timeouts, not a training checkpoint or launcher configuration.</p>
 <p>Heartbeat monitoring is being deprecated as a deployment approach. Use
 <a class="reference internal" href="train_ddp_sections.html"><span class="doc">Section monitoring and checkpoint recovery with DDP</span></a> for a small section-based example with training
 checkpoint recovery, or <a class="reference internal" href="megatron_gpt.html"><span class="doc">GPT checkpoint recovery with Megatron-LM</span></a> for the recommended GPT workflow.</p>

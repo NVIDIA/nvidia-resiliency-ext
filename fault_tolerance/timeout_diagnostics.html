@@ -139,9 +139,8 @@ There are no wildcard or timeout-type aliases. Selecting a section does not
 enable diagnostics or configure its timeout: it must also have a finite timeout
 in <code class="docutils literal notranslate"><span class="pre">rank_section_timeouts</span></code> and actually expire. Heartbeat and out-of-section
 timeouts are separate detection paths, not section names in this option.</p>
-<p>Use <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=false</span></code> to disable capture, including when YAML
-enables it. Selecting tools alone does not enable diagnostics. The default tool
-list is <code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code>, in that order. There is no automatic detection or
+<p>Selecting tools alone does not enable diagnostics. The default tool list is
+<code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code>, in that order. There is no automatic detection or
 silent skipping: when enabled, the launcher validates every requested executable
 and fails before starting workers if any is missing or not executable. Each
 selected debugger also requires a readable command file. Supply a smaller tool
@@ -183,13 +182,8 @@ and <code class="docutils literal notranslate"><span class="pre">-x</span></code
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">mode</span><span class="o">=</span><span class="n">stdin</span>
 </pre></div>
 </div>
-<p>The equivalent YAML setting is:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">timeout_dump_cuda_gdb_mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">stdin</span>
-</pre></div>
-</div>
-<p>CLI values override YAML. Selecting a mode does not enable diagnostics or add
-CUDA-GDB to the tool list. Native GDB and py-spy are unaffected. Switch back with
+<p>Selecting a mode does not enable diagnostics or add CUDA-GDB to the tool list.
+Native GDB and py-spy are unaffected. Switch back with
 <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-cuda-gdb-mode=batch</span></code>; there is no automatic fallback.</p>
 <p><code class="docutils literal notranslate"><span class="pre">stdin</span></code> is fully automated: no terminal, prompts, or monitor command exchange
 is required. The startup thread writes setup, <code class="docutils literal notranslate"><span class="pre">attach</span></code>, <code class="docutils literal notranslate"><span class="pre">source</span></code> of the
@@ -212,7 +206,7 @@ failure does not add retries or extend recovery beyond the capture budget.</p>
 <section id="debugger-command-files">
 <h2>Debugger command files<a class="headerlink" href="#debugger-command-files" title="Link to this heading"></a></h2>
 <p>Users must supply a command file for each selected debugger. NVRx does not
-bundle default GDB or CUDA-GDB commands. Set the paths through CLI or YAML:</p>
+bundle default GDB or CUDA-GDB commands. Set the paths through the CLI:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">command</span><span class="o">-</span><span class="n">file</span><span class="o">=/</span><span class="n">lustre</span><span class="o">/</span><span class="n">config</span><span class="o">/</span><span class="n">gdb</span><span class="o">-</span><span class="n">timeout</span><span class="o">.</span><span class="n">txt</span>
 <span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">command</span><span class="o">-</span><span class="n">file</span><span class="o">=/</span><span class="n">lustre</span><span class="o">/</span><span class="n">config</span><span class="o">/</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">timeout</span><span class="o">.</span><span class="n">txt</span>
 </pre></div>
@@ -476,12 +470,11 @@ local teardown is in progress.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
-<p>These fields work in the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> YAML section. <code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code>
-corresponds to <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code>; other fields use matching
-<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-...</span></code> options, replacing underscores with hyphens. Explicit
-CLI values override YAML. Enable diagnostics with
-<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=true</span></code> and select tools with <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code>
-in addition to the existing log configuration.</p>
+<p>These <code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code> fields are set on the command line.
+<code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code> corresponds to <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code>; other fields use matching
+<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-...</span></code> options, replacing underscores with hyphens. Enable
+diagnostics with <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=true</span></code> and select tools with
+<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code> in addition to the existing log configuration.</p>
 <table class="docutils align-default">
 <colgroup>
 <col style="width: 45.0%" />

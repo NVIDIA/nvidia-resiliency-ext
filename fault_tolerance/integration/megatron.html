@@ -203,7 +203,7 @@ Megatron reruns can look like no progress across cycles; see
 <h2>Timeout state and shutdown<a class="headerlink" href="#timeout-state-and-shutdown" title="Link to this heading"></a></h2>
 <p>Megatron saves calculated timeouts to <code class="docutils literal notranslate"><span class="pre">ft_state.json</span></code> only when calibration
 runs, but restores an existing file at startup. Use a fresh directory for the
-fixed-timeout walkthrough. That file is distinct from launcher YAML and from
+fixed-timeout walkthrough. That file is distinct from launcher configuration and from
 the distributed training checkpoint.</p>
 <p>Let Megatron finalize outstanding async saves during normal shutdown. A forced
 worker termination can interrupt an in-flight save; the most recent completed

@@ -147,6 +147,17 @@ package, Lightning callback documentation, and its unit/NeMo functional tests
 and Dockerfile. Integrate the underlying fault-tolerance, checkpointing, and
 straggler APIs directly; use the Megatron GPT walkthrough for InJob training.
 Documentation builds no longer require Lightning.</p></li>
+<li><p><strong>YAML configuration for fault tolerance has been removed.</strong> <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> and
+<code class="docutils literal notranslate"><span class="pre">nvrx-control</span></code> no longer accept <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig.from_yaml_file</span></code>/<code class="docutils literal notranslate"><span class="pre">to_yaml_file</span></code> are gone, along with the
+<code class="docutils literal notranslate"><span class="pre">pyyaml</span></code> dependency. <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> also no longer reads <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code>’s
+environment form, <code class="docutils literal notranslate"><span class="pre">PET_FT_CFG_PATH</span></code>: a job that sets only that variable now runs
+with default settings, without an error. Pass the equivalent <code class="docutils literal notranslate"><span class="pre">--ft-*</span></code> options
+instead, or build the config in code with <code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig(...)</span></code> or
+<code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig.from_kwargs(...)</span></code>. Workloads set warmup iterations
+through <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring(num_warmup_iters=...)</span></code>.
+The <code class="docutils literal notranslate"><span class="pre">--ft-ignore-missing-cfg</span></code> flag, which has had no effect since v0.4, is
+removed as well; drop it from launch scripts.</p></li>
 </ul>
 </section>
 </section>

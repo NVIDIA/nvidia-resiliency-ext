@@ -57,7 +57,7 @@
 <li class="toctree-l4"><a class="reference internal" href="#what-is-monitored">What is monitored</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#checkpoint-and-data-progress">Checkpoint and data progress</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#exercise-a-failure">Exercise a failure</a></li>
-<li class="toctree-l4"><a class="reference internal" href="#optional-configuration-and-experiments">Optional configuration and experiments</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#experiments">Experiments</a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="singleton_deployment.html">Singleton job-array deployment (SLURM)</a></li>
@@ -214,23 +214,9 @@ completed after both SIGKILL and SIGSTOP injection following a mid-epoch
 checkpoint. Their final model and optimizer state matched uninterrupted training
 exactly. These CPU checks do not establish GPU/Slurm qualification.</p>
 </section>
-<section id="optional-configuration-and-experiments">
-<h2>Optional configuration and experiments<a class="headerlink" href="#optional-configuration-and-experiments" title="Link to this heading"></a></h2>
-<p>The supplied YAML is equivalent to the documented fixed deadlines:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># Optional YAML equivalent of the fixed-timeout DDP launcher example.</span>
-<span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">initial_rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="w">    </span><span class="nt">rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="w">    </span><span class="nt">rank_section_timeouts</span><span class="p">:</span>
-<span class="w">        </span><span class="nt">init</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
-<span class="w">        </span><span class="nt">step</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span>
-<span class="w">        </span><span class="nt">checkpoint</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span>
-<span class="w">    </span><span class="nt">rank_out_of_section_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span>
-<span class="w">    </span><span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="s">"DEBUG"</span>
-</pre></div>
-</div>
-<p>Use <code class="docutils literal notranslate"><span class="pre">--ft-cfg-path</span></code> instead of the timeout CLI options if desired.
-<code class="docutils literal notranslate"><span class="pre">--calculate_timeouts</span></code> enables experimental calibration and timeout JSON
+<section id="experiments">
+<h2>Experiments<a class="headerlink" href="#experiments" title="Link to this heading"></a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">--calculate_timeouts</span></code> enables experimental calibration and timeout JSON
 persistence; it is not needed for normal execution and can override fixed values.
 See <a class="reference internal" href="../configuration.html"><span class="doc">Configuration and timeouts</span></a>.</p>
 <div class="admonition warning">

@@ -80,15 +80,9 @@ completed after both SIGKILL and SIGSTOP injection following a mid-epoch
 checkpoint. Their final model and optimizer state matched uninterrupted training
 exactly. These CPU checks do not establish GPU/Slurm qualification.
 
-Optional configuration and experiments
---------------------------------------
+Experiments
+-----------
 
-The supplied YAML is equivalent to the documented fixed deadlines:
-
-.. literalinclude:: ../../../../examples/fault_tolerance/fault_tol_cfg_sections.yaml
-   :language: yaml
-
-Use ``--ft-cfg-path`` instead of the timeout CLI options if desired.
 ``--calculate_timeouts`` enables experimental calibration and timeout JSON
 persistence; it is not needed for normal execution and can override fixed values.
 See :doc:`../configuration`.

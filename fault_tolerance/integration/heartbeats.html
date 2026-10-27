@@ -137,15 +137,12 @@ where their own heartbeat calls occur.</p>
 <p>Fixed timeout values can be used throughout the training runs, or timeouts can be calculated based on observed heartbeat intervals.
 <cite>null</cite> timeout values are interpreted as infinite timeouts. In such cases, values need to be calculated to make the FT usable.</p>
 <p>Both heartbeat timeouts default to <code class="docutils literal notranslate"><span class="pre">None</span></code> (disabled), not 60/45 minutes.
-The YAML below deliberately leaves them disabled until the legacy example
-calculates or restores timeouts. Initial hangs before calibration are not
+The legacy example’s launcher options deliberately leave them disabled until
+it calculates or restores timeouts. Initial hangs before calibration are not
 bounded by heartbeat monitoring. Dynamic calibration is experimental and
 insufficiently tested for the recommended deployment.</p>
-<p>Configuration file example:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="linenos">1</span><span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="linenos">2</span><span class="w">    </span><span class="nt">initial_rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="linenos">3</span><span class="w">    </span><span class="nt">rank_heartbeat_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
-<span class="linenos">4</span><span class="w">    </span><span class="nt">log_level</span><span class="p">:</span><span class="w"> </span><span class="s">"DEBUG"</span>
+<p>Launcher options used by the example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>--ft-initial-rank-heartbeat-timeout<span class="o">=</span>None<span class="w"> </span>--ft-rank-heartbeat-timeout<span class="o">=</span>None<span class="w"> </span>--ft-log-level<span class="o">=</span>DEBUG
 </pre></div>
 </div>
 <p>A summary of all FT configuration items can be found in <a class="reference internal" href="../api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig" title="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig</span></code></a></p>

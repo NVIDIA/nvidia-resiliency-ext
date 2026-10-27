@@ -94,14 +94,11 @@
 <span class="c1"># limitations under the License.</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">argparse</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">contextlib</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">signal</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">dataclass</span><span class="p">,</span> <span class="n">fields</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Literal</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">yaml</span>
 
 
 <div class="viewcode-block" id="FaultToleranceConfig">
@@ -307,38 +304,6 @@
         <span class="k">return</span> <span class="n">FaultToleranceConfig</span><span class="p">(</span><span class="o">**</span><span class="n">matching_args</span><span class="p">)</span></div>
 
 
-<div class="viewcode-block" id="FaultToleranceConfig.from_yaml_file">
-<a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_yaml_file">[docs]</a>
-    <span class="nd">@staticmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">from_yaml_file</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">ignore_not_recognized</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">'FaultToleranceConfig'</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">"""</span>
-<span class="sd">        Load the fault tolerance configuration from a YAML file.</span>
-
-<span class="sd">        YAML file should contain `fault_tolerance` section.</span>
-<span class="sd">        `fault_tolerance` section can be at the top level or nested in any other section.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            cfg_path (str): The path to the YAML configuration file.</span>
-<span class="sd">            ignore_not_recognized (bool, optional): Whether to ignore unrecognized configuration options.</span>
-<span class="sd">                Defaults to True.</span>
-
-<span class="sd">        Returns:</span>
-<span class="sd">            FaultToleranceConfig: The fault tolerance configuration object.</span>
-
-<span class="sd">        Raises:</span>
-<span class="sd">            ValueError: If the 'fault_tolerance' section is not found in the config file.</span>
-<span class="sd">        """</span>
-        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">,</span> <span class="s1">'r'</span><span class="p">)</span> <span class="k">as</span> <span class="n">file</span><span class="p">:</span>
-            <span class="n">yaml_data</span> <span class="o">=</span> <span class="n">yaml</span><span class="o">.</span><span class="n">safe_load</span><span class="p">(</span><span class="n">file</span><span class="p">)</span>
-            <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_find_fault_tol_section</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">)</span>
-            <span class="k">if</span> <span class="n">ft_cfg</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">from_kwargs</span><span class="p">(</span>
-                    <span class="o">**</span><span class="n">ft_cfg</span><span class="p">,</span> <span class="n">ignore_not_recognized</span><span class="o">=</span><span class="n">ignore_not_recognized</span>
-                <span class="p">)</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"'fault_tolerance' section not found in config file </span><span class="si">{</span><span class="n">cfg_path</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></div>
-
-
     <span class="nd">@staticmethod</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">_parse_timeout_arg</span><span class="p">(</span><span class="n">timeout_arg</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">float</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">"""</span>
@@ -389,24 +354,12 @@
 <span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Init FT config object from parsed CLI args.</span>
 
-<span class="sd">        Implements the following logic:</span>
-<span class="sd">        - Use default FT config as a base.</span>
-<span class="sd">        - If there is a config file argument defined, first try to read the FT config from the file.</span>
-<span class="sd">        - Update the FT config with FT args provided via CLI.</span>
-<span class="sd">        - If can't read from file and there are no related args in CLI, raise an exception.</span>
+<span class="sd">        Starts from the default FT config and applies the FT args given on the command line.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            args (argparse.Namespace): Parsed arguments</span>
 <span class="sd">        """</span>
-        <span class="c1"># Start with default config</span>
         <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="p">()</span>
-        <span class="n">is_read_from_file</span> <span class="o">=</span> <span class="kc">False</span>
-
-        <span class="c1"># Try to read from config file if specified</span>
-        <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">ft_cfg_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">suppress</span><span class="p">(</span><span class="ne">ValueError</span><span class="p">):</span>
-                <span class="n">ft_cfg</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">from_yaml_file</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">ft_cfg_path</span><span class="p">)</span>
-                <span class="n">is_read_from_file</span> <span class="o">=</span> <span class="kc">True</span>
 
         <span class="c1"># Extract FT args from CLI</span>
         <span class="n">cli_ft_args</span> <span class="o">=</span> <span class="p">{}</span>
@@ -442,47 +395,6 @@
 
         <span class="k">return</span> <span class="n">ft_cfg</span></div>
 
-
-<div class="viewcode-block" id="FaultToleranceConfig.to_yaml_file">
-<a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.to_yaml_file">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">to_yaml_file</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cfg_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">"""</span>
-<span class="sd">        Convert the configuration object to a YAML file and save it to the specified path.</span>
-
-<span class="sd">        Args:</span>
-<span class="sd">            cfg_path (str): The path to save the YAML file.</span>
-
-<span class="sd">        Returns:</span>
-<span class="sd">            None</span>
-<span class="sd">        """</span>
-        <span class="c1"># first, ensure that `rank_termination_signal` and `log_level` have their native types</span>
-        <span class="c1"># this might not be the case, if the object was modified after creation</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_fix_rank_termination_signal_type</span><span class="p">()</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_fix_log_level_type</span><span class="p">()</span>
-        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">cfg_path</span><span class="p">,</span> <span class="s1">'w'</span><span class="p">)</span> <span class="k">as</span> <span class="n">file</span><span class="p">:</span>
-            <span class="n">ft_cfg_dict</span> <span class="o">=</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">asdict</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
-            <span class="n">ft_cfg_dict</span><span class="p">[</span><span class="s1">'rank_termination_signal'</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="o">.</span><span class="n">name</span>
-            <span class="n">ft_cfg_dict</span><span class="p">[</span><span class="s1">'log_level'</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">log_level</span>
-            <span class="n">ft_cfg_dict</span> <span class="o">=</span> <span class="p">{</span><span class="s1">'fault_tolerance'</span><span class="p">:</span> <span class="n">ft_cfg_dict</span><span class="p">}</span>
-            <span class="n">yaml</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">ft_cfg_dict</span><span class="p">,</span> <span class="n">file</span><span class="p">)</span></div>
-
-
-    <span class="nd">@staticmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">_find_fault_tol_section</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">):</span>
-        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
-            <span class="k">if</span> <span class="s2">"fault_tolerance"</span> <span class="ow">in</span> <span class="n">yaml_data</span><span class="p">:</span>
-                <span class="k">return</span> <span class="n">yaml_data</span><span class="p">[</span><span class="s2">"fault_tolerance"</span><span class="p">]</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">yaml_data</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-                    <span class="n">sub_config</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_find_fault_tol_section</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
-                    <span class="k">if</span> <span class="n">sub_config</span><span class="p">:</span>
-                        <span class="k">return</span> <span class="n">sub_config</span>
-        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">yaml_data</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
-            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">yaml_data</span><span class="p">:</span>
-                <span class="n">sub_config</span> <span class="o">=</span> <span class="n">FaultToleranceConfig</span><span class="o">.</span><span class="n">_find_fault_tol_section</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
-                <span class="k">if</span> <span class="n">sub_config</span><span class="p">:</span>
-                    <span class="k">return</span> <span class="n">sub_config</span>
-        <span class="k">return</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_fix_rank_termination_signal_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_termination_signal</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>

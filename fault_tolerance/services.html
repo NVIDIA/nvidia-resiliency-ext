@@ -201,7 +201,7 @@ time.</p>
 <section id="distributed-storage-health-check-lustre-nfs">
 <h2>Distributed storage health check (Lustre + NFS)<a class="headerlink" href="#distributed-storage-health-check-lustre-nfs" title="Link to this heading"></a></h2>
 <p>The launcher can perform a distributed storage health check before rendezvous.
-By default it is disabled. When enabled (via CLI or YAML), it:</p>
+By default it is disabled. When enabled, it:</p>
 <ul class="simple">
 <li><p>Verifies Lustre health via <code class="docutils literal notranslate"><span class="pre">/sys/fs/lustre/health_check</span></code> (fails if not healthy).</p></li>
 <li><p>Discovers distributed mount targets and checks that each mount is reachable.</p></li>
@@ -220,13 +220,7 @@ By default it is disabled. When enabled (via CLI or YAML), it:</p>
 <li><p>CLI: <code class="docutils literal notranslate"><span class="pre">--ft-storage-health-check-path</span></code> (alias: <code class="docutils literal notranslate"><span class="pre">--ft_storage_health_check_path</span></code>)
 - Accepts a comma-separated list of absolute paths (each starting with <code class="docutils literal notranslate"><span class="pre">/</span></code>).
 - Example: <code class="docutils literal notranslate"><span class="pre">--ft-storage-health-check-path</span> <span class="pre">'/data/checkpoints,/mnt/dataset'</span></code></p></li>
-<li><p>YAML: <code class="docutils literal notranslate"><span class="pre">storage_healthcheck_path</span></code> under the <code class="docutils literal notranslate"><span class="pre">fault_tolerance</span></code> section</p></li>
 </ul>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">fault_tolerance</span><span class="p">:</span>
-<span class="w">  </span><span class="c1"># Comma-separated absolute paths</span>
-<span class="w">  </span><span class="nt">storage_healthcheck_path</span><span class="p">:</span><span class="w"> </span><span class="s">"/data/checkpoints,/mnt/dataset"</span>
-</pre></div>
-</div>
 <dl class="simple">
 <dt>Validation behavior:</dt><dd><ul class="simple">
 <li><p>Files: attempts to read a small block (up to 4KB)</p></li>
@@ -238,8 +232,7 @@ By default it is disabled. When enabled (via CLI or YAML), it:</p>
 </section>
 <section id="segment-health-check">
 <h2>Segment Health Check<a class="headerlink" href="#segment-health-check" title="Link to this heading"></a></h2>
-<p>Set <code class="docutils literal notranslate"><span class="pre">--ft-segment-health-check-dir</span> <span class="pre">&lt;ABSOLUTE_PATH&gt;</span></code> or
-<code class="docutils literal notranslate"><span class="pre">fault_tolerance.segment_health_check_dir</span></code> to consume segment health
+<p>Set <code class="docutils literal notranslate"><span class="pre">--ft-segment-health-check-dir</span> <span class="pre">&lt;ABSOLUTE_PATH&gt;</span></code> to consume segment health
 decisions before rendezvous. Omitting the setting disables the check.</p>
 <p>See the <a class="reference internal" href="integration/segment_health_check.html"><span class="doc">Segment Health Check integration guide</span></a> for the consumer contract.</p>
 </section>
@@ -281,8 +274,7 @@ listens on <code class="docutils literal notranslate"><span class="pre">127.0.0.
 <p>The managed attribution API key must come from <code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span></code> or inherited
 <code class="docutils literal notranslate"><span class="pre">LLM_API_KEY_FILE</span></code>. If neither points to a readable file, the TCPStore-host launcher fails
 before starting the attribution service.</p>
-<p>To export managed attribution results, pass <code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span></code> or
-set <code class="docutils literal notranslate"><span class="pre">attribution_export_url</span></code> in the fault tolerance YAML config.</p>
+<p>To export managed attribution results, pass <code class="docutils literal notranslate"><span class="pre">--ft-attribution-export-url</span></code>.</p>
 <p>Launcher-managed attribution defaults to the <code class="docutils literal notranslate"><span class="pre">lib</span></code> backend, which runs the Restart Agent
 directly in the attrsvc process. The backend flag may be left unset to use that default or set
 explicitly to <code class="docutils literal notranslate"><span class="pre">lib</span></code>. The optional MCP/LogSage analysis path is no longer selectable from
