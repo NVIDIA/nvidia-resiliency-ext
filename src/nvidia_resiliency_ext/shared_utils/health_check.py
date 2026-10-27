@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import defusedxml.ElementTree as ET
 import httpx
+from torch.distributed.elastic.multiprocessing import SignalException
 
 from nvidia_resiliency_ext.attribution import parse_attrsvc_response
 from nvidia_resiliency_ext.attribution.orchestration.http_api import (
@@ -1583,6 +1584,8 @@ class NodeHealthCheck:
                     f"failed_checks={failed_checks})"
                 )
                 return True
+        except SignalException:
+            raise
         except Exception as e:
             logger.warning(
                 f"Node health check gRPC connectivity error: {str(e)}; treating as healthy (skip)."
@@ -2183,6 +2186,8 @@ class AttributionService:
                     job_id=job_id_from_env(),
                     analysis_intent=analysis_intent,
                 )
+        except SignalException:
+            raise
         except Exception as e:
             logger.warning(
                 "AttributionService POST %s failed: %s: %s", log_path, type(e).__name__, e
