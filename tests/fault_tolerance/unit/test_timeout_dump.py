@@ -18,18 +18,18 @@ import pytest
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.data import InitMsg, RankInfo
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
-from nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics import (
-    DiagnosticCollector,
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump import (
     DiagnosticCollectorProcess,
     ToolCapture,
     authorize_monitor_ptrace,
-    debugger_command_file,
     parse_capture_sections,
     parse_capture_tools,
     staging_dir,
     validate_capture_dependencies,
     validate_config,
 )
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump.collector import DiagnosticCollector
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump.config import debugger_command_file
 
 
 @pytest.fixture
@@ -293,7 +293,7 @@ def test_blocked_launch_cannot_delay_worker_termination(cfg, cancel, tool):
 
     try:
         with patch(
-            "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.subprocess.Popen",
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture.subprocess.Popen",
             side_effect=blocked_launch,
         ) as launch:
             started = time.monotonic()
@@ -824,7 +824,7 @@ def test_launcher_cli_and_root_inference(cfg):
     assert merged.timeout_dump == "pyspy"
     assert merged.timeout_dump_capture_timeout == 7
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.DiagnosticCollectorProcess"
     ) as collector_process:
         try:
             launcher._start_diagnostic_collector(
@@ -861,11 +861,11 @@ def test_optional_startup_rank_failure_does_not_skip_dependency_validation(
         patch.dict(os.environ, rank_env, clear=True),
         patch.object(launcher.logger, "isEnabledFor", return_value=True),
         patch(
-            "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.validate_capture_dependencies",
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.validate_capture_dependencies",
             wraps=validate_capture_dependencies,
         ) as validate,
         patch(
-            "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.DiagnosticCollectorProcess"
         ) as process,
     ):
         try:
@@ -917,7 +917,7 @@ def test_cli_can_disable_and_has_no_removed_options():
     merged = FaultToleranceConfig.from_args(args)
     assert not merged.timeout_dump_enabled
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.DiagnosticCollectorProcess"
     ) as process:
         launcher._start_diagnostic_collector(merged, None)
         process.assert_not_called()
@@ -963,7 +963,7 @@ def test_dump_requires_logfile_in_nvrx_layout(cfg, logfile):
 
 
 def test_collector_initial_offset_and_retry_cadence(cfg):
-    from nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics import _collector_main
+    from nvidia_resiliency_ext.fault_tolerance.timeout_dump.collector import _collector_main
 
     handlers = {}
     sleeps = []
@@ -981,7 +981,7 @@ def test_collector_initial_offset_and_retry_cadence(cfg):
         patch("time.sleep", side_effect=sleep),
         patch("random.uniform", return_value=0.007) as jitter,
         patch(
-            "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollector"
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.collector.DiagnosticCollector"
         ) as collector,
         patch("nvidia_resiliency_ext.shared_utils.log_manager.setup_logger"),
     ):
@@ -1009,7 +1009,7 @@ def test_missing_requested_tool_fails_before_collector_starts(cfg):
     cfg.timeout_dump = "pyspy,gdb"
     cfg.timeout_dump_gdb = "/missing/gdb"
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.DiagnosticCollectorProcess"
     ) as process:
         with pytest.raises(ValueError, match="gdb.*missing or not executable"):
             launcher._start_diagnostic_collector(cfg, "/shared/nvrx/123/logs/launcher.log")
@@ -1055,7 +1055,7 @@ def test_disabled_configuration_does_not_validate_tools(cfg):
     cfg.timeout_dump = "invalid"
     cfg.timeout_dump_pyspy = "/missing/pyspy"
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.validate_capture_dependencies"
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.validate_capture_dependencies"
     ) as validate:
         launcher._start_diagnostic_collector(cfg, None)
         validate.assert_not_called()
@@ -1348,7 +1348,7 @@ def test_stdin_capture_preserves_commands_errors_and_exit_code(cfg, tmp_path, ex
         return popen(*args, **kwargs)
 
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.subprocess.Popen", launch
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture.subprocess.Popen", launch
     ):
         asyncio.run(capture.run())
     assert inputs[0].closed
@@ -1469,7 +1469,7 @@ def test_bad_command_file_fails_before_collector_starts(cfg, tmp_path, tool, bad
         bad_path = str(tmp_path)
     setattr(cfg, "timeout_dump_" + tool.replace("-", "_") + "_command_file", bad_path)
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics.DiagnosticCollectorProcess"
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.DiagnosticCollectorProcess"
     ) as process:
         with pytest.raises(ValueError, match="command file"):
             launcher._start_diagnostic_collector(cfg, "/shared/nvrx/123/logs/launcher.log")

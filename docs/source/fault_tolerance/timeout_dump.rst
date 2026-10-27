@@ -1,5 +1,5 @@
-Timeout diagnostics
-===================
+Timeout dumps
+=============
 
 NVRx can capture Python, native CPU, and CUDA diagnostics when a selected workload
 section times out. Diagnostics are opt-in; the default capture section is ``step``.
