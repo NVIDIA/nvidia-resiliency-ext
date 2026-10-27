@@ -3,6 +3,11 @@
 # Build (from repo root):
 #   docker build -t nvrx-attrsvc -f services/attrsvc/deploy/Dockerfile .
 #
+# Stamp the build so /healthz can identify it:
+#   docker build -t nvrx-attrsvc -f services/attrsvc/deploy/Dockerfile \
+#       --build-arg NVRX_PACKAGE_VERSION="$(git describe --tags --always --dirty)" \
+#       --build-arg NVRX_BUILD_TAG="main-$(git rev-parse --short=8 HEAD)" .
+#
 # Run:
 #   docker run -d \
 #       -p 8000:8000 \
@@ -38,6 +43,12 @@ ENV STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1
 ARG NVRX_PACKAGE_VERSION=0.0.0
 RUN POETRY_DYNAMIC_VERSIONING_BYPASS="${NVRX_PACKAGE_VERSION}" \
     pip install --no-cache-dir --no-deps .
+
+# Baked so /healthz can say what is running. Without it every image reports
+# the same version and a rollout cannot be confirmed from outside the host.
+# Overridable at run time by setting NVRX_ATTRSVC_BUILD_TAG on the container.
+ARG NVRX_BUILD_TAG=""
+ENV NVRX_ATTRSVC_BUILD_TAG=${NVRX_BUILD_TAG}
 
 # Verify the service command and its import graph without PyTorch.
 RUN command -v nvrx-attrsvc && \
