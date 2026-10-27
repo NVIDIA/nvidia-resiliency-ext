@@ -126,12 +126,7 @@
     <span class="n">UpdateConfigMsg</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.rank_monitor_state_machine</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankMonitorStateMachine</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_diagnostics</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
-    <span class="n">ToolCapture</span><span class="p">,</span>
-    <span class="n">parse_capture_sections</span><span class="p">,</span>
-    <span class="n">parse_capture_tools</span><span class="p">,</span>
-    <span class="n">staging_dir</span><span class="p">,</span>
-<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_dump</span><span class="w"> </span><span class="kn">import</span> <span class="n">ToolCapture</span><span class="p">,</span> <span class="n">parse_capture_sections</span><span class="p">,</span> <span class="n">parse_capture_tools</span><span class="p">,</span> <span class="n">staging_dir</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">is_process_alive</span><span class="p">,</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">,</span> <span class="n">write_obj_to_ipc_stream</span>
 
 

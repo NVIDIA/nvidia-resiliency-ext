@@ -63,7 +63,7 @@
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
-<li class="toctree-l2"><a class="reference internal" href="timeout_diagnostics.html">Timeout diagnostics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="timeout_dump.html">Timeout dumps</a></li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
 </ul>
 </li>
@@ -241,7 +241,7 @@ liveness. Before the first checkpoint, progress can legitimately be unknown.</p>
 <li><p>For suspected host OOM or hardware failure, collect compute-node kernel/Xid/ECC
 evidence where available. Passing a later health check does not establish that
 the original node was healthy.</p></li>
-<li><p>Use <a class="reference internal" href="timeout_diagnostics.html"><span class="doc">Timeout diagnostics</span></a> for optional bounded stack capture on selected
+<li><p>Use <a class="reference internal" href="timeout_dump.html"><span class="doc">Timeout dumps</span></a> for optional bounded stack capture on selected
 section timeouts. Heartbeat/out-of-section timeouts do not trigger those captures.</p></li>
 </ul>
 <p>For shared multi-node logs, configure both the application prefix and launcher

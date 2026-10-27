@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Timeout diagnostics &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+  <title>Timeout dumps &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
@@ -56,7 +56,7 @@
 <li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="operations.html">Operations and troubleshooting</a></li>
 <li class="toctree-l2"><a class="reference internal" href="services.html">Optional health checks and attribution</a></li>
-<li class="toctree-l2 current"><a class="current reference internal" href="#">Timeout diagnostics</a><ul>
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Timeout dumps</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#enable-capture">Enable capture</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#cuda-gdb-launch-mode">CUDA-GDB launch mode</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#debugger-command-files">Debugger command files</a><ul>
@@ -95,9 +95,9 @@
   <ul class="wy-breadcrumbs">
       <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
           <li class="breadcrumb-item"><a href="index.html">InJob restart</a></li>
-      <li class="breadcrumb-item active">Timeout diagnostics</li>
+      <li class="breadcrumb-item active">Timeout dumps</li>
       <li class="wy-breadcrumbs-aside">
-            <a href="../_sources/fault_tolerance/timeout_diagnostics.rst.txt" rel="nofollow"> View page source</a>
+            <a href="../_sources/fault_tolerance/timeout_dump.rst.txt" rel="nofollow"> View page source</a>
       </li>
   </ul>
   <hr/>
@@ -105,8 +105,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="timeout-diagnostics">
-<h1>Timeout diagnostics<a class="headerlink" href="#timeout-diagnostics" title="Link to this heading"></a></h1>
+  <section id="timeout-dumps">
+<h1>Timeout dumps<a class="headerlink" href="#timeout-dumps" title="Link to this heading"></a></h1>
 <p>NVRx can capture Python, native CPU, and CUDA diagnostics when a selected workload
 section times out. Diagnostics are opt-in; the default capture section is <code class="docutils literal notranslate"><span class="pre">step</span></code>.
 Once enabled, all completed captures are uploaded automatically. Heartbeat and
