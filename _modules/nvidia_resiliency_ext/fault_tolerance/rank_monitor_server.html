@@ -126,7 +126,7 @@
     <span class="n">UpdateConfigMsg</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.rank_monitor_state_machine</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankMonitorStateMachine</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_dump</span><span class="w"> </span><span class="kn">import</span> <span class="n">ToolCapture</span><span class="p">,</span> <span class="n">parse_capture_sections</span><span class="p">,</span> <span class="n">parse_capture_tools</span><span class="p">,</span> <span class="n">staging_dir</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_dump</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_capture</span><span class="p">,</span> <span class="n">staging_dir</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">is_process_alive</span><span class="p">,</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">,</span> <span class="n">write_obj_to_ipc_stream</span>
 
 
@@ -357,11 +357,8 @@
         <span class="n">captures</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="n">cancelled</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="n">rank_process</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="n">reasons</span> <span class="o">=</span> <span class="p">(</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_timed_out_sections</span> <span class="o">&amp;</span> <span class="n">parse_capture_sections</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_sections</span><span class="p">)</span>
-            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_enabled</span>
-            <span class="k">else</span> <span class="nb">set</span><span class="p">()</span>
-        <span class="p">)</span>
+        <span class="n">dump</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump</span>
+        <span class="n">reasons</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_timed_out_sections</span> <span class="o">&amp;</span> <span class="nb">set</span><span class="p">(</span><span class="n">dump</span><span class="o">.</span><span class="n">sections</span><span class="p">)</span> <span class="k">if</span> <span class="n">dump</span><span class="o">.</span><span class="n">enabled</span> <span class="k">else</span> <span class="nb">set</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">reasons</span> <span class="ow">and</span> <span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">try</span><span class="p">:</span>
                 <span class="c1"># Snapshot before capture yields. The IPC connection can disappear</span>
@@ -383,7 +380,7 @@
 
         <span class="n">timer</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_enabled</span> <span class="ow">and</span> <span class="n">reasons</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_attempted</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">dump</span><span class="o">.</span><span class="n">enabled</span> <span class="ow">and</span> <span class="n">reasons</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_attempted</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_attempted</span> <span class="o">=</span> <span class="kc">True</span>
                 <span class="n">child</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_child</span>
                 <span class="k">if</span> <span class="n">child</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">child</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
@@ -393,21 +390,22 @@
                     <span class="k">return</span>
                 <span class="k">if</span> <span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
                     <span class="n">timer</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">call_later</span><span class="p">(</span>
-                        <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_capture_timeout</span><span class="p">,</span> <span class="n">terminate_original_worker</span>
+                        <span class="n">dump</span><span class="o">.</span><span class="n">capture_timeout</span><span class="p">,</span> <span class="n">terminate_original_worker</span>
                     <span class="p">)</span>
-                    <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump_capture_timeout</span>
-                    <span class="n">tools</span> <span class="o">=</span> <span class="n">parse_capture_tools</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump</span><span class="p">)</span>
-                    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">tool</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">tools</span><span class="p">):</span>
+                    <span class="n">deadline</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span> <span class="o">+</span> <span class="n">dump</span><span class="o">.</span><span class="n">capture_timeout</span>
+                    <span class="n">tools</span> <span class="o">=</span> <span class="n">dump</span><span class="o">.</span><span class="n">tools</span>
+                    <span class="k">for</span> <span class="n">index</span><span class="p">,</span> <span class="n">tool_cfg</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">tools</span><span class="p">):</span>
                         <span class="n">remaining</span> <span class="o">=</span> <span class="n">deadline</span> <span class="o">-</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
                         <span class="k">if</span> <span class="n">remaining</span> <span class="o">&lt;=</span> <span class="mi">0</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">rank_info</span><span class="p">:</span>
                             <span class="k">break</span>
-                        <span class="n">capture</span> <span class="o">=</span> <span class="n">ToolCapture</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="p">,</span> <span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">,</span> <span class="n">tool</span><span class="p">)</span>
+                        <span class="n">capture</span> <span class="o">=</span> <span class="n">create_capture</span><span class="p">(</span><span class="n">dump</span><span class="p">,</span> <span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">,</span> <span class="n">tool_cfg</span><span class="p">)</span>
                         <span class="n">captures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">capture</span><span class="p">)</span>
                         <span class="bp">self</span><span class="o">.</span><span class="n">_diagnostic_child</span> <span class="o">=</span> <span class="n">capture</span>
                         <span class="k">await</span> <span class="n">capture</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">remaining</span> <span class="o">/</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">tools</span><span class="p">)</span> <span class="o">-</span> <span class="n">index</span><span class="p">))</span>
                         <span class="k">if</span> <span class="n">capture</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
                             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
-                                <span class="s2">"Skipping later timeout tools: </span><span class="si">%s</span><span class="s2"> child is still alive"</span><span class="p">,</span> <span class="n">tool</span>
+                                <span class="s2">"Skipping later timeout tools: </span><span class="si">%s</span><span class="s2"> child is still alive"</span><span class="p">,</span>
+                                <span class="n">tool_cfg</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
                             <span class="p">)</span>
                             <span class="k">break</span>
         <span class="k">except</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">CancelledError</span><span class="p">:</span>
@@ -435,8 +433,8 @@
                 <span class="n">rank_info</span><span class="o">.</span><span class="n">global_rank</span><span class="p">,</span>
                 <span class="n">rank_info</span><span class="o">.</span><span class="n">local_rank</span><span class="p">,</span>
                 <span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">,</span>
-                <span class="s2">" "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">capture</span><span class="o">.</span><span class="n">tool</span><span class="si">}</span><span class="s2">=</span><span class="si">{</span><span class="n">capture</span><span class="o">.</span><span class="n">status</span><span class="si">}</span><span class="s2">"</span> <span class="k">for</span> <span class="n">capture</span> <span class="ow">in</span> <span class="n">captures</span><span class="p">),</span>
-                <span class="n">staging_dir</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="p">)</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">"cycle</span><span class="si">{</span><span class="n">cycle</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
+                <span class="s2">" "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">capture</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">=</span><span class="si">{</span><span class="n">capture</span><span class="o">.</span><span class="n">status_text</span><span class="p">()</span><span class="si">}</span><span class="s2">"</span> <span class="k">for</span> <span class="n">capture</span> <span class="ow">in</span> <span class="n">captures</span><span class="p">),</span>
+                <span class="n">staging_dir</span><span class="p">(</span><span class="n">dump</span><span class="p">)</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">"cycle</span><span class="si">{</span><span class="n">cycle</span><span class="si">}</span><span class="s2">"</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="k">if</span> <span class="n">cancelled</span><span class="p">:</span>
             <span class="k">raise</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">CancelledError</span>

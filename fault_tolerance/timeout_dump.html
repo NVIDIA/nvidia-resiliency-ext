@@ -116,8 +116,7 @@ out-of-section timeouts do not trigger captures by themselves.</p>
 <p>Install the requested tools in the training container and enable diagnostics
 on the launcher:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ft_launcher<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--ft-timeout-dump-enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--ft-timeout-dump<span class="o">=</span>pyspy,gdb,cuda-gdb<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-timeout-dump-tools<span class="o">=</span>pyspy,gdb,cuda-gdb<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--ft-timeout-dump-gdb-command-file<span class="o">=</span>/lustre/config/gdb-timeout.txt<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--ft-timeout-dump-cuda-gdb-command-file<span class="o">=</span>/lustre/config/cuda-gdb-timeout.txt<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--ft-nvrx-logfile<span class="w"> </span>/lustre/run/nvrx/12345/logs/launcher.log<span class="w"> </span><span class="se">\</span>
@@ -139,13 +138,21 @@ There are no wildcard or timeout-type aliases. Selecting a section does not
 enable diagnostics or configure its timeout: it must also have a finite timeout
 in <code class="docutils literal notranslate"><span class="pre">rank_section_timeouts</span></code> and actually expire. Heartbeat and out-of-section
 timeouts are separate detection paths, not section names in this option.</p>
-<p>Selecting tools alone does not enable diagnostics. The default tool list is
-<code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code>, in that order. There is no automatic detection or
-silent skipping: when enabled, the launcher validates every requested executable
-and fails before starting workers if any is missing or not executable. Each
-selected debugger also requires a readable command file. Supply a smaller tool
-list or install/configure the missing tools. Disabled diagnostics skip tool
-and command-file validation and collector setup. Dumps require
+<p>Selecting tools with <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-tools</span></code> enables capture;
+<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=true</span></code> enables it with the default tools,
+<code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code>, in that order. <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=false</span></code> wins over
+<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-tools</span></code>. Options for a tool that is not listed, such as
+<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-cuda-gdb-mode</span></code> without <code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code>, are unused; they never
+select the tool.</p>
+<p>Option values are checked when the command line is parsed: an invalid value, such
+as an unknown tool name or a relative local root, fails the launch like any other
+bad flag. Problems with the node itself never stop training. When dumps are
+enabled, the launcher checks every requested executable, each selected debugger’s
+command file, the log layout below, and the local staging root before starting
+workers. If any check fails, the launcher logs an error on node0 and runs without
+dumps. There is no automatic detection or partial fallback: a missing tool disables
+dumps on that node rather than being skipped. Supply a smaller tool list or
+install/configure the missing tools. Dumps require
 an absolute <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile=&lt;nvrx-root&gt;/logs/&lt;filename&gt;</span></code> and always use
 <code class="docutils literal notranslate"><span class="pre">&lt;nvrx-root&gt;/diags/</span></code>. The existing requirement for
 <code class="docutils literal notranslate"><span class="pre">--ft-per-cycle-applog-prefix</span></code> with <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> still applies.</p>
@@ -153,14 +160,15 @@ an absolute <code class="docutils literal notranslate"><span class="pre">--ft-nv
 <code class="docutils literal notranslate"><span class="pre">&lt;work-dir&gt;/nvrx/&lt;array-parent-id&gt;</span></code> for job arrays. Diagnostics reuse that
 namespace without reconstructing Slurm IDs. A root must distinguish launch
 attempts whose cycle numbers restart at zero.</p>
-<p>Successful startup validation logs resolved paths only from node0 at DEBUG
-(<code class="docutils literal notranslate"><span class="pre">NVRX_LOG_DEBUG=1</span></code>): one summary for selected tools (including the CUDA-GDB
-mode) and one for debugger command files, if any. Node0 uses the launcher’s
-infrastructure rank with hostname/topology-derived IDs disabled; Slurm job-array
-offsets still apply. If the startup rank is unknown, the summaries are omitted.
-Every node still validates its own dependencies. INFO is reserved for actual
-capture results and upload completion. Validation errors, runtime warnings, and
-capture/upload results remain visible from every node at their existing levels.</p>
+<p>Successful startup validation logs one summary of the resolved tools (executable,
+CUDA-GDB mode, and command files) only from node0 at DEBUG (<code class="docutils literal notranslate"><span class="pre">NVRX_LOG_DEBUG=1</span></code>).
+Node0 uses the launcher’s infrastructure rank with hostname/topology-derived IDs
+disabled; Slurm job-array offsets still apply. If the startup rank is unknown, the
+summary is omitted.
+Every node still checks its own dependencies, but only node0 logs startup errors,
+since every node normally runs the same image. INFO is reserved for actual capture
+results and upload completion. Runtime warnings and capture/upload results remain
+visible from every node at their existing levels.</p>
 <p>The worker obtains its monitor PID from the existing Unix socket and calls
 <code class="docutils literal notranslate"><span class="pre">PR_SET_PTRACER</span></code> to permit the monitor and its descendants to attach under
 Linux Yama mode 1. This does not override container restrictions, other security
@@ -182,7 +190,7 @@ and <code class="docutils literal notranslate"><span class="pre">-x</span></code
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">mode</span><span class="o">=</span><span class="n">stdin</span>
 </pre></div>
 </div>
-<p>Selecting a mode does not enable diagnostics or add CUDA-GDB to the tool list.
+<p>The mode option applies only when CUDA-GDB is a selected tool; it does not add it.
 Native GDB and py-spy are unaffected. Switch back with
 <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-cuda-gdb-mode=batch</span></code>; there is no automatic fallback.</p>
 <p><code class="docutils literal notranslate"><span class="pre">stdin</span></code> is fully automated: no terminal, prompts, or monitor command exchange
@@ -198,7 +206,8 @@ state, after qualifying it in the deployed debugger/driver/container combination
 A zero exit code in stdin mode is recorded as <code class="docutils literal notranslate"><span class="pre">completed</span></code>, not <code class="docutils literal notranslate"><span class="pre">success</span></code>:
 command errors can be printed while the debugger continues to <code class="docutils literal notranslate"><span class="pre">detach</span></code> and
 <code class="docutils literal notranslate"><span class="pre">quit</span></code> and exits zero. NVRx retains merged stdout/stderr and partial output,
-and records the selected CUDA-GDB mode and process exit code in the capture.
+and records the selected CUDA-GDB mode in the capture header; every capture’s footer
+records the tool’s process exit code.
 It does not parse command errors or certify GPU-state availability. Nonzero exits,
 timeouts, and output limits retain their existing failure statuses. Diagnostic
 failure does not add retries or extend recovery beyond the capture budget.</p>
@@ -206,7 +215,7 @@ failure does not add retries or extend recovery beyond the capture budget.</p>
 <section id="debugger-command-files">
 <h2>Debugger command files<a class="headerlink" href="#debugger-command-files" title="Link to this heading"></a></h2>
 <p>Users must supply a command file for each selected debugger. NVRx does not
-bundle default GDB or CUDA-GDB commands. Set the paths through the CLI:</p>
+bundle default GDB or CUDA-GDB commands. Set the paths on the command line:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">command</span><span class="o">-</span><span class="n">file</span><span class="o">=/</span><span class="n">lustre</span><span class="o">/</span><span class="n">config</span><span class="o">/</span><span class="n">gdb</span><span class="o">-</span><span class="n">timeout</span><span class="o">.</span><span class="n">txt</span>
 <span class="o">--</span><span class="n">ft</span><span class="o">-</span><span class="n">timeout</span><span class="o">-</span><span class="n">dump</span><span class="o">-</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">command</span><span class="o">-</span><span class="n">file</span><span class="o">=/</span><span class="n">lustre</span><span class="o">/</span><span class="n">config</span><span class="o">/</span><span class="n">cuda</span><span class="o">-</span><span class="n">gdb</span><span class="o">-</span><span class="n">timeout</span><span class="o">.</span><span class="n">txt</span>
 </pre></div>
@@ -367,7 +376,8 @@ GPU capture and timeout cleanup in the deployed training container. See the
 </div>
 <p>Each file contains the host, cycle, global/local rank, PID, timeout reason,
 timestamp, and capture outcome. The monitor closes the file before renaming it
-to <code class="docutils literal notranslate"><span class="pre">.ready</span></code>. Failed or truncated output is retained with its status. A
+to <code class="docutils literal notranslate"><span class="pre">.ready</span></code>. Failed or truncated output is retained with its status and, once the
+tool has started, its exit code. A
 still-running diagnostic child only has a pipe, never a writable staging file.</p>
 <p>After staging, the monitor emits one INFO summary per rank and capture sequence,
 combining the attempted tools’ capture statuses and the local cycle directory:</p>
@@ -425,10 +435,11 @@ quota or pre-capture directory scan. At the default 1 MiB cap, py-spy plus
 GDB use at most 8 MiB per cycle on a four-worker node or 16 MiB on an
 eight-worker node. Failed uploads can accumulate across cycles. Local write
 failures are logged after worker termination has been requested.</p></li>
-<li><p>An ownership lock prevents two collectors using the same local staging root.
-Existing captures cause diagnostics to be disabled with a warning, rather
-than uploaded into a new job or deleted. Collect them or select another local
-root. Concurrent launchers on one node need distinct roots and destinations.</p></li>
+<li><p>An ownership lock prevents two collectors using the same local staging root;
+a second launcher using the same root runs without dumps. Existing captures
+also disable dumps on that node, rather than being uploaded into a new job or
+deleted. Collect them or select another local root. Concurrent launchers on one
+node need distinct roots and destinations.</p></li>
 <li><p>The collector is not automatically restarted. Uploads do not delay training
 restart. Shutdown wakes the collector immediately for one final collection
 pass (including pending retries within their attempt limit). It grants a
@@ -470,79 +481,117 @@ local teardown is in progress.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h2>
-<p>These <code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code> fields are set on the command line.
-<code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code> corresponds to <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code>; other fields use matching
-<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-...</span></code> options, replacing underscores with hyphens. Enable
-diagnostics with <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled=true</span></code> and select tools with
-<code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump</span></code> in addition to the existing log configuration.</p>
-<table class="docutils align-default">
+<p>Timeout dumps are configured with the options below. Each corresponds to a field of
+<code class="docutils literal notranslate"><span class="pre">TimeoutDumpConfig</span></code>, the <code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code> field of <code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code>; tool
+options configure that tool’s entry in <code class="docutils literal notranslate"><span class="pre">tools</span></code>, whose order is the execution order.</p>
+<table class="docutils align-default" id="id1">
+<caption><span class="caption-text">Shared fields</span><a class="headerlink" href="#id1" title="Link to this table"></a></caption>
 <colgroup>
-<col style="width: 45.0%" />
+<col style="width: 25.0%" />
 <col style="width: 20.0%" />
-<col style="width: 35.0%" />
+<col style="width: 25.0%" />
+<col style="width: 30.0%" />
 </colgroup>
 <thead>
 <tr class="row-odd"><th class="head"><p>Field</p></th>
 <th class="head"><p>Default</p></th>
+<th class="head"><p>Option</p></th>
 <th class="head"><p>Meaning</p></th>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_enabled</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code>, or <code class="docutils literal notranslate"><span class="pre">true</span></code> when <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-tools</span></code> is given</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-enabled</span></code> (<code class="docutils literal notranslate"><span class="pre">true</span></code>/<code class="docutils literal notranslate"><span class="pre">false</span></code>)</p></td>
 <td><p>Enable or disable diagnostics</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code></p></td>
-<td><p>Ordered comma-separated tools; all must be executable when enabled</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tools</span></code></p></td>
+<td><p>every tool, with defaults</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-tools</span></code> (comma-separated names)</p></td>
+<td><p>Ordered tool entries; all must be executable when enabled</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_sections</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">step</span></code></p></td>
-<td><p>Comma-separated workload section names that trigger capture on timeout</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sections</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[step]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-sections</span></code> (comma-separated)</p></td>
+<td><p>Workload section names that trigger capture on timeout</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_local_root</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">local_root</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/tmp</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-local-root</span></code></p></td>
 <td><p>Node-local parent of <code class="docutils literal notranslate"><span class="pre">nvrx-diags/</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_pyspy</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">py-spy</span></code></p></td>
-<td><p>Executable name or path</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_gdb</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">gdb</span></code></p></td>
-<td><p>GDB executable name or path</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_cuda_gdb</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code></p></td>
-<td><p>CUDA-GDB executable name or path</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_gdb_command_file</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
-<td><p>User-supplied command file; required when gdb is selected</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_cuda_gdb_command_file</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
-<td><p>User-supplied command file; required when cuda-gdb is selected</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_capture_timeout</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">capture_timeout</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code> seconds</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-capture-timeout</span></code></p></td>
 <td><p>Total capture grace across all tools, including cleanup</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_max_capture_bytes</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_capture_bytes</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1048576</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-max-capture-bytes</span></code></p></td>
 <td><p>Output cap per tool, including headers</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_poll_interval</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">poll_interval</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code> seconds</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-poll-interval</span></code></p></td>
 <td><p>Collection and retry interval; filesystem I/O can extend the cadence</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_upload_attempts</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">upload_attempts</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">3</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-upload-attempts</span></code></p></td>
 <td><p>Total attempts per batch, including the first upload</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timeout_dump_shutdown_grace</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shutdown_grace</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">10</span></code> seconds</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-shutdown-grace</span></code></p></td>
 <td><p>Maximum launcher wait for the collector to finish its final pass</p></td>
+</tr>
+</tbody>
+</table>
+<table class="docutils align-default" id="id2">
+<caption><span class="caption-text">Tool entry fields</span><a class="headerlink" href="#id2" title="Link to this table"></a></caption>
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 20.0%" />
+<col style="width: 25.0%" />
+<col style="width: 30.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Tool and field</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Option</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pyspy</span></code>: <code class="docutils literal notranslate"><span class="pre">executable</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">py-spy</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-pyspy</span></code></p></td>
+<td><p>Executable name or path</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">gdb</span></code>: <code class="docutils literal notranslate"><span class="pre">executable</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gdb</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-gdb</span></code></p></td>
+<td><p>GDB executable name or path</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">gdb</span></code>: <code class="docutils literal notranslate"><span class="pre">command_file</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-gdb-command-file</span></code></p></td>
+<td><p>User-supplied command file; required when gdb is selected</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code>: <code class="docutils literal notranslate"><span class="pre">executable</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-cuda-gdb</span></code></p></td>
+<td><p>CUDA-GDB executable name or path</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code>: <code class="docutils literal notranslate"><span class="pre">command_file</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-cuda-gdb-command-file</span></code></p></td>
+<td><p>User-supplied command file; required when cuda-gdb is selected</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cuda-gdb</span></code>: <code class="docutils literal notranslate"><span class="pre">mode</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">batch</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-cuda-gdb-mode</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">batch</span></code> or <code class="docutils literal notranslate"><span class="pre">stdin</span></code> command delivery</p></td>
 </tr>
 </tbody>
 </table>
