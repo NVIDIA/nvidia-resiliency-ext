@@ -8,7 +8,7 @@ from .capture import staging_dir
 from .config import create_capture
 
 
-class TimeoutDumpMonitor:
+class TimeoutDumpManager:
     """Captures a timed-out worker at most once per incarnation, one tool at a time.
 
     The last diagnostic child is kept until its process exits, so a debugger that

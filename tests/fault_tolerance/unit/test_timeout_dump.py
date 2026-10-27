@@ -434,7 +434,9 @@ def test_ignore_incomplete_and_unknown_files(cfg, collector):
 
 def test_capture_only_once_on_step_timeout(cfg):
     server = monitor(cfg)
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         capture = cls.return_value
         capture.run = AsyncMock()
         asyncio.run(server._handle_timeout({"step"}))
@@ -447,7 +449,9 @@ def test_capture_only_once_on_step_timeout(cfg):
 @pytest.mark.parametrize("sections", [set(), {"setup"}, {"checkpoint"}, {"checkpointing"}])
 def test_other_timeouts_kill_without_capture(cfg, sections):
     server = monitor(cfg)
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         asyncio.run(server._handle_timeout(sections))
         cls.assert_not_called()
     server._shutdown_rank_if_alive.assert_called_once()
@@ -463,7 +467,9 @@ def test_selected_section_timeout_captures(cfg, section):
     server.open_sections = {section: 0}
     expired = server._expired_sections(2)
     assert expired == {section}
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         cls.return_value.run = AsyncMock()
         cls.return_value.is_running.return_value = False
         asyncio.run(server._handle_timeout(expired))
@@ -479,7 +485,9 @@ def test_selection_requires_exact_expired_section(cfg):
     server.open_sections = {"step": 0, "checkpoint": 0, "checkpointing": 0}
     expired = server._expired_sections(2)
     assert expired == {"step", "checkpointing"}
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         asyncio.run(server._handle_timeout(expired))
         cls.assert_not_called()
     server._shutdown_rank_if_alive.assert_called_once()
@@ -505,7 +513,9 @@ def test_section_names_do_not_enable_non_section_timeouts(cfg, timeout_type):
     else:
         assert server._is_out_of_section_timeout_elapsed(2)
     assert server._expired_sections(2) == set()
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         asyncio.run(server._handle_timeout(set()))
         cls.assert_not_called()
     server._shutdown_rank_if_alive.assert_called_once()
@@ -530,7 +540,7 @@ def test_non_step_detection_path_terminates_without_dump(cfg, section):
     assert expired == ({section} if section is not None else set())
     assert expired or server._is_out_of_section_timeout_elapsed(10)
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture"
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
     ) as capture:
         asyncio.run(server._handle_timeout(expired))
         capture.assert_not_called()
@@ -544,7 +554,9 @@ def test_replacement_worker_not_killed(cfg):
     async def replace(**kwargs):
         server.rank_info = RankInfo(global_rank=42, local_rank=0, pid=67890, host="node42")
 
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         cls.return_value.run = replace
         asyncio.run(server._handle_timeout({"step"}))
         assert cls.return_value.publish_local.call_args.args[0] is old
@@ -597,7 +609,7 @@ def test_original_worker_terminated_across_connection_changes(
 
     try:
         with patch(
-            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture"
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
         ) as cls:
             cls.return_value.run = change_connection
             cls.return_value.is_running.return_value = False
@@ -1170,11 +1182,11 @@ def test_sequence_shares_remaining_budget_and_stages_after_termination(cfg):
 
     with (
         patch(
-            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture",
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture",
             capture_factory,
         ),
         patch(
-            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.time",
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.time",
             SimpleNamespace(monotonic=lambda: now[0]),
         ),
     ):
@@ -1188,7 +1200,9 @@ def test_sequence_shares_remaining_budget_and_stages_after_termination(cfg):
 def test_unreaped_diagnostic_prevents_next_attachment(cfg):
     select_tools(cfg, "gdb", "cuda-gdb")
     server = monitor(cfg)
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         capture = cls.return_value
         capture.run = AsyncMock()
         capture.process.poll.return_value = None
@@ -1202,7 +1216,9 @@ def test_previous_worker_live_debugger_blocks_capture_until_exit(cfg):
     old_child = Mock()
     old_child.process.poll.return_value = None
     server.timeout_dump.child = old_child
-    with patch("nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture") as cls:
+    with patch(
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+    ) as cls:
         asyncio.run(server._handle_timeout({"step"}))
         cls.assert_not_called()
         server._shutdown_rank_if_alive.assert_called_once()
@@ -1248,7 +1264,7 @@ def test_three_hanging_tools_are_sequential_and_bounded(cfg, tmp_path):
 
     started = time.monotonic()
     with patch(
-        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.monitor.create_capture",
+        "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture",
         side_effect=make_capture,
     ):
         asyncio.run(server._handle_timeout({"step"}))

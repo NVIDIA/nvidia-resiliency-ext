@@ -46,7 +46,7 @@ from .data import (
     UpdateConfigMsg,
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
-from .timeout_dump import TimeoutDumpMonitor
+from .timeout_dump import TimeoutDumpManager
 from .utils import read_obj_from_ipc_stream, write_obj_to_ipc_stream
 
 
@@ -189,7 +189,7 @@ class RankMonitorServer:
         self._step_section_seen_this_cycle = False
         self.current_cycle = 0  # Track current cycle number for logging
         self.timeout_dump = (
-            TimeoutDumpMonitor(cfg.timeout_dump, logger) if cfg.timeout_dump.enabled else None
+            TimeoutDumpManager(cfg.timeout_dump, logger) if cfg.timeout_dump.enabled else None
         )
 
         if self.cfg.enable_nic_monitor:
