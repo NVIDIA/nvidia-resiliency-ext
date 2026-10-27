@@ -27,8 +27,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
 # Install system dependencies (curl for healthcheck)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+# APT::Sandbox::User=root because the image is built rootless on hosts with no
+# /etc/subuid range, where only one UID is mapped and apt cannot drop to _apt.
+# The sandbox guards against untrusted repositories; this build uses the
+# official Debian repos of the base image and already runs as root.
+RUN apt-get -o APT::Sandbox::User=root update && \
+    apt-get -o APT::Sandbox::User=root install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Install the standalone service dependencies independently from the root
