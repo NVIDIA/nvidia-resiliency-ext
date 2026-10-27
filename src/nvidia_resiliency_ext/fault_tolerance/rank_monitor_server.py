@@ -46,7 +46,7 @@ from .data import (
     UpdateConfigMsg,
 )
 from .rank_monitor_state_machine import RankMonitorStateMachine
-from .timeout_dump import ToolCapture, parse_capture_sections, parse_capture_tools, staging_dir
+from .timeout_dump import create_capture, staging_dir
 from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
 
 
@@ -269,11 +269,8 @@ class RankMonitorServer:
         captures = []
         cancelled = False
         rank_process = None
-        reasons = (
-            self._timed_out_sections & parse_capture_sections(self.cfg.timeout_dump_sections)
-            if self.cfg.timeout_dump_enabled
-            else set()
-        )
+        dump = self.cfg.timeout_dump
+        reasons = self._timed_out_sections & set(dump.sections) if dump.enabled else set()
         if reasons and rank_info is not None:
             try:
                 # Snapshot before capture yields. The IPC connection can disappear
@@ -295,7 +292,7 @@ class RankMonitorServer:
 
         timer = None
         try:
-            if self.cfg.timeout_dump_enabled and reasons and not self._diagnostic_attempted:
+            if dump.enabled and reasons and not self._diagnostic_attempted:
                 self._diagnostic_attempted = True
                 child = self._diagnostic_child
                 if child is not None and child.is_running():
@@ -305,21 +302,22 @@ class RankMonitorServer:
                     return
                 if rank_info is not None:
                     timer = asyncio.get_running_loop().call_later(
-                        self.cfg.timeout_dump_capture_timeout, terminate_original_worker
+                        dump.capture_timeout, terminate_original_worker
                     )
-                    deadline = time.monotonic() + self.cfg.timeout_dump_capture_timeout
-                    tools = parse_capture_tools(self.cfg.timeout_dump)
-                    for index, tool in enumerate(tools):
+                    deadline = time.monotonic() + dump.capture_timeout
+                    tools = dump.tools
+                    for index, tool_cfg in enumerate(tools):
                         remaining = deadline - time.monotonic()
                         if remaining <= 0 or self.rank_info is not rank_info:
                             break
-                        capture = ToolCapture(self.cfg, rank_info.pid, tool)
+                        capture = create_capture(dump, rank_info.pid, tool_cfg)
                         captures.append(capture)
                         self._diagnostic_child = capture
                         await capture.run(timeout=remaining / (len(tools) - index))
                         if capture.is_running():
                             self.logger.warning(
-                                "Skipping later timeout tools: %s child is still alive", tool
+                                "Skipping later timeout tools: %s child is still alive",
+                                tool_cfg.name,
                             )
                             break
         except asyncio.CancelledError:
@@ -347,8 +345,8 @@ class RankMonitorServer:
                 rank_info.global_rank,
                 rank_info.local_rank,
                 rank_info.pid,
-                " ".join(f"{capture.tool}={capture.status}" for capture in captures),
-                staging_dir(self.cfg) / f"cycle{cycle}",
+                " ".join(f"{capture.name}={capture.status_text()}" for capture in captures),
+                staging_dir(dump) / f"cycle{cycle}",
             )
         if cancelled:
             raise asyncio.CancelledError

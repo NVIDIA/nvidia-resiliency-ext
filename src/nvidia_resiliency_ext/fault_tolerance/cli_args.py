@@ -8,23 +8,13 @@ from __future__ import annotations
 import argparse
 from typing import Any, Callable, Optional
 
+from nvidia_resiliency_ext.fault_tolerance.arg_types import str_to_bool
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     ATTRIBUTION_STOP_ACTIONS,
     DEFAULT_ATTRIBUTION_STARTUP_TIMEOUT,
     DEFAULT_ATTRIBUTION_STOP_ACTION,
 )
 from nvidia_resiliency_ext.fault_tolerance.utils import DEFAULT_NO_RESTART_EXIT_CODE
-
-
-def str_to_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes"}:
-        return True
-    if normalized in {"0", "false", "no"}:
-        return False
-    raise argparse.ArgumentTypeError(f"expected a boolean value, got {value!r}")
 
 
 def _add_argument(

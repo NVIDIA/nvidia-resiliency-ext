@@ -395,7 +395,7 @@ class RankMonitorClient:
             )
         # we receive current FT config from the server
         self.cfg = reply_for_init.cfg
-        if self.cfg.timeout_dump_enabled:
+        if self.cfg.timeout_dump.enabled:
             from .timeout_dump import authorize_monitor_ptrace
 
             try:

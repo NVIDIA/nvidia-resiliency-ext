@@ -40,7 +40,6 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_control_services_args,
     add_log_funnel_args,
     add_rendezvous_args,
-    str_to_bool,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
@@ -87,7 +86,7 @@ def get_args_parser() -> argparse.ArgumentParser:
         include_local_addr=True,
         include_ft_segment=True,
     )
-    add_log_funnel_args(parser, enable_default=True, enable_type=str_to_bool)
+    add_log_funnel_args(parser, enable_default=True)
     add_control_services_args(parser)
     return parser
 

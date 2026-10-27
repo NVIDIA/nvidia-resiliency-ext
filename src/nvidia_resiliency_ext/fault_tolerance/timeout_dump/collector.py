@@ -18,11 +18,14 @@ from pathlib import Path
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from .config import staging_dir, validate_config
+from .capture import staging_dir
+from .config import TOOLS
 
 logger = logging.getLogger(LogConfig.name)
 CAPTURE_NAME = re.compile(
-    r"rank(?P<local_rank>\d+)_pid\d+_(?P<tool>pyspy|gdb|cuda-gdb)\.txt\.ready\Z"
+    r"rank(?P<local_rank>\d+)_pid\d+_(?P<tool>"
+    + "|".join(map(re.escape, TOOLS))
+    + r")\.txt\.ready\Z"
 )
 
 
@@ -111,7 +114,7 @@ class DiagnosticCollector:
             try:
                 self.publish(key, batch)
             except OSError as exc:
-                batch.exhausted = batch.attempts >= self.cfg.timeout_dump_upload_attempts
+                batch.exhausted = batch.attempts >= self.cfg.upload_attempts
                 if batch.exhausted:
                     # Retain failed evidence without consuming the retry budget
                     # of captures that arrive later for the same cycle/tool.
@@ -171,11 +174,11 @@ def _collector_main(cfg, destination, lock_fd, inherited_fds, launcher_pid, loca
     try:
         # Desynchronize nodes once at startup. Subsequent collection and retry
         # polls use the same interval; there is no separate upload jitter knob.
-        wait_for_poll(random.uniform(0, cfg.timeout_dump_poll_interval))
+        wait_for_poll(random.uniform(0, cfg.poll_interval))
         while not stopping and os.getppid() == launcher_pid:
             collector.tick()
             if not stopping:
-                wait_for_poll(cfg.timeout_dump_poll_interval)
+                wait_for_poll(cfg.poll_interval)
         # Shutdown bypasses polling and incomplete-group deferral for one final
         # pass. The launcher independently enforces the shutdown grace period.
         collector.tick(flush=True)
@@ -187,14 +190,19 @@ class DiagnosticCollectorProcess:
     """Launcher-owned fork child. No queues, events, or additional sockets."""
 
     def __init__(self, cfg, destination, *, local_world_size=1):
-        validate_config(cfg)
         root = staging_dir(cfg)
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         if root.is_symlink() or root.stat().st_uid != os.geteuid():
             raise PermissionError(f"Diagnostic staging directory is not owned by this user: {root}")
         lock_fd = os.open(root / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise RuntimeError(
+                    f"Another launcher on this node already uses {root}; "
+                    "give each launcher its own --ft-timeout-dump-local-root"
+                ) from None
             # Never upload stale files into a new job or delete unpublished evidence.
             if any(root.glob("cycle*/*")):
                 raise RuntimeError(
@@ -233,7 +241,7 @@ class DiagnosticCollectorProcess:
     def shutdown(self):
         if self.process.is_alive():
             self.process.terminate()
-            self.process.join(timeout=self.cfg.timeout_dump_shutdown_grace)
+            self.process.join(timeout=self.cfg.shutdown_grace)
         if self.process.is_alive():
             logger.warning("Diagnostic collector exceeded shutdown grace; sending SIGKILL")
             self.process.kill()
