@@ -85,7 +85,6 @@ from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
 from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_attribution_args,
     add_cycle_info_args,
-    add_ft_config_file_args,
     add_log_funnel_args,
     add_no_restart_args,
     add_rendezvous_args,
@@ -2610,8 +2609,6 @@ def get_args_parser() -> ArgumentParser:
     # Fault tolerance related items
     #
 
-    add_ft_config_file_args(parser, aliases=("--ft-cfg-path", "--ft-cfg_path"), action=env)
-
     parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
@@ -2942,13 +2939,6 @@ def get_args_parser() -> ArgumentParser:
     add_no_restart_args(parser)
     add_cycle_info_args(parser)
 
-    parser.add_argument(
-        "--ft-ignore-missing-cfg",
-        action='store_true',
-        dest="ft_ignore_missing_cfg",
-        help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
-    )
-
     #
     # Progress tracking arguments
     #
@@ -3178,10 +3168,8 @@ def _validate_args(
         diagnostics_directory(launcher_log_file or getattr(args, "ft_nvrx_logfile", None))
 
 
-def _resolve_attribution_endpoint(args: Any, fault_tol_cfg: FaultToleranceConfig) -> Optional[str]:
-    endpoint = getattr(args, "ft_attribution_endpoint", None)
-    if endpoint is None:
-        endpoint = fault_tol_cfg.attribution_endpoint
+def _resolve_attribution_endpoint(fault_tol_cfg: FaultToleranceConfig) -> Optional[str]:
+    endpoint = fault_tol_cfg.attribution_endpoint
     if endpoint is not None:
         endpoint = str(endpoint).strip() or None
     return endpoint
@@ -3190,7 +3178,7 @@ def _resolve_attribution_endpoint(args: Any, fault_tol_cfg: FaultToleranceConfig
 def _validate_attribution_requires_per_cycle_applog(
     args: Any, fault_tol_cfg: FaultToleranceConfig
 ) -> None:
-    if _resolve_attribution_endpoint(args, fault_tol_cfg) and not getattr(
+    if _resolve_attribution_endpoint(fault_tol_cfg) and not getattr(
         args, "ft_per_cycle_applog_prefix", None
     ):
         raise ValueError(

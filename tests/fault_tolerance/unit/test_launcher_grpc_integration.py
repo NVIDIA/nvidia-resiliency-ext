@@ -21,7 +21,6 @@ import time
 import grpc
 import pytest
 
-from nvidia_resiliency_ext import fault_tolerance
 from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
 
 WORLD_SIZE = 2
@@ -54,11 +53,7 @@ def _run_launcher(cmd_to_run, timeout=DEFAULT_TIMEOUT):
         raise AssertionError(f"ft_launcher was still running after {timeout} seconds")
 
 
-def _save_ft_cfg(cfg, dirpath):
-    """Save fault tolerance config to YAML file."""
-    cfg_path = os.path.join(dirpath, "_tmp_ft_cfg.yaml")
-    cfg.to_yaml_file(cfg_path)
-    return cfg_path
+FT_ARGS = "--ft-initial-rank-heartbeat-timeout=3.0 --ft-rank-heartbeat-timeout=3.0"
 
 
 def _get_util_script_path():
@@ -286,17 +281,12 @@ def test_grpc_client_can_connect_and_stream_logs(tmp_dir):
 
 def test_launcher_starts_grpc_server_on_correct_port(tmp_dir):
     """Test that launcher starts gRPC server on the specified port."""
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-
     custom_port = 50055
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
 
     launcher_cmd = (
         "ft_launcher"
-        f" --ft-cfg-path={ft_cfg_path}"
+        f" {FT_ARGS}"
         " --ft-enable-log-server=true"
         f" --ft-log-server-port={custom_port}"
         f" --ft-per-cycle-applog-prefix={tmp_dir}/test.log"
@@ -312,11 +302,6 @@ def test_launcher_starts_grpc_server_on_correct_port(tmp_dir):
 
 def test_launcher_creates_grpc_root_log(tmp_dir):
     """Test that launcher creates a log file for the gRPC root log server."""
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-
     base_log_file = os.path.join(tmp_dir, "test.log")
     expected_server_log = os.path.join(tmp_dir, "test_grpc_root.log")
 
@@ -324,7 +309,7 @@ def test_launcher_creates_grpc_root_log(tmp_dir):
 
     launcher_cmd = (
         "ft_launcher"
-        f" --ft-cfg-path={ft_cfg_path}"
+        f" {FT_ARGS}"
         " --ft-enable-log-server=true"
         f" --ft-per-cycle-applog-prefix={base_log_file}"
         f" --nproc-per-node={WORLD_SIZE}"
@@ -345,16 +330,11 @@ def test_launcher_creates_grpc_root_log(tmp_dir):
 
 def test_launcher_without_grpc_flag_does_not_start_server(tmp_dir):
     """Test that gRPC server is NOT started when --ft-enable-log-server flag is absent."""
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
 
     launcher_cmd = (
         "ft_launcher"
-        f" --ft-cfg-path={ft_cfg_path}"
+        f" {FT_ARGS}"
         # Note: NO --ft-enable-log-server flag
         f" --ft-per-cycle-applog-prefix={tmp_dir}/test.log"
         f" --nproc-per-node={WORLD_SIZE}"
@@ -369,11 +349,6 @@ def test_launcher_without_grpc_flag_does_not_start_server(tmp_dir):
 
 def test_launcher_custom_server_log_prefix(tmp_dir):
     """Test that --ft-log-server-log-prefix is used for root diagnostics."""
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
-
     base_log_file = os.path.join(tmp_dir, "test.log")
     custom_server_log_prefix = os.path.join(tmp_dir, "custom_grpc_server")
     custom_root_log = custom_server_log_prefix + "_root.log"
@@ -383,7 +358,7 @@ def test_launcher_custom_server_log_prefix(tmp_dir):
 
     launcher_cmd = (
         "ft_launcher"
-        f" --ft-cfg-path={ft_cfg_path}"
+        f" {FT_ARGS}"
         " --ft-enable-log-server=true"
         f" --ft-per-cycle-applog-prefix={base_log_file}"
         f" --ft-log-server-log-prefix={custom_server_log_prefix}"

@@ -4,7 +4,7 @@ Legacy heartbeat monitoring example
 This older DDP example demonstrates heartbeat monitoring and experimental
 timeout calculation. It does **not** save model, optimizer, or training
 progress; a worker restart starts training again. Its ``ft_state.json`` holds
-calculated monitoring timeouts, not a training checkpoint or launcher YAML.
+calculated monitoring timeouts, not a training checkpoint or launcher configuration.
 
 Heartbeat monitoring is being deprecated as a deployment approach. Use
 :doc:`train_ddp_sections` for a small section-based example with training
