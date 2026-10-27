@@ -54,6 +54,12 @@ RUN POETRY_DYNAMIC_VERSIONING_BYPASS="${NVRX_PACKAGE_VERSION}" \
 ARG NVRX_BUILD_TAG=""
 ENV NVRX_ATTRSVC_BUILD_TAG=${NVRX_BUILD_TAG}
 
+# Deployments mount a log directory here. The service logs to stderr, which the
+# container runtime keeps on the host; writing a copy to the mount makes startup
+# state readable by anyone who can see the shared filesystem. Override or clear
+# NVRX_ATTRSVC_LOG_FILE to opt out.
+ENV NVRX_ATTRSVC_LOG_FILE=/var/log/nvrx/attrsvc.log
+
 # Verify the service command and its import graph without PyTorch.
 RUN command -v nvrx-attrsvc && \
     python -c "import nvidia_resiliency_ext.services.attrsvc.app" && \

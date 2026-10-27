@@ -230,6 +230,13 @@ class Settings(BaseSettings):
 
     CLUSTER_NAME: str = Field(default="", description="Cluster name for dataflow")
 
+    LOG_FILE: str = Field(
+        default="",
+        description="Write service logs to this file in addition to stderr. Empty "
+        "keeps stderr only. Lets a deployment read startup state without shell "
+        "access to the host, when the path is on shared storage",
+    )
+
     # Slack integration (optional; env vars have no NVRX_ATTRSVC_ prefix)
     SLACK_BOT_TOKEN: str = Field(
         default="",
@@ -477,6 +484,19 @@ def configure_logging(log_level: str = "INFO") -> None:
 
     root_level = getattr(logging, log_level, logging.INFO)
     logging.basicConfig(level=root_level, format=_LOG_FORMAT)
+    # Read straight from the environment: this runs before Settings is built,
+    # and a standalone function should not need one passed in just for this.
+    log_file = (os.environ.get("NVRX_ATTRSVC_LOG_FILE") or "").strip()
+    if log_file:
+        try:
+            os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+            handler = logging.FileHandler(log_file)
+            handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+            logging.getLogger().addHandler(handler)
+        except OSError as exc:  # a bad path must not stop the service starting
+            logging.getLogger(__name__).warning(
+                "Could not open log file %s: %s; continuing on stderr only", log_file, exc
+            )
     # ``basicConfig`` is a no-op when the embedding process already has a
     # handler. The explicit level assignment still honors attrsvc configuration.
     logging.getLogger().setLevel(root_level)

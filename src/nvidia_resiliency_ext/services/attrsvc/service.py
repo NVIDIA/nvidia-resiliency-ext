@@ -9,6 +9,7 @@ This module keeps FastAPI-facing concerns in ``services/attrsvc``. The default
 
 import asyncio
 import logging
+import os
 from functools import partial
 from typing import Any, Protocol
 
@@ -133,6 +134,23 @@ class AttributionHttpAdapter:
         restart_config = restart_agent_config_from_settings(cfg)
         slack_notifier = SlackNotifier(SlackConfig.from_settings(cfg))
         logger.info("Slack alerts: %s", slack_notifier.describe())
+        # Spelled out because "disabled" alone does not say which input was
+        # missing, and the container's environment is not readable from outside.
+        _sc = slack_notifier.config
+        logger.info(
+            "Slack config: channel=%r token=%s(len=%d) actions=%s email_domain=%r "
+            "env[SLACK_CHANNEL]=%r env[SLACK_BOT_TOKEN_FILE]=%r "
+            "env[SLACK_BOT_TOKEN]=%s env[NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS]=%r",
+            _sc.channel,
+            "present" if _sc.token else "MISSING",
+            len(_sc.token or ""),
+            sorted(_sc.notify_actions),
+            _sc.email_domain,
+            os.environ.get("SLACK_CHANNEL"),
+            os.environ.get("SLACK_BOT_TOKEN_FILE"),
+            "set" if os.environ.get("SLACK_BOT_TOKEN") else "unset",
+            os.environ.get("NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS"),
+        )
         self._backend: AttributionServiceBackend = RestartAgentServiceBackend(
             allowed_root=cfg.ALLOWED_ROOT,
             runtime=build_restart_agent_runtime(restart_config),
