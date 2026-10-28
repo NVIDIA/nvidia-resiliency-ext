@@ -4,7 +4,7 @@
 """Analyzing a cycle as soon as a successor proves it complete.
 
 A job that restarts in place keeps its SLURM allocation RUNNING across every
-cycle, so SLURM's terminal state is the wrong trigger: run 4173891 produced
+cycle, so SLURM's terminal state is the wrong trigger: run 2200200 produced
 eight cycles over six hours and the allocation never left RUNNING until the
 whole array was cancelled.
 """
@@ -14,7 +14,7 @@ from nvidia_resiliency_ext.services.smonsvc.models import JobState, MonitorState
 from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
 
 LOG_DIR = "/logs"
-BASE = f"{LOG_DIR}/nemotron4_ultra_60t_phase1_v1_4173891_date_26-10-02_time_08-18-26"
+BASE = f"{LOG_DIR}/trainjob_tierA_s4_phase1_v1_2200200_date_26-10-02_time_08-18-26"
 
 
 def _cycles(count):
@@ -35,14 +35,14 @@ def _monitor(resolved, *, resolution_enabled=True):
     return monitor
 
 
-def _job(job_id="4173891_96", state=JobState.RUNNING):
+def _job(job_id="2200200_96", state=JobState.RUNNING):
     return SlurmJob(
         job_id=job_id,
-        name="nemotron4_ultra_60t_phase1_v1",
-        user="dnarayanan",
+        name="trainjob_tierA_s4_phase1_v1",
+        user="alice",
         partition="batch",
         state=state,
-        stdout_path=f"{LOG_DIR}/slurm-4173891_96.out",
+        stdout_path=f"{LOG_DIR}/slurm-2200200_96.out",
     )
 
 
@@ -57,7 +57,7 @@ def test_the_oldest_complete_cycle_goes_first_and_the_live_one_is_only_tracked()
     # attempt against completed predecessors, so they must not run together.
     assert [path for _, path in analyze] == [resolved[0]]
     assert [path for _, path in submit] == [resolved[3]]
-    assert monitor.state.cycle_inflight == {"4173891": resolved[0]}
+    assert monitor.state.cycle_inflight == {"2200200": resolved[0]}
 
 
 def test_no_further_cycle_starts_while_one_is_in_flight():
@@ -131,7 +131,7 @@ def test_sibling_array_tasks_do_not_start_different_cycles_at_once():
     # first claimed and start the next one alongside it. The gate is per run.
     resolved = _cycles(3)
     monitor = _monitor(resolved)
-    tasks = {f"4173891_{index}": _job(f"4173891_{index}") for index in (96, 133, 141)}
+    tasks = {f"2200200_{index}": _job(f"2200200_{index}") for index in (96, 133, 141)}
 
     _, analyze = monitor._sync_jobs_from_slurm(tasks)
 
@@ -143,7 +143,7 @@ def test_analysis_identity_drops_the_array_task_for_a_shared_app_log():
     monitor = _monitor(_cycles(2))
     job = _job()
 
-    assert monitor._analysis_job_id(job, f"{BASE}_cycle0.log") == "4173891"
+    assert monitor._analysis_job_id(job, f"{BASE}_cycle0.log") == "2200200"
 
 
 def test_analysis_identity_keeps_the_task_for_its_own_wrapper():
@@ -151,14 +151,14 @@ def test_analysis_identity_keeps_the_task_for_its_own_wrapper():
     monitor = _monitor([])
     job = _job()
 
-    assert monitor._analysis_job_id(job, job.stdout_path) == "4173891_96"
+    assert monitor._analysis_job_id(job, job.stdout_path) == "2200200_96"
 
 
 def test_analysis_identity_keeps_the_task_when_resolution_is_off():
     monitor = _monitor(_cycles(2), resolution_enabled=False)
     job = _job()
 
-    assert monitor._analysis_job_id(job, f"{BASE}_cycle0.log") == "4173891_96"
+    assert monitor._analysis_job_id(job, f"{BASE}_cycle0.log") == "2200200_96"
 
 
 # ─── a log that has not appeared yet is not a log that never will ───

@@ -232,28 +232,28 @@ def test_log_attribution_result_still_rejects_unusable_responses(capsys, caplog)
 
 
 def test_completed_cycle_is_analyzed_under_the_array_job_not_the_task():
-    job = SimpleNamespace(job_id="4173891_96", user="dnarayanan")
+    job = SimpleNamespace(job_id="2200200_96", user="alice")
     client = _AttrsvcClient()
     state = MonitorState()
 
-    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "4173891")
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
 
     (call,) = client.calls
     assert call["method"] == "POST"
     assert call["analysis_intent"] == ANALYSIS_INTENT_TERMINAL
     # L3 groups attempt history by exact job ID, so the task index must not
     # reach it: 149 concurrent tasks share this one log.
-    assert call["job_id"] == "4173891"
+    assert call["job_id"] == "2200200"
     assert state.completed_cycles_analyzed == 1
 
 
 def test_a_cycle_is_analyzed_only_once():
-    job = SimpleNamespace(job_id="4173891_96", user="dnarayanan")
+    job = SimpleNamespace(job_id="2200200_96", user="alice")
     client = _AttrsvcClient()
     state = MonitorState()
 
-    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "4173891")
-    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "4173891")
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
 
     assert len(client.calls) == 1
     assert state.completed_cycles_analyzed == 1
@@ -262,16 +262,16 @@ def test_a_cycle_is_analyzed_only_once():
 def test_terminal_fetch_does_not_re_request_an_already_analyzed_cycle():
     # The cycle trigger already signaled this path; the terminal path must not
     # pay for a second full analysis of the same log.
-    job = SimpleNamespace(job_id="4173891_96", user="dnarayanan")
+    job = SimpleNamespace(job_id="2200200_96", user="alice")
     client = _AttrsvcClient()
     state = MonitorState()
 
-    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "4173891")
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
     posts_before = len([c for c in client.calls if c["method"] == "POST"])
-    fetch_results(job, "/logs/run_cycle0.log", state, client, "4173891")
+    fetch_results(job, "/logs/run_cycle0.log", state, client, "2200200")
 
     assert len([c for c in client.calls if c["method"] == "POST"]) == posts_before
-    assert [c["job_id"] for c in client.calls if c["method"] == "GET"] == ["4173891"]
+    assert [c["job_id"] for c in client.calls if c["method"] == "GET"] == ["2200200"]
 
 
 def test_submit_log_falls_back_to_the_task_id():

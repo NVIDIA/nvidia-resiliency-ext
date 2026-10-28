@@ -20,8 +20,8 @@ ON = AppLogResolution(enabled=True)
 OFF = AppLogResolution(enabled=False)
 
 
-def _nemotron_layout(tmp_path, job="3847837", cycles=(0,), name="n4_4k_egtp8_full_vlm_adam"):
-    """The layout observed on the Nemotron clusters: slurm_out/ beside logs/."""
+def _cluster_layout(tmp_path, job="2200100", cycles=(0,), name="proj_4k_par8_full_mm_adam"):
+    """A common production layout: slurm_out/ beside logs/."""
     run = tmp_path / "phase1"
     (run / "slurm_out").mkdir(parents=True)
     (run / "logs").mkdir(parents=True)
@@ -41,11 +41,11 @@ def _nemotron_layout(tmp_path, job="3847837", cycles=(0,), name="n4_4k_egtp8_ful
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        ("3847837", "3847837"),
-        ("3847837_0", "3847837"),
-        ("3847837_13", "3847837"),
-        ("3847837+1", "3847837"),
-        ("  3847837_2  ", "3847837"),
+        ("2200100", "2200100"),
+        ("2200100_0", "2200100"),
+        ("2200100_13", "2200100"),
+        ("2200100+1", "2200100"),
+        ("  2200100_2  ", "2200100"),
     ],
 )
 def test_base_job_id_strips_array_and_het_suffixes(raw, expected):
@@ -56,35 +56,35 @@ def test_base_job_id_strips_array_and_het_suffixes(raw, expected):
 
 
 def test_resolves_stub_to_application_log(tmp_path):
-    stub, logs = _nemotron_layout(tmp_path)
-    assert resolve_app_log(str(stub), "3847837_0", ON) == str(logs[0])
+    stub, logs = _cluster_layout(tmp_path)
+    assert resolve_app_log(str(stub), "2200100_0", ON) == str(logs[0])
 
 
 def test_every_array_task_resolves_to_the_same_log(tmp_path):
     # The application log embeds the parent job ID, not the array task.
-    stub, logs = _nemotron_layout(tmp_path)
-    for task in ("3847837_0", "3847837_7", "3847837_13"):
+    stub, logs = _cluster_layout(tmp_path)
+    for task in ("2200100_0", "2200100_7", "2200100_13"):
         assert resolve_app_log(str(stub), task, ON) == str(logs[0])
 
 
 def test_newest_cycle_wins(tmp_path):
-    stub, logs = _nemotron_layout(tmp_path, cycles=(0, 1, 2))
+    stub, logs = _cluster_layout(tmp_path, cycles=(0, 1, 2))
     # cycle2 produced the terminal outcome; cycle10 must beat cycle2 numerically
-    assert resolve_app_log(str(stub), "3847837", ON) == str(logs[-1])
+    assert resolve_app_log(str(stub), "2200100", ON) == str(logs[-1])
 
 
 def test_cycle_ordering_is_numeric_not_lexical(tmp_path):
-    stub, logs = _nemotron_layout(tmp_path, cycles=(2, 10))
-    assert resolve_app_log(str(stub), "3847837", ON).endswith("_cycle10.log")
+    stub, logs = _cluster_layout(tmp_path, cycles=(2, 10))
+    assert resolve_app_log(str(stub), "2200100", ON).endswith("_cycle10.log")
 
 
 def test_disabled_resolution_returns_none(tmp_path):
-    stub, _ = _nemotron_layout(tmp_path)
-    assert resolve_app_log(str(stub), "3847837_0", OFF) is None
+    stub, _ = _cluster_layout(tmp_path)
+    assert resolve_app_log(str(stub), "2200100_0", OFF) is None
 
 
 def test_returns_none_when_no_log_matches_the_job(tmp_path):
-    stub, _ = _nemotron_layout(tmp_path, job="3847837")
+    stub, _ = _cluster_layout(tmp_path, job="2200100")
     assert resolve_app_log(str(stub), "9999999", ON) is None
 
 
@@ -96,9 +96,9 @@ def test_returns_none_without_a_logs_dir(tmp_path):
 
 
 def test_does_not_match_another_jobs_log(tmp_path):
-    # A prefix/suffix collision must not resolve: 384 should not match 3847837.
-    stub, _ = _nemotron_layout(tmp_path, job="3847837")
-    assert resolve_app_log(str(stub), "384", ON) is None
+    # A prefix/suffix collision must not resolve: 220 should not match 2200100.
+    stub, _ = _cluster_layout(tmp_path, job="2200100")
+    assert resolve_app_log(str(stub), "220", ON) is None
 
 
 def test_layout_without_stdout_subdir_uses_sibling_logs_dir(tmp_path):
@@ -171,7 +171,7 @@ def test_first_task_claims_the_log():
     from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
 
     state = MonitorState()
-    granted, job = _claim(state, "3847837_0", "/run/logs/a_3847837_cycle0.log")
+    granted, job = _claim(state, "2200100_0", "/run/logs/a_2200100_cycle0.log")
 
     assert granted is True
     assert job.log_submitted is False
@@ -182,10 +182,10 @@ def test_sibling_tasks_are_skipped_and_counted():
     from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
 
     state = MonitorState()
-    path = "/run/logs/a_3847837_cycle0.log"
-    _claim(state, "3847837_0", path)
+    path = "/run/logs/a_2200100_cycle0.log"
+    _claim(state, "2200100_0", path)
 
-    for task in ("3847837_1", "3847837_2", "3847837_13"):
+    for task in ("2200100_1", "2200100_2", "2200100_13"):
         granted, job = _claim(state, task, path)
         assert granted is False
         # Marked settled so the task is not retried or fetched.
@@ -208,8 +208,8 @@ def test_distinct_logs_are_each_claimed():
 # ─── single-cycle layout: no _cycle<N> suffix, plus metadata sidecars ───
 
 
-def _single_cycle_layout(tmp_path, job="788958", name="nemotron4_derisking_super_2p6t_phase2"):
-    """Observed on oci-aga: stdout sits in the run dir, log has no cycle suffix."""
+def _single_cycle_layout(tmp_path, job="661100", name="trainjob_variant_tierB_s3_phase2"):
+    """A layout where stdout sits in the run dir and the log has no cycle suffix."""
     run = tmp_path / "phase2_2x_bs"
     (run / "logs").mkdir(parents=True)
     stub = run / f"slurm-{job}.out"
@@ -224,12 +224,12 @@ def _single_cycle_layout(tmp_path, job="788958", name="nemotron4_derisking_super
 
 def test_resolves_log_without_cycle_suffix(tmp_path):
     stub, main = _single_cycle_layout(tmp_path)
-    assert resolve_app_log(str(stub), "788958", ON) == str(main)
+    assert resolve_app_log(str(stub), "661100", ON) == str(main)
 
 
 def test_never_selects_env_or_tasks_sidecars(tmp_path):
     stub, main = _single_cycle_layout(tmp_path)
-    resolved = resolve_app_log(str(stub), "788958", ON)
+    resolved = resolve_app_log(str(stub), "661100", ON)
     assert not resolved.endswith(".env.log")
     assert not resolved.endswith(".tasks.log")
     assert resolved == str(main)
@@ -243,10 +243,10 @@ def test_cycle_log_outranks_a_plain_log_for_the_same_job(tmp_path):
 
 
 def test_does_not_pick_another_jobs_log_in_a_shared_dir(tmp_path):
-    stub, main = _single_cycle_layout(tmp_path, job="788958")
-    other = main.parent / "nemotron4_other_788873_date_26-09-18_time_15-20-13.log"
+    stub, main = _single_cycle_layout(tmp_path, job="661100")
+    other = main.parent / "trainjob_other_661200_date_26-09-18_time_15-20-13.log"
     other.write_text("different job\n")
-    assert resolve_app_log(str(stub), "788958", ON) == str(main)
+    assert resolve_app_log(str(stub), "661100", ON) == str(main)
 
 
 # ─── one terminal analysis per log, even when siblings submitted wrappers ───
@@ -440,10 +440,10 @@ def test_resolution_disabled_still_submits_the_stdout_path(tmp_path):
 def test_job_with_an_application_log_is_still_analyzed(tmp_path):
     from types import SimpleNamespace
 
-    stub, logs = _nemotron_layout(tmp_path, job="3906471", cycles=(0, 1))
+    stub, logs = _cluster_layout(tmp_path, job="2200600", cycles=(0, 1))
     monitor = _monitor()
     job = SimpleNamespace(
-        job_id="3906471_0",
+        job_id="2200600_0",
         stdout_path=str(stub),
         app_log_missing=False,
         name='',
@@ -458,9 +458,9 @@ def test_job_with_an_application_log_is_still_analyzed(tmp_path):
 # ─── wrapper written above the run directory ───
 
 
-def _nested_layout(tmp_path, job="4075258"):
+def _nested_layout(tmp_path, job="2200400"):
     """Observed shape: <parent>/slurm-<jobid>.out beside <parent>/phase1/logs/."""
-    parent = tmp_path / "super_3t_data_smoke"
+    parent = tmp_path / "tierB_s2_data_smoke"
     logs = parent / "phase1" / "logs"
     logs.mkdir(parents=True)
     stub = parent / f"slurm-{job}.out"
@@ -470,15 +470,15 @@ def _nested_layout(tmp_path, job="4075258"):
 
 def test_resolves_when_logs_live_one_level_below_the_wrapper(tmp_path):
     stub, logs = _nested_layout(tmp_path)
-    log = logs / "nemotron4_derisking_super_3t_data_smoke_4075258_date_26-09-28_time_13-42-39.log"
+    log = logs / "trainjob_variant_tierB_s2_data_smoke_2200400_date_26-09-28_time_13-42-39.log"
     log.write_text("training output\n")
 
-    assert resolve_app_log(str(stub), "4075258", ON) == str(log)
+    assert resolve_app_log(str(stub), "2200400", ON) == str(log)
 
 
 def test_empty_log_never_outranks_a_populated_one(tmp_path):
     stub, logs = _nested_layout(tmp_path)
-    stamp = "nemotron4_derisking_super_3t_data_smoke_4075258_date_26-09-28_time"
+    stamp = "trainjob_variant_tierB_s2_data_smoke_2200400_date_26-09-28_time"
     populated = logs / f"{stamp}_13-42-39.log"
     populated.write_text("training output\n")
     # A launcher can open a log and die before writing; make the empty one newer.
@@ -486,32 +486,32 @@ def test_empty_log_never_outranks_a_populated_one(tmp_path):
     empty.write_text("")
     os.utime(empty, (empty.stat().st_atime + 60, empty.stat().st_mtime + 60))
 
-    assert resolve_app_log(str(stub), "4075258", ON) == str(populated)
+    assert resolve_app_log(str(stub), "2200400", ON) == str(populated)
 
 
 def test_all_logs_empty_resolves_to_nothing(tmp_path):
     stub, logs = _nested_layout(tmp_path)
-    (logs / "run_4075258_date_x.log").write_text("")
+    (logs / "run_2200400_date_x.log").write_text("")
 
-    assert resolve_app_log(str(stub), "4075258", ON) is None
+    assert resolve_app_log(str(stub), "2200400", ON) is None
 
 
 def test_nested_search_does_not_match_another_jobs_log(tmp_path):
-    stub, logs = _nested_layout(tmp_path, job="4075258")
+    stub, logs = _nested_layout(tmp_path, job="2200400")
     (logs / "run_4074334_date_x.log").write_text("a different job")
 
-    assert resolve_app_log(str(stub), "4075258", ON) is None
+    assert resolve_app_log(str(stub), "2200400", ON) is None
 
 
 def test_sibling_run_directories_do_not_confuse_resolution(tmp_path):
-    stub, logs = _nested_layout(tmp_path, job="4075258")
+    stub, logs = _nested_layout(tmp_path, job="2200400")
     other = logs.parent.parent / "phase2" / "logs"
     other.mkdir(parents=True)
-    (other / "run_4075258_date_x_cycle3.log").write_text("same job, later phase")
-    (logs / "run_4075258_date_x.log").write_text("same job, phase1")
+    (other / "run_2200400_date_x_cycle3.log").write_text("same job, later phase")
+    (logs / "run_2200400_date_x.log").write_text("same job, phase1")
 
     # Both belong to this job ID; the cycle log ranks higher.
-    assert resolve_app_log(str(stub), "4075258", ON).endswith("_cycle3.log")
+    assert resolve_app_log(str(stub), "2200400", ON).endswith("_cycle3.log")
 
 
 def test_unreadable_run_directory_is_handled(tmp_path):
@@ -524,9 +524,9 @@ def test_unreadable_run_directory_is_handled(tmp_path):
 
 def test_declared_logs_dir_reaches_an_unrelated_sibling(tmp_path):
     # Observed: submitted from phase1_tp1, logs written to phase1_tp1_test.
-    submit = tmp_path / "ultra_2t" / "phase1_tp1"
+    submit = tmp_path / "tierA_s5" / "phase1_tp1"
     submit.mkdir(parents=True)
-    elsewhere = tmp_path / "ultra_2t" / "phase1_tp1_test" / "logs"
+    elsewhere = tmp_path / "tierA_s5" / "phase1_tp1_test" / "logs"
     elsewhere.mkdir(parents=True)
     log = elsewhere / "run_3988470_date_26-09-24_time_14-31-43.log"
     log.write_text("training output\n")
@@ -539,7 +539,7 @@ def test_declared_logs_dir_reaches_an_unrelated_sibling(tmp_path):
 
 
 def test_structural_match_wins_without_reading_the_wrapper(tmp_path):
-    stub, logs = _nemotron_layout(tmp_path, job="777")
+    stub, logs = _cluster_layout(tmp_path, job="777")
     # A bogus declaration must not be consulted when the layout already resolves.
     stub.write_text("<< START PATHS >>\nLOGS_DIR=/nonexistent\n<< END PATHS >>\n")
 
@@ -578,7 +578,7 @@ def test_wrapper_without_a_banner_yields_no_declaration(tmp_path):
 def test_unreadable_sibling_directory_does_not_fail_resolution(tmp_path, monkeypatch):
     # Shared run trees contain directories this account cannot stat, including
     # ones created by unexpanded shell variables such as a literal "${HOME}".
-    stub, logs = _nemotron_layout(tmp_path, job="555")
+    stub, logs = _cluster_layout(tmp_path, job="555")
     blocked = stub.parent.parent / "${HOME}"
     blocked.mkdir()
 
@@ -607,15 +607,15 @@ def test_script_pattern_resolves_a_fully_static_logs_dir(tmp_path):
     s = _script(
         tmp_path,
         (
-            'ROOT_DIR="/scratch/n4"\n'
-            'NAME="derisking/ultra_smoke/full/llm_adam_forcedlb_mock"\n'
+            'ROOT_DIR="/scratch/proj"\n'
+            'NAME="variant/tierA_smoke/full/llm_adam_forcedlb_mock"\n'
             'RUN_DIR="${ROOT_DIR}/${NAME}"\n'
             'LOGS_DIR="${RUN_DIR}/logs"\n'
         ),
     )
     assert (
         script_log_dir_pattern(s)
-        == "/scratch/n4/derisking/ultra_smoke/full/llm_adam_forcedlb_mock/logs"
+        == "/scratch/proj/variant/tierA_smoke/full/llm_adam_forcedlb_mock/logs"
     )
 
 
@@ -625,15 +625,15 @@ def test_script_pattern_wildcards_only_the_unknown_component(tmp_path):
     s = _script(
         tmp_path,
         (
-            'ROOT_DIR="/scratch/n4"\n'
-            'FINAL_DIR="${ROOT_DIR}/derisking/super_3t/phase2"\n'
+            'ROOT_DIR="/scratch/proj"\n'
+            'FINAL_DIR="${ROOT_DIR}/variant/tierB_s2/phase2"\n'
             'SMOKE_ROOT="${FINAL_DIR}/smoke_64n"\n'
             'TAG=${TAG:-aa}\n'
             'RUN_DIR="${SMOKE_ROOT}/${TAG}"\n'
             'LOGS_DIR="${RUN_DIR}/logs"\n'
         ),
     )
-    assert script_log_dir_pattern(s) == "/scratch/n4/derisking/super_3t/phase2/smoke_64n/*/logs"
+    assert script_log_dir_pattern(s) == "/scratch/proj/variant/tierB_s2/phase2/smoke_64n/*/logs"
 
 
 def test_script_pattern_refuses_command_substitution(tmp_path):
@@ -673,11 +673,11 @@ def test_resolution_uses_the_script_when_layout_fails(tmp_path):
 def test_resolution_uses_a_wildcarded_script_pattern(tmp_path):
     submit = tmp_path / "phase2"
     submit.mkdir()
-    stub = submit / "slurm-3982013.out"
+    stub = submit / "slurm-2200700.out"
     stub.write_text("banner\n")
     logs = submit / "smoke_64n" / "cont" / "logs"
     logs.mkdir(parents=True)
-    log = logs / "run_3982013_date_x.log"
+    log = logs / "run_2200700_date_x.log"
     log.write_text("training\n")
 
     s = _script(
@@ -690,55 +690,55 @@ def test_resolution_uses_a_wildcarded_script_pattern(tmp_path):
         ),
         name="run_smoke.sh",
     )
-    assert resolve_app_log(str(stub), "3982013", ON, script=str(s)) == str(log)
+    assert resolve_app_log(str(stub), "2200700", ON, script=str(s)) == str(log)
 
 
 # ─── tier: the job name mirrors the run path ───
 
 
 def test_job_name_recovers_a_sibling_run_directory(tmp_path):
-    root = tmp_path / "derisking"
-    submit = root / "ultra_smoke" / "half" / "llm_adam_forcedlb"
+    root = tmp_path / "variant"
+    submit = root / "tierA_smoke" / "half" / "llm_adam_forcedlb"
     submit.mkdir(parents=True)
-    stub = submit / "slurm-3776237_0.out"
+    stub = submit / "slurm-2200500_0.out"
     stub.write_text("banner\n")
-    logs = root / "ultra_smoke" / "half" / "llm_adam_forcedlb_mock" / "logs"
+    logs = root / "tierA_smoke" / "half" / "llm_adam_forcedlb_mock" / "logs"
     logs.mkdir(parents=True)
-    log = logs / "run_3776237_date_x.log"
+    log = logs / "run_2200500_date_x.log"
     log.write_text("training\n")
 
-    hits = logs_from_job_name(root, "ultra_smoke_half_llm_adam_forcedlb_mock", "3776237")
+    hits = logs_from_job_name(root, "tierA_smoke_half_llm_adam_forcedlb_mock", "2200500")
     assert [str(h) for h in hits] == [str(log)]
 
 
 def test_job_name_tolerates_a_product_prefix(tmp_path):
-    root = tmp_path / "derisking"
-    logs = root / "nano_21t" / "phase1" / "logs"
+    root = tmp_path / "variant"
+    logs = root / "tierC_s1" / "phase1" / "logs"
     logs.mkdir(parents=True)
     log = logs / "run_555_date_x.log"
     log.write_text("training\n")
 
-    # "nemotron4_derisking_..." carries tokens the path does not.
-    hits = logs_from_job_name(root, "nemotron4_nano_21t_phase1", "555")
+    # "trainjob_variant_..." carries tokens the path does not.
+    hits = logs_from_job_name(root, "trainjob_tierC_s1_phase1", "555")
     assert [str(h) for h in hits] == [str(log)]
 
 
 def test_job_name_finds_nothing_for_an_unrelated_name(tmp_path):
-    root = tmp_path / "derisking"
+    root = tmp_path / "variant"
     (root / "a" / "logs").mkdir(parents=True)
     assert logs_from_job_name(root, "totally_other_run", "999") == []
 
 
 def test_job_name_is_used_when_script_resolution_fails(tmp_path):
     # The stale-script case: the script now points somewhere this job never wrote.
-    root = tmp_path / "derisking"
+    root = tmp_path / "variant"
     submit = root / "half" / "llm_adam_forcedlb"
     submit.mkdir(parents=True)
-    stub = submit / "slurm-3776237_0.out"
+    stub = submit / "slurm-2200500_0.out"
     stub.write_text("banner\n")
     logs = root / "half" / "llm_adam_forcedlb_mock" / "logs"
     logs.mkdir(parents=True)
-    log = logs / "run_3776237_date_x.log"
+    log = logs / "run_2200500_date_x.log"
     log.write_text("training\n")
 
     stale = _script(
@@ -746,7 +746,7 @@ def test_job_name_is_used_when_script_resolution_fails(tmp_path):
     )
     resolved = resolve_app_log(
         str(stub),
-        "3776237",
+        "2200500",
         ON,
         script=str(stale),
         job_name="half_llm_adam_forcedlb_mock",
@@ -756,18 +756,18 @@ def test_job_name_is_used_when_script_resolution_fails(tmp_path):
 
 
 def test_job_name_matches_at_an_offset_below_the_search_root(tmp_path):
-    # Real shape: the search root is already <...>/ultra_smoke/half, so the name's
+    # Real shape: the search root is already <...>/tierA_smoke/half, so the name's
     # matching suffix begins five tokens in. Trimmed names hid this.
-    root = tmp_path / "ultra_smoke" / "half"
+    root = tmp_path / "tierA_smoke" / "half"
     submit = root / "llm_adam_forcedlb"
     submit.mkdir(parents=True)
     logs = root / "llm_adam_forcedlb_mock" / "logs"
     logs.mkdir(parents=True)
-    log = logs / "run_3776237_date_x_cycle0.log"
+    log = logs / "run_2200500_date_x_cycle0.log"
     log.write_text("training\n")
 
     hits = logs_from_job_name(
-        root, "nemotron4_derisking_ultra_smoke_half_llm_adam_forcedlb_mock", "3776237"
+        root, "trainjob_variant_tierA_smoke_half_llm_adam_forcedlb_mock", "2200500"
     )
     assert [str(h) for h in hits] == [str(log)]
 
@@ -782,7 +782,7 @@ def test_skipped_job_is_reported_at_info_once(tmp_path, caplog):
         job_id="3911280_100",
         stdout_path=str(stub),
         app_log_missing=False,
-        name="nemotron4_derisking_run",
+        name="trainjob_variant_run",
         script="",
         work_dir="",
     )
@@ -797,16 +797,16 @@ def test_skipped_job_is_reported_at_info_once(tmp_path, caplog):
     assert skips[0].levelno == logging.INFO
     assert "3911280_100" in skips[0].message
     assert str(stub) in skips[0].message
-    assert "nemotron4_derisking_run" in skips[0].message
+    assert "trainjob_variant_run" in skips[0].message
 
 
 # ─── every cycle, oldest first, so L3 can build history ───
 
 
 def test_all_cycles_are_returned_oldest_first(tmp_path):
-    stub, logs = _nemotron_layout(tmp_path, job="4103814", cycles=(0, 1, 2, 3, 4))
+    stub, logs = _cluster_layout(tmp_path, job="2200300", cycles=(0, 1, 2, 3, 4))
 
-    paths = resolve_app_logs(str(stub), "4103814", ON)
+    paths = resolve_app_logs(str(stub), "2200300", ON)
 
     assert [p.rsplit("_cycle", 1)[1] for p in paths] == [
         "0.log",
@@ -818,7 +818,7 @@ def test_all_cycles_are_returned_oldest_first(tmp_path):
 
 
 def test_cycle_order_is_numeric(tmp_path):
-    stub, _ = _nemotron_layout(tmp_path, job="777", cycles=(2, 10, 1))
+    stub, _ = _cluster_layout(tmp_path, job="777", cycles=(2, 10, 1))
 
     paths = resolve_app_logs(str(stub), "777", ON)
 
@@ -826,7 +826,7 @@ def test_cycle_order_is_numeric(tmp_path):
 
 
 def test_single_cycle_returns_one_path(tmp_path):
-    stub, logs = _nemotron_layout(tmp_path, job="555", cycles=(0,))
+    stub, logs = _cluster_layout(tmp_path, job="555", cycles=(0,))
     assert resolve_app_logs(str(stub), "555", ON) == [str(logs[0])]
 
 
@@ -850,10 +850,10 @@ def test_no_logs_gives_an_empty_list(tmp_path):
 def test_monitor_submits_every_cycle_in_order(tmp_path):
     from types import SimpleNamespace
 
-    stub, logs = _nemotron_layout(tmp_path, job="4103814", cycles=(0, 1, 2))
+    stub, logs = _cluster_layout(tmp_path, job="2200300", cycles=(0, 1, 2))
     monitor = _monitor()
     job = SimpleNamespace(
-        job_id="4103814_0",
+        job_id="2200300_0",
         stdout_path=str(stub),
         app_log_missing=False,
         name="",
@@ -895,14 +895,14 @@ def test_claim_settles_the_job_only_when_all_cycles_are_analyzed():
 
 
 def _run(log_dir, stamp, cycles, start_time):
-    """Write ``cycles`` cycle logs for one run of job 4173891.
+    """Write ``cycles`` cycle logs for one run of job 2200200.
 
     mtimes are set explicitly: a test that writes every file in the same
     instant cannot distinguish an older run from a newer one.
     """
     written = []
     for index in range(cycles):
-        path = log_dir / f"nemotron4_4173891_date_{stamp}_cycle{index}.log"
+        path = log_dir / f"trainjob_2200200_date_{stamp}_cycle{index}.log"
         path.write_text("x")
         os.utime(path, (start_time + index, start_time + index))
         written.append(path)
@@ -918,11 +918,11 @@ def test_cycle_series_covers_one_run_not_every_run_of_the_array_job(tmp_path):
     stdout_dir.mkdir()
     _run(log_dir, "26-10-01_time_08-00-00", 3, start_time=1_000_000)
     newer = _run(log_dir, "26-10-02_time_09-00-00", 2, start_time=2_000_000)
-    stdout = stdout_dir / "slurm-4173891_96.out"
+    stdout = stdout_dir / "slurm-2200200_96.out"
     stdout.write_text("x")
 
     resolved = resolve_app_logs(
-        str(stdout), "4173891_96", AppLogResolution(enabled=True), job_name="nemotron4"
+        str(stdout), "2200200_96", AppLogResolution(enabled=True), job_name="trainjob"
     )
 
     assert resolved == [str(path) for path in newer]
@@ -934,11 +934,11 @@ def test_a_single_run_is_unaffected_by_the_run_scoping(tmp_path):
     log_dir.mkdir()
     stdout_dir.mkdir()
     only = _run(log_dir, "26-10-02_time_09-00-00", 4, start_time=2_000_000)
-    stdout = stdout_dir / "slurm-4173891_96.out"
+    stdout = stdout_dir / "slurm-2200200_96.out"
     stdout.write_text("x")
 
     resolved = resolve_app_logs(
-        str(stdout), "4173891_96", AppLogResolution(enabled=True), job_name="nemotron4"
+        str(stdout), "2200200_96", AppLogResolution(enabled=True), job_name="trainjob"
     )
 
     assert resolved == [str(path) for path in only]
