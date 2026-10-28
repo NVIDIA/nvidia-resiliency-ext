@@ -45,6 +45,7 @@ from .data import (
     SectionMsg,
     UpdateConfigMsg,
 )
+from .launcher_error_reporting import launcher_error_reporter
 from .rank_monitor_state_machine import RankMonitorStateMachine
 from .timeout_diagnostics import (
     ToolCapture,
@@ -753,6 +754,8 @@ class RankMonitorServer:
         is_restarter_logger: bool,
         env: Optional[Dict[str, str]] = None,
     ) -> None:
+        # Only the launcher needs the original stderr; keep stdout/stderr for logging.
+        launcher_error_reporter.close()
         # Set environment variables if provided
         if env is not None:
             for key, value in env.items():

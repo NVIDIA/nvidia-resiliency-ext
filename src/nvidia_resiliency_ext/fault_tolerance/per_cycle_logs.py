@@ -317,6 +317,8 @@ class GrpcWriterThread(threading.Thread):
         self.node_id = str(node_id)
         self.logger = logger
         self.shutdown_requested = False
+        # Last known server readiness, not an acknowledgement of log delivery.
+        self.forwarding_ready = threading.Event()
 
         # Statistics
         self.total_bytes_sent = 0
@@ -431,7 +433,11 @@ class GrpcWriterThread(threading.Thread):
 
             try:
                 # Try to stream logs using the channel
-                self._stream_logs(channel)
+                self.forwarding_ready.set()
+                try:
+                    self._stream_logs(channel)
+                finally:
+                    self.forwarding_ready.clear()
             except grpc.RpcError as e:
                 self.connection_errors += 1
 
@@ -540,11 +546,12 @@ class GrpcWriterThread(threading.Thread):
 
     def shutdown(self):
         """Request graceful shutdown of writer thread."""
+        self.shutdown_requested = True
+        self.forwarding_ready.clear()
         self.logger.info(
             f"Shutting down gRPC writer. Sent {self.total_chunks_sent} chunks, "
             f"{self.total_bytes_sent / 1024 / 1024:.2f} MB"
         )
-        self.shutdown_requested = True
 
 
 @dataclass
@@ -623,6 +630,7 @@ class MultiplexingReaderThread(threading.Thread):
         # Logger and control
         self.logger = logging.getLogger(LogConfig.name)
         self._shutdown_requested = False
+        self._accepting_launcher_logs = False
 
         # Synchronization events for FD unregistration (prevents FD reuse bugs)
         # Used by clear_all_pipes() to block launcher until all FDs are unregistered
@@ -646,8 +654,10 @@ class MultiplexingReaderThread(threading.Thread):
                 node_id=node_id,
                 logger=self.logger,
             )
+            self._grpc_ready = self._writer_thread.forwarding_ready
             self.logger.info(f"gRPC writer: {server_address}")
         else:
+            self._grpc_ready = threading.Event()
             self._writer_thread = threading.Thread(
                 target=self._writer_thread_loop, daemon=True, name="LogWriter"
             )
@@ -1087,6 +1097,7 @@ class MultiplexingReaderThread(threading.Thread):
 
         try:
             active_config = self._current_config  # Remember what we've applied
+            self._accepting_launcher_logs = active_config.launcher_pipe_fd is not None
 
             while not self._shutdown_requested:
                 # Check for immediate pipe clear request (FD reuse prevention)
@@ -1145,6 +1156,7 @@ class MultiplexingReaderThread(threading.Thread):
             )
             raise
         finally:
+            self._accepting_launcher_logs = False
             # Clean up all resources (queue incomplete lines for writing)
             # Note: _cleanup_resources() preserves launcher pipe during cycle changes
             self._cleanup_resources()
@@ -1276,6 +1288,7 @@ class MultiplexingReaderThread(threading.Thread):
                 self._reader_thread.shutdown()
                 self._reader_thread.join(timeout=_READER_THREAD_SHUTDOWN_JOIN_TIMEOUT_SEC)
         """
+        self._accepting_launcher_logs = False
         # First, give reader thread a moment to process any final pipe events
         # (especially POLLHUP after pipes are closed)
         # The poll timeout is 100ms, so 0.15s ensures at least one poll cycle
@@ -1400,6 +1413,12 @@ class PipeBasedLogsSpecs(LogsSpecs):
         # self._reader_thread already initialized above
         self._current_cycle_log = None
         self._world_size = None  # Will be set in reify()
+
+    @property
+    def launcher_forwarding_available(self) -> bool:
+        """Whether launcher logs can currently enter the gRPC forwarding path."""
+        reader = self._reader_thread
+        return reader._accepting_launcher_logs and reader._grpc_ready.is_set()
 
     @property
     def root_log_dir(self) -> str:
@@ -1595,7 +1614,8 @@ class PipeBasedLogsSpecs(LogsSpecs):
 
         This must be called explicitly - daemon thread alone won't flush buffers!
         """
-        self._reader_thread.shutdown()
+        if not self._reader_thread._shutdown_requested:
+            self._reader_thread.shutdown()
         # Reader shutdown() sleeps 0.15s, then the thread exits its main loop and runs
         # finally: cleanup_resources, launcher pipe cleanup, GrpcWriterThread.shutdown(),
         # then join on the gRPC writer (_GRPC_WRITER_THREAD_JOIN_TIMEOUT_SEC). The join

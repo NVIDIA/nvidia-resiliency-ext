@@ -97,6 +97,7 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
     UpdateConfigMsg,
 )
+from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import launcher_error_reporter
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
@@ -3448,6 +3449,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
             grpc_server_address=grpc_server_address,
             node_id=node_id,
         )
+        launcher_error_reporter.logs_specs = logs_specs
         # Note: PipeBasedLogsSpecs handles rank prefixing in parent process
     else:
         # Standard logs_specs creation for other cases
@@ -4025,6 +4027,8 @@ def run(args):
 def main(args=None):
     args = parse_args(args)
     try:
+        if args.ft_nvrx_logfile:
+            launcher_error_reporter.save_stderr()
         run(args)
     except NoRestartRequested as e:
         exit_code = _no_restart_exit_code(args)
@@ -4038,25 +4042,34 @@ def main(args=None):
         )
         exit_code = 1
     except Exception as e:
-        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
+        launcher_error_reporter.report_exception(e)
+        logger.error(
+            f"Agent run ended with exception, {e=}. Agent's exit code = 1",
+            exc_info=True,
+        )
         exit_code = 1
     else:
         logger.info("Agent exits with exit code = 0.")
         exit_code = 0
     finally:
-        # Clean up gRPC server AFTER all logging is done
-        # (logging cleanup already happened in run()'s finally block)
-        _stop_diagnostic_collector()  # also covers failure during configuration/startup
-        global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER
-        if _GRPC_SERVER_PROCESSES:
-            grpc_graceful_shutdown_timeout = float(
-                getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
-            )
-            stop_grpc_log_servers(_GRPC_SERVER_PROCESSES, grpc_graceful_shutdown_timeout)
+        try:
+            # Also drain errors raised after log setup but before launch_agent() owns cleanup.
+            if launcher_error_reporter.logs_specs is not None:
+                launcher_error_reporter.logs_specs.cleanup()
+            # Stop gRPC servers after the local reader has drained pending logs.
+            _stop_diagnostic_collector()  # also covers failure during configuration/startup
+            global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER
+            if _GRPC_SERVER_PROCESSES:
+                grpc_graceful_shutdown_timeout = float(
+                    getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
+                )
+                stop_grpc_log_servers(_GRPC_SERVER_PROCESSES, grpc_graceful_shutdown_timeout)
 
-        if _ATTRIBUTION_MANAGER is not None:
-            _ATTRIBUTION_MANAGER.stop()
-            _ATTRIBUTION_MANAGER = None
+            if _ATTRIBUTION_MANAGER is not None:
+                _ATTRIBUTION_MANAGER.stop()
+                _ATTRIBUTION_MANAGER = None
+        finally:
+            launcher_error_reporter.close()
 
     sys.exit(exit_code)
 
