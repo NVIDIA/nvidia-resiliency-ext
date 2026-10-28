@@ -13,14 +13,157 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for wait-for-TCPStore-server logic in c10d_monkey_patch."""
+"""Unit tests for TCPStore role selection, initialization, and startup probes."""
 
 import socket
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from torch.distributed.elastic.rendezvous.api import RendezvousConnectionError, RendezvousParameters
 
-from nvidia_resiliency_ext.fault_tolerance.c10d_monkey_patch import _wait_for_tcp_store_server
+from nvidia_resiliency_ext.fault_tolerance.c10d_monkey_patch import (
+    _patched_create_tcp_store,
+    _wait_for_tcp_store_server,
+)
+
+
+class TestCreateTcpStore:
+    @pytest.fixture
+    def dependencies(self):
+        with (
+            patch("torch.distributed.TCPStore") as create_store,
+            patch(
+                "torch.distributed.elastic.rendezvous.c10d_rendezvous_backend._matches_machine_hostname"
+            ) as matches_host,
+            patch(
+                "nvidia_resiliency_ext.fault_tolerance.c10d_monkey_patch._wait_for_tcp_store_server"
+            ) as wait_for_server,
+            patch(
+                "torch.distributed.elastic.events.construct_and_record_rdzv_event"
+            ) as record_event,
+        ):
+            yield create_store, matches_host, wait_for_server, record_event
+
+    @staticmethod
+    def params(**config):
+        return RendezvousParameters(
+            backend="c10d",
+            endpoint="store.example:29400",
+            run_id="test-store",
+            min_nodes=1,
+            max_nodes=1,
+            **config,
+        )
+
+    @pytest.mark.parametrize(
+        "explicit_role,hostname_matches,expected_server",
+        [(None, True, True), (None, False, False), (True, False, True), (False, True, False)],
+    )
+    def test_role_selected_once(
+        self, dependencies, explicit_role, hostname_matches, expected_server
+    ):
+        create_store, matches_host, wait_for_server, record_event = dependencies
+        matches_host.return_value = hostname_matches
+        params = self.params(
+            is_host=explicit_role,
+            read_timeout=13,
+            use_libuv=False,
+            store_connect_wait_seconds=600,
+        )
+
+        assert _patched_create_tcp_store(params) is create_store.return_value
+
+        create_store.assert_called_once_with(
+            "store.example",
+            29400,
+            is_master=expected_server,
+            multi_tenant=True,
+            timeout=timedelta(seconds=13),
+            use_libuv=False,
+        )
+        if explicit_role is None:
+            matches_host.assert_called_once_with("store.example")
+        else:
+            matches_host.assert_not_called()
+        if expected_server:
+            wait_for_server.assert_not_called()
+            record_event.assert_called_once()
+        else:
+            wait_for_server.assert_called_once_with("store.example", 29400, max_wait_seconds=600)
+            record_event.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "explicit_role,hostname_matches", [(None, True), (None, False), (True, True), (False, True)]
+    )
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RuntimeError("The server socket has failed to bind: EADDRINUSE"),
+            ValueError("Invalid TCPStore configuration"),
+            TimeoutError("The client socket has timed out"),
+        ],
+    )
+    def test_initialization_error_preserved_without_fallback(
+        self, dependencies, explicit_role, hostname_matches, error
+    ):
+        create_store, matches_host, _, record_event = dependencies
+        create_store.side_effect = error
+        matches_host.return_value = hostname_matches
+
+        with pytest.raises(RendezvousConnectionError) as raised:
+            _patched_create_tcp_store(self.params(is_host=explicit_role))
+
+        create_store.assert_called_once()
+        assert raised.value.__cause__ is error
+        assert str(error) in str(raised.value)
+        assert "store.example:29400" in str(raised.value)
+        role = (
+            "server" if (hostname_matches if explicit_role is None else explicit_role) else "client"
+        )
+        assert f"TCPStore {role}" in str(raised.value)
+        record_event.assert_not_called()
+
+    def test_event_error_does_not_retry_store_creation(self, dependencies):
+        create_store, matches_host, _, record_event = dependencies
+        matches_host.return_value = True
+        error = RuntimeError("Failed to record rendezvous event")
+        record_event.side_effect = error
+
+        with pytest.raises(RuntimeError) as raised:
+            _patched_create_tcp_store(self.params())
+
+        assert raised.value is error
+        create_store.assert_called_once()
+
+    def test_server_and_client_on_same_host(self):
+        server = _patched_create_tcp_store(
+            RendezvousParameters(
+                backend="c10d",
+                endpoint="127.0.0.1:0",
+                run_id="test-local-store",
+                min_nodes=1,
+                max_nodes=1,
+                is_host=True,
+                read_timeout=5,
+            )
+        )
+        client = _patched_create_tcp_store(
+            RendezvousParameters(
+                backend="c10d",
+                endpoint=f"127.0.0.1:{server.port}",
+                run_id="test-local-store",
+                min_nodes=1,
+                max_nodes=1,
+                is_host=False,
+                read_timeout=5,
+            )
+        )
+
+        server.set("from-server", "server-value")
+        assert client.get("from-server") == b"server-value"
+        client.set("from-client", "client-value")
+        assert server.get("from-client") == b"client-value"
 
 
 def _monotonic_sequence(*values):
