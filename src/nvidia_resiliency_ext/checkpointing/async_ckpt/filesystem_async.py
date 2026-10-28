@@ -19,20 +19,16 @@ import hashlib
 import inspect
 import logging
 import os
-
-# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
-# Severity: Low   Confidence: High
-# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
-# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
-import pickle  # nosec
 import queue
 import threading
 from functools import partial
 from heapq import heappop, heappush
+from io import UnsupportedOperation
 from itertools import chain
 from operator import itemgetter
+from pathlib import Path
 from time import time
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union, cast
 
 import torch
 from torch import multiprocessing as mp
@@ -42,9 +38,19 @@ from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX, _StoragePref
 from torch.distributed.checkpoint.metadata import Metadata
 
 try:
+    from torch.distributed.checkpoint.filesystem import _metadata_fn  # PyTorch 2.4+
+except ImportError:  # finish() uses FileSystemWriter.finish there
+    _metadata_fn = None
+
+try:
     from torch.distributed.checkpoint.filesystem import _StorageWriterTransforms
 except ImportError:
     _StorageWriterTransforms = Any
+
+try:
+    from torch.distributed.checkpoint.filesystem import CURRENT_DCP_VERSION  # PyTorch 2.9+
+except ImportError:
+    CURRENT_DCP_VERSION = None
 
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner, WriteItem, WriteItemType
 from torch.distributed.checkpoint.storage import WriteResult
@@ -60,6 +66,7 @@ except ImportError:
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
+from . import _metadata_pickler
 from .core import PersistentAsyncCaller
 
 logger = logging.getLogger(__name__)
@@ -1273,35 +1280,70 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     def finish(self, metadata: Metadata, results: List[List[WriteResult]]) -> None:
         """
-        Finish the checkpointing process.
+        Finish the checkpointing process by writing the global metadata file.
+
+        Follows ``FileSystemWriter.finish`` of the torch versions in
+        ``_metadata_pickler.TESTED_TORCH_VERSIONS``, but writes ``.metadata`` with
+        ``_metadata_pickler.dump_metadata``: the same pickle format as ``pickle.dump``, written
+        much faster. On other torch versions, or with ``NVRX_FAST_METADATA_PICKLE=0``, it uses
+        ``FileSystemWriter.finish`` (or, for MSC, ``pickle.dump``).
 
         Args:
             metadata (Metadata): metadata to save
             results (List[List[WriteResult]]): results to save
         """
+        fast = _metadata_pickler.fast_metadata_enabled()
+        if not fast and not self.use_msc:
+            super().finish(metadata, results)
+            return
+
+        if fast and CURRENT_DCP_VERSION is not None:
+            metadata.version = CURRENT_DCP_VERSION
+
+        storage_md = {}
+        for wr_list in results:
+            storage_md.update({wr.index: wr.storage_data for wr in wr_list})
+        metadata.storage_data = storage_md
+
+        # storage_meta was introduced since PyTorch 2.4
+        if "storage_meta" in inspect.signature(Metadata).parameters:
+            metadata.storage_meta = self.storage_meta()
+
         if self.use_msc:
             import multistorageclient as msc
 
-            storage_md = dict()
-            for wr_list in results:
-                storage_md.update({wr.index: wr.storage_data for wr in wr_list})
-
-            metadata.storage_data = storage_md
-
-            # storage_meta was introduced since PyTorch 2.4
-            if "storage_meta" in inspect.signature(Metadata).parameters:
-                metadata.storage_meta = self.storage_meta()
-
             path = os.path.join(self.checkpoint_dir, ".metadata")
-
             with msc.open(path, "wb") as metadata_file:
-                # Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.
-                # Severity: Medium   Confidence: High
-                # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
-                # More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle
-                pickle.dump(metadata, metadata_file)  # nosec
+                _metadata_pickler.dump_metadata(metadata, metadata_file)
+            return
+
+        # PyTorch 2.9+ writes one metadata file per rank when collectives are disabled.
+        rank = getattr(self, "rank", None)
+        if not getattr(self, "use_collectives", True) and rank is not None:
+            tmp_filename = f"__{rank}{_metadata_fn}.tmp"
+            metadata_path = self._get_metadata_path(rank)
         else:
-            super().finish(metadata, results)
+            tmp_filename = f"{_metadata_fn}.tmp"
+            if hasattr(self, "_get_metadata_path"):  # PyTorch 2.9+
+                metadata_path = self._get_metadata_path()
+            else:
+                metadata_path = self.metadata_path
+        tmp_path = cast(Path, self.fs.concat_path(self.path, tmp_filename))
+        with self.fs.create_stream(tmp_path, "wb") as metadata_file:
+            _metadata_pickler.dump_metadata(metadata, metadata_file)
+            if self.sync_files:
+                # Flush Python-level buffers (OS for local files, network for cloud storage) before fsync.
+                metadata_file.flush()
+                try:
+                    os.fsync(metadata_file.fileno())
+                except (AttributeError, UnsupportedOperation):
+                    os.sync()  # as PyTorch < 2.14 does; 2.14 only warns
+
+        # delete in-case other checkpoints were present.
+        if self.fs.exists(metadata_path):
+            self.fs.rm_file(metadata_path)
+
+        self.fs.rename(tmp_path, metadata_path)
 
     def prepare_local_plan(self, plan: SavePlan) -> SavePlan:
         """

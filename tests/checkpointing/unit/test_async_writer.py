@@ -14,6 +14,7 @@
 # limitations under the License.
 import filecmp
 import pickle
+from collections import Counter
 from copy import deepcopy
 from dataclasses import fields
 from time import sleep
@@ -33,6 +34,7 @@ from torch.distributed.checkpoint import (
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
     AsyncRequest,
@@ -40,6 +42,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
+    CheckpointMetadataCache,
     save_state_dict_async_finalize,
     save_state_dict_async_plan,
 )
@@ -82,6 +85,43 @@ def test_wrap_exception_for_gather_sanitizes_code_objects(monkeypatch):
     pickle.dumps(wrapped_exception)
 
 
+class CountingSavePlanner(DefaultSavePlanner):
+    """DefaultSavePlanner counting the local and global plans created in this process."""
+
+    calls = Counter()
+
+    def create_local_plan(self):
+        CountingSavePlanner.calls['local'] += 1
+        return super().create_local_plan()
+
+    def create_global_plan(self, all_plans):
+        CountingSavePlanner.calls['global'] += 1
+        return super().create_global_plan(all_plans)
+
+
+class DecentralizedSavePlanner(CountingSavePlanner):
+    """Plans like Megatron's MCoreSavePlanner: each rank turns its local plan into its global plan."""
+
+    can_run_decentralized_global_plan = True
+
+    def __init__(self):
+        super().__init__(flatten_state_dict=False)
+
+    def create_decentralized_global_plan(self, local_plan):
+        return local_plan
+
+
+def rank_state_dict(extra=False):
+    """Tensors only this rank saves, so the ranks' plans don't overlap."""
+    rank = torch.distributed.get_rank()
+    state_dict = {
+        f'rank{rank}.w{i}': torch.full((64, 64), float(i), device='cuda') for i in range(4)
+    }
+    if extra:
+        state_dict[f'rank{rank}.extra'] = torch.zeros(8, device='cuda')
+    return state_dict
+
+
 class TestAsyncSave:
     def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
         """Creates an async save request with a finalization step."""
@@ -107,6 +147,7 @@ class TestAsyncSave:
         is_multiproc_io=False,
         use_cached_data_structure=False,
         use_cpu_shm_for_gpu_tensors=False,
+        metadata_cache=None,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
@@ -120,7 +161,13 @@ class TestAsyncSave:
         coordinator_rank = 0
 
         save_state_dict_ret = save_state_dict_async_plan(
-            state_dict, writer, None, coordinator_rank, planner=planner, enable_cache=caching
+            state_dict,
+            writer,
+            None,
+            coordinator_rank,
+            planner=planner,
+            enable_cache=caching,
+            metadata_cache=metadata_cache,
         )
         async_request = self.get_async_save_request(writer, save_state_dict_ret)
         async_queue.schedule_async_request(async_request)
@@ -199,6 +246,49 @@ class TestAsyncSave:
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
 
+    @pytest.mark.parametrize('mode', ['1', 'python', '0'])
+    def test_metadata_matches_torch(self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode):
+        """FileSystemWriterAsync writes the same .metadata as torch's FileSystemWriter.
+
+        Covers the native writer, the Python writer and, with mode '0', torch's own.
+        """
+        monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
+        md_writer.fast_metadata_enabled.cache_clear()
+        md_writer._select_dumps.cache_clear()
+        native = (
+            md_writer._native_dumps if md_writer.native is not None else md_writer._python_dumps
+        )
+        expected = {'1': native, 'python': md_writer._python_dumps, '0': None}[mode]
+        assert md_writer._select_dumps() is expected
+
+        Utils.initialize_distributed()
+        model = FSDP(Model((1024, 1024), 8))
+        state_dict = model.state_dict()
+        planner = DefaultSavePlanner()
+        try:
+            with (
+                TempNamedDir(tmp_path_dist_ckpt / 'nvrx_metadata', sync=True) as async_ckpt_dir,
+                TempNamedDir(tmp_path_dist_ckpt / 'torch_metadata', sync=True) as sync_ckpt_dir,
+            ):
+                self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
+                self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+
+                nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
+                torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
+                for field in fields(torch_md):
+                    if field.name != 'storage_meta':  # holds the checkpoint path
+                        assert getattr(nvrx_md, field.name) == getattr(
+                            torch_md, field.name
+                        ), f'{field.name} differs from torch\'s'
+
+                loaded = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
+                for key, value in state_dict.items():
+                    assert torch.equal(loaded[key], value), f'Mismatch for key {key!r}'
+        finally:
+            md_writer.fast_metadata_enabled.cache_clear()
+            md_writer._select_dumps.cache_clear()
+
     @pytest.mark.parametrize(
         ('persistent_is_daemon', 'is_multiproc_io'),
         [(True, True)],
@@ -266,9 +356,7 @@ class TestAsyncSave:
         planner = DefaultSavePlanner()
 
         with TempNamedDir(tmp_path_dist_ckpt / 'ckpt_dir', sync=True) as ckpt_path:
-            self.async_save_checkpoint(
-                ckpt_path, state_dict_non_cached, planner, async_queue, caching=True
-            )
+            self.async_save_checkpoint(ckpt_path, state_dict_non_cached, planner, async_queue)
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             loaded_non_cached = self.load_checkpoint(ckpt_path, state_dict_non_cached)
             md_path = ckpt_path / '.metadata'
@@ -276,12 +364,18 @@ class TestAsyncSave:
                 md_non_cached = pickle.load(f)
 
         # Run over 3 iterations with cached metadata enabled
-        # The 3rd iteration will run with cached metadata
-        # `ckpt_dir` at the 3rd iteration 2 will be maintained for comparison
+        # The 2nd and 3rd iterations will run with cached metadata
+        # `ckpt_dir` at the 3rd iteration will be maintained for comparison
+        cache = CheckpointMetadataCache()
         for i in range(3):
             ckpt_dir = TempNamedDir(tmp_path_dist_ckpt / f'ckpt_dir_{i}_cached', sync=True)
             self.async_save_checkpoint(
-                ckpt_dir, state_dict_cached, planner, async_queue, caching=True
+                ckpt_dir,
+                state_dict_cached,
+                planner,
+                async_queue,
+                caching=True,
+                metadata_cache=cache,
             )
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             if i < 2:
@@ -307,6 +401,131 @@ class TestAsyncSave:
                 ), f'{field.name} is different in metadata from non-cached, cached metadata impls'
         ckpt_dir.cleanup()
         async_queue.close()
+
+    @pytest.mark.parametrize('planner_cls', [CountingSavePlanner, DecentralizedSavePlanner])
+    def test_cache_reuses_metadata_from_second_save(
+        self, tmp_path_dist_ckpt, async_queue, planner_cls
+    ):
+        """With enable_cache, only the first save builds the global metadata.
+
+        Every save still creates its local plan, and every checkpoint loads back.
+        """
+        Utils.initialize_distributed()
+        CountingSavePlanner.calls.clear()
+        cache = CheckpointMetadataCache()
+        state_dict = rank_state_dict()
+        calls, loaded = [], []
+        for i in range(3):
+            with TempNamedDir(tmp_path_dist_ckpt / f'reuse_{i}', sync=True) as ckpt_dir:
+                self.async_save_checkpoint(
+                    ckpt_dir,
+                    state_dict,
+                    planner_cls(),
+                    async_queue,
+                    caching=True,
+                    metadata_cache=cache,
+                )
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                calls.append(dict(CountingSavePlanner.calls))
+                CountingSavePlanner.calls.clear()
+                loaded.append(
+                    self.load_checkpoint(
+                        ckpt_dir, {k: torch.empty_like(v) for k, v in state_dict.items()}
+                    )
+                )
+
+        # Asserted after the collectives, so a failure on one rank doesn't hang the others.
+        for i, loaded_i in enumerate(loaded):
+            for key, value in state_dict.items():
+                assert torch.equal(loaded_i[key], value), f'save {i}: mismatch for {key!r}'
+        assert [c.get('local', 0) for c in calls] == [1, 1, 1]
+        built = [1, 0, 0] if torch.distributed.get_rank() == 0 else [0, 0, 0]
+        assert [c.get('global', 0) for c in calls] == built
+
+    @pytest.mark.parametrize('extra', [False, True], ids=['same', 'changed'])
+    def test_cache_reuses_loaded_metadata(self, tmp_path_dist_ckpt, async_queue, extra):
+        """After a restart, the first save reuses the loaded checkpoint's metadata if it applies.
+
+        It applies if the new local plans write the chunks it lists; then the global metadata is
+        not built again. The checkpoint stores no local plans for this. The loaded metadata, here
+        as written by older versions with every rank's local plan, is not modified, and the plans
+        are not written again.
+        """
+        Utils.initialize_distributed()
+        coordinator = torch.distributed.get_rank() == 0
+        with TempNamedDir(tmp_path_dist_ckpt / 'loaded', sync=True) as loaded_dir:
+            self.async_save_checkpoint(
+                loaded_dir,
+                rank_state_dict(),
+                DecentralizedSavePlanner(),
+                async_queue,
+                caching=True,
+                metadata_cache=CheckpointMetadataCache(),
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            loaded_md = FileSystemReader(loaded_dir).read_metadata()
+        assert 'all_local_plans' not in vars(loaded_md)
+        loaded_md.all_local_plans = ['plans of an older version']
+        loaded_before = dict(vars(loaded_md))
+
+        # A restarted job: a new cache, given the metadata read from the checkpoint on every rank.
+        cache = CheckpointMetadataCache()
+        cache.set_cached_global_metadata(loaded_md)
+        state_dict = rank_state_dict(extra=extra)
+        CountingSavePlanner.calls.clear()
+        with TempNamedDir(tmp_path_dist_ckpt / 'after_restart', sync=True) as ckpt_dir:
+            self.async_save_checkpoint(
+                ckpt_dir,
+                state_dict,
+                DecentralizedSavePlanner(),
+                async_queue,
+                caching=True,
+                metadata_cache=cache,
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            built = CountingSavePlanner.calls['global']
+            written_md = FileSystemReader(ckpt_dir).read_metadata()
+            loaded = self.load_checkpoint(
+                ckpt_dir, {k: torch.empty_like(v) for k, v in state_dict.items()}
+            )
+        # Asserted after the collectives, so a failure on one rank doesn't hang the others.
+        assert built == (1 if extra and coordinator else 0)
+        assert vars(loaded_md) == loaded_before
+        assert 'all_local_plans' not in vars(written_md)
+        for key, value in state_dict.items():
+            assert torch.equal(loaded[key], value), f'mismatch for {key!r}'
+
+    @pytest.mark.parametrize('planner_cls', [CountingSavePlanner, DecentralizedSavePlanner])
+    def test_cache_raises_when_structure_changes(
+        self, tmp_path_dist_ckpt, async_queue, planner_cls
+    ):
+        """With enable_cache, a save whose local plan differs from the previous save's raises.
+
+        Reusing the previous save's plans and metadata would write a checkpoint that doesn't
+        match the state dict.
+        """
+        Utils.initialize_distributed()
+        cache = CheckpointMetadataCache()
+        with TempNamedDir(tmp_path_dist_ckpt / 'changed_0', sync=True) as ckpt_dir:
+            self.async_save_checkpoint(
+                ckpt_dir,
+                rank_state_dict(),
+                planner_cls(),
+                async_queue,
+                caching=True,
+                metadata_cache=cache,
+            )
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+        with TempNamedDir(tmp_path_dist_ckpt / 'changed_1', sync=True) as ckpt_dir:
+            with pytest.raises(RuntimeError, match='differs from the previous save'):
+                self.async_save_checkpoint(
+                    ckpt_dir,
+                    rank_state_dict(extra=True),
+                    planner_cls(),
+                    async_queue,
+                    caching=True,
+                    metadata_cache=cache,
+                )
 
     def test_cached_data_structure(self, tmp_path_dist_ckpt):
         """

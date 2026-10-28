@@ -244,6 +244,41 @@ The following code demonstrates a complete workflow for saving and loading check
     loaded_state_dict = load_checkpoint(checkpoint_path, state_dict.copy())
 
 
+Writing the .metadata File
+--------------------------
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync`
+writes the checkpoint's ``.metadata`` file with its own pickler instead of ``pickle.dump``
+(about 16 times faster on large checkpoints). The file is an ordinary
+pickle that ``torch.distributed.checkpoint`` loads unchanged. The pickler is used on the PyTorch
+versions it was tested with, 2.4 to 2.14; on other versions the file is written with
+``pickle.dump``, as PyTorch writes it.
+
+The environment variable ``NVRX_FAST_METADATA_PICKLE``, read once per process, changes this:
+
+* ``0``: write the file with ``pickle.dump``.
+* ``python``: use the pure-Python pickler instead of the C++ extension.
+* ``force``: use the pickler on untested PyTorch versions too, except those known not to work with
+  it (2.3), where an error is logged.
+
+
+Reusing Global Metadata
+-----------------------
+Building a checkpoint's global metadata gathers every rank's local save plan on the coordinator.
+With ``enable_cache=True``,
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan`
+reuses metadata instead, kept between saves in a
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache`
+(``metadata_cache``, or the one created by ``init_checkpoint_metadata_cache``):
+
+* After loading a checkpoint, pass its metadata to ``set_cached_global_metadata`` on every rank.
+  The first save reuses it if all ranks' local plans write exactly the chunks it lists, checked
+  with one ``all_reduce``; otherwise the metadata is built as usual. This needs a planner that
+  plans each rank's writes locally (``can_run_decentralized_global_plan``), as Megatron-LM's does,
+  and no planner data.
+* Later saves reuse the previous save's plans and metadata without communicating. The checkpoint
+  structure must not change between them: a rank whose local plan changed raises an error.
+
+
 Best Practices
 --------------
 * Use process binding to pin the checkpointing process to a specific GPU. This is important for pre-staging tensors to host memory.

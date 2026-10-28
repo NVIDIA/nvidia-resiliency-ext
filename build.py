@@ -189,6 +189,29 @@ def build(setup_kwargs):
         print(f"\nERROR: Unexpected error during proto compilation: {e}")
         raise
 
+    # Fast writer for checkpoint .metadata files. Needs only a C++ compiler, not CUDA, so it is
+    # built even when the CUPTI extension is skipped. It is optional: if it fails to compile, the
+    # build continues and the checkpointing code falls back to its pure-Python writer.
+    ext_modules = [
+        Pybind11Extension(
+            'nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.native',
+            [
+                'src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native_src/native.cpp'
+            ],
+            extra_compile_args=['-O3'],
+            language='c++',
+            cxx_std=20,
+            optional=True,
+        )
+    ]
+    setup_kwargs.update(
+        {
+            "ext_modules": ext_modules,
+            "cmdclass": {"build_ext": build_ext},
+            "zip_safe": False,
+        }
+    )
+
     # Optionally build the CUPTI extension
     if _skip_ext_build():
         print(
@@ -222,13 +245,4 @@ def build(setup_kwargs):
         language='c++',
         cxx_std=17,
     )
-    ext_modules = [
-        cpp_extension,
-    ]
-    setup_kwargs.update(
-        {
-            "ext_modules": ext_modules,
-            "cmdclass": {"build_ext": build_ext},
-            "zip_safe": False,
-        }
-    )
+    ext_modules.append(cpp_extension)  # the list setup_kwargs["ext_modules"] refers to
