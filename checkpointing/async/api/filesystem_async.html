@@ -191,7 +191,12 @@ tensor IPC handles rather than assuming the worker already has them.</p></li>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.finish">
 <span class="sig-name descname"><span class="pre">finish</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">metadata</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">results</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.finish"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.finish" title="Link to this definition"></a></dt>
-<dd><p>Finish the checkpointing process.</p>
+<dd><p>Finish the checkpointing process by writing the global metadata file.</p>
+<p>Follows <code class="docutils literal notranslate"><span class="pre">FileSystemWriter.finish</span></code> of the torch versions in
+<code class="docutils literal notranslate"><span class="pre">_metadata_pickler.TESTED_TORCH_VERSIONS</span></code>, but writes <code class="docutils literal notranslate"><span class="pre">.metadata</span></code> with
+<code class="docutils literal notranslate"><span class="pre">_metadata_pickler.dump_metadata</span></code>: the same pickle format as <code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>, written
+much faster. On other torch versions, or with <code class="docutils literal notranslate"><span class="pre">NVRX_FAST_METADATA_PICKLE=0</span></code>, it uses
+<code class="docutils literal notranslate"><span class="pre">FileSystemWriter.finish</span></code> (or, for MSC, <code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">

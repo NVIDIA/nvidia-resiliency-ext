@@ -99,20 +99,16 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-
-<span class="c1"># Issue: [B403:blacklist] Consider possible security implications associated with pickle module.</span>
-<span class="c1"># Severity: Low   Confidence: High</span>
-<span class="c1"># CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)</span>
-<span class="c1"># More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>  <span class="c1"># nosec</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">queue</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <span class="n">partial</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">heapq</span><span class="w"> </span><span class="kn">import</span> <span class="n">heappop</span><span class="p">,</span> <span class="n">heappush</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">io</span><span class="w"> </span><span class="kn">import</span> <span class="n">UnsupportedOperation</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">itertools</span><span class="w"> </span><span class="kn">import</span> <span class="n">chain</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">operator</span><span class="w"> </span><span class="kn">import</span> <span class="n">itemgetter</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">time</span><span class="w"> </span><span class="kn">import</span> <span class="n">time</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">ClassVar</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Callable</span><span class="p">,</span> <span class="n">ClassVar</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">List</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span><span class="p">,</span> <span class="n">cast</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">multiprocessing</span> <span class="k">as</span> <span class="n">mp</span>
@@ -122,9 +118,19 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.metadata</span><span class="w"> </span><span class="kn">import</span> <span class="n">Metadata</span>
 
 <span class="k">try</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">_metadata_fn</span>  <span class="c1"># PyTorch 2.4+</span>
+<span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>  <span class="c1"># finish() uses FileSystemWriter.finish there</span>
+    <span class="n">_metadata_fn</span> <span class="o">=</span> <span class="kc">None</span>
+
+<span class="k">try</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">_StorageWriterTransforms</span>
 <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
     <span class="n">_StorageWriterTransforms</span> <span class="o">=</span> <span class="n">Any</span>
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.filesystem</span><span class="w"> </span><span class="kn">import</span> <span class="n">CURRENT_DCP_VERSION</span>  <span class="c1"># PyTorch 2.9+</span>
+<span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
+    <span class="n">CURRENT_DCP_VERSION</span> <span class="o">=</span> <span class="kc">None</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.planner</span><span class="w"> </span><span class="kn">import</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">SavePlanner</span><span class="p">,</span> <span class="n">WriteItem</span><span class="p">,</span> <span class="n">WriteItemType</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.storage</span><span class="w"> </span><span class="kn">import</span> <span class="n">WriteResult</span>
@@ -140,6 +146,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">semconv</span><span class="p">,</span> <span class="n">telemetry</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">..utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_disable_gc</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">_metadata_pickler</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.core</span><span class="w"> </span><span class="kn">import</span> <span class="n">PersistentAsyncCaller</span>
 
 <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
@@ -1399,35 +1406,70 @@
 <a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.finish">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">finish</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">metadata</span><span class="p">:</span> <span class="n">Metadata</span><span class="p">,</span> <span class="n">results</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteResult</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">"""</span>
-<span class="sd">        Finish the checkpointing process.</span>
+<span class="sd">        Finish the checkpointing process by writing the global metadata file.</span>
+
+<span class="sd">        Follows ``FileSystemWriter.finish`` of the torch versions in</span>
+<span class="sd">        ``_metadata_pickler.TESTED_TORCH_VERSIONS``, but writes ``.metadata`` with</span>
+<span class="sd">        ``_metadata_pickler.dump_metadata``: the same pickle format as ``pickle.dump``, written</span>
+<span class="sd">        much faster. On other torch versions, or with ``NVRX_FAST_METADATA_PICKLE=0``, it uses</span>
+<span class="sd">        ``FileSystemWriter.finish`` (or, for MSC, ``pickle.dump``).</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            metadata (Metadata): metadata to save</span>
 <span class="sd">            results (List[List[WriteResult]]): results to save</span>
 <span class="sd">        """</span>
+        <span class="n">fast</span> <span class="o">=</span> <span class="n">_metadata_pickler</span><span class="o">.</span><span class="n">fast_metadata_enabled</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">fast</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_msc</span><span class="p">:</span>
+            <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">results</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="k">if</span> <span class="n">fast</span> <span class="ow">and</span> <span class="n">CURRENT_DCP_VERSION</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">metadata</span><span class="o">.</span><span class="n">version</span> <span class="o">=</span> <span class="n">CURRENT_DCP_VERSION</span>
+
+        <span class="n">storage_md</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">wr_list</span> <span class="ow">in</span> <span class="n">results</span><span class="p">:</span>
+            <span class="n">storage_md</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">wr</span><span class="o">.</span><span class="n">index</span><span class="p">:</span> <span class="n">wr</span><span class="o">.</span><span class="n">storage_data</span> <span class="k">for</span> <span class="n">wr</span> <span class="ow">in</span> <span class="n">wr_list</span><span class="p">})</span>
+        <span class="n">metadata</span><span class="o">.</span><span class="n">storage_data</span> <span class="o">=</span> <span class="n">storage_md</span>
+
+        <span class="c1"># storage_meta was introduced since PyTorch 2.4</span>
+        <span class="k">if</span> <span class="s2">"storage_meta"</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">signature</span><span class="p">(</span><span class="n">Metadata</span><span class="p">)</span><span class="o">.</span><span class="n">parameters</span><span class="p">:</span>
+            <span class="n">metadata</span><span class="o">.</span><span class="n">storage_meta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage_meta</span><span class="p">()</span>
+
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">use_msc</span><span class="p">:</span>
             <span class="kn">import</span><span class="w"> </span><span class="nn">multistorageclient</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">msc</span>
 
-            <span class="n">storage_md</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">()</span>
-            <span class="k">for</span> <span class="n">wr_list</span> <span class="ow">in</span> <span class="n">results</span><span class="p">:</span>
-                <span class="n">storage_md</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">wr</span><span class="o">.</span><span class="n">index</span><span class="p">:</span> <span class="n">wr</span><span class="o">.</span><span class="n">storage_data</span> <span class="k">for</span> <span class="n">wr</span> <span class="ow">in</span> <span class="n">wr_list</span><span class="p">})</span>
-
-            <span class="n">metadata</span><span class="o">.</span><span class="n">storage_data</span> <span class="o">=</span> <span class="n">storage_md</span>
-
-            <span class="c1"># storage_meta was introduced since PyTorch 2.4</span>
-            <span class="k">if</span> <span class="s2">"storage_meta"</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">signature</span><span class="p">(</span><span class="n">Metadata</span><span class="p">)</span><span class="o">.</span><span class="n">parameters</span><span class="p">:</span>
-                <span class="n">metadata</span><span class="o">.</span><span class="n">storage_meta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage_meta</span><span class="p">()</span>
-
             <span class="n">path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="s2">".metadata"</span><span class="p">)</span>
-
             <span class="k">with</span> <span class="n">msc</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s2">"wb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">metadata_file</span><span class="p">:</span>
-                <span class="c1"># Issue: [B301:blacklist] Pickle and modules that wrap it can be unsafe when used to deserialize untrusted data, possible security issue.</span>
-                <span class="c1"># Severity: Medium   Confidence: High</span>
-                <span class="c1"># CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)</span>
-                <span class="c1"># More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_calls.html#b301-pickle</span>
-                <span class="n">pickle</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">metadata_file</span><span class="p">)</span>  <span class="c1"># nosec</span>
+                <span class="n">_metadata_pickler</span><span class="o">.</span><span class="n">dump_metadata</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">metadata_file</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="c1"># PyTorch 2.9+ writes one metadata file per rank when collectives are disabled.</span>
+        <span class="n">rank</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">"rank"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">"use_collectives"</span><span class="p">,</span> <span class="kc">True</span><span class="p">)</span> <span class="ow">and</span> <span class="n">rank</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">tmp_filename</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"__</span><span class="si">{</span><span class="n">rank</span><span class="si">}{</span><span class="n">_metadata_fn</span><span class="si">}</span><span class="s2">.tmp"</span>
+            <span class="n">metadata_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_metadata_path</span><span class="p">(</span><span class="n">rank</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
-            <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">results</span><span class="p">)</span></div>
+            <span class="n">tmp_filename</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">_metadata_fn</span><span class="si">}</span><span class="s2">.tmp"</span>
+            <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s2">"_get_metadata_path"</span><span class="p">):</span>  <span class="c1"># PyTorch 2.9+</span>
+                <span class="n">metadata_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_metadata_path</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">metadata_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">metadata_path</span>
+        <span class="n">tmp_path</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="n">Path</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">fs</span><span class="o">.</span><span class="n">concat_path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">tmp_filename</span><span class="p">))</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">fs</span><span class="o">.</span><span class="n">create_stream</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">,</span> <span class="s2">"wb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">metadata_file</span><span class="p">:</span>
+            <span class="n">_metadata_pickler</span><span class="o">.</span><span class="n">dump_metadata</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">metadata_file</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">sync_files</span><span class="p">:</span>
+                <span class="c1"># Flush Python-level buffers (OS for local files, network for cloud storage) before fsync.</span>
+                <span class="n">metadata_file</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">os</span><span class="o">.</span><span class="n">fsync</span><span class="p">(</span><span class="n">metadata_file</span><span class="o">.</span><span class="n">fileno</span><span class="p">())</span>
+                <span class="k">except</span> <span class="p">(</span><span class="ne">AttributeError</span><span class="p">,</span> <span class="n">UnsupportedOperation</span><span class="p">):</span>
+                    <span class="n">os</span><span class="o">.</span><span class="n">sync</span><span class="p">()</span>  <span class="c1"># as PyTorch &lt; 2.14 does; 2.14 only warns</span>
+
+        <span class="c1"># delete in-case other checkpoints were present.</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">fs</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">metadata_path</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">fs</span><span class="o">.</span><span class="n">rm_file</span><span class="p">(</span><span class="n">metadata_path</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">fs</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">tmp_path</span><span class="p">,</span> <span class="n">metadata_path</span><span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="FileSystemWriterAsync.prepare_local_plan">

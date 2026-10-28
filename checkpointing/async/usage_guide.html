@@ -60,6 +60,8 @@
 <li class="toctree-l4"><a class="reference internal" href="#example-saving-and-loading-checkpoints-with-msc">Example: Saving and Loading Checkpoints with MSC</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="#writing-the-metadata-file">Writing the .metadata File</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reusing-global-metadata">Reusing Global Metadata</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#best-practices">Best Practices</a></li>
 </ul>
 </li>
@@ -316,6 +318,40 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 </pre></div>
 </div>
 </section>
+</section>
+<section id="writing-the-metadata-file">
+<h2>Writing the .metadata File<a class="headerlink" href="#writing-the-metadata-file" title="Link to this heading"></a></h2>
+<p><a class="reference internal" href="api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><code class="xref py py-class docutils literal notranslate"><span class="pre">FileSystemWriterAsync</span></code></a>
+writes the checkpoint’s <code class="docutils literal notranslate"><span class="pre">.metadata</span></code> file with its own pickler instead of <code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>
+(about 16 times faster on large checkpoints). The file is an ordinary
+pickle that <code class="docutils literal notranslate"><span class="pre">torch.distributed.checkpoint</span></code> loads unchanged. The pickler is used on the PyTorch
+versions it was tested with, 2.4 to 2.14; on other versions the file is written with
+<code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>, as PyTorch writes it.</p>
+<p>The environment variable <code class="docutils literal notranslate"><span class="pre">NVRX_FAST_METADATA_PICKLE</span></code>, read once per process, changes this:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">0</span></code>: write the file with <code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">python</span></code>: use the pure-Python pickler instead of the C++ extension.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">force</span></code>: use the pickler on untested PyTorch versions too, except those known not to work with
+it (2.3), where an error is logged.</p></li>
+</ul>
+</section>
+<section id="reusing-global-metadata">
+<h2>Reusing Global Metadata<a class="headerlink" href="#reusing-global-metadata" title="Link to this heading"></a></h2>
+<p>Building a checkpoint’s global metadata gathers every rank’s local save plan on the coordinator.
+With <code class="docutils literal notranslate"><span class="pre">enable_cache=True</span></code>,
+<a class="reference internal" href="api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan"><code class="xref py py-class docutils literal notranslate"><span class="pre">save_state_dict_async_plan</span></code></a>
+reuses metadata instead, kept between saves in a
+<a class="reference internal" href="api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache"><code class="xref py py-class docutils literal notranslate"><span class="pre">CheckpointMetadataCache</span></code></a>
+(<code class="docutils literal notranslate"><span class="pre">metadata_cache</span></code>, or the one created by <code class="docutils literal notranslate"><span class="pre">init_checkpoint_metadata_cache</span></code>):</p>
+<ul class="simple">
+<li><p>After loading a checkpoint, pass its metadata to <code class="docutils literal notranslate"><span class="pre">set_cached_global_metadata</span></code> on every rank.
+The first save reuses it if all ranks’ local plans write exactly the chunks it lists, checked
+with one <code class="docutils literal notranslate"><span class="pre">all_reduce</span></code>; otherwise the metadata is built as usual. This needs a planner that
+plans each rank’s writes locally (<code class="docutils literal notranslate"><span class="pre">can_run_decentralized_global_plan</span></code>), as Megatron-LM’s does,
+and no planner data.</p></li>
+<li><p>Later saves reuse the previous save’s plans and metadata without communicating. The checkpoint
+structure must not change between them: a rank whose local plan changed raises an error.</p></li>
+</ul>
 </section>
 <section id="best-practices">
 <h2>Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading"></a></h2>
