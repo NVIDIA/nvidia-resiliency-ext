@@ -5,11 +5,14 @@
 
 import os
 import tempfile
+import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import (
+    GrpcWriterThread,
     MultiplexingReaderThread,
     PipeBasedLogsSpecs,
 )
@@ -258,3 +261,41 @@ class TestLauncherPipeFunctionality:
         finally:
             if os.path.exists(worker_log2):
                 os.remove(worker_log2)
+
+
+def test_forwarding_unavailable_as_soon_as_reader_shutdown_starts(tmp_path, monkeypatch):
+    streaming = threading.Event()
+    release_stream = threading.Event()
+    channel = Mock()
+
+    def stream_logs(self, channel):
+        streaming.set()
+        assert release_stream.wait(5)
+
+    monkeypatch.setattr(GrpcWriterThread, "_wait_for_server_ready", lambda self: channel)
+    monkeypatch.setattr(GrpcWriterThread, "_stream_logs", stream_logs)
+    read_fd, write_fd = os.pipe()
+    specs = PipeBasedLogsSpecs(
+        base_log_file=str(tmp_path / "app.log"),
+        launcher_pipe_fd=read_fd,
+        launcher_log_file=str(tmp_path / "launcher.log"),
+        grpc_server_address="unused:1234",
+        node_id="test",
+    )
+    try:
+        assert streaming.wait(5)
+        assert specs.launcher_forwarding_available
+
+        def shutdown_grace(_):
+            # shutdown() must disable forwarding before its existing sleep/drain.
+            assert not specs.launcher_forwarding_available
+
+        monkeypatch.setattr(
+            "nvidia_resiliency_ext.fault_tolerance.per_cycle_logs.time.sleep", shutdown_grace
+        )
+        specs._reader_thread.shutdown()
+        assert not specs.launcher_forwarding_available
+    finally:
+        release_stream.set()
+        specs.cleanup()
+        os.close(write_fd)
