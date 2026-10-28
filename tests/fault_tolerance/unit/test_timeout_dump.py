@@ -27,7 +27,7 @@ from nvidia_resiliency_ext.fault_tolerance.timeout_dump import (
 )
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture import CaptureStatus, staging_dir
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.collector import DiagnosticCollector
-from nvidia_resiliency_ext.fault_tolerance.timeout_dump.config import create_capture
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump.config import TOOLS, create_capture
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.cuda_gdb import CudaGdb, Mode
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.gdb import Gdb
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.pyspy import PySpy
@@ -116,11 +116,16 @@ def fake_tool(cfg, tmp_path, body, tool="pyspy"):
     cfg.timeout_dump.tools = [entry]
 
 
-def from_cli(*argv):
+def from_cli(*argv, resolve=False):
+    """Parse the launcher CLI; tools are resolved against this machine only if `resolve`."""
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     args = launcher.get_args_parser().parse_args([*argv, "train.py"])
-    return FaultToleranceConfig.from_args(args).timeout_dump
+    with contextlib.ExitStack() as stack:
+        if not resolve:
+            for tool in TOOLS.values():
+                stack.enter_context(patch.object(tool.Config, "resolve"))
+        return FaultToleranceConfig.from_args(args).timeout_dump
 
 
 def errors(caplog):
@@ -1145,6 +1150,31 @@ def test_options_for_unlisted_tools_are_unused(caplog, cli, tools):
     config = from_cli(*cli)
     assert ([tool.name for tool in config.tools] if config.enabled else None) == tools
     assert not errors(caplog)
+
+
+@pytest.mark.parametrize(
+    "cli,message",
+    [
+        (["--ft-timeout-dump-tools=pyspy", "--ft-timeout-dump-pyspy=/missing/py-spy"], "missing"),
+        (
+            ["--ft-timeout-dump-tools=gdb", f"--ft-timeout-dump-gdb={sys.executable}"],
+            "command file is required",
+        ),
+    ],
+)
+def test_misconfigured_enabled_tool_fails_at_startup(cli, message):
+    with pytest.raises(ValueError, match=message):
+        from_cli(*cli, resolve=True)
+
+
+def test_disabled_dumps_do_not_resolve_tools():
+    config = from_cli(
+        "--ft-timeout-dump-enabled=false",
+        "--ft-timeout-dump-tools=pyspy",
+        "--ft-timeout-dump-pyspy=/missing/py-spy",
+        resolve=True,
+    )
+    assert not config.enabled
 
 
 def test_options_apply_to_the_default_tool_list(caplog):
