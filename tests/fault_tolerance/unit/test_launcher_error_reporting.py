@@ -13,8 +13,8 @@ from unittest.mock import Mock
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance import launcher
-from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import LauncherErrorReporter
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import LauncherErrorReporter
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump import DiagnosticCollectorProcess
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.config import TimeoutDumpConfig
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump.pyspy import PySpy
@@ -210,14 +210,12 @@ def test_forked_helpers_release_saved_stderr(tmp_path, helper, monkeypatch):
             process = monitors[0].process
         elif helper == "collector":
             cfg = TimeoutDumpConfig(
-                        enabled=True,
-                        tools = [
-                            PySpy.Config()
-                        ],
-                        local_root=str(tmp_path / "local"),
-                        poll_interval=0.02,
-                        shutdown_grace=1,
-                    )
+                enabled=True,
+                tools=[PySpy.Config()],
+                local_root=str(tmp_path / "local"),
+                poll_interval=0.02,
+                shutdown_grace=1,
+            )
             collector = DiagnosticCollectorProcess(cfg, tmp_path / "diags")
             process = collector.process
         else:
