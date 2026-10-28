@@ -159,10 +159,6 @@ _LEGACY_FINALIZE_DEPRECATED = (
 class PendingSave:
     """A save planned and staged by `save_state_dict_async_plan`, to pass to
     `save_state_dict_async_finalize`.
-
-    Attributes:
-        storage_writer (FileSystemWriterAsync): The storage writer the save was planned with.
-        dist_wrapper (_DistWrapper): The distributed wrapper used for planning.
     """
 
     storage_writer: "FileSystemWriterAsync"
