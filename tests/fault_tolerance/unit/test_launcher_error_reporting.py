@@ -15,7 +15,7 @@ import pytest
 from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import LauncherErrorReporter
-from nvidia_resiliency_ext.fault_tolerance.timeout_diagnostics import DiagnosticCollectorProcess
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump import DiagnosticCollectorProcess
 
 
 @pytest.fixture
