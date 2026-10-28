@@ -21,13 +21,14 @@ all_reduce would.
 """
 
 import dataclasses
+import gc
 import pickle
-from dataclasses import fields
+import weakref
 
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from torch.distributed.checkpoint import FileSystemReader, FileSystemWriter
 from torch.distributed.checkpoint.default_planner import (
@@ -35,6 +36,7 @@ from torch.distributed.checkpoint.default_planner import (
     create_default_global_save_plan,
 )
 from torch.distributed.checkpoint.metadata import (
+    BytesStorageMetadata,
     ChunkStorageMetadata,
     MetadataIndex,
     TensorProperties,
@@ -42,10 +44,18 @@ from torch.distributed.checkpoint.metadata import (
 from torch.distributed.checkpoint.planner import SavePlan, TensorWriteData, WriteItem, WriteItemType
 from torch.distributed.checkpoint.storage import WriteResult
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt import _metadata_reuse, state_dict_saver
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import (
+    state_dict_table,
+    writer,
+)
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler.write_result_table import (
+    FqnList,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import CheckpointMetadataCache
+
+from .metadata_assertions import NEEDS_FAST
 
 
 def tensor_item(fqn, offsets, sizes, size, dtype=torch.float32, requires_grad=False):
@@ -87,9 +97,25 @@ def metadata_of(plans):
     return pickle.loads(pickle.dumps(metadata))
 
 
+VIEWS = {
+    "objects": _metadata_reuse.ObjectEntries,
+    "table": lambda md: _metadata_reuse.TableEntries(
+        state_dict_table.StateDictTable.from_metadata(md)
+    ),
+}
+entries_of = VIEWS["objects"]  # the view the checks below read the metadata through
+
+
+@pytest.fixture(autouse=True, params=VIEWS)
+def view(request, monkeypatch):
+    """Make every reuse check read the metadata through each view."""
+    monkeypatch.setitem(globals(), "entries_of", VIEWS[request.param])
+
+
 def reusable(plans, metadata):
     """Whether the simulated ranks' summed votes allow reuse."""
-    votes = [_metadata_reuse.votes(p, metadata, r, len(plans)) for r, p in enumerate(plans)]
+    entries = entries_of(metadata)
+    votes = [_metadata_reuse.votes(p, entries, r, len(plans)) for r, p in enumerate(plans)]
     return _metadata_reuse.can_reuse([sum(column) for column in zip(*votes)])
 
 
@@ -233,7 +259,7 @@ def test_unreadable_metadata_votes_against_reuse():
     plans = sample_plans()
     metadata = metadata_of(plans)
     metadata.state_dict_metadata["experts"].chunks = None
-    votes = _metadata_reuse.votes(plans[0], metadata, 0, len(plans))
+    votes = _metadata_reuse.votes(plans[0], entries_of(metadata), 0, len(plans))
     assert votes[0] == 1
 
 
@@ -266,7 +292,9 @@ def all_items(tensors):
     ]
 
 
-@settings(max_examples=50, deadline=None)
+@settings(
+    max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 @given(tensors=chunked_tensors(), data=st.data())
 def test_any_distribution_of_the_same_chunks_reuses(tensors, data):
     items = all_items(tensors)
@@ -284,7 +312,9 @@ def test_any_distribution_of_the_same_chunks_reuses(tensors, data):
     assert reusable(new_plans, metadata_of(old_plans))
 
 
-@settings(max_examples=50, deadline=None)
+@settings(
+    max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
 @given(tensors=chunked_tensors(), data=st.data())
 def test_any_missing_chunk_doesnt_reuse(tensors, data):
     items = all_items(tensors)
@@ -300,40 +330,50 @@ def test_reuse_leaves_the_loaded_metadata_alone():
     plans = sample_plans()
     metadata = metadata_of(plans)
     metadata.all_local_plans = plans  # as written by older versions
-    before = dict(vars(metadata))
+    before = pickle.dumps(metadata)
     cache = CheckpointMetadataCache()
     cache.set_cached_global_metadata(metadata)
     written = cache._update(plans[0], plans[0], None, reused=True, is_coordinator=True)
-    written.storage_data = {"rewritten": None}  # as finish does
-    assert vars(metadata) == before
-    assert "all_local_plans" not in vars(written)
-    assert all(
-        getattr(written, f.name) == before[f.name]
-        for f in fields(metadata)
-        if f.name != "storage_data"
-    )
+    assert pickle.dumps(metadata) == before
+    back = written.to_metadata()
+    assert "all_local_plans" not in vars(back)
+    assert back == dataclasses.replace(metadata, storage_data=None)
+
+
+def cached_metadata(cache: CheckpointMetadataCache):
+    """Return the global metadata the cache would reuse, as a new Metadata, or None."""
+    template = cache._metadata_template
+    return template.to_metadata() if template is not None else None
 
 
 @pytest.mark.parametrize("reused", [False, True], ids=["built", "reused"])
-def test_finish_never_writes_into_the_cache(reused):
-    """Each save's storage_data goes into a copy: kept in the cache, it would stay alive on the
-    coordinator and slow down every full garbage collection there."""
+def test_the_cache_holds_no_storage_data(reused):
+    """The cache keeps the metadata without storage_data, and every save writes the same one."""
     plans = sample_plans()
     cache = CheckpointMetadataCache()
+    built = metadata_of(plans)
     if reused:
-        cache.set_cached_global_metadata(metadata_of(plans))
-        built = None
-    else:
-        built = metadata_of(plans)
-        built.storage_data = None  # create_global_plan leaves it to finish
+        cache.set_cached_global_metadata(built)
     for save in range(3):
         written = cache._update(plans[0], plans[0], built, reused or save > 0, is_coordinator=True)
-        cached = cache.global_metadata
-        storage_data = cached.storage_data
-        assert written is not cached
-        written.storage_data = {f"save {save}": None}  # as finish does
-        assert cached.storage_data is storage_data
-        assert written.state_dict_metadata is cached.state_dict_metadata
+        assert written.to_metadata().storage_data is None
+        assert cached_metadata(cache) == dataclasses.replace(built, storage_data=None)
+
+
+@NEEDS_FAST
+def test_the_cache_keeps_no_reference_to_the_loaded_metadata():
+    """With the fast .metadata writers, the caller can free the loaded metadata after handing it
+    to the cache: the cache keeps a table of it, not its objects."""
+    loaded = metadata_of(sample_plans())
+    loaded.storage_data = {}
+    entry = loaded.state_dict_metadata["w"]
+    refs = [weakref.ref(loaded), weakref.ref(entry), weakref.ref(entry.chunks[0])]
+    cache = CheckpointMetadataCache()
+    cache.set_cached_global_metadata(loaded)
+    del loaded, entry
+    gc.collect()
+    assert all(ref() is None for ref in refs)
+    assert cached_metadata(cache) is not None
 
 
 def test_only_the_coordinator_keeps_metadata_after_a_save():
@@ -343,13 +383,66 @@ def test_only_the_coordinator_keeps_metadata_after_a_save():
     other = CheckpointMetadataCache()
     other.set_cached_global_metadata(metadata)
     assert other._update(plans[1], plans[1], None, reused=True, is_coordinator=False) is None
-    assert other.global_metadata is None and other.local_plan is plans[1]
+    assert cached_metadata(other) is None and other._local_plan is plans[1]
 
     built = metadata_of(plans)
     coordinator = CheckpointMetadataCache()
     coordinator.set_cached_global_metadata(metadata)
-    assert coordinator._update(plans[0], plans[0], built, False, is_coordinator=True) == built
-    assert coordinator.global_metadata is built
+    written = coordinator._update(plans[0], plans[0], built, False, is_coordinator=True)
+    assert written.to_metadata() == cached_metadata(coordinator) == built
+
+
+def test_every_rank_keeps_the_fqn_list_of_the_loaded_metadata():
+    """Index tables of the first save after a load refer to the loaded fqn list."""
+    plans = sample_plans()
+    loaded = metadata_of(plans)
+    expected = FqnList.of(loaded.state_dict_metadata)
+    for rank, is_coordinator in enumerate([True, False]):
+        cache = CheckpointMetadataCache()
+        cache.set_cached_global_metadata(loaded)
+        assert cache._fqn_list_slot.fqn_list == expected
+        cache._update(plans[rank], plans[rank], None, reused=True, is_coordinator=is_coordinator)
+        assert cache._fqn_list_slot.fqn_list == expected
+
+
+def test_a_build_leaves_the_other_ranks_without_an_fqn_list():
+    """Until the finalize of the save delivers the coordinator's new list."""
+    plans = sample_plans()
+    other = CheckpointMetadataCache()
+    other.set_cached_global_metadata(metadata_of(plans))
+    other._update(plans[1], plans[1], None, reused=False, is_coordinator=False)
+    assert other._fqn_list_slot.fqn_list is None
+
+    built = metadata_of(plans)
+    coordinator = CheckpointMetadataCache()
+    coordinator._update(plans[0], plans[0], built, reused=False, is_coordinator=True)
+    assert coordinator._fqn_list_slot.fqn_list == FqnList.of(built.state_dict_metadata)
+
+
+def test_metadata_with_an_fqn_that_isnt_a_str_has_no_fqn_list():
+    """Caching such metadata, loaded or built, leaves every rank to send fqn strings."""
+    plans = sample_plans()
+    metadata = metadata_of(plans)
+    metadata.state_dict_metadata[1] = BytesStorageMetadata()
+    loaded = CheckpointMetadataCache()
+    loaded.set_cached_global_metadata(metadata)
+    built = CheckpointMetadataCache()
+    built._update(plans[0], plans[0], metadata, reused=False, is_coordinator=True)
+    assert loaded._fqn_list_slot.fqn_list is None and built._fqn_list_slot.fqn_list is None
+
+
+def test_a_save_that_fails_to_record_its_metadata_isnt_reused(monkeypatch):
+    """The plans are recorded only once the metadata is: a retried save builds it again."""
+    plans = sample_plans()
+    cache = CheckpointMetadataCache()
+
+    def failing(metadata):
+        raise MemoryError("no room for the table")
+
+    monkeypatch.setattr(state_dict_saver.MetadataTemplate, "from_metadata", failing)
+    with pytest.raises(MemoryError):
+        cache._update(plans[0], plans[0], metadata_of(plans), False, is_coordinator=True)
+    assert cache._local_plan is None and cache._central_plan is None
 
 
 def test_reuse_without_metadata_on_the_coordinator_raises():
@@ -367,8 +460,8 @@ def test_set_cached_global_metadata_starts_over():
     cache._update(plans[0], plans[0], metadata_of(plans), reused=False, is_coordinator=True)
     loaded = metadata_of(plans)
     cache.set_cached_global_metadata(loaded)
-    assert cache.global_metadata == dataclasses.replace(loaded, storage_data=None)
-    assert cache.local_plan is None and cache.central_plan is None
+    assert cached_metadata(cache) == dataclasses.replace(loaded, storage_data=None)
+    assert cache._local_plan is None and cache._central_plan is None
 
 
 def test_cache_does_not_keep_the_loaded_storage_data():
@@ -377,7 +470,7 @@ def test_cache_does_not_keep_the_loaded_storage_data():
     loaded.storage_data = {"loaded": None}
     cache = CheckpointMetadataCache()
     cache.set_cached_global_metadata(loaded)
-    assert cache.global_metadata.storage_data is None
+    assert cached_metadata(cache).storage_data is None
     assert loaded.storage_data == {"loaded": None}
 
 
@@ -408,7 +501,7 @@ def test_finish_leaves_the_cache_and_the_caller_alone(tmp_path, monkeypatch, reu
     caller_before = pickle.dumps(loaded)
     for save in range(3):
         written = cache._update(None, None, built, reused or save > 0, is_coordinator=True)
-        cache_before = pickle.dumps(cache.global_metadata)
+        cache_before = pickle.dumps(cached_metadata(cache))
         results = [
             [
                 WriteResult(
@@ -423,9 +516,9 @@ def test_finish_leaves_the_cache_and_the_caller_alone(tmp_path, monkeypatch, reu
         path.mkdir()
         storage_writer = FileSystemWriterAsync(path)
         storage_writer.set_up_storage_writer(True)
-        storage_writer.finish(written, results)
+        storage_writer._finish(written, results)
 
-        assert pickle.dumps(cache.global_metadata) == cache_before, f"save {save}: cache changed"
+        assert pickle.dumps(cached_metadata(cache)) == cache_before, f"save {save}: cache changed"
         assert pickle.dumps(loaded) == caller_before, f"save {save}: caller's metadata changed"
         written_back = FileSystemReader(path).read_metadata()
         assert {info.relative_path for info in written_back.storage_data.values()} == {

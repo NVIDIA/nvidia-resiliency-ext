@@ -25,207 +25,37 @@ import logging
 import os
 import pickle
 from collections import OrderedDict
-from dataclasses import fields
 
+import numpy as np
 import pytest
 import torch
-import torch.distributed.checkpoint as dcp
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
-from torch.distributed.checkpoint.filesystem import _StorageInfo
-from torch.distributed.checkpoint.metadata import (
-    BytesStorageMetadata,
-    ChunkStorageMetadata,
-    Metadata,
-    MetadataIndex,
-    TensorProperties,
-    TensorStorageMetadata,
-)
+from hypothesis import given
+from torch.distributed.checkpoint.metadata import ChunkStorageMetadata, MetadataIndex
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, writer
 
-HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo)}  # torch 2.8+
-NEEDS_NATIVE = pytest.mark.skipif(writer.native is None, reason="native extension not built")
+from .metadata_assertions import (
+    NEEDS_NATIVE,
+    assert_identical,
+    assert_written_like_stock,
+    stock_round_trip,
+)
+from .metadata_samples import (
+    CHANGED_WHILE_PICKLED,
+    FIXED_METADATA,
+    SubclassedMetadata,
+    SubclassedStr,
+    metadata_changed_while_pickled,
+    rename_first,
+    set_index,
+)
+from .metadata_strategies import hypothesis_settings, metadatas
+
+writer.fast_metadata_enabled.cache_clear()
 WRITERS = [
     pytest.param(pickler.dumps, id="python"),
     pytest.param(writer.native.dumps if writer.native else None, id="native", marks=NEEDS_NATIVE),
 ]
-
-
-def assert_identical(a, b, path="metadata"):
-    """a and b are equal, have the same types throughout, and their dicts the same order."""
-    assert type(a) is type(b), f"{path}: {type(a).__name__} != {type(b).__name__}"
-    if isinstance(a, dict):
-        assert len(a) == len(b), f"{path}: {len(a)} != {len(b)} items"
-        for i, ((ka, va), (kb, vb)) in enumerate(zip(a.items(), b.items())):
-            assert_identical(ka, kb, f"{path}.key[{i}]")
-            assert_identical(va, vb, f"{path}[{ka!r}]")
-    elif isinstance(a, (list, tuple)):
-        assert len(a) == len(b), f"{path}: {len(a)} != {len(b)} items"
-        for i, (xa, xb) in enumerate(zip(a, b)):
-            assert_identical(xa, xb, f"{path}[{i}]")
-    elif hasattr(a, "__dict__"):
-        assert_identical(vars(a), vars(b), f"{path}.__dict__")
-    else:
-        assert a == b, f"{path}: {a!r} != {b!r}"
-
-
-def stock_round_trip(md: Metadata) -> Metadata:
-    return pickle.loads(pickle.dumps(md))
-
-
-def assert_written_like_stock(dumps, md: Metadata) -> None:
-    """dumps(md) unpickles exactly as stock pickle round-trips md."""
-    assert_identical(pickle.loads(dumps(md)), stock_round_trip(md))
-
-
-# Strategies for Metadata the writers encode themselves. Integers stay within int64, which the
-# native writer is limited to; fqns and paths have no lone surrogates, which it cannot encode.
-# Both cases are tested as fallbacks below.
-int64s = st.integers(min_value=-(2**63), max_value=2**63 - 1)
-dims = st.integers(min_value=0, max_value=2**63 - 1)
-sizes = st.lists(dims, max_size=6).map(torch.Size)
-texts = st.text(max_size=300)
-properties = st.builds(
-    TensorProperties,
-    dtype=st.sampled_from([torch.float32, torch.bfloat16, torch.int64, torch.uint8]),
-    requires_grad=st.sampled_from([True, False, 1, 0]),  # equal values, different pickles
-)
-chunks = st.builds(ChunkStorageMetadata, offsets=sizes, sizes=sizes)
-
-
-@st.composite
-def metadatas(draw):
-    # Draw fqns and paths from small pools, so that strings repeat as in real checkpoints.
-    fqns = draw(st.lists(texts, min_size=1, max_size=20, unique=True))
-    paths = draw(st.lists(texts, min_size=1, max_size=5, unique=True))
-    tensor = st.builds(
-        TensorStorageMetadata,
-        properties=properties,
-        size=sizes,
-        chunks=st.lists(chunks, max_size=5),
-    )
-    state_dict_metadata = draw(
-        st.dictionaries(st.sampled_from(fqns), st.one_of(tensor, st.builds(BytesStorageMetadata)))
-    )
-    index = st.builds(
-        MetadataIndex,
-        fqn=st.sampled_from(fqns),
-        offset=st.none() | sizes,
-        index=st.none() | int64s,
-    )
-    transforms = st.none()
-    if HAS_TRANSFORMS:
-        transforms = st.none() | st.lists(texts, min_size=1, max_size=2)
-
-    def storage_info(path, offset, length, transform_descriptors):
-        if transform_descriptors is None:
-            return _StorageInfo(path, offset, length)
-        return _StorageInfo(path, offset, length, transform_descriptors=transform_descriptors)
-
-    info = st.builds(storage_info, st.sampled_from(paths), int64s, int64s, transforms)
-    storage_data = draw(st.dictionaries(index, info, max_size=30))
-    planner_data = draw(st.none() | st.dictionaries(texts, st.tuples(texts), max_size=3))
-    return Metadata(
-        state_dict_metadata=state_dict_metadata,
-        planner_data=planner_data,
-        storage_data=storage_data,
-    )
-
-
-def large_metadata() -> Metadata:
-    """Crosses the writers' size boundaries: batches of 1000 items, memo indices past 255,
-    strings longer than 255 bytes, and integers of every width."""
-    props = TensorProperties(dtype=torch.bfloat16)
-    many_chunks = [
-        ChunkStorageMetadata(torch.Size([i, 0]), torch.Size([1, 2**40])) for i in range(2500)
-    ]
-    state_dict_metadata = {
-        "w" * 300: TensorStorageMetadata(props, torch.Size([2500, 2**40]), many_chunks),
-        **{f"layers.{i}.ünïcode.bias": BytesStorageMetadata() for i in range(1500)},
-    }
-    lengths = [0, 255, 256, 65535, 65536, 2**31 - 1, 2**31, 2**63 - 1, -1, -(2**31), -(2**63)]
-    storage_data = {
-        MetadataIndex("w" * 300, torch.Size([i, 0]), i): _StorageInfo(
-            f"__{i % 7}_0.distcp", i * 2**33, lengths[i % len(lengths)]
-        )
-        for i in range(2500)
-    }
-    return Metadata(state_dict_metadata=state_dict_metadata, storage_data=storage_data)
-
-
-def dcp_saved_metadata(tmp_path) -> Metadata:
-    """Metadata as torch writes it for a state dict of tensors and objects."""
-    state_dict = {
-        "scalar": torch.tensor(3.0),
-        "weight": torch.randn(4, 5, dtype=torch.bfloat16),
-        "ids": torch.arange(10),
-        "stats": {"step": 7, "name": "run-1"},
-    }
-    dcp.save(state_dict, storage_writer=dcp.FileSystemWriter(tmp_path))  # no process group
-    md = dcp.FileSystemReader(tmp_path).read_metadata()
-    assert md.storage_data, "expected storage entries"
-    return md
-
-
-def subclassed_metadata() -> Metadata:
-    """Objects of subclasses of the metadata classes, which must keep their class."""
-
-    md = writer._sample_metadata()
-    w = md.state_dict_metadata["w"]
-    chunks = [_Chunk(torch.Size([0, 0, 0, 0]), torch.Size([1, 1, 1, 1])), *w.chunks]
-    md.state_dict_metadata["w2"] = _Tensor(w.properties, w.size, chunks)
-    md.storage_data[_Index("w2", torch.Size([0, 0, 0, 0]), 0)] = _Info("__9_0.distcp", 5, 6)
-    return md
-
-
-class _Metadata(Metadata):
-    pass
-
-
-class _Tensor(TensorStorageMetadata):
-    pass
-
-
-class _Chunk(ChunkStorageMetadata):
-    pass
-
-
-class _Index(MetadataIndex):
-    pass
-
-
-class _Info(_StorageInfo):
-    pass
-
-
-def properties_of_equal_values() -> Metadata:
-    """TensorProperties whose values are equal but of different types: True and 1."""
-    md = writer._sample_metadata()
-    w = md.state_dict_metadata["w"]
-    md.state_dict_metadata["w1"] = TensorStorageMetadata(
-        TensorProperties(dtype=torch.float32, requires_grad=True), w.size, w.chunks
-    )
-    md.state_dict_metadata["w2"] = TensorStorageMetadata(
-        TensorProperties(dtype=torch.float32, requires_grad=1), w.size, w.chunks
-    )
-    return md
-
-
-FIXED_METADATA = [
-    pytest.param(lambda tmp_path: writer._sample_metadata(), id="sample"),
-    pytest.param(lambda tmp_path: large_metadata(), id="large"),
-    pytest.param(dcp_saved_metadata, id="dcp-save"),
-    pytest.param(lambda tmp_path: subclassed_metadata(), id="subclasses"),
-    pytest.param(lambda tmp_path: properties_of_equal_values(), id="equal-properties"),
-]
-
-# Examples are random on purpose, to cover more inputs over time; failures found locally are
-# replayed from the example database in .hypothesis/.
-# TODO: persist the example database across CI runs.
-hypothesis_settings = settings(
-    max_examples=200, deadline=None, suppress_health_check=[HealthCheck.too_slow]
-)
 
 
 @pytest.mark.parametrize("dumps", WRITERS)
@@ -255,37 +85,65 @@ def test_native_matches_python_on(make, tmp_path):
     assert writer.native.dumps(md) == pickler.dumps(md)
 
 
-def _set_index(md, value):
-    object.__setattr__(next(iter(md.storage_data)), "index", value)  # MetadataIndex is frozen
+# State-dict entries the table keeps as the stdlib pickler's opcodes (see state_dict_table.py),
+# which both writers write exactly as stock pickle does.
+KEPT_AS_PICKLES = pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda md: setattr(
+                md.state_dict_metadata["w"], "chunks", tuple(md.state_dict_metadata["w"].chunks)
+            ),
+            id="tuple-chunks",
+        ),
+        pytest.param(
+            lambda md: setattr(md.state_dict_metadata["w"].chunks[0], "offsets", (0, 0, 0, 0)),
+            id="tuple-size",
+        ),
+        pytest.param(
+            lambda md: object.__setattr__(md.state_dict_metadata["w"], "extra", 1),
+            id="tensor-extra-attribute",
+        ),
+        pytest.param(
+            lambda md: object.__setattr__(md.state_dict_metadata["w"].chunks[0], "extra", 1),
+            id="chunk-extra-attribute",
+        ),
+        pytest.param(
+            lambda md: setattr(md.state_dict_metadata["w"], "size", torch.Size([np.int64(4), 2])),
+            id="numpy-int-size",
+        ),
+        pytest.param(
+            lambda md: setattr(
+                md.state_dict_metadata["w"].chunks[0], "offsets", torch.Size([2**63, 0])
+            ),
+            id="offset-beyond-int64",
+        ),
+    ],
+)
 
 
-class _Str(str):
-    pass
+@pytest.mark.parametrize("dumps", WRITERS)
+@KEPT_AS_PICKLES
+def test_writer_writes_unusual_entries_like_stock(dumps, mutate):
+    md = writer._sample_metadata()
+    mutate(md)
+    assert_written_like_stock(dumps, md)
 
 
-def _rename_first(md, rename):
-    fqn = next(iter(md.state_dict_metadata))
-    md.state_dict_metadata[rename(fqn)] = md.state_dict_metadata.pop(fqn)
+@NEEDS_NATIVE
+@KEPT_AS_PICKLES
+def test_native_matches_python_on_unusual_entries(mutate):
+    md = writer._sample_metadata()
+    mutate(md)
+    assert writer.native.dumps(md) == pickler.dumps(md)
 
 
 # (mutation, whether the Python writer rejects it too). The native writer rejects them all.
 UNEXPECTED_VALUES = pytest.mark.parametrize(
     ("mutate", "python_rejects"),
     [
-        pytest.param(
-            lambda md: setattr(
-                md.state_dict_metadata["w"], "chunks", tuple(md.state_dict_metadata["w"].chunks)
-            ),
-            True,
-            id="tuple-chunks",
-        ),
-        pytest.param(
-            lambda md: setattr(md.state_dict_metadata["w"].chunks[0], "offsets", (0, 0, 0, 0)),
-            True,
-            id="tuple-size",
-        ),
-        pytest.param(lambda md: _set_index(md, True), True, id="bool-int"),
-        pytest.param(lambda md: _rename_first(md, _Str), True, id="str-subclass"),
+        pytest.param(lambda md: set_index(md, True), True, id="bool-int"),
+        pytest.param(lambda md: rename_first(md, SubclassedStr), True, id="str-subclass"),
         pytest.param(
             lambda md: setattr(md, "storage_data", OrderedDict(md.storage_data)),
             True,
@@ -297,24 +155,16 @@ UNEXPECTED_VALUES = pytest.mark.parametrize(
             id="metadata-index-extra-attribute",
         ),
         pytest.param(
-            lambda md: object.__setattr__(md.state_dict_metadata["w"], "extra", 1),
-            True,
-            id="tensor-extra-attribute",
-        ),
-        pytest.param(
-            lambda md: object.__setattr__(md.state_dict_metadata["w"].chunks[0], "extra", 1),
-            True,
-            id="chunk-extra-attribute",
-        ),
-        pytest.param(
             lambda md: setattr(next(iter(md.storage_data.values())), "extra", 1),
             True,
             id="storage-info-extra-attribute",
         ),
-        pytest.param(lambda md: setattr(md, "__class__", _Metadata), True, id="metadata-subclass"),
-        pytest.param(lambda md: _set_index(md, 2**70), False, id="int-beyond-int64"),
         pytest.param(
-            lambda md: _rename_first(md, lambda s: s + "\ud800"), False, id="lone-surrogate"
+            lambda md: setattr(md, "__class__", SubclassedMetadata), True, id="metadata-subclass"
+        ),
+        pytest.param(lambda md: set_index(md, 2**70), False, id="int-beyond-int64"),
+        pytest.param(
+            lambda md: rename_first(md, lambda s: s + "\ud800"), False, id="lone-surrogate"
         ),
     ],
 )
@@ -343,73 +193,10 @@ def test_dump_metadata_falls_back(mutate, python_rejects):
     assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(md))
 
 
-# Objects whose pickling changes the metadata being written, through a class attribute set by the
-# test. The native writer must raise or write a loadable pickle, never crash or write garbage.
-class _EmptiesChunkList(ChunkStorageMetadata):
-    target = None
-
-    def __reduce_ex__(self, protocol):
-        type(self).target.clear()
-        return super().__reduce_ex__(protocol)
-
-
-class _ReplacesChunkList(TensorProperties):
-    target = None
-
-    def __reduce_ex__(self, protocol):
-        type(self).target.chunks = []  # frees the list being written
-        return super().__reduce_ex__(protocol)
-
-
-class _DeletesEntries(BytesStorageMetadata):
-    target = None
-
-    def __reduce_ex__(self, protocol):
-        for fqn in [fqn for fqn in type(self).target if fqn.startswith("obj.")][:250]:
-            del type(self).target[fqn]
-        return super().__reduce_ex__(protocol)
-
-
-class _ReplacesStorageInfo(MetadataIndex):
-    target = None
-
-    def __reduce_ex__(self, protocol):
-        type(self).target[self] = _StorageInfo("__9_9.distcp", 0, 1)  # frees the old value
-        return super().__reduce_ex__(protocol)
-
-
-def _metadata_changed_while_pickled(case):
-    md = writer._sample_metadata()
-    w = md.state_dict_metadata["w"]
-    if case == "chunk-list-emptied":
-        w.chunks = [_EmptiesChunkList(torch.Size([0]), torch.Size([1])), *w.chunks * 1000]
-        _EmptiesChunkList.target = w.chunks
-    elif case == "chunk-list-replaced":
-        w.properties = _ReplacesChunkList(dtype=torch.float32)
-        w.chunks = w.chunks * 2500
-        _ReplacesChunkList.target = w
-    elif case == "entries-deleted":
-        md.state_dict_metadata = {"first": _DeletesEntries(), **md.state_dict_metadata}
-        _DeletesEntries.target = md.state_dict_metadata
-    elif case == "storage-info-replaced":
-        index = _ReplacesStorageInfo("w2", torch.Size([0, 0, 0, 0]), 0)
-        md.storage_data = {index: _StorageInfo("__0_0.distcp", 0, 1), **md.storage_data}
-        _ReplacesStorageInfo.target = md.storage_data
-    return md
-
-
-CHANGED_WHILE_PICKLED = [
-    "chunk-list-emptied",
-    "chunk-list-replaced",
-    "entries-deleted",
-    "storage-info-replaced",
-]
-
-
 @NEEDS_NATIVE
 @pytest.mark.parametrize("case", CHANGED_WHILE_PICKLED)
 def test_native_survives_metadata_changed_while_pickled(case):
-    md = _metadata_changed_while_pickled(case)
+    md = metadata_changed_while_pickled(case)
     try:
         out = writer.native.dumps(md)
     except RuntimeError as e:
@@ -420,7 +207,7 @@ def test_native_survives_metadata_changed_while_pickled(case):
 
 @pytest.mark.parametrize("case", CHANGED_WHILE_PICKLED)
 def test_dump_metadata_raises_or_loads_when_metadata_changes(case):
-    md = _metadata_changed_while_pickled(case)
+    md = metadata_changed_while_pickled(case)
     buf = io.BytesIO()
     try:
         writer.dump_metadata(md, buf)

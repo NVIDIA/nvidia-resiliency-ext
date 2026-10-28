@@ -111,13 +111,13 @@ def init_distributed_backend(backend="nccl"):
         raise
 
 
-def get_save_and_finalize_callbacks(writer, save_state_dict_ret) -> AsyncRequest:
+def get_save_and_finalize_callbacks(writer, pending) -> AsyncRequest:
     """Creates an async save request with a finalize function."""
     save_fn, preload_fn, save_args = writer.get_save_function_and_args()
 
     def finalize_fn():
         """Finalizes async checkpointing and synchronizes processes."""
-        save_state_dict_async_finalize(*save_state_dict_ret)
+        save_state_dict_async_finalize(pending)
         dist.barrier()
 
     return AsyncRequest(
@@ -132,10 +132,10 @@ def save_checkpoint(checkpoint_dir, async_queue, model, thread_count, enable_msc
     writer = FileSystemWriterAsync(checkpoint_dir, thread_count=thread_count, use_msc=enable_msc)
     coordinator_rank = 0
 
-    save_state_dict_ret = save_state_dict_async_plan(
+    pending = save_state_dict_async_plan(
         state_dict, writer, None, coordinator_rank, planner=planner, enable_cache=True
     )
-    save_request = get_save_and_finalize_callbacks(writer, save_state_dict_ret)
+    save_request = get_save_and_finalize_callbacks(writer, pending)
     async_queue.schedule_async_request(save_request)
 
 
