@@ -85,7 +85,7 @@ calls and produced 159 unattributable results. Each skip is logged once per job 
 `log_paths` in `/stats`:
 
 ```
-[3911280_100] No application log found; skipping analysis (job_name=..., stdout=.../slurm-3911280_100.out)
+[2201100_100] No application log found; skipping analysis (job_name=..., stdout=.../slurm-2201100_100.out)
 ```
 
 The line matters because a skip and a resolution bug look identical from the

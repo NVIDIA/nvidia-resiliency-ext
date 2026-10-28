@@ -268,7 +268,7 @@ def test_first_terminal_task_claims_the_analysis():
     from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
 
     state = MonitorState()
-    granted, job = _claim_analysis(state, "3848756_0", "/run/logs/a_3848756_cycle0.log")
+    granted, job = _claim_analysis(state, "2201000_0", "/run/logs/a_2201000_cycle0.log")
 
     assert granted is True
     assert job.result_fetched is False
@@ -282,10 +282,10 @@ def test_siblings_do_not_reanalyze_or_realert():
     # before the application log existed, so all were fetch-eligible and each one
     # ran a terminal analysis and sent an alert for the same log.
     state = MonitorState()
-    log = "/run/logs/n4_3848756_date_x_cycle0.log"
-    _claim_analysis(state, "3848756_0", log)
+    log = "/run/logs/proj_2201000_date_x_cycle0.log"
+    _claim_analysis(state, "2201000_0", log)
 
-    for task in ("3848756_17", "3848756_27", "3848756_31"):
+    for task in ("2201000_17", "2201000_27", "2201000_31"):
         granted, job = _claim_analysis(state, task, log)
         assert granted is False
         assert job.result_fetched is True  # settled, so cleanup can reap it
@@ -300,8 +300,8 @@ def test_analysis_claims_are_independent_of_submit_claims():
     # A task submits its wrapper, then later resolves to the application log.
     # Claiming the wrapper must not block analyzing the real log.
     state = MonitorState()
-    _claim(state, "3848756_5", "/run/slurm_out/slurm-3848756_5.out")
-    granted, _ = _claim_analysis(state, "3848756_5", "/run/logs/n4_3848756_cycle0.log")
+    _claim(state, "2201000_5", "/run/slurm_out/slurm-2201000_5.out")
+    granted, _ = _claim_analysis(state, "2201000_5", "/run/logs/proj_2201000_cycle0.log")
 
     assert granted is True
 
@@ -341,7 +341,7 @@ def _get_path(monitor, job):
     return SlurmJobMonitor._get_log_path(monitor, job)
 
 
-def _sidecars_only(tmp_path, job="3911280"):
+def _sidecars_only(tmp_path, job="2201100"):
     """Observed shape: setup wrote env/tasks metadata but training never started."""
     run = tmp_path / "12544g_forcedlb"
     (run / "slurm_out").mkdir(parents=True)
@@ -360,7 +360,7 @@ def test_job_without_application_log_is_skipped(tmp_path):
     stub = _sidecars_only(tmp_path)
     monitor = _monitor()
     job = SimpleNamespace(
-        job_id="3911280_100",
+        job_id="2201100_100",
         stdout_path=str(stub),
         app_log_missing=False,
         name='',
@@ -380,7 +380,7 @@ def test_missing_application_log_is_counted_once_per_job(tmp_path):
     stub = _sidecars_only(tmp_path)
     monitor = _monitor()
     job = SimpleNamespace(
-        job_id="3911280_100",
+        job_id="2201100_100",
         stdout_path=str(stub),
         app_log_missing=False,
         name='',
@@ -402,10 +402,10 @@ def test_sibling_array_tasks_are_each_skipped_not_analyzed(tmp_path):
     stub_dir = _sidecars_only(tmp_path).parent
     monitor = _monitor()
     for task in (0, 100, 500, 1001):
-        stub = stub_dir / f"slurm-3911280_{task}.out"
+        stub = stub_dir / f"slurm-2201100_{task}.out"
         stub.write_text("<< START PATHS >>\n")
         job = SimpleNamespace(
-            job_id=f"3911280_{task}",
+            job_id=f"2201100_{task}",
             stdout_path=str(stub),
             app_log_missing=False,
             name='',
@@ -424,7 +424,7 @@ def test_resolution_disabled_still_submits_the_stdout_path(tmp_path):
     stub = _sidecars_only(tmp_path)
     monitor = _monitor(enabled=False)
     job = SimpleNamespace(
-        job_id="3911280_100",
+        job_id="2201100_100",
         stdout_path=str(stub),
         app_log_missing=False,
         name='',
@@ -528,14 +528,14 @@ def test_declared_logs_dir_reaches_an_unrelated_sibling(tmp_path):
     submit.mkdir(parents=True)
     elsewhere = tmp_path / "tierA_s5" / "phase1_tp1_test" / "logs"
     elsewhere.mkdir(parents=True)
-    log = elsewhere / "run_3988470_date_26-09-24_time_14-31-43.log"
+    log = elsewhere / "run_2201500_date_26-09-24_time_14-31-43.log"
     log.write_text("training output\n")
 
-    stub = submit / "slurm-3988470.out"
+    stub = submit / "slurm-2201500.out"
     stub.write_text(f"<< START PATHS >>\nLOGS_DIR={elsewhere}\n<< END PATHS >>\n")
 
     # No containment relationship exists, so only the declaration can find it.
-    assert resolve_app_log(str(stub), "3988470", ON) == str(log)
+    assert resolve_app_log(str(stub), "2201500", ON) == str(log)
 
 
 def test_structural_match_wins_without_reading_the_wrapper(tmp_path):
@@ -659,15 +659,15 @@ def test_resolution_uses_the_script_when_layout_fails(tmp_path):
     # Wrapper in one directory, logs written to a sibling the layout cannot reach.
     submit = tmp_path / "phase1_tp1"
     submit.mkdir()
-    stub = submit / "slurm-3988470.out"
+    stub = submit / "slurm-2201500.out"
     stub.write_text("banner\n")
     logs = tmp_path / "phase1_tp1_test" / "logs"
     logs.mkdir(parents=True)
-    log = logs / "run_3988470_date_x.log"
+    log = logs / "run_2201500_date_x.log"
     log.write_text("training\n")
 
     s = _script(submit, f'LOGS_DIR="{logs}"\n', name="run_test.sh")
-    assert resolve_app_log(str(stub), "3988470", ON, script=str(s)) == str(log)
+    assert resolve_app_log(str(stub), "2201500", ON, script=str(s)) == str(log)
 
 
 def test_resolution_uses_a_wildcarded_script_pattern(tmp_path):
@@ -779,7 +779,7 @@ def test_skipped_job_is_reported_at_info_once(tmp_path, caplog):
     stub = _sidecars_only(tmp_path)
     monitor = _monitor()
     job = SimpleNamespace(
-        job_id="3911280_100",
+        job_id="2201100_100",
         stdout_path=str(stub),
         app_log_missing=False,
         name="trainjob_variant_run",
@@ -795,7 +795,7 @@ def test_skipped_job_is_reported_at_info_once(tmp_path, caplog):
     skips = [r for r in caplog.records if "skipping analysis" in r.message]
     assert len(skips) == 1
     assert skips[0].levelno == logging.INFO
-    assert "3911280_100" in skips[0].message
+    assert "2201100_100" in skips[0].message
     assert str(stub) in skips[0].message
     assert "trainjob_variant_run" in skips[0].message
 
@@ -833,18 +833,18 @@ def test_single_cycle_returns_one_path(tmp_path):
 def test_logs_without_cycle_numbers_stay_a_single_path(tmp_path):
     # Two timestamped launches are not an ordered series: nothing defines
     # "before", so L3 cannot relate them and we must not invent an order.
-    stub, main = _single_cycle_layout(tmp_path, job="933624")
-    other = main.parent / "run_933624_date_26-09-29_time_19-36-00.log"
+    stub, main = _single_cycle_layout(tmp_path, job="661400")
+    other = main.parent / "run_661400_date_26-09-29_time_19-36-00.log"
     other.write_text("earlier launch\n")
 
-    paths = resolve_app_logs(str(stub), "933624", ON)
+    paths = resolve_app_logs(str(stub), "661400", ON)
 
     assert len(paths) == 1
 
 
 def test_no_logs_gives_an_empty_list(tmp_path):
     stub = _sidecars_only(tmp_path)
-    assert resolve_app_logs(str(stub), "3911280", ON) == []
+    assert resolve_app_logs(str(stub), "2201100", ON) == []
 
 
 def test_monitor_submits_every_cycle_in_order(tmp_path):
