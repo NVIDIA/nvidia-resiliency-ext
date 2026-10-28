@@ -44,6 +44,11 @@ RUN command -v nvrx-attrsvc && \
     python -c "import nvidia_resiliency_ext.services.attrsvc.app" && \
     python -c "import importlib.util; assert importlib.util.find_spec('torch') is None"
 
+# Features behind an optional import degrade quietly rather than failing to
+# start, so the import graph check above cannot see them missing. Assert them
+# here instead: an image that serves but never alerts looks healthy.
+RUN python -c "from nvidia_resiliency_ext.attribution.postprocessing.slack import HAS_SLACK; assert HAS_SLACK, 'slack-sdk missing: alerting would be silently disabled'"
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -sf http://localhost:8000/healthz || exit 1

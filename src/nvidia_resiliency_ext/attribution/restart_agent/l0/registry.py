@@ -72,6 +72,15 @@ _REJECTED_NONFINITE_ITERATION_RE = re.compile(
     re.I,
 )
 
+#: NCCL's wording for device exhaustion. Kept separate from _CUDA_OOM_RE so
+#: the registry can file it as a confirmation rather than a root candidate: it
+#: explains an exception raised elsewhere, since the collective that failed
+#: reports only "unhandled cuda error".
+_NCCL_DEVICE_OOM_RE = re.compile(
+    r"\bCuda failure\s+\d+\s+'out of memory'" r"|\bFailed to CUDA calloc async\b",
+    re.I,
+)
+
 _CUDA_OOM_RE = re.compile(
     r"\bCUDA(?:\s+error:)?\s+out of memory\b"
     r"|\btorch(?:\.cuda)?\.OutOfMemoryError\b"
@@ -225,6 +234,18 @@ MVP_SIGNATURES: tuple[SignatureRegistryRow, ...] = (
         role=RegistryRole.ROOT_CANDIDATE.value,
     ),
     SignatureRegistryRow(
+        # NCCL reports device exhaustion in its own words, which the PyTorch
+        # allocator wording never matches. It is a confirmation rather than a
+        # root candidate because it explains an exception raised elsewhere:
+        # the collective that failed reports only "unhandled cuda error".
+        registry_id="cuda_oom_confirmation",
+        pattern=re.compile(
+            r"\bCuda failure\s+\d+\s+'out of memory'" r"|\bFailed to CUDA calloc async\b",
+            re.I,
+        ),
+        role=RegistryRole.CAUSE_CONFIRMATION.value,
+    ),
+    SignatureRegistryRow(
         registry_id="linux_oom_kill_confirmation",
         pattern=re.compile(
             r"\bDetected\s+\d+\s+oom_kill events\b"
@@ -256,7 +277,12 @@ MVP_SIGNATURES: tuple[SignatureRegistryRow, ...] = (
     SignatureRegistryRow(
         registry_id="cuda_previous_error_cascade",
         pattern=re.compile(
-            r"operation failed due to a previous error during capture" r"|NCCL WARN Cuda failure",
+            r"operation failed due to a previous error during capture"
+            # Not the out-of-memory variant: that is a resource exhaustion with
+            # its own confirmation row, not a symptom of an earlier capture
+            # error, and labelling it a cascade hides the only evidence of why
+            # the collective failed.
+            r"|NCCL WARN Cuda failure(?!\s+\d+\s+'out of memory')",
             re.I,
         ),
         role=RegistryRole.CASCADE_CANDIDATE.value,
@@ -362,6 +388,7 @@ _ROW_TRIGGER_TERMS: dict[str, tuple[str, ...]] = {
         "illegal instruction",
         "core dumped",
     ),
+    "cuda_oom_confirmation": ("cuda failure", "calloc async"),
     "linux_oom_kill_confirmation": (
         "oom_kill",
         "oom killed",
@@ -432,7 +459,7 @@ def failure_signal_classifiers(line: str) -> tuple[str, ...]:
     """Return policy-neutral classifiers for an observed failure line."""
 
     classifiers: list[str] = []
-    if _CUDA_OOM_RE.search(line):
+    if _CUDA_OOM_RE.search(line) or _NCCL_DEVICE_OOM_RE.search(line):
         classifiers.append(FailureClassifier.CUDA_OOM.value)
     if _PORT_BIND_CONFLICT_RE.search(line):
         classifiers.append(FailureClassifier.PORT_BIND_CONFLICT.value)
@@ -489,7 +516,7 @@ def signature_for(row: SignatureRegistryRow, line: str) -> str:
 
 def fingerprint_components(row: SignatureRegistryRow, line: str) -> list[str]:
     lowered = line.lower()
-    if row.registry_id == "cuda_oom":
+    if row.registry_id in ("cuda_oom", "cuda_oom_confirmation"):
         return ["allocation_failure"]
     if row.registry_id == "nccl_cascade":
         if "watchdog" in lowered:
