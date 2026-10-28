@@ -13,9 +13,11 @@ from unittest.mock import Mock
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance import launcher
-from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import LauncherErrorReporter
+from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump import DiagnosticCollectorProcess
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump.config import TimeoutDumpConfig
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump.pyspy import PySpy
 
 
 @pytest.fixture
@@ -44,11 +46,11 @@ def test_startup_failure_reaches_original_stderr(tmp_path, failure, redirect):
     if failure == "invalid_nproc":
         args += ["--nproc-per-node=invalid"]
         expected = "Unsupported nproc_per_node value: invalid"
-    else:
+    elif failure in ("missing_cuda_command", "unreadable_cuda_command"):
         # Use a known executable; validation fails before any debugger is invoked.
         args += [
             "--ft-timeout-dump-enabled=true",
-            "--ft-timeout-dump=cuda-gdb",
+            "--ft-timeout-dump-tools=cuda-gdb",
             "--ft-timeout-dump-cuda-gdb-mode=stdin",
             f"--ft-timeout-dump-cuda-gdb={sys.executable}",
         ]
@@ -57,6 +59,8 @@ def test_startup_failure_reaches_original_stderr(tmp_path, failure, redirect):
             expected = "Timeout dump cuda-gdb command file is not readable"
         else:
             expected = "Timeout dump cuda-gdb command file is required"
+    else:
+        raise ValueError(f"Unsupported failure type: {failure}")
 
     result = subprocess.run(
         [sys.executable, "-m", launcher.__name__, *args, "train.py"],
@@ -196,24 +200,28 @@ def test_forked_helpers_release_saved_stderr(tmp_path, helper, monkeypatch):
     process = None
     collector = None
     try:
-        cfg = FaultToleranceConfig(
-            timeout_dump_enabled=True,
-            timeout_dump="pyspy",
-            timeout_dump_pyspy=sys.executable,
-            timeout_dump_local_root=str(tmp_path / "local"),
-            timeout_dump_poll_interval=0.02,
-            timeout_dump_shutdown_grace=1,
-        )
         if helper == "rank_monitor":
+            cfg = FaultToleranceConfig()
             monitors = launcher.LocalElasticAgent.setup_rank_monitors_early(
                 nproc_per_node=1,
                 ft_cfg=cfg,
                 launcher_pid=os.getpid(),
             )
             process = monitors[0].process
-        else:
+        elif helper == "collector":
+            cfg = TimeoutDumpConfig(
+                        enabled=True,
+                        tools = [
+                            PySpy.Config()
+                        ],
+                        local_root=str(tmp_path / "local"),
+                        poll_interval=0.02,
+                        shutdown_grace=1,
+                    )
             collector = DiagnosticCollectorProcess(cfg, tmp_path / "diags")
             process = collector.process
+        else:
+            raise ValueError(f"Unknown helper type: {helper}")
 
         # Child cleanup must leave the parent's reporting stream usable.
         os.write(saved_fd, b"parent can still report\n")
