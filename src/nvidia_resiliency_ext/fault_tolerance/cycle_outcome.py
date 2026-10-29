@@ -34,6 +34,9 @@ class RankEndReason(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"  # exited with a nonzero code or a signal on its own
     STOPPED_BY_LAUNCHER = "stopped_by_launcher"
+    # Exited after its rank monitor detected a timeout. The monitor records the timeout
+    # before signaling, so a worker that died on its own just after detection (or during
+    # a timeout dump capture) is reported here too: the monitor saw the hang first.
     STOPPED_BY_RMON = "stopped_by_rank_monitor"
 
 

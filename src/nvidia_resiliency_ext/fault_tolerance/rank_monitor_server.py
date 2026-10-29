@@ -605,16 +605,22 @@ class RankMonitorServer:
         return is_elapsed
 
     def _record_timeout_stop(self, expired_sections, out_of_section_timed_out) -> None:
-        """Remember the first timeout that stops the worker in the current cycle."""
-        if self._timeout_stop is not None and self._timeout_stop[0] == self.current_cycle:
-            return
-        if expired_sections:
-            timeout = RankTimeout(TimeoutKind.SECTION, tuple(sorted(expired_sections)))
-        elif out_of_section_timed_out:
-            timeout = RankTimeout(TimeoutKind.OUT_OF_SECTION)
-        else:
-            timeout = RankTimeout(TimeoutKind.HEARTBEAT)
-        self._timeout_stop = (self.current_cycle, timeout)
+        """Remember the first timeout that stops the worker in the current cycle.
+
+        Best effort: this runs in the periodic check, which must keep running.
+        """
+        try:
+            if self._timeout_stop is not None and self._timeout_stop[0] == self.current_cycle:
+                return
+            if expired_sections:
+                timeout = RankTimeout(TimeoutKind.SECTION, tuple(sorted(expired_sections)))
+            elif out_of_section_timed_out:
+                timeout = RankTimeout(TimeoutKind.OUT_OF_SECTION)
+            else:
+                timeout = RankTimeout(TimeoutKind.HEARTBEAT)
+            self._timeout_stop = (self.current_cycle, timeout)
+        except Exception as e:
+            self.logger.warning(f"Failed to record the timeout: {e}")
 
     async def _handle_timeout_query_msg(self, msg: TimeoutQueryMsg, writer):
         timeout = None
@@ -634,7 +640,8 @@ class RankMonitorServer:
                 if hb_timed_out or expired_sections or out_of_section_timed_out:
                     # Record before stopping the worker: the launcher queries the record
                     # only after it sees the worker exit.
-                    self._record_timeout_stop(expired_sections, out_of_section_timed_out)
+                    if self.cfg.is_cycle_outcome_enabled:
+                        self._record_timeout_stop(expired_sections, out_of_section_timed_out)
                     await self._handle_timeout(expired_sections)
             await asyncio.sleep(self.cfg.workload_check_interval)
 

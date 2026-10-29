@@ -754,20 +754,31 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         Call before stopping workers or deciding on a restart, so `detected_at` is the
         moment the end was observed rather than the end of teardown.
+
+        Best effort: a failure here is logged and never interrupts the restart path.
         """
-        detected_at = time.time()
-        cycle = self._get_global_cycle_number()
-        timeouts = self._query_rank_monitor_timeouts(cycle, failures) if failures else None
-        self._cycle_outcome = build_local_cycle_outcome(
-            cycle=cycle,
-            node=self._node_id,
-            node_end_reason=node_end,
-            workers=self._worker_group.workers,
-            failures=failures,
-            detected_at=detected_at,
-            timeouts=timeouts,
-        )
-        logger.debug("Cycle outcome: %s", self._cycle_outcome)
+        if not self._ft_cfg.is_cycle_outcome_enabled:
+            return
+        try:
+            detected_at = time.time()
+            cycle = self._get_global_cycle_number()
+            timeouts = self._query_rank_monitor_timeouts(cycle, failures) if failures else None
+            self._cycle_outcome = build_local_cycle_outcome(
+                cycle=cycle,
+                node=self._node_id,
+                node_end_reason=node_end,
+                workers=self._worker_group.workers,
+                failures=failures,
+                detected_at=detected_at,
+                timeouts=timeouts,
+            )
+            logger.debug("Cycle outcome: %s", self._cycle_outcome)
+        except SignalException:
+            # Termination signals must reach run(), which shuts the workers down.
+            raise
+        except Exception as e:
+            self._cycle_outcome = None
+            logger.warning(f"Failed to record the cycle outcome: {e}")
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         return self._invoke_run_with_any_failed_policy(role)
@@ -1120,6 +1131,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                     writer.close()
                     await writer.wait_closed()
                 return global_rank, reply.timeout
+            except SignalException:
+                # Termination signals surface here as exceptions; they must reach run().
+                raise
             except Exception as e:
                 logger.warning(f"Failed to query rank monitor of rank {global_rank}: {e}")
                 return global_rank, None
@@ -1140,12 +1154,16 @@ class LocalElasticAgent(SimpleElasticAgent):
         timeouts = {}
         try:
             for result in asyncio.run(query_all()):
+                if isinstance(result, SignalException):
+                    raise result
                 if isinstance(result, BaseException):
                     logger.warning(f"Rank monitor timeout query did not complete: {result!r}")
                     continue
                 global_rank, timeout = result
                 if timeout is not None:
                     timeouts[global_rank] = timeout
+        except SignalException:
+            raise
         except Exception as e:
             logger.error(f"Error querying rank monitors for timeouts: {e}")
         return timeouts
@@ -3217,6 +3235,10 @@ def _validate_args(args: Any) -> None:
     if getattr(args, "ft_nvrx_logfile", None) and os.getenv("NVRX_NODE_LOCAL_TMPDIR"):
         raise ValueError(
             "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
+        )
+    if getattr(args, "ft_cycle_info_outcomes", None) and not getattr(args, "ft_cycle_info_dir", None):
+        raise ValueError(
+            "--ft-cycle-info-outcomes requires --ft-cycle-info-dir to be specified."
         )
 
 
