@@ -682,6 +682,17 @@ class RestartAgentServiceBackend:
                 "config_version": self._config.config_version,
                 "config_fingerprint": self._config.config_fingerprint,
                 "attempts": counts,
+                # Which model answers is otherwise invisible from outside the
+                # host: a route built from the environment is always called
+                # "nvrx-default", and no message or endpoint named the model.
+                "model_routes": [
+                    {
+                        "route_id": spec.route_id,
+                        "model": spec.model,
+                        "endpoint": spec.endpoint,
+                    }
+                    for spec in self._config.model_route_specs
+                ],
             },
         }
 
