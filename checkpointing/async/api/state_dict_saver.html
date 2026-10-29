@@ -118,11 +118,13 @@
 <cite>enable_cache</cite> promises that the checkpoint structure does not change. Each rank still
 creates its local plan and raises if it differs from the previous one.</p></li>
 </ul>
+<p>The coordinator writes a shallow copy of the cached metadata on every save, so the cache never
+holds a save’s storage_data and never modifies the metadata it was given.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.global_metadata">
 <span class="sig-name descname"><span class="pre">global_metadata</span></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.global_metadata" title="Link to this definition"></a></dt>
-<dd><p>The global metadata to reuse: a copy of the loaded
-checkpoint’s on every rank until the first save, the previous save’s on the
+<dd><p>The global metadata to reuse: the loaded checkpoint’s, without
+its storage_data, on every rank until the first save, the previous save’s on the
 coordinator afterwards.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Type<span class="colon">:</span></dt>

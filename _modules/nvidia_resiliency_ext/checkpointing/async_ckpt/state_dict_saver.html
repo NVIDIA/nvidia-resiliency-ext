@@ -135,9 +135,12 @@
 <span class="sd">      `enable_cache` promises that the checkpoint structure does not change. Each rank still</span>
 <span class="sd">      creates its local plan and raises if it differs from the previous one.</span>
 
+<span class="sd">    The coordinator writes a shallow copy of the cached metadata on every save, so the cache never</span>
+<span class="sd">    holds a save's storage_data and never modifies the metadata it was given.</span>
+
 <span class="sd">    Attributes:</span>
-<span class="sd">        global_metadata (Metadata): The global metadata to reuse: a copy of the loaded</span>
-<span class="sd">            checkpoint's on every rank until the first save, the previous save's on the</span>
+<span class="sd">        global_metadata (Metadata): The global metadata to reuse: the loaded checkpoint's, without</span>
+<span class="sd">            its storage_data, on every rank until the first save, the previous save's on the</span>
 <span class="sd">            coordinator afterwards.</span>
 <span class="sd">        local_plan (SavePlan): This rank's local plan of the previous save, as the planner created</span>
 <span class="sd">            it; None before the first save in this process.</span>
@@ -162,10 +165,9 @@
 <span class="sd">        Args:</span>
 <span class="sd">            cached_global_metadata (Metadata): The global metadata from a previous checkpoint.</span>
 <span class="sd">        """</span>
-        <span class="c1"># A copy: finish writes into the metadata it is given. It has only the dataclass fields,</span>
-        <span class="c1"># so the local plans that older versions attach (all_local_plans) are not written again.</span>
+        <span class="c1"># Without the loaded storage_data: no save needs it, as finish rebuilds it every save.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span> <span class="o">=</span> <span class="p">(</span>
-            <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">cached_global_metadata</span><span class="p">)</span>
+            <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">cached_global_metadata</span><span class="p">,</span> <span class="n">storage_data</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">cached_global_metadata</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
             <span class="k">else</span> <span class="kc">None</span>
         <span class="p">)</span>
@@ -184,18 +186,19 @@
 <span class="w">        </span><span class="sd">"""Record a planned save; return the global metadata the coordinator writes for it."""</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">local_plan</span> <span class="o">=</span> <span class="n">local_plan</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">central_plan</span> <span class="o">=</span> <span class="n">central_plan</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="n">reused</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span> <span class="o">=</span> <span class="n">global_metadata</span> <span class="k">if</span> <span class="n">is_coordinator</span> <span class="k">else</span> <span class="kc">None</span>
-            <span class="k">return</span> <span class="n">global_metadata</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">is_coordinator</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span> <span class="o">=</span> <span class="kc">None</span>
             <span class="k">return</span> <span class="kc">None</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">reused</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span> <span class="o">=</span> <span class="n">global_metadata</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span>
                 <span class="s2">"the coordinator holds no global metadata to reuse; with enable_cache, the "</span>
                 <span class="s2">"coordinator rank must stay the same between saves"</span>
             <span class="p">)</span>
-        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span></div>
+        <span class="c1"># `finish` populates `storage_data` in the `Metadata` object it's given. Create a fresh copy</span>
+        <span class="c1"># so that the `storage_data` does not persist in memory after `finish`.</span>
+        <span class="k">return</span> <span class="n">dataclasses</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">global_metadata</span><span class="p">)</span></div>
 
 
 
