@@ -31,6 +31,12 @@ from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
+    CycleEndReason,
+    RankEndReason,
+    RankTimeout,
+    TimeoutKind,
+)
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
@@ -1996,3 +2002,82 @@ class TestCycleTelemetry:
         env = start.call_args.kwargs["envs"][0]
         assert env["TORCHELASTIC_RESTART_COUNT"] == "4"
         agent._send_cycle_to_rank_monitors.assert_called_once_with(4)
+
+
+def _outcome_agent(cycle_info_dir="/cycle_infos", cycle_info_outcomes=True):
+    """Agent with just the state _record_cycle_outcome reads; two workers, global ranks 4 and 5."""
+    agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+    agent._ft_cfg = FaultToleranceConfig(
+        cycle_info_dir=cycle_info_dir, cycle_info_outcomes=cycle_info_outcomes
+    )
+    agent._node_id = "node0"
+    agent._worker_group = MagicMock()
+    agent._worker_group.workers = [
+        MagicMock(global_rank=4 + i, local_rank=i, id=100 + i) for i in range(2)
+    ]
+    agent._cycle_outcome = None
+    agent._get_global_cycle_number = MagicMock(return_value=3)
+    agent._query_rank_monitor_timeouts = MagicMock(return_value={})
+    return agent
+
+
+class TestRecordCycleOutcome:
+    @pytest.mark.parametrize(
+        ("cycle_info_dir", "cycle_info_outcomes"),
+        [(None, True), ("/cycle_infos", False)],
+        ids=["no_cycle_info_dir", "outcomes_off"],
+    )
+    def test_disabled_records_nothing(self, cycle_info_dir, cycle_info_outcomes):
+        agent = _outcome_agent(cycle_info_dir, cycle_info_outcomes)
+        agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
+        assert agent._cycle_outcome is None
+        agent._query_rank_monitor_timeouts.assert_not_called()
+
+    def test_completed_cycle_does_not_query_monitors(self):
+        agent = _outcome_agent()
+        agent._record_cycle_outcome(CycleEndReason.COMPLETED)
+
+        outcome = agent._cycle_outcome
+        assert (outcome.cycle, outcome.node, outcome.node_end) == (
+            3,
+            "node0",
+            CycleEndReason.COMPLETED,
+        )
+        assert [(r.global_rank, r.end, r.exitcode) for r in outcome.ranks] == [
+            (4, RankEndReason.COMPLETED, 0),
+            (5, RankEndReason.COMPLETED, 0),
+        ]
+        agent._query_rank_monitor_timeouts.assert_not_called()
+
+    def test_failures_are_classified_with_monitor_timeouts(self):
+        agent = _outcome_agent()
+        failures = {5: MagicMock(exitcode=-9)}
+        agent._query_rank_monitor_timeouts.return_value = {
+            5: RankTimeout(TimeoutKind.SECTION, ("step",))
+        }
+        agent._record_cycle_outcome(CycleEndReason.FAILED, failures)
+
+        agent._query_rank_monitor_timeouts.assert_called_once_with(3, failures)
+        stopped, timed_out = agent._cycle_outcome.ranks
+        assert (stopped.end, stopped.exitcode) == (RankEndReason.STOPPED_BY_LAUNCHER, None)
+        assert (timed_out.end, timed_out.exitcode) == (RankEndReason.STOPPED_BY_RMON, -9)
+        assert (timed_out.timeout_kind, timed_out.timeout_sections) == (
+            TimeoutKind.SECTION,
+            ("step",),
+        )
+
+    def test_failure_does_not_interrupt_the_caller(self):
+        agent = _outcome_agent()
+        agent._cycle_outcome = MagicMock()  # stale record from an earlier cycle
+        agent._query_rank_monitor_timeouts.side_effect = RuntimeError("boom")
+        with patch.object(launcher, "logger") as logger:
+            agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
+        assert agent._cycle_outcome is None
+
+    def test_termination_signal_propagates(self):
+        agent = _outcome_agent()
+        agent._query_rank_monitor_timeouts.side_effect = launcher.SignalException(
+            "terminated", signal.SIGTERM
+        )
+        with pytest.raises(launcher.SignalException):
+            agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
