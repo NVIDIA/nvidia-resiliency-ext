@@ -26,8 +26,6 @@ classes, so stock ``torch.distributed.checkpoint`` loads it unchanged; it unpick
 native.py has the same writer in C++, with the same interface and byte-identical output.
 """
 
-import io
-
 # Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
 # Severity: Low   Confidence: High
 # CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
@@ -47,7 +45,9 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from . import table
+from . import write_result_table
+from .opcodes import small_pickle
+from .state_dict_table import BYTES, OTHER, STATE_DICT_METADATA, STORAGE_DATA, StateDictTable
 
 PROTO, STOP, MARK, POP = b"\x80", b".", b"(", b"0"
 EMPTY_DICT, EMPTY_LIST, EMPTY_TUPLE = b"}", b"]", b")"
@@ -79,21 +79,6 @@ STATE_KEYS = {
     TensorStorageMetadata: ("properties", "size", "chunks"),
     BytesStorageMetadata: (),
 }
-
-
-def small_pickle(obj) -> bytes:
-    """Opcodes for a small object, from the stdlib pickler without memo, to splice into the stream.
-
-    Protocol 3 emits no FRAME opcodes, and fast mode emits no memo PUT/GET, so the body can be
-    embedded anywhere without disturbing the writer's memo numbering.
-    """
-    buf = io.BytesIO()
-    p = pickle.Pickler(buf, protocol=3)
-    p.fast = True
-    p.dump(obj)
-    data = buf.getvalue()
-    assert data[:2] == b"\x80\x03" and data[-1:] == STOP
-    return data[2:-1]
 
 
 def _str_header(n: int) -> bytes:
@@ -139,7 +124,6 @@ class _MetadataPickler:
         self.strings: dict = {}
         self.ints: dict = {}
         self.sizes: dict = {}
-        self.props: dict = {}
 
     def _memoize_top(self) -> bytes:
         """Memo index of the object just memoized, as the opcode that fetches it."""
@@ -200,38 +184,34 @@ class _MetadataPickler:
             b = self.sizes[key] = self.SIZE + tup + TUPLE1 + REDUCE
         return b
 
-    def properties(self, p) -> bytes:
-        """A TensorProperties, from the stdlib pickler, once per distinct value."""
-        # Values' types are part of the key: equal values of different types (True and 1) are
-        # pickled differently.
-        key = (type(p), tuple((name, type(v), v) for name, v in vars(p).items()))
-        b = self.props.get(key)
-        if b is None:
-            b = self.props[key] = small_pickle(p)
-        return b
+    def dumps(
+        self,
+        state_dict_table: StateDictTable,
+        storage_data: Optional[dict] = None,
+        tables: Optional[List[write_result_table.WriteResultTable]] = None,
+    ) -> bytes:
+        """Pickle the Metadata that state_dict_table was converted from, and return the bytes.
 
-    def dumps(self, md: Metadata, tables: Optional[List[table.WriteResultTable]] = None) -> bytes:
-        """The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field.
-
-        With tables (decoded write-result tables, see table.py), storage_data is written
-        from them instead of md.storage_data.
+        The pickle is a NEWOBJ of Metadata built from its fields, in order. storage_data is
+        written from tables (decoded write-result tables, see write_result_table.py) if given,
+        else from the storage_data dict, else as None.
         """
-        if type(md) is not Metadata:
-            raise TypeError(f"expected Metadata, got {type(md).__name__}")
         self._prelude()
         out = self.out
         out.append(self.METADATA + EMPTY_TUPLE + NEWOBJ + EMPTY_DICT + MARK)
-        for field, value in vars(md).items():
+        for field, opcodes in state_dict_table.fields:
             out.append(_str(field))
-            if field == "state_dict_metadata":
-                self._state_dict_metadata(value)
-            elif field == "storage_data":
-                if tables is None:
-                    self._storage_data(value)
+            if field == STATE_DICT_METADATA:
+                self._state_dict_metadata(state_dict_table)
+            elif field == STORAGE_DATA:
+                if tables is not None:
+                    self._storage_data_tables(tables, state_dict_table)
+                elif storage_data is not None:
+                    self._storage_data(storage_data)
                 else:
-                    self._storage_data_tables(tables)
+                    out.append(NONE)
             else:
-                out.append(small_pickle(value))
+                out.append(opcodes)
         out.append(SETITEMS + BUILD + STOP)
         return b"".join(out)
 
@@ -267,55 +247,52 @@ class _MetadataPickler:
         self.INDEX_START = self.INDEX + start + k["fqn"]
         self.INFO_START = self.INFO + start + k["relative_path"]
 
-    def _state_dict_metadata(self, value: dict) -> None:
-        """Metadata.state_dict_metadata: fqn -> TensorStorageMetadata or BytesStorageMetadata."""
-        if type(value) is not dict:
-            raise TypeError(f"expected dict for state_dict_metadata, got {type(value).__name__}")
-        out, k, size, string = self.out, self.k, self.size, self.string
+    def _state_dict_metadata(self, state_dict_table: StateDictTable) -> None:
+        """Write Metadata.state_dict_metadata from the table's entries, in order."""
+        out, size_of, string = self.out, self.size_of, self.string
         BYTES_OBJ = self.BYTES + EMPTY_TUPLE + NEWOBJ
-        TENSOR_START, K_SIZE, TENSOR_CHUNKS = self.TENSOR_START, k["size"], self.TENSOR_CHUNKS
-        CHUNK_START, K_SIZES = self.CHUNK_START, k["sizes"]
+        TENSOR_START, K_SIZE, TENSOR_CHUNKS = self.TENSOR_START, self.k["size"], self.TENSOR_CHUNKS
+        CHUNK_START, K_SIZES = self.CHUNK_START, self.k["sizes"]
+        kinds, refs, ndims = (
+            state_dict_table.kind.tolist(),
+            state_dict_table.ref.tolist(),
+            state_dict_table.ndim.tolist(),
+        )
+        chunk_start, dims_start = (
+            state_dict_table.chunk_start.tolist(),
+            state_dict_table.dims_start.tolist(),
+        )
         out.append(EMPTY_DICT)
-        items = list(value.items())
-        for start in range(0, len(items), _BATCH):
+        for start in range(0, len(state_dict_table), _BATCH):
             out.append(MARK)
-            for fqn, v in items[start : start + _BATCH]:
-                out.append(string(fqn))
-                if type(v) is BytesStorageMetadata and not vars(v):
+            for i in range(start, min(start + _BATCH, len(state_dict_table))):
+                out.append(string(state_dict_table.fqns[i]))
+                if kinds[i] == BYTES:
                     out.append(BYTES_OBJ)
                     continue
-                if type(v) is not TensorStorageMetadata:
-                    out.append(small_pickle(v))
+                if kinds[i] == OTHER:
+                    out.append(state_dict_table.others[refs[i]])
                     continue
-                state = vars(v)
-                if len(state) != 3:
-                    raise TypeError(f"unexpected TensorStorageMetadata attributes: {list(state)}")
-                chunks = state["chunks"]
-                if type(chunks) is not list:
-                    raise TypeError(f"expected list of chunks, got {type(chunks).__name__}")
+                # The size, then each chunk's offsets and sizes.
+                ndim = ndims[i]
+                dims = state_dict_table.dims[dims_start[i] : dims_start[i + 1]].tolist()
                 out.append(
                     TENSOR_START
-                    + self.properties(state["properties"])
+                    + state_dict_table.properties[refs[i]]
                     + K_SIZE
-                    + size(state["size"])
+                    + size_of(tuple(dims[:ndim]))
                     + TENSOR_CHUNKS
                 )
-                for cstart in range(0, len(chunks), _BATCH):
+                n_chunks = chunk_start[i + 1] - chunk_start[i]
+                for cstart in range(0, n_chunks, _BATCH):
                     out.append(MARK)
-                    for c in chunks[cstart : cstart + _BATCH]:
-                        if type(c) is not ChunkStorageMetadata:
-                            out.append(small_pickle(c))
-                            continue
-                        cstate = vars(c)
-                        if len(cstate) != 2:
-                            raise TypeError(
-                                f"unexpected ChunkStorageMetadata attributes: {list(cstate)}"
-                            )
+                    for k in range(cstart, min(cstart + _BATCH, n_chunks)):
+                        pos = ndim + 2 * ndim * k
                         out.append(
                             CHUNK_START
-                            + size(cstate["offsets"])
+                            + size_of(tuple(dims[pos : pos + ndim]))
                             + K_SIZES
-                            + size(cstate["sizes"])
+                            + size_of(tuple(dims[pos + ndim : pos + 2 * ndim]))
                             + END
                         )
                     out.append(APPENDS)
@@ -375,15 +352,17 @@ class _MetadataPickler:
                 )
             out.append(SETITEMS)
 
-    def _storage_data_tables(self, tables) -> None:
-        """Metadata.storage_data from write-result tables, encoded as _storage_data encodes the
-        dict finish builds from the same write results."""
+    def _storage_data_tables(self, tables, state_dict_table: StateDictTable) -> None:
+        """Write Metadata.storage_data from write-result tables, as _storage_data writes the dict
+        finish builds from the same write results. Index tables name their fqns by entries of
+        state_dict_table."""
         out, k, string, int_ = self.out, self.k, self.string, self.int
         INDEX_START, K_INDEX, K_OFFSET = self.INDEX_START, k["index"], k["offset"]
         INFO_START, K_LENGTH = self.INFO_START, k["length"]
         out.append(EMPTY_DICT)
         count = 0
         for t in tables:
+            fqns = write_result_table.fqns_of(t, state_dict_table.fqn_list)
             strings, offsets, pos = t.strings, t.offsets.tolist(), 0
             for fqn, index, ndim, path, offset, length, flags in t.entry.tolist():
                 if count % _BATCH == 0:
@@ -391,18 +370,18 @@ class _MetadataPickler:
                         out.append(SETITEMS)
                     out.append(MARK)
                 count += 1
-                if flags & table.FLAG_OFFSET_SIZE:
+                if flags & write_result_table.FLAG_OFFSET_SIZE:
                     off = K_OFFSET + self.size_of(tuple(offsets[pos : pos + ndim]))
                     pos += ndim
-                elif flags & table.FLAG_OFFSET:
+                elif flags & write_result_table.FLAG_OFFSET:
                     off = K_OFFSET + NONE
                 else:
                     off = b""
                 out.append(
                     INDEX_START
-                    + string(strings[fqn])
+                    + string(fqns[fqn])
                     + K_INDEX
-                    + (int_(index) if flags & table.FLAG_INDEX else NONE)
+                    + (int_(index) if flags & write_result_table.FLAG_INDEX else NONE)
                     + off
                     + END
                     + INFO_START
@@ -417,8 +396,27 @@ class _MetadataPickler:
             out.append(SETITEMS)
 
 
-def dumps(md: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
-    """The pickle of md. With storage_rows (the gathered write-result tables, see table.py),
-    storage_data is written from them instead of md.storage_data."""
-    tables = None if storage_rows is None else table.decode_rows(storage_rows)
-    return _MetadataPickler().dumps(md, tables)
+def dumps(metadata: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
+    """Pickle metadata and return the bytes.
+
+    storage_data is written from storage_rows (the gathered write-result tables, see
+    write_result_table.py) if given, else from metadata.storage_data. The bytes equal native.dumps's.
+    """
+    return dumps_table(StateDictTable.from_metadata(metadata), metadata.storage_data, storage_rows)
+
+
+def dumps_table(
+    state_dict_table: StateDictTable,
+    storage_data: Optional[dict] = None,
+    storage_rows: Optional[np.ndarray] = None,
+) -> bytes:
+    """Pickle the Metadata that state_dict_table was converted from, and return the bytes.
+
+    storage_data is written from storage_rows (the gathered write-result tables, see
+    write_result_table.py) if given, else from the storage_data dict, else as None. The bytes equal native.dumps_table's. A
+    StateDictTable is checked when it is created, so it is read without further checks.
+    """
+    if not isinstance(state_dict_table, StateDictTable):
+        raise TypeError(f"expected StateDictTable, got {type(state_dict_table).__name__}")
+    tables = None if storage_rows is None else write_result_table.decode_rows(storage_rows)
+    return _MetadataPickler().dumps(state_dict_table, storage_data, tables)
