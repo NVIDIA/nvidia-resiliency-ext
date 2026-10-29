@@ -33,7 +33,8 @@ from torch.distributed.checkpoint import (
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async
+from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async, state_dict_saver
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
@@ -246,22 +247,51 @@ class TestAsyncSave:
                 ), f"Mismatch for key '{key}' between async checkpoint and original state_dict."
             async_queue.close()
 
+    @pytest.mark.parametrize('rank1', ['same', 'unencodable', 'fast'])
     @pytest.mark.parametrize('mode', ['1', 'python', '0'])
-    def test_metadata_matches_torch(self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode):
+    def test_metadata_matches_torch(
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode, rank1
+    ):
         """FileSystemWriterAsync writes the same .metadata as torch's FileSystemWriter.
 
-        Covers the native writer, the Python writer and, with mode '0', torch's own.
+        Covers the native writer, the Python writer and, with mode '0', torch's own. Each rank
+        sends its write results as a table or pickled: rank 1 as the others, or pickled because it
+        can't encode them ('unencodable'), or as a table with the fast writer on ('fast').
         """
         monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
         md_writer.fast_metadata_enabled.cache_clear()
         md_writer._select_dumps.cache_clear()
-        native = (
-            md_writer._native_dumps if md_writer.native is not None else md_writer._python_dumps
-        )
-        expected = {'1': native, 'python': md_writer._python_dumps, '0': None}[mode]
+        native = md_writer.native.dumps if md_writer.native is not None else pickler.dumps
+        expected = {'1': native, 'python': pickler.dumps, '0': None}[mode]
         assert md_writer._select_dumps() is expected
 
         Utils.initialize_distributed()
+        rank, world_size = torch.distributed.get_rank(), torch.distributed.get_world_size()
+        if rank1 != 'same' and world_size < 2:
+            pytest.skip('needs a rank 1')
+        if rank1 == 'fast' and mode == '1':
+            pytest.skip('the same as rank1="same"')
+        if rank == 1 and rank1 == 'fast':
+            monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', '1')
+            md_writer.fast_metadata_enabled.cache_clear()
+            md_writer._select_dumps.cache_clear()
+        encode, decode_payloads = table.encode, state_dict_saver._decode_payloads
+
+        def encode_or_fail(results):
+            if rank == 1 and rank1 == 'unencodable':
+                raise table.Unencodable('a write result the table lacks')
+            return encode(results)
+
+        received = []
+
+        def record_decode_payloads(rows):
+            is_table, pickled = decode_payloads(rows)
+            received.extend(is_table.tolist())
+            return is_table, pickled
+
+        monkeypatch.setattr(table, 'encode', encode_or_fail)
+        monkeypatch.setattr(state_dict_saver, '_decode_payloads', record_decode_payloads)
+
         model = FSDP(Model((1024, 1024), 8))
         state_dict = model.state_dict()
         planner = DefaultSavePlanner()
@@ -273,6 +303,10 @@ class TestAsyncSave:
                 self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
                 self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
                 async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                if rank == 0:  # whether each rank sent a table
+                    rank1_table = rank1 == 'fast' or (rank1 == 'same' and mode != '0')
+                    expected = [rank1_table if r == 1 else mode != '0' for r in range(world_size)]
+                    assert received == expected
 
                 nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
                 torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
