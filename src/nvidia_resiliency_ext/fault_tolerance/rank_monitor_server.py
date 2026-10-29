@@ -25,7 +25,7 @@ import sys
 import tempfile
 import time
 import traceback
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Tuple
 
 import torch
 import torch.multiprocessing as mp
@@ -35,6 +35,7 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 from .config import FaultToleranceConfig
+from .cycle_outcome import RankTimeout, TimeoutKind
 from .data import (
     AuthkeyMsg,
     ErrorMsg,
@@ -43,6 +44,8 @@ from .data import (
     OkMsg,
     SectionAction,
     SectionMsg,
+    TimeoutQueryMsg,
+    TimeoutReplyMsg,
     UpdateConfigMsg,
 )
 from .launcher_error_reporting import launcher_error_reporter
@@ -189,6 +192,8 @@ class RankMonitorServer:
         # workload step reporting does not include warmup iterations.
         self._step_section_seen_this_cycle = False
         self.current_cycle = 0  # Track current cycle number for logging
+        # (cycle, timeout) of the latest worker stopped on a timeout, for launcher queries.
+        self._timeout_stop: Optional[Tuple[int, RankTimeout]] = None
         self.timeout_dump = (
             TimeoutDumpManager(cfg.timeout_dump, logger) if cfg.timeout_dump.enabled else None
         )
@@ -463,6 +468,8 @@ class RankMonitorServer:
                 elif isinstance(msg, UpdateConfigMsg):
                     # Handle cycle updates from launcher (no response needed - fire and forget)
                     await self._handle_update_config_msg(msg, writer, send_response=False)
+                elif isinstance(msg, TimeoutQueryMsg):
+                    await self._handle_timeout_query_msg(msg, writer)
                 else:
                     self.logger.warning(f"Received unknown message from launcher: {msg}")
         except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
@@ -597,6 +604,24 @@ class RankMonitorServer:
             )
         return is_elapsed
 
+    def _record_timeout_stop(self, expired_sections, out_of_section_timed_out) -> None:
+        """Remember the first timeout that stops the worker in the current cycle."""
+        if self._timeout_stop is not None and self._timeout_stop[0] == self.current_cycle:
+            return
+        if expired_sections:
+            timeout = RankTimeout(TimeoutKind.SECTION, tuple(sorted(expired_sections)))
+        elif out_of_section_timed_out:
+            timeout = RankTimeout(TimeoutKind.OUT_OF_SECTION)
+        else:
+            timeout = RankTimeout(TimeoutKind.HEARTBEAT)
+        self._timeout_stop = (self.current_cycle, timeout)
+
+    async def _handle_timeout_query_msg(self, msg: TimeoutQueryMsg, writer):
+        timeout = None
+        if self._timeout_stop is not None and self._timeout_stop[0] == msg.cycle:
+            timeout = self._timeout_stop[1]
+        await write_obj_to_ipc_stream(TimeoutReplyMsg(timeout), writer)
+
     async def _periodic_rank_check(self):
         while True:
             if self.timeout_dump is not None:
@@ -607,6 +632,9 @@ class RankMonitorServer:
                 expired_sections = self._expired_sections(curr_time)
                 out_of_section_timed_out = self._is_out_of_section_timeout_elapsed(curr_time)
                 if hb_timed_out or expired_sections or out_of_section_timed_out:
+                    # Record before stopping the worker: the launcher queries the record
+                    # only after it sees the worker exit.
+                    self._record_timeout_stop(expired_sections, out_of_section_timed_out)
                     await self._handle_timeout(expired_sections)
             await asyncio.sleep(self.cfg.workload_check_interval)
 

@@ -92,9 +92,16 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
+from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
+    CycleEndReason,
+    LocalCycleOutcome,
+    RankTimeout,
+    build_local_cycle_outcome,
+)
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
+    TimeoutQueryMsg,
     UpdateConfigMsg,
 )
 from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import launcher_error_reporter
@@ -114,6 +121,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     is_slurm_job_array,
     parse_bool_env,
     patched_method,
+    read_obj_from_ipc_stream,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
@@ -142,6 +150,8 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
+# Bound on asking a rank monitor whether it stopped its worker; on the failure path only.
+RANK_MONITOR_QUERY_TIMEOUT = 1.0
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -508,6 +518,8 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._cycle_phase = telemetry.Phase()
         self._run_phase = telemetry.Phase()
+        # How the latest cycle ended on this launcher, recorded when the end is observed.
+        self._cycle_outcome: Optional[LocalCycleOutcome] = None
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -735,6 +747,28 @@ class LocalElasticAgent(SimpleElasticAgent):
             # No more restarts available
             return False
 
+    def _record_cycle_outcome(
+        self, node_end: CycleEndReason, failures: Optional[Dict[int, Any]] = None
+    ) -> None:
+        """Record how the current cycle ended on this launcher.
+
+        Call before stopping workers or deciding on a restart, so `detected_at` is the
+        moment the end was observed rather than the end of teardown.
+        """
+        detected_at = time.time()
+        cycle = self._get_global_cycle_number()
+        timeouts = self._query_rank_monitor_timeouts(cycle, failures) if failures else None
+        self._cycle_outcome = build_local_cycle_outcome(
+            cycle=cycle,
+            node=self._node_id,
+            node_end_reason=node_end,
+            workers=self._worker_group.workers,
+            failures=failures,
+            detected_at=detected_at,
+            timeouts=timeouts,
+        )
+        logger.debug("Cycle outcome: %s", self._cycle_outcome)
+
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         return self._invoke_run_with_any_failed_policy(role)
 
@@ -761,6 +795,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
+                self._record_cycle_outcome(CycleEndReason.COMPLETED)
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -783,6 +818,8 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Deliberately placed below SUCCEEDED: a workload that finished is not killed
             # because an earlier cycle was later attributed as fatal.
             if rdzv_handler.attribution_stop_requested():
+                # The worker group may also have failed in this same poll.
+                self._record_cycle_outcome(CycleEndReason.TERMINATED, run_result.failures)
                 logger.error(
                     "[%s] Attribution recommended stopping the job; terminating workers "
                     "and signalling the rest of the job.",
@@ -801,6 +838,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
 
             if state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                self._record_cycle_outcome(CycleEndReason.FAILED, run_result.failures)
                 # Record failure detection event
                 record_profiling_event(
                     ProfilingEvent.FAILURE_DETECTED,
@@ -864,6 +902,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # job is ending.
                     no_restart = rdzv_handler.no_restart_reason()
                     if no_restart is not None:
+                        self._record_cycle_outcome(CycleEndReason.TERMINATED)
                         logger.error(
                             "[%s] Another launcher reported a no-restart decision (%s); "
                             "terminating workers.",
@@ -876,6 +915,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                         self._worker_group.state = WorkerState.FAILED
                         raise NoRestartRequested(no_restart)
 
+                    self._record_cycle_outcome(CycleEndReason.PEER_RESTART)
                     group_rank = self._worker_group.group_rank
                     # Record failure detection event
                     record_profiling_event(
@@ -1053,6 +1093,62 @@ class LocalElasticAgent(SimpleElasticAgent):
             asyncio.run(send_to_all())
         except Exception as e:
             logger.error(f"Error sending cycle to rank monitors: {e}")
+
+    def _query_rank_monitor_timeouts(
+        self, cycle: int, failures: Dict[int, Any]
+    ) -> Dict[int, RankTimeout]:
+        """Ask the monitors of exited workers whether they stopped them on a timeout.
+
+        A monitor records its timeout before stopping the worker, so the record exists by
+        the time the launcher sees the exit. Best effort: a monitor that does not answer
+        within RANK_MONITOR_QUERY_TIMEOUT counts as no timeout.
+
+        Args:
+            cycle: The cycle in which the workers exited.
+            failures: Exited workers, keyed by global rank.
+
+        Returns:
+            Timeouts keyed by global rank, only for workers stopped by their monitor.
+        """
+        async def query_monitor(global_rank: int, socket_path: str):
+            try:
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+                try:
+                    await write_obj_to_ipc_stream(TimeoutQueryMsg(cycle), writer)
+                    reply = await read_obj_from_ipc_stream(reader)
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+                return global_rank, reply.timeout
+            except Exception as e:
+                logger.warning(f"Failed to query rank monitor of rank {global_rank}: {e}")
+                return global_rank, None
+
+        async def query_all():
+            tasks = []
+            for worker in self._worker_group.workers:
+                state = self._rank_monitors.get(worker.local_rank)
+                if worker.global_rank in failures and state is not None and state.socket_path:
+                    tasks.append(
+                        asyncio.wait_for(
+                            query_monitor(worker.global_rank, state.socket_path),
+                            RANK_MONITOR_QUERY_TIMEOUT,
+                        )
+                    )
+            return await asyncio.gather(*tasks, return_exceptions=True)
+
+        timeouts = {}
+        try:
+            for result in asyncio.run(query_all()):
+                if isinstance(result, BaseException):
+                    logger.warning(f"Rank monitor timeout query did not complete: {result!r}")
+                    continue
+                global_rank, timeout = result
+                if timeout is not None:
+                    timeouts[global_rank] = timeout
+        except Exception as e:
+            logger.error(f"Error querying rank monitors for timeouts: {e}")
+        return timeouts
 
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
         enable_watchdog_env_name = TORCHELASTIC_ENABLE_FILE_TIMER

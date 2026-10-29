@@ -23,6 +23,8 @@ from typing import Mapping, Optional, Set
 
 import torch.distributed as dist
 
+from .cycle_outcome import RankTimeout
+
 """Env variable name that stores the path of IPC socket connecting a rank with its monitor"""
 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR = "FT_RANK_MONITOR_IPC_SOCKET"
 
@@ -230,6 +232,28 @@ class UpdateConfigMsg:
         self.hb_timeouts = hb_timeouts
         self.section_timeouts = section_timeouts
         self.current_cycle = current_cycle
+
+
+class TimeoutQueryMsg:
+    """
+    Sent from launcher -> rank monitor after the monitored worker exited.
+    Asks whether the monitor stopped that worker on a timeout in `cycle`.
+    The monitor replies with TimeoutReplyMsg.
+    """
+
+    def __init__(self, cycle: int):
+        self.cycle = cycle
+
+
+class TimeoutReplyMsg:
+    """
+    Reply to TimeoutQueryMsg (rank monitor -> launcher).
+    `timeout` holds the timeout kind and, for section timeouts, the expired section names.
+    It is None if the monitor did not stop its worker on a timeout in that cycle.
+    """
+
+    def __init__(self, timeout: Optional[RankTimeout] = None):
+        self.timeout = timeout
 
 
 class OkMsg:
