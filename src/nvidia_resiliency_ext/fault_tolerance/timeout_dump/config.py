@@ -154,6 +154,9 @@ class TimeoutDumpConfig:
         tool_names = settings.pop("tools", None)
         settings.setdefault("enabled", tool_names is not None)
         tools = [TOOLS[name].Config.from_args(args) for name in tool_names or TOOLS]
+        if settings["enabled"]:
+            for tool in tools:
+                tool.resolve()
         return cls(tools=tools, **settings)
 
 
