@@ -185,6 +185,20 @@ class _AttemptExecution:
     source_identity: dict[str, Any] = field(default_factory=dict)
 
 
+def _enriched_source(result: ModelAnalysisResult) -> str:
+    """Name the route and the model that answered.
+
+    The route id is whatever the deployment called the route, so it says
+    nothing about which model ran unless someone happened to name it after
+    one. A route built from the environment is always called "nvrx-default",
+    which left no way to tell what produced a verdict without host access.
+    """
+    label = f"l1_enriched:{result.route_id}"
+    if result.model and result.model != result.route_id:
+        label += f" ({result.model})"
+    return label
+
+
 class RestartAgentServiceBackend:
     """Adapt attrsvc's progressive HTTP lifecycle to one RestartAgentRuntime."""
 
@@ -862,7 +876,7 @@ class RestartAgentServiceBackend:
                         return
                     current.best_result = result.analysis_result
                     current.best_source = (
-                        f"{candidate_kind}:{result.route_id}"
+                        _enriched_source(result)
                         if candidate_kind == "l1_enriched"
                         else candidate_kind
                     )
