@@ -190,7 +190,8 @@ sets the cached global metadata from the previous checkpoint</p>
 <span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">save_state_dict_async_finalize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">storage_writer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_metadata</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dist_wrapper</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#save_state_dict_async_finalize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize" title="Link to this definition"></a></dt>
 <dd><p>Finalization of save_state_dict_async_plan.</p>
 <p>The input arguments are the same as the save_state_dict_async_plan output,
-the <cite>write_results</cite> are retrieved from the storage_writer.</p>
+the <cite>write_results</cite> are retrieved from the storage_writer. Each rank sends them to the
+coordinator as a table (see <cite>_metadata_pickler.table</cite>) if it can, else pickled.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">

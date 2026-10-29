@@ -96,22 +96,30 @@
 <span class="sd">"""State dict saver for PyT Distributed format allowing asynchronous save."""</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">dataclasses</span>
+
+<span class="c1"># Issue: [B403:blacklist] Consider possible security implications associated with pickle module.</span>
+<span class="c1"># Severity: Low   Confidence: High</span>
+<span class="c1"># CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)</span>
+<span class="c1"># More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">pickle</span>  <span class="c1"># nosec</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">fields</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">logging</span><span class="w"> </span><span class="kn">import</span> <span class="n">getLogger</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">time</span><span class="w"> </span><span class="kn">import</span> <span class="n">time</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">TYPE_CHECKING</span><span class="p">,</span> <span class="n">Any</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span><span class="p">,</span> <span class="n">Union</span>
 
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.distributed</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">dist</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint</span><span class="w"> </span><span class="kn">import</span> <span class="n">CheckpointException</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.default_planner</span><span class="w"> </span><span class="kn">import</span> <span class="n">DefaultSavePlanner</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.metadata</span><span class="w"> </span><span class="kn">import</span> <span class="n">STATE_DICT_TYPE</span><span class="p">,</span> <span class="n">Metadata</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.planner</span><span class="w"> </span><span class="kn">import</span> <span class="n">SavePlan</span><span class="p">,</span> <span class="n">SavePlanner</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_DistWrapper</span><span class="p">,</span> <span class="n">_get_failure_dict</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.distributed.checkpoint.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">_DistWrapper</span><span class="p">,</span> <span class="n">_is_wrapped_exception</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">nvidia_resiliency_ext.shared_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">semconv</span><span class="p">,</span> <span class="n">telemetry</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">_metadata_reuse</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.</span><span class="w"> </span><span class="kn">import</span> <span class="n">_metadata_pickler</span><span class="p">,</span> <span class="n">_metadata_reuse</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">._metadata_pickler</span><span class="w"> </span><span class="kn">import</span> <span class="n">table</span> <span class="k">as</span> <span class="n">_table</span>
 
 <span class="k">if</span> <span class="n">TYPE_CHECKING</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">.filesystem_async</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriterAsync</span>
@@ -461,6 +469,76 @@
 
 
 
+<span class="k">def</span><span class="w"> </span><span class="nf">_encode_write_results</span><span class="p">(</span><span class="n">write_results</span><span class="p">,</span> <span class="n">storage_writer</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bytes</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""This rank's write results for the coordinator: a table if it can and its storage writer</span>
+<span class="sd">    writes from tables (see _writes_rows), else pickled. A storage writer whose finish a subclass</span>
+<span class="sd">    overrides thus gets the write results from every rank that has the same writer as they are."""</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">write_results</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span> <span class="ow">and</span> <span class="n">_writes_rows</span><span class="p">(</span><span class="n">storage_writer</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">_table</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">_table</span><span class="o">.</span><span class="n">Unencodable</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                <span class="s2">"write results unencodable as a table; sending them pickled"</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span>
+            <span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"encoding the write results as a table failed"</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">pickle</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_gather_payloads</span><span class="p">(</span><span class="n">payload</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">,</span> <span class="n">dist_wrapper</span><span class="p">:</span> <span class="n">_DistWrapper</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""Collective: the ranks' payloads on the coordinator, one zero-padded row per rank.</span>
+
+<span class="sd">    Rows are a multiple of 8 bytes wide, so a table's int64s are aligned and every row holds the</span>
+<span class="sd">    8 bytes that tell a table from a pickle.</span>
+<span class="sd">    """</span>
+    <span class="n">width</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">payload</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">current_device</span><span class="p">()</span> <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">use_dist</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">use_dist</span><span class="p">:</span>
+        <span class="n">widest</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="n">width</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span>
+            <span class="n">widest</span><span class="p">,</span> <span class="n">op</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">MAX</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span>
+        <span class="p">)</span>
+        <span class="n">width</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">widest</span><span class="o">.</span><span class="n">item</span><span class="p">())</span>
+    <span class="n">width</span> <span class="o">=</span> <span class="o">-</span><span class="p">(</span><span class="o">-</span><span class="n">width</span> <span class="o">//</span> <span class="mi">8</span><span class="p">)</span> <span class="o">*</span> <span class="mi">8</span>
+    <span class="n">row</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">width</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+    <span class="n">row</span><span class="p">[:</span> <span class="nb">len</span><span class="p">(</span><span class="n">payload</span><span class="p">)]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">frombuffer</span><span class="p">(</span><span class="n">payload</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">use_dist</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">row</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">:]</span>
+    <span class="n">rows</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">:</span>
+        <span class="n">rows</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">get_world_size</span><span class="p">(),</span> <span class="n">width</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">row</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">),</span>
+        <span class="nb">list</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span> <span class="k">if</span> <span class="n">rows</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">dst</span><span class="o">=</span><span class="nb">getattr</span><span class="p">(</span><span class="n">dist_wrapper</span><span class="p">,</span> <span class="s2">"global_coordinator_rank"</span><span class="p">,</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">coordinator_rank</span><span class="p">),</span>
+        <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">rows</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="k">if</span> <span class="n">rows</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_decode_payloads</span><span class="p">(</span><span class="n">rows</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""Which ranks sent a table, and what each other rank pickled: its write results or exception."""</span>
+    <span class="n">is_table</span> <span class="o">=</span> <span class="n">rows</span><span class="p">[:,</span> <span class="p">:</span><span class="mi">8</span><span class="p">]</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="s2">"&lt;i8"</span><span class="p">)[:,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="n">_table</span><span class="o">.</span><span class="n">MAGIC</span>
+    <span class="c1"># Unpickles only what this job's ranks pickled, as dist.gather_object does.</span>
+    <span class="n">pickled</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="nb">int</span><span class="p">(</span><span class="n">rank</span><span class="p">):</span> <span class="n">pickle</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">rows</span><span class="p">[</span><span class="n">rank</span><span class="p">]</span><span class="o">.</span><span class="n">tobytes</span><span class="p">())</span>  <span class="c1"># nosec B301</span>
+        <span class="k">for</span> <span class="n">rank</span> <span class="ow">in</span> <span class="n">np</span><span class="o">.</span><span class="n">flatnonzero</span><span class="p">(</span><span class="o">~</span><span class="n">is_table</span><span class="p">)</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">is_table</span><span class="p">,</span> <span class="n">pickled</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_writes_rows</span><span class="p">(</span><span class="n">storage_writer</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Whether storage_writer can write storage_data from the gathered tables: a fast .metadata</span>
+<span class="sd">    writer, and a FileSystemWriterAsync whose finish a subclass doesn't override."""</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">.filesystem_async</span><span class="w"> </span><span class="kn">import</span> <span class="n">FileSystemWriterAsync</span>
+
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="nb">isinstance</span><span class="p">(</span><span class="n">storage_writer</span><span class="p">,</span> <span class="n">FileSystemWriterAsync</span><span class="p">)</span>
+        <span class="ow">and</span> <span class="nb">type</span><span class="p">(</span><span class="n">storage_writer</span><span class="p">)</span><span class="o">.</span><span class="n">finish</span> <span class="ow">is</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">finish</span>
+        <span class="ow">and</span> <span class="n">_metadata_pickler</span><span class="o">.</span><span class="n">writes_tables</span><span class="p">()</span>
+    <span class="p">)</span>
+
+
 <div class="viewcode-block" id="save_state_dict_async_finalize">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize">[docs]</a>
 <span class="k">def</span><span class="w"> </span><span class="nf">save_state_dict_async_finalize</span><span class="p">(</span>
@@ -472,7 +550,8 @@
 <span class="sd">    Finalization of save_state_dict_async_plan.</span>
 
 <span class="sd">    The input arguments are the same as the save_state_dict_async_plan output,</span>
-<span class="sd">    the `write_results` are retrieved from the storage_writer.</span>
+<span class="sd">    the `write_results` are retrieved from the storage_writer. Each rank sends them to the</span>
+<span class="sd">    coordinator as a table (see `_metadata_pickler.table`) if it can, else pickled.</span>
 
 <span class="sd">    Args:</span>
 <span class="sd">        storage_writer (FileSystemWriterAsync): storage writer used for planning</span>
@@ -486,7 +565,7 @@
     <span class="c1"># Gather the write results that will be saved to the metadata file.</span>
     <span class="n">gather_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
     <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.finalize_gather"</span><span class="p">):</span>
-        <span class="n">all_results</span> <span class="o">=</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">gather_object</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span>
+        <span class="n">rows</span> <span class="o">=</span> <span class="n">_gather_payloads</span><span class="p">(</span><span class="n">_encode_write_results</span><span class="p">(</span><span class="n">write_results</span><span class="p">,</span> <span class="n">storage_writer</span><span class="p">),</span> <span class="n">dist_wrapper</span><span class="p">)</span>
     <span class="n">gather_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
     <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
         <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">gather_end</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span><span class="si">}</span><span class="s2">, gather: </span><span class="si">{</span><span class="n">gather_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">gather_start</span><span class="si">}</span><span class="s2">"</span>
@@ -494,14 +573,22 @@
 
     <span class="c1"># Store the metadata on coordinator rank</span>
     <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">:</span>
-        <span class="n">node_failures</span> <span class="o">=</span> <span class="n">_get_failure_dict</span><span class="p">(</span><span class="n">all_results</span><span class="p">)</span>
+        <span class="n">is_table</span><span class="p">,</span> <span class="n">pickled</span> <span class="o">=</span> <span class="n">_decode_payloads</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span>
+        <span class="n">node_failures</span> <span class="o">=</span> <span class="p">{</span><span class="n">rank</span><span class="p">:</span> <span class="n">r</span> <span class="k">for</span> <span class="n">rank</span><span class="p">,</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">pickled</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">_is_wrapped_exception</span><span class="p">(</span><span class="n">r</span><span class="p">)}</span>
         <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">node_failures</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
             <span class="k">assert</span> <span class="n">global_metadata</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
             <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span>
                 <span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.metadata_write"</span>
             <span class="p">):</span>
                 <span class="n">write_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-                <span class="n">storage_writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">global_metadata</span><span class="p">,</span> <span class="n">all_results</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">is_table</span><span class="o">.</span><span class="n">all</span><span class="p">()</span> <span class="ow">and</span> <span class="n">_writes_rows</span><span class="p">(</span><span class="n">storage_writer</span><span class="p">):</span>
+                    <span class="n">storage_writer</span><span class="o">.</span><span class="n">_finish</span><span class="p">(</span><span class="n">global_metadata</span><span class="p">,</span> <span class="p">[],</span> <span class="n">storage_rows</span><span class="o">=</span><span class="n">rows</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">results</span> <span class="o">=</span> <span class="p">[</span>
+                        <span class="n">_table</span><span class="o">.</span><span class="n">to_write_results</span><span class="p">(</span><span class="n">_table</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="n">row</span><span class="p">))</span> <span class="k">if</span> <span class="n">sent_table</span> <span class="k">else</span> <span class="n">pickled</span><span class="p">[</span><span class="n">rank</span><span class="p">]</span>
+                        <span class="k">for</span> <span class="n">rank</span><span class="p">,</span> <span class="p">(</span><span class="n">row</span><span class="p">,</span> <span class="n">sent_table</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">rows</span><span class="p">,</span> <span class="n">is_table</span><span class="p">))</span>
+                    <span class="p">]</span>
+                    <span class="n">storage_writer</span><span class="o">.</span><span class="n">finish</span><span class="p">(</span><span class="n">global_metadata</span><span class="p">,</span> <span class="n">results</span><span class="p">)</span>
                 <span class="n">write_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
                 <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">write_end</span><span class="si">}</span><span class="s2">, metadata_write: </span><span class="si">{</span><span class="n">write_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">write_start</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
