@@ -172,7 +172,7 @@
     {
       "id": 29,
       "name": "Triton cubin / TorchInductor software toolchain error",
-      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels + TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup; clean Python exceptions, multi-node, deterministic in-container.",
+      "description": "Triton autotuner KeyError 'Unknown key: cubin' on mamba_ssm kernels, or TorchInductor StaticCudaLauncher 'CUDA driver error: file not found' at JIT warmup. Clean Python exceptions, multi-node, deterministic in-container: the same compilation fails on every rank that attempts it, so an unchanged retry reproduces it. Requires one of those two signatures. A compile or cache failure that hits only a few ranks while the rest compile the same kernel is cat 39, not this - a toolchain that is genuinely broken in-container fails every rank that attempts the compilation, not a small subset of them.",
       "decision": "STOP"
     },
     {
@@ -227,6 +227,18 @@
       "id": 38,
       "name": "Suspected SDC / DP-replica weight-hash mismatch",
       "description": "DP-replica weight-hash mismatch (suspected silent data corruption); restart from last good checkpoint is plausibly safe.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 39,
+      "name": "Transient JIT compile-cache artifact failure",
+      "description": "A compiled-kernel artifact is unreadable or unusable on a small minority of ranks while the rest of the job compiles the same kernel successfully. Seen as a JSONDecodeError 'Expecting value: line 1 column 1 (char 0)' raised from Triton's CompiledKernel.__init__ or _precompile_config, which means the cached metadata file was empty; as an InductorError 'CUDA driver error: device kernel image is invalid'. Each leaves an artifact behind that cannot be read or loaded. The rank fraction is the discriminator and it is required: compare the failing rank count against the job's observed rank count, and pick this only when the failures are a small minority. A small subset failing while the overwhelming majority compile the same kernel is a write race on a shared cache directory; every attempting rank failing is a broken toolchain and belongs in cat 29. Judge the ratio, not an absolute count: job sizes differ, so what matters is that the failures are a minority of the ranks that attempted the same compilation. Partially written cache artifacts are rewritten or recompiled on the next attempt, so the retry is expected to differ. Zero completed iterations does not argue against this: compilation happens at warmup and again whenever a new shape is traced, so it can also strike a job that has been training for some time. A JIT compiler invocation that fails to complete, rather than an artifact that cannot be read, is cat 40.",
+      "decision": "RESTART"
+    },
+    {
+      "id": 40,
+      "name": "JIT toolchain invocation failure on isolated ranks",
+      "description": "A just-in-time compiler invocation does not complete, on a small minority of ranks, and the compiler's own diagnostics are absent from the log. Seen as a RuntimeError 'Failed to compile the code' from a deep_ep hybrid_ep JIT build, or an equivalent wrapper that reports the command it ran but not what the compiler said. The rank fraction is required and rules out the deterministic reading: bad source, bad flags or an unsupported architecture fail every rank that attempts the same build, so one rank of thousands means the inputs compile. Compare the failing rank count against the job's observed rank count. A single log cannot separate a node-local resource condition - output directory full, memory pressure, a concurrent write to the same target - from a genuine toolchain fault, because the diagnostic that would distinguish them was never recorded. Whether the next attempt hits the same condition is not determinable from this log. Distinct from cat 39, where a compiled artifact exists but is empty or unusable; here the artifact was never produced. Distinct from cat 29, which requires a compilation that fails on every rank attempting it.",
       "decision": "RESTART"
     }
   ]
