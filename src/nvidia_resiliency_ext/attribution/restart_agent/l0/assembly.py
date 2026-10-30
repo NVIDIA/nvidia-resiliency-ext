@@ -164,8 +164,18 @@ _SPECIFIC_FAILURE_CUE_RE = re.compile(
     r"failed to|failure|timed out|timeout|errno)\b",
     re.I,
 )
+# A traceback's last line is the exception class name, followed by ": message"
+# only when the exception carries arguments. ``raise EOFError`` ends the
+# traceback with a bare ``EOFError``, so a colon cannot be required or the
+# summary is invisible and the episode falls back to its traceback header,
+# publishing an identity that names no exception at all.
+#
+# The second alternative is anchored to the start of the line (after an
+# optional rank prefix) and must reach end of line, so it accepts the summary
+# ``9: EOFError`` while rejecting the ``9:     raise EOFError`` frame above it.
 _EXCEPTION_SUMMARY_RE = re.compile(
-    r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):",
+    r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):"
+    r"|^\s*(?:\d+:\s*)?[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\s*$",
 )
 _WATCHDOG_EXCEPTION_RE = re.compile(
     r"\bwatchdog thread terminated with exception:\s*"
