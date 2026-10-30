@@ -171,9 +171,21 @@ def extract_gpu(text: str) -> str | None:
     return next(group for group in match.groups() if group is not None)
 
 
+# NCCL prefixes each line with "<host>:<pid>:<tid> [gpu]". Anchoring on that
+# shape rather than on a hostname family keeps this working across clusters,
+# and the two ":<digits>" groups are what separate a host from a timestamp or
+# a "file.cc:376" source reference.
+_NODE_RE = re.compile(
+    r"\bnode[=:\s]+([a-z0-9_.-]+)" r"|(?:^|[\s\]])([a-z][a-z0-9_.-]*[a-z0-9])(?::\d+){2}\s",
+    re.I,
+)
+
+
 def extract_node(text: str) -> str | None:
-    match = re.search(r"\bnode[=:\s]+([a-z0-9_.-]+)", text, re.I)
-    return match.group(1) if match else None
+    match = _NODE_RE.search(text)
+    if not match:
+        return None
+    return next((group for group in match.groups() if group is not None), None)
 
 
 def extract_failure_iteration(text: str) -> int | None:
