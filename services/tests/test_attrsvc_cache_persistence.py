@@ -5,7 +5,7 @@
 
 All dedup state used to be in memory, so restarting attrsvc re-analyzed every
 complete cycle of every running job and L3 evaluated each one as a first
-attempt. Job 4234179's cycle 0 was analyzed five times across one afternoon.
+attempt. Job 2201600's cycle 0 was analyzed five times across one afternoon.
 """
 
 import json
@@ -74,12 +74,12 @@ def _result():
 
 
 def _log(tmp_path, text="boom\n"):
-    path = tmp_path / "run_4234179_date_x_cycle0.log"
+    path = tmp_path / "run_2201600_date_x_cycle0.log"
     path.write_text(text)
     return str(path)
 
 
-def _completed(log_path, job_id="4234179", cycle_id=0, identity=None):
+def _completed(log_path, job_id="2201600", cycle_id=0, identity=None):
     # The real backend stats the source when the analysis finishes, not when
     # the cache is written; the stand-in has to do the same or the tests would
     # not exercise what production stores.
@@ -89,7 +89,7 @@ def _completed(log_path, job_id="4234179", cycle_id=0, identity=None):
     return _AttemptExecution(
         key=(job_id, cycle_id),
         log_path=log_path,
-        user="dnarayanan",
+        user="alice",
         job_id=job_id,
         cycle_id=cycle_id,
         status=_STATUS_COMPLETED,
@@ -108,17 +108,17 @@ def backend():
 def test_a_completed_analysis_survives_a_restart(backend, tmp_path):
     log = _log(tmp_path)
     cache = str(tmp_path / "cache.json")
-    backend._entries[("4234179", 0)] = _completed(log)
-    backend._path_index[log] = ("4234179", 0)
+    backend._entries[("2201600", 0)] = _completed(log)
+    backend._path_index[log] = ("2201600", 0)
 
     assert backend._save_cache(cache) is True
 
     restarted = _Backend()
     assert restarted._load_cache(cache) == 1
-    entry = restarted._entries[("4234179", 0)]
+    entry = restarted._entries[("2201600", 0)]
     assert entry.status == _STATUS_COMPLETED
     assert entry.final_result.decision == "RESTART"
-    assert restarted._path_index[log] == ("4234179", 0)
+    assert restarted._path_index[log] == ("2201600", 0)
 
 
 def test_a_log_that_grew_since_analysis_is_re_analyzed(backend, tmp_path):
@@ -126,7 +126,7 @@ def test_a_log_that_grew_since_analysis_is_re_analyzed(backend, tmp_path):
     # verdict would attribute a failure from minutes ago.
     log = _log(tmp_path)
     cache = str(tmp_path / "cache.json")
-    backend._entries[("4234179", 0)] = _completed(log)
+    backend._entries[("2201600", 0)] = _completed(log)
     backend._save_cache(cache)
 
     with open(log, "a", encoding="utf-8") as handle:
@@ -140,7 +140,7 @@ def test_a_log_that_grew_since_analysis_is_re_analyzed(backend, tmp_path):
 def test_a_deleted_log_is_dropped(backend, tmp_path):
     log = _log(tmp_path)
     cache = str(tmp_path / "cache.json")
-    backend._entries[("4234179", 0)] = _completed(log)
+    backend._entries[("2201600", 0)] = _completed(log)
     backend._save_cache(cache)
     os.unlink(log)
 
@@ -150,13 +150,13 @@ def test_a_deleted_log_is_dropped(backend, tmp_path):
 def test_attempt_history_is_restored(backend, tmp_path):
     log = _log(tmp_path)
     cache = str(tmp_path / "cache.json")
-    backend._entries[("4234179", 0)] = _completed(log)
+    backend._entries[("2201600", 0)] = _completed(log)
     backend._runtime.attempt_record_control._records = ()
     backend._save_cache(cache)
 
     # Rewrite with a record present; the store round-trips payload dicts.
     payload = json.loads(open(cache, encoding="utf-8").read())
-    payload["attempt_records"] = [{"job_id": "4234179", "cycle_id": 0}]
+    payload["attempt_records"] = [{"job_id": "2201600", "cycle_id": 0}]
     open(cache, "w", encoding="utf-8").write(json.dumps(payload))
 
     restarted = _Backend()
@@ -164,17 +164,17 @@ def test_attempt_history_is_restored(backend, tmp_path):
 
     seeded, mode = restarted._runtime.attempt_record_control.seeded
     assert mode == "replace"
-    assert seeded == [{"job_id": "4234179", "cycle_id": 0}]
+    assert seeded == [{"job_id": "2201600", "cycle_id": 0}]
 
 
 def test_history_is_restored_even_when_the_analysis_is_stale(backend, tmp_path):
     # History is still true about what happened; only the verdict is suspect.
     log = _log(tmp_path)
     cache = str(tmp_path / "cache.json")
-    backend._entries[("4234179", 0)] = _completed(log)
+    backend._entries[("2201600", 0)] = _completed(log)
     backend._save_cache(cache)
     payload = json.loads(open(cache, encoding="utf-8").read())
-    payload["attempt_records"] = [{"job_id": "4234179", "cycle_id": 0}]
+    payload["attempt_records"] = [{"job_id": "2201600", "cycle_id": 0}]
     open(cache, "w", encoding="utf-8").write(json.dumps(payload))
     with open(log, "a", encoding="utf-8") as handle:
         handle.write("grew\n")
@@ -212,7 +212,7 @@ def test_only_completed_analyses_are_persisted(backend, tmp_path):
     pending.status = "analyzing"
     pending.final_result = None
     pending.best_result = None
-    backend._entries[("4234179", 1)] = pending
+    backend._entries[("2201600", 1)] = pending
 
     backend._save_cache(cache)
 
@@ -231,7 +231,7 @@ def test_a_log_that_grew_between_analysis_and_save_is_not_restored(backend, tmp_
     # stale result then validates as byte-for-byte current.
     log = _log(tmp_path)
     cache = str(tmp_path / "cache.json")
-    backend._entries[("4234179", 0)] = _completed(log)
+    backend._entries[("2201600", 0)] = _completed(log)
 
     # Another job finishes and triggers a save after this log has moved on.
     with open(log, "a", encoding="utf-8") as handle:
@@ -249,11 +249,11 @@ def test_decisions_from_a_different_policy_are_not_restored(backend, tmp_path):
     # give. History is still seeded: it records what happened, not a verdict.
     log = _log(tmp_path)
     cache = str(tmp_path / "cache.json")
-    backend._entries[("4234179", 0)] = _completed(log)
+    backend._entries[("2201600", 0)] = _completed(log)
     backend._runtime.attempt_record_control._records = ()
     backend._save_cache(cache)
     payload = json.loads(open(cache, encoding="utf-8").read())
-    payload["attempt_records"] = [{"job_id": "4234179", "cycle_id": 0}]
+    payload["attempt_records"] = [{"job_id": "2201600", "cycle_id": 0}]
     open(cache, "w", encoding="utf-8").write(json.dumps(payload))
 
     restarted = _Backend(fingerprint="cfg-b")
@@ -277,9 +277,9 @@ def test_concurrent_saves_leave_readable_json(backend, tmp_path):
 
     cache = str(tmp_path / "cache.json")
     for cycle in range(40):
-        log = tmp_path / f"run_4234179_date_x_cycle{cycle}.log"
+        log = tmp_path / f"run_2201600_date_x_cycle{cycle}.log"
         log.write_text("boom\n" * (cycle + 1))
-        backend._entries[("4234179", cycle)] = _completed(str(log), cycle_id=cycle)
+        backend._entries[("2201600", cycle)] = _completed(str(log), cycle_id=cycle)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = [f.result() for f in [pool.submit(backend._save_cache, cache) for _ in range(24)]]

@@ -128,6 +128,35 @@ def _raise_error(error: LogAnalyzerError) -> None:
     )
 
 
+#: Set by whoever builds or runs the image, so a deployment can be identified
+#: without shell access to the host. Free-form on purpose: an image tag, a
+#: commit, or a release name are all useful and none is always available.
+BUILD_TAG_ENV_VAR = "NVRX_ATTRSVC_BUILD_TAG"
+
+
+def _build_identity() -> dict[str, str]:
+    """What is running, for confirming a rollout reached a host.
+
+    The installed version alone does not distinguish two images built from
+    different commits: the container build passes a literal through
+    POETRY_DYNAMIC_VERSIONING_BYPASS, so every image carries whatever that
+    was - "0.0.0" when the build did not set it. The env var covers that
+    case and lets the deploying side label a rollout it already knows the
+    name of.
+    """
+    try:
+        import importlib.metadata as _md
+
+        version = _md.version("nvidia-resiliency-ext")
+    except Exception:  # not installed as a distribution, e.g. a source checkout
+        version = "unknown"
+    identity = {"version": version}
+    tag = (os.environ.get(BUILD_TAG_ENV_VAR) or "").strip()
+    if tag:
+        identity["tag"] = tag
+    return identity
+
+
 def create_app(cfg: Settings) -> FastAPI:
     """
     Construct and return the FastAPI app for the NVRX Attribution Service.
@@ -216,7 +245,7 @@ def create_app(cfg: Settings) -> FastAPI:
         """
         adapter: AttributionHttpAdapter = request.app.state.attribution
         health = await adapter.get_health()
-        return json_response(health, pretty=pretty, indent=indent)
+        return json_response({**health, "build": _build_identity()}, pretty=pretty, indent=indent)
 
     @app.get("/stats")
     async def get_stats(

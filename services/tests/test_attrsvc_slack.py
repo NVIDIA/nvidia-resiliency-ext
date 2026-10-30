@@ -21,7 +21,7 @@ from nvidia_resiliency_ext.services.attrsvc.slack import (
 )
 
 
-def _job(job_id="123", name="nemotron_pretrain", user="alice"):
+def _job(job_id="123", name="trainjob_pretrain", user="alice"):
     return AnalysisIdentity(job_id=job_id, run_name=name, user=user)
 
 
@@ -176,7 +176,7 @@ def test_notification_carries_job_label_and_log_path():
     text = format_summary(_job(), _parsed()) + format_details(_job(), _parsed())
 
     assert "*Job ID:* `123`" in text
-    assert "*Job Name:* `nemotron_pretrain`" in text
+    assert "*Job Name:* `trainjob_pretrain`" in text
     assert "/lustre/logs/job.log" in text
 
 
@@ -199,7 +199,7 @@ def test_notify_posts_message_with_action_reason_and_details(monkeypatch):
     # The channel line stays scannable: decision, job, log path, nothing else.
     assert "*NVRx attribution:* `STOP`" in summary["text"]
     assert "*Job ID:* `123`" in summary["text"]
-    assert "*Job Name:* `nemotron_pretrain`" in summary["text"]
+    assert "*Job Name:* `trainjob_pretrain`" in summary["text"]
     assert "/lustre/logs/job.log" in summary["text"]
     assert "checkpoint corrupted" not in summary["text"]
 
@@ -583,7 +583,7 @@ def _ledgers(**overrides):
 
 
 def test_rationale_names_the_guard_that_exhausted_not_the_rule_budget():
-    # Job 4125659: the same-root ceiling had budget to spare; what stopped the
+    # Job 2201300: the same-root ceiling had budget to spare; what stopped the
     # job was the unverifiable-progress guard, which ignores the root cause.
     payload = _policy_payload(
         retry_budget_exhausted=True,
@@ -757,9 +757,9 @@ def test_message_omits_the_why_section_without_policy_data(monkeypatch):
     "path,job_id,expected",
     [
         (
-            "/x/logs/nemotron4_derisking_nano_21t_phase1_3901259_date_26-09-21_time_10-45-42_cycle0.log",
-            "3901259_26",
-            "nemotron4_derisking_nano_21t_phase1",
+            "/x/logs/trainjob_variant_tierC_s1_phase1_2200900_date_26-09-21_time_10-45-42_cycle0.log",
+            "2200900_26",
+            "trainjob_variant_tierC_s1_phase1",
         ),
         # The parent job ID is what the filename embeds, so array tasks agree.
         ("/x/logs/run_777_date_x.log", "777_3", "run"),
@@ -773,7 +773,7 @@ def test_run_name_recovered_from_log_filename(path, job_id, expected):
 @pytest.mark.parametrize(
     "path,job_id",
     [
-        ("/x/slurm_out/slurm-813606.out", "813606"),  # wrapper, no run prefix
+        ("/x/slurm_out/slurm-661300.out", "661300"),  # wrapper, no run prefix
         ("/x/logs/anything.log", ""),  # no job id to anchor on
         ("", "777"),
     ],
@@ -826,9 +826,9 @@ def test_backend_notifies_on_terminal_completion(monkeypatch):
             return True
 
     entry = SimpleNamespace(
-        job_id="3901259_26",
-        user="dnarayanan",
-        log_path="/x/logs/nemotron4_derisking_nano_21t_phase1_3901259_date_x_cycle0.log",
+        job_id="2200900_26",
+        user="alice",
+        log_path="/x/logs/trainjob_variant_tierC_s1_phase1_2200900_date_x_cycle0.log",
         cycle_id=0,
     )
     public = SimpleNamespace(
@@ -847,10 +847,10 @@ def test_backend_notifies_on_terminal_completion(monkeypatch):
 
     assert len(sent) == 1
     identity, result = sent[0]
-    assert identity.job_id == "3901259_26"
-    assert identity.user == "dnarayanan"
+    assert identity.job_id == "2200900_26"
+    assert identity.user == "alice"
     # attrsvc never sees the SLURM job name; it is recovered from the log path.
-    assert identity.run_name == "nemotron4_derisking_nano_21t_phase1"
+    assert identity.run_name == "trainjob_variant_tierC_s1_phase1"
     assert result.recommendation.action == "STOP"
 
 
@@ -900,11 +900,11 @@ def test_backend_skips_notification_when_slack_is_disabled():
 
 def test_message_names_the_cluster(monkeypatch):
     client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client, cluster="oci-aga-slurm-1")
+    notifier = _notifier(monkeypatch, client=client, cluster="clusterA-slurm-1")
 
     notifier.notify(_job(), _parsed())
 
-    assert "on *oci-aga-slurm-1*" in client.alert_text
+    assert "on *clusterA-slurm-1*" in client.alert_text
 
 
 def test_message_omits_the_cluster_when_unset(monkeypatch):
@@ -919,9 +919,9 @@ def test_message_omits_the_cluster_when_unset(monkeypatch):
 def test_config_from_settings_reads_the_cluster_name(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     settings = SimpleNamespace(
-        SLACK_BOT_TOKEN="xoxb-x", SLACK_CHANNEL="C1", CLUSTER_NAME=" aws-cmh-slurm-1 "
+        SLACK_BOT_TOKEN="xoxb-x", SLACK_CHANNEL="C1", CLUSTER_NAME=" clusterB-slurm-1 "
     )
-    assert SlackConfig.from_settings(settings).cluster == "aws-cmh-slurm-1"
+    assert SlackConfig.from_settings(settings).cluster == "clusterB-slurm-1"
 
 
 # ─── "none of the categories matched" is an answer, not an absence ───
@@ -1019,7 +1019,7 @@ def test_message_omits_the_excerpt_when_the_log_is_unreadable(monkeypatch):
 
 def test_summary_is_four_fields(monkeypatch):
     client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client, cluster="aws-cmh-slurm-1")
+    notifier = _notifier(monkeypatch, client=client, cluster="clusterB-slurm-1")
 
     notifier.notify(_job(), _parsed())
     lines = client.summaries[0]["text"].splitlines()
@@ -1139,14 +1139,14 @@ def test_no_reply_when_there_is_no_detail(monkeypatch):
 
 
 def test_job_line_shows_the_cycle_when_there_is_one():
-    ident = AnalysisIdentity(job_id="4103814_0", run_name="ultra_60t", cycle_id=3)
-    assert ident.label == "4103814_0 (ultra_60t) cycle 3"
+    ident = AnalysisIdentity(job_id="2200300_0", run_name="tierA_s4", cycle_id=3)
+    assert ident.label == "2200300_0 (tierA_s4) cycle 3"
 
 
 def test_job_line_omits_the_cycle_when_there_is_none():
     # Logs without _cycle<N> have no attempt ordering, so there is nothing to show.
-    ident = AnalysisIdentity(job_id="4103814_0", run_name="ultra_60t")
-    assert ident.label == "4103814_0 (ultra_60t)"
+    ident = AnalysisIdentity(job_id="2200300_0", run_name="tierA_s4")
+    assert ident.label == "2200300_0 (tierA_s4)"
 
 
 def test_cycle_zero_is_shown_not_treated_as_absent():
@@ -1160,7 +1160,7 @@ def test_cycle_shows_without_a_run_name():
 def test_summary_carries_the_cycle(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
-    ident = AnalysisIdentity(job_id="4103814_0", user="alice", run_name="ultra_60t", cycle_id=4)
+    ident = AnalysisIdentity(job_id="2200300_0", user="alice", run_name="tierA_s4", cycle_id=4)
 
     notifier.notify(ident, _parsed())
 
@@ -1174,9 +1174,9 @@ def test_backend_passes_the_cycle_to_the_alert():
 
     sent = []
     entry = SimpleNamespace(
-        job_id="4103814_0",
+        job_id="2200300_0",
         user="u",
-        log_path="/x/logs/run_4103814_date_x_cycle2.log",
+        log_path="/x/logs/run_2200300_date_x_cycle2.log",
         cycle_id=2,
     )
     backend = SimpleNamespace(
@@ -1200,7 +1200,7 @@ def test_backend_passes_the_cycle_to_the_alert():
 
 
 def test_headline_names_the_guard_over_the_category():
-    # Live case 4234179: L1 picked a category that said RESTART and a job guard
+    # Live case 2201600: L1 picked a category that said RESTART and a job guard
     # forced STOP anyway. The channel line has to show what actually decided.
     payload = _policy_payload(
         retry_budget_exhausted=True,
@@ -1251,10 +1251,10 @@ def test_headline_is_empty_without_a_decision():
 
 def test_job_line_names_the_owner():
     line = slack_mod.AnalysisIdentity(
-        job_id="4234179", user="dnarayanan", run_name="rollback_34k", cycle_id=3
+        job_id="2201600", user="alice", run_name="rollback_r1", cycle_id=3
     ).as_line()
 
-    assert "*Owner:* `dnarayanan`" in line
+    assert "*Owner:* `alice`" in line
     assert "<@" not in line  # named, not tagged
 
 
@@ -1319,7 +1319,7 @@ class _Settings:
     def __init__(self, **kw):
         self.SLACK_BOT_TOKEN = kw.get("token", "xoxb-from-settings")
         self.SLACK_CHANNEL = kw.get("channel", "#from-settings")
-        self.CLUSTER_NAME = kw.get("cluster", "aws-cmh")
+        self.CLUSTER_NAME = kw.get("cluster", "clusterB")
         self.SLACK_NOTIFY_ACTIONS = kw.get("actions", "")
         self.SLACK_EMAIL_DOMAIN = kw.get("domain", "")
 
