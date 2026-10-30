@@ -495,3 +495,69 @@ class TestGrpcWriterThread:
                     len(chunks_received) == 3
                 ), f"Expected all 3 queued lines drained after shutdown, got {len(chunks_received)}"
                 assert write_queue.qsize() == 0, "Queue should be empty after drain"
+
+
+@pytest.mark.parametrize("disconnect", [False, True])
+def test_grpc_readiness_clears_between_streams_and_on_shutdown(monkeypatch, disconnect):
+    writer = GrpcWriterThread(queue.Queue(), "unused:1234", "test", MagicMock())
+    channel = MagicMock()
+    attempts = []
+
+    def wait_for_server():
+        # Neither initial connection nor reconnect may advertise readiness.
+        assert not writer.forwarding_ready.is_set()
+        return channel
+
+    def stream_logs(channel):
+        assert writer.forwarding_ready.is_set()
+        attempts.append(channel)
+        if len(attempts) == 1:
+            if disconnect:
+                raise grpc.RpcError("connection lost")
+            return
+        writer.shutdown()
+        assert not writer.forwarding_ready.is_set()
+
+    monkeypatch.setattr(writer, "_wait_for_server_ready", wait_for_server)
+    monkeypatch.setattr(writer, "_stream_logs", stream_logs)
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.per_cycle_logs.time.sleep", lambda _: None
+    )
+    writer.run()
+
+    assert len(attempts) == 2
+    assert writer.connection_errors == int(disconnect)
+    assert not writer.forwarding_ready.is_set()
+
+
+def test_shutdown_during_health_check_still_drains_queued_logs(monkeypatch):
+    write_queue = queue.Queue()
+    write_queue.put(("/tmp/launcher.log", "final error marker\n"))
+    writer = GrpcWriterThread(write_queue, "unused:1234", "test", MagicMock())
+    channel = MagicMock()
+    captured = []
+
+    def wait_for_server():
+        # The health check succeeds just after another thread requests shutdown.
+        writer.shutdown()
+        return channel
+
+    stub = MagicMock()
+    stub.StreamLogs.side_effect = lambda chunks: captured.extend(chunks) or MagicMock()
+    monkeypatch.setattr(writer, "_wait_for_server_ready", wait_for_server)
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub",
+        lambda channel: stub,
+    )
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.per_cycle_logs.time.sleep", lambda _: None
+    )
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.per_cycle_logs._WRITE_QUEUE_GET_TIMEOUT_SEC", 0.01
+    )
+    writer.run()
+
+    assert [chunk.data for chunk in captured] == [b"final error marker\n"]
+    assert write_queue.empty()
+    assert not writer.forwarding_ready.is_set()
+    channel.close.assert_called_once_with()

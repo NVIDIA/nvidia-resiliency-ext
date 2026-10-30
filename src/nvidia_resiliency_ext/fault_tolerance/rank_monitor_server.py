@@ -29,7 +29,7 @@ from typing import Dict, Mapping, Optional
 
 import torch
 import torch.multiprocessing as mp
-from psutil import NoSuchProcess, Process
+from psutil import STATUS_ZOMBIE, NoSuchProcess, Process
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
@@ -45,14 +45,10 @@ from .data import (
     SectionMsg,
     UpdateConfigMsg,
 )
+from .launcher_error_reporting import launcher_error_reporter
 from .rank_monitor_state_machine import RankMonitorStateMachine
-from .timeout_diagnostics import (
-    ToolCapture,
-    parse_capture_sections,
-    parse_capture_tools,
-    staging_dir,
-)
-from .utils import is_process_alive, read_obj_from_ipc_stream, write_obj_to_ipc_stream
+from .timeout_dump import TimeoutDumpManager
+from .utils import read_obj_from_ipc_stream, write_obj_to_ipc_stream
 
 
 class RankMonitorLogger(logging.Logger):
@@ -193,11 +189,9 @@ class RankMonitorServer:
         # workload step reporting does not include warmup iterations.
         self._step_section_seen_this_cycle = False
         self.current_cycle = 0  # Track current cycle number for logging
-        self._diagnostic_attempted = False
-        self._diagnostic_incarnation = None
-        # Tools run sequentially; retain the last child until its exit is observed.
-        self._diagnostic_child = None
-        self._timed_out_sections = set()
+        self.timeout_dump = (
+            TimeoutDumpManager(cfg.timeout_dump, logger) if cfg.timeout_dump.enabled else None
+        )
 
         if self.cfg.enable_nic_monitor:
             self.logger.info("Enable NIC health monitoring.")
@@ -222,43 +216,37 @@ class RankMonitorServer:
         # without affecting core functionality.
         return
 
-    def _shutdown_rank(self, rank_process=None):
+    def _shutdown_rank(self, rank_process):
         # First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it
+        sig = self.cfg.rank_termination_signal
         try:
-            sig = self.cfg.rank_termination_signal
-            rank_pid = rank_process.pid if rank_process is not None else self.rank_info.pid
             # Process.send_signal checks PID reuse against its saved creation time.
-            send_signal = (
-                rank_process.send_signal
-                if rank_process is not None
-                else functools.partial(os.kill, rank_pid)
-            )
-            send_signal(signal.SIGCONT)
-            send_signal(sig)
+            rank_process.send_signal(signal.SIGCONT)
+            rank_process.send_signal(sig)
             self.logger.debug(
-                f"Rank monitor sent SIGCONT then {sig.name} to the rank (PID={rank_pid})"
+                f"Rank monitor sent SIGCONT then {sig.name} to the rank (PID={rank_process.pid})"
             )
         except Exception as e:
             self.logger.error(
-                f"Rank monitor could not send {sig.name} to the rank (PID={rank_pid}). Exception={e}"
+                f"Rank monitor could not send {sig.name} to the rank (PID={rank_process.pid}). Exception={e}"
             )
             # do nothing, most probably rank process is terminated anyway
 
     def _shutdown_rank_if_alive(self, rank_process=None):
-        if rank_process is None and self.rank_info is None:
-            return
-
+        """Terminate `rank_process`, or by default the currently connected rank."""
         try:
-            if rank_process is not None:
-                if rank_process.is_running():
-                    self._shutdown_rank(rank_process)
-                return
-            if is_process_alive(self.rank_info.pid):
-                self._shutdown_rank()
+            if rank_process is None:
+                if self.rank_info is None:
+                    return
+                rank_process = Process(self.rank_info.pid)
+            if rank_process.is_running() and rank_process.status() != STATUS_ZOMBIE:
+                self._shutdown_rank(rank_process)
             else:
                 self.logger.debug(
-                    f"_shutdown_rank_if_alive: rank process {self.rank_info.pid} is dead."
+                    f"_shutdown_rank_if_alive: rank process {rank_process.pid} is dead."
                 )
+        except NoSuchProcess:
+            self.logger.debug("_shutdown_rank_if_alive: rank process is gone.")
         except Exception:
             self.logger.error("_shutdown_rank_if_alive exception! ", exc_info=True)
 
@@ -268,93 +256,46 @@ class RankMonitorServer:
     async def _handle_unhealthy_nic(self):
         self._shutdown_rank_if_alive()
 
-    async def _handle_timeout(self):
+    async def _handle_timeout(self, timed_out_sections):
+        """Terminate the timed-out rank, first capturing it if a selected section expired."""
         rank_info = self.rank_info
+        reasons = self.timeout_dump.reasons(timed_out_sections) if self.timeout_dump else set()
+        if not reasons or rank_info is None:
+            self._shutdown_rank_if_alive()
+            return
         cycle = self.current_cycle
+        try:
+            # Snapshot before capture yields. The IPC connection can disappear
+            # or be replaced while the original process is still alive.
+            rank_process = Process(rank_info.pid)
+        except NoSuchProcess:
+            return
+        except Exception as exc:
+            self.logger.warning("Could not retain timeout worker identity: %s", exc)
+            # Preserve recovery without yielding or attempting diagnostics.
+            self._shutdown_rank_if_alive()
+            return
+
+        timer = asyncio.get_running_loop().call_later(
+            self.cfg.timeout_dump.capture_timeout, self._shutdown_rank_if_alive, rank_process
+        )
         captures = []
         cancelled = False
-        rank_process = None
-        reasons = (
-            self._timed_out_sections & parse_capture_sections(self.cfg.timeout_dump_sections)
-            if self.cfg.timeout_dump_enabled
-            else set()
-        )
-        if reasons and rank_info is not None:
-            try:
-                # Snapshot before capture yields. The IPC connection can disappear
-                # or be replaced while the original process is still alive.
-                rank_process = Process(rank_info.pid)
-            except NoSuchProcess:
-                return
-            except Exception as exc:
-                self.logger.warning("Could not retain timeout worker identity: %s", exc)
-                # Preserve recovery without yielding or attempting diagnostics.
-                self._shutdown_rank_if_alive()
-                return
-
-        def terminate_original_worker():
-            if rank_process is not None:
-                self._shutdown_rank_if_alive(rank_process)
-            elif self.rank_info is rank_info:
-                self._shutdown_rank_if_alive()
-
-        timer = None
         try:
-            if self.cfg.timeout_dump_enabled and reasons and not self._diagnostic_attempted:
-                self._diagnostic_attempted = True
-                child = self._diagnostic_child
-                if child is not None and child.is_running():
-                    self.logger.warning(
-                        "Skipping timeout capture: previous diagnostic child is still alive"
-                    )
-                    return
-                if rank_info is not None:
-                    timer = asyncio.get_running_loop().call_later(
-                        self.cfg.timeout_dump_capture_timeout, terminate_original_worker
-                    )
-                    deadline = time.monotonic() + self.cfg.timeout_dump_capture_timeout
-                    tools = parse_capture_tools(self.cfg.timeout_dump)
-                    for index, tool in enumerate(tools):
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0 or self.rank_info is not rank_info:
-                            break
-                        capture = ToolCapture(self.cfg, rank_info.pid, tool)
-                        captures.append(capture)
-                        self._diagnostic_child = capture
-                        await capture.run(timeout=remaining / (len(tools) - index))
-                        if capture.is_running():
-                            self.logger.warning(
-                                "Skipping later timeout tools: %s child is still alive", tool
-                            )
-                            break
+            await self.timeout_dump.capture(
+                rank_info, lambda: self.rank_info is rank_info, captures
+            )
         except asyncio.CancelledError:
             # Preserve collected output when launcher teardown cancels capture.
             cancelled = True
         except Exception as exc:
             self.logger.warning("Timeout capture failed: %s", exc)
         finally:
-            if timer is not None:
-                timer.cancel()
-            terminate_original_worker()
-        # Local filesystem writes and publication happen after worker termination
-        # was requested, so they cannot extend the capture grace period.
-        for capture in captures:
-            try:
-                capture.publish_local(rank_info, cycle, ",".join(sorted(reasons)))
-            except OSError as exc:
-                self.logger.warning("Could not stage timeout capture: %s", exc)
-            finally:
-                capture.output.clear()
-        if captures:
-            self.logger.info(
-                "Timeout captures: cycle=%s global_rank=%s local_rank=%s pid=%s %s dir=%s",
-                cycle,
-                rank_info.global_rank,
-                rank_info.local_rank,
-                rank_info.pid,
-                " ".join(f"{capture.tool}={capture.status}" for capture in captures),
-                staging_dir(self.cfg) / f"cycle{cycle}",
-            )
+            timer.cancel()
+            self._shutdown_rank_if_alive(rank_process)
+        # Local filesystem writes happen after worker termination was requested,
+        # so they cannot extend the capture grace period.
+        self.timeout_dump.stage(captures, rank_info, cycle, reasons)
         if cancelled:
             raise asyncio.CancelledError
 
@@ -385,10 +326,8 @@ class RankMonitorServer:
 
     async def _handle_init_msg(self, msg, writer):
         self.rank_info = msg.rank_info
-        incarnation = (self.current_cycle, msg.rank_info.pid)
-        if incarnation != self._diagnostic_incarnation:
-            self._diagnostic_attempted = False
-            self._diagnostic_incarnation = incarnation
+        if self.timeout_dump is not None:
+            self.timeout_dump.on_worker_init(self.current_cycle, msg.rank_info.pid)
         self.start_time = time.monotonic()
         self.out_of_section_time = time.monotonic()
         self.open_sections.clear()
@@ -614,11 +553,9 @@ class RankMonitorServer:
                 )
         return is_elapsed
 
-    def _is_section_timeout_elapsed(self, curr_time) -> bool:
-        is_elapsed = False
-        self._timed_out_sections.clear()
-        # If any sections are open, check their timeouts,
-        # otherwise check the timeout for "out of section"
+    def _expired_sections(self, curr_time) -> set:
+        """Open sections that have exceeded their timeouts."""
+        expired = set()
         for section, section_start_time in self.open_sections.items():
             elapsed = curr_time - section_start_time
             timeout = self.cfg.rank_section_timeouts.get(section)
@@ -632,43 +569,45 @@ class RankMonitorServer:
                 iterations_this_cycle = self._current_iteration - self._initial_iteration
                 if iterations_this_cycle < self.cfg.num_warmup_iterations:
                     timeout = self.cfg.rank_section_timeouts["warmup"]
-            section_elapsed = timeout is not None and elapsed > timeout
-            if section_elapsed:
-                self._timed_out_sections.add(section)
+            if timeout is not None and elapsed > timeout:
+                expired.add(section)
                 self.logger.warning(
                     f"[Cycle {self.current_cycle}] Section '{section}' has been open for {elapsed:.2f} seconds. "
                     f"Timeout is {timeout:.2f} seconds."
                 )
-                is_elapsed = True
-        if not self.open_sections:
-            if (
-                self.cfg.rank_section_timeouts
-                and "warmup" not in self.cfg.rank_section_timeouts
-                and not self._step_section_seen_this_cycle
-            ):
-                return False
+        return expired
 
-            elapsed = curr_time - self.out_of_section_time
-            timeout = self.cfg.rank_out_of_section_timeout
-            is_elapsed = timeout is not None and elapsed > timeout
-            if is_elapsed:
-                self.logger.warning(
-                    f"[Cycle {self.current_cycle}] Was out of section for {elapsed:.2f} seconds. "
-                    f"Timeout is {timeout:.2f} seconds."
-                )
+    def _is_out_of_section_timeout_elapsed(self, curr_time) -> bool:
+        """Whether code outside any section has run too long; False while a section is open."""
+        if self.open_sections:
+            return False
+        if (
+            self.cfg.rank_section_timeouts
+            and "warmup" not in self.cfg.rank_section_timeouts
+            and not self._step_section_seen_this_cycle
+        ):
+            return False
+        elapsed = curr_time - self.out_of_section_time
+        timeout = self.cfg.rank_out_of_section_timeout
+        is_elapsed = timeout is not None and elapsed > timeout
+        if is_elapsed:
+            self.logger.warning(
+                f"[Cycle {self.current_cycle}] Was out of section for {elapsed:.2f} seconds. "
+                f"Timeout is {timeout:.2f} seconds."
+            )
         return is_elapsed
 
     async def _periodic_rank_check(self):
         while True:
-            child = self._diagnostic_child
-            if child is not None and not child.is_running():
-                self._diagnostic_child = None
+            if self.timeout_dump is not None:
+                self.timeout_dump.reap_finished_child()
             if self.rank_info is not None:
                 curr_time = time.monotonic()
                 hb_timed_out = self._is_hb_timeout_elapsed(curr_time)
-                section_timed_out = self._is_section_timeout_elapsed(curr_time)
-                if hb_timed_out or section_timed_out:
-                    await self._handle_timeout()
+                expired_sections = self._expired_sections(curr_time)
+                out_of_section_timed_out = self._is_out_of_section_timeout_elapsed(curr_time)
+                if hb_timed_out or expired_sections or out_of_section_timed_out:
+                    await self._handle_timeout(expired_sections)
             await asyncio.sleep(self.cfg.workload_check_interval)
 
     async def _periodic_restart_check(self):
@@ -753,6 +692,8 @@ class RankMonitorServer:
         is_restarter_logger: bool,
         env: Optional[Dict[str, str]] = None,
     ) -> None:
+        # Only the launcher needs the original stderr; keep stdout/stderr for logging.
+        launcher_error_reporter.close()
         # Set environment variables if provided
         if env is not None:
             for key, value in env.items():

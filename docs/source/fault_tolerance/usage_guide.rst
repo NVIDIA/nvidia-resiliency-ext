@@ -112,7 +112,7 @@ timeouts by default. Launching a workload alone does not instrument it.
 Timeouts must cover the deployed model, initialization and checkpoint loading,
 evaluation, asynchronous checkpoint finalization, and observed storage delays.
 The numbers in examples are starting points, not service guarantees. See
-:doc:`configuration` for warmup, YAML, and experimental calibration details.
+:doc:`configuration` for warmup and experimental calibration details.
 
 Recovery limits
 ---------------
@@ -135,7 +135,7 @@ Where to go next
 * :doc:`integration/megatron`: section boundaries and async checkpoint recovery.
 * :doc:`examples/megatron_gpt`: small GPT recovery and multinode TP/PP variants.
 * :doc:`integration/sections`: integrating another training loop.
-* :doc:`configuration`: CLI/YAML settings, defaults, and experimental features.
+* :doc:`configuration`: CLI settings, defaults, and experimental features.
 * :doc:`operations`: checkpoint progress, cycle logs, stop decisions, and diagnosis.
 * :doc:`services`: optional health checks and attribution.
-* :doc:`timeout_diagnostics`: optional timeout stack capture.
+* :doc:`timeout_dump`: optional timeout stack capture.

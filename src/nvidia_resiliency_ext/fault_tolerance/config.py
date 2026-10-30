@@ -14,14 +14,13 @@
 # limitations under the License.
 
 import argparse
-import contextlib
 import dataclasses
 import logging
 import signal
 from dataclasses import dataclass, fields
-from typing import Literal, Mapping, Optional
+from typing import Mapping, Optional
 
-import yaml
+from .timeout_dump.config import TimeoutDumpConfig
 
 
 @dataclass
@@ -114,18 +113,10 @@ class FaultToleranceConfig:
     * `segment_health_check_dir` [str|None] Shared directory containing per-task
       segment health decision artifacts. Allocation-unit process 0 checks its artifact
       before joining a rendezvous. Default: None (disabled).
-    * `timeout_dump_enabled` [bool] Enable timeout diagnostics (default: False).
-    * `timeout_dump` [str] Ordered, comma-separated tools (default:
-      "pyspy,gdb,cuda-gdb") to capture stacks on selected section
-      timeouts and automatically upload per-node,
-      per-cycle text files. ``timeout_dump_local_root`` defaults to /tmp; the
-      shared destination is derived from ``--ft-nvrx-logfile``. The remaining
-      ``timeout_dump_*`` fields control capture, storage, collection, and shutdown
-      bounds. See the timeout diagnostics guide for deployment requirements.
-    * `timeout_dump_sections` [str] Comma-separated workload section names that
-      trigger capture when they time out (default: "step"). Names match exactly.
-    * `timeout_dump_cuda_gdb_mode` [str] CUDA-GDB command delivery: "batch"
-      (default) or "stdin" for automated normal command-reading mode.
+    * `timeout_dump` [TimeoutDumpConfig] Optional stack captures on selected section
+      timeouts, uploaded as per-node, per-cycle text files (disabled by default). Set by
+      the ``--ft-timeout-dump-*`` options; the shared destination is derived from
+      ``--ft-nvrx-logfile``. See the timeout dumps guide.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -179,21 +170,7 @@ class FaultToleranceConfig:
     segment_health_check_dir: Optional[str] = None
 
     # Optional timeout dumps; shared destination is derived from --ft-nvrx-logfile.
-    timeout_dump_enabled: bool = False
-    timeout_dump: str = "pyspy,gdb,cuda-gdb"
-    timeout_dump_sections: str = "step"
-    timeout_dump_local_root: str = "/tmp"
-    timeout_dump_pyspy: str = "py-spy"
-    timeout_dump_gdb: str = "gdb"
-    timeout_dump_cuda_gdb: str = "cuda-gdb"
-    timeout_dump_cuda_gdb_mode: Literal["batch", "stdin"] = "batch"
-    timeout_dump_gdb_command_file: Optional[str] = None
-    timeout_dump_cuda_gdb_command_file: Optional[str] = None
-    timeout_dump_capture_timeout: float = 30.0
-    timeout_dump_max_capture_bytes: int = 1024 * 1024
-    timeout_dump_poll_interval: float = 30.0
-    timeout_dump_upload_attempts: int = 3
-    timeout_dump_shutdown_grace: float = 10.0
+    timeout_dump: TimeoutDumpConfig = dataclasses.field(default_factory=TimeoutDumpConfig)
 
     @property
     def is_progress_tracking_enabled(self) -> bool:
@@ -221,35 +198,6 @@ class FaultToleranceConfig:
         if extra_args and not ignore_not_recognized:
             raise ValueError(f"Not recognized args: {extra_args}")
         return FaultToleranceConfig(**matching_args)
-
-    @staticmethod
-    def from_yaml_file(cfg_path: str, ignore_not_recognized: bool = True) -> 'FaultToleranceConfig':
-        """
-        Load the fault tolerance configuration from a YAML file.
-
-        YAML file should contain `fault_tolerance` section.
-        `fault_tolerance` section can be at the top level or nested in any other section.
-
-        Args:
-            cfg_path (str): The path to the YAML configuration file.
-            ignore_not_recognized (bool, optional): Whether to ignore unrecognized configuration options.
-                Defaults to True.
-
-        Returns:
-            FaultToleranceConfig: The fault tolerance configuration object.
-
-        Raises:
-            ValueError: If the 'fault_tolerance' section is not found in the config file.
-        """
-        with open(cfg_path, 'r') as file:
-            yaml_data = yaml.safe_load(file)
-            ft_cfg = FaultToleranceConfig._find_fault_tol_section(yaml_data)
-            if ft_cfg:
-                return FaultToleranceConfig.from_kwargs(
-                    **ft_cfg, ignore_not_recognized=ignore_not_recognized
-                )
-            else:
-                raise ValueError(f"'fault_tolerance' section not found in config file {cfg_path}")
 
     @staticmethod
     def _parse_timeout_arg(timeout_arg: str) -> Optional[float]:
@@ -299,24 +247,12 @@ class FaultToleranceConfig:
         """
         Init FT config object from parsed CLI args.
 
-        Implements the following logic:
-        - Use default FT config as a base.
-        - If there is a config file argument defined, first try to read the FT config from the file.
-        - Update the FT config with FT args provided via CLI.
-        - If can't read from file and there are no related args in CLI, raise an exception.
+        Starts from the default FT config and applies the FT args given on the command line.
 
         Args:
             args (argparse.Namespace): Parsed arguments
         """
-        # Start with default config
         ft_cfg = FaultToleranceConfig()
-        is_read_from_file = False
-
-        # Try to read from config file if specified
-        if args.ft_cfg_path is not None:
-            with contextlib.suppress(ValueError):
-                ft_cfg = FaultToleranceConfig.from_yaml_file(args.ft_cfg_path)
-                is_read_from_file = True
 
         # Extract FT args from CLI
         cli_ft_args = {}
@@ -345,50 +281,13 @@ class FaultToleranceConfig:
         # Update config with CLI args
         for arg_name, arg_val in cli_ft_args.items():
             setattr(ft_cfg, arg_name, arg_val)
+        ft_cfg.timeout_dump = TimeoutDumpConfig.from_args(args)
 
         # Fix any type issues
         ft_cfg._fix_log_level_type()
         ft_cfg._fix_rank_termination_signal_type()
 
         return ft_cfg
-
-    def to_yaml_file(self, cfg_path: str) -> None:
-        """
-        Convert the configuration object to a YAML file and save it to the specified path.
-
-        Args:
-            cfg_path (str): The path to save the YAML file.
-
-        Returns:
-            None
-        """
-        # first, ensure that `rank_termination_signal` and `log_level` have their native types
-        # this might not be the case, if the object was modified after creation
-        self._fix_rank_termination_signal_type()
-        self._fix_log_level_type()
-        with open(cfg_path, 'w') as file:
-            ft_cfg_dict = dataclasses.asdict(self)
-            ft_cfg_dict['rank_termination_signal'] = self.rank_termination_signal.name
-            ft_cfg_dict['log_level'] = self.log_level
-            ft_cfg_dict = {'fault_tolerance': ft_cfg_dict}
-            yaml.dump(ft_cfg_dict, file)
-
-    @staticmethod
-    def _find_fault_tol_section(yaml_data):
-        if isinstance(yaml_data, dict):
-            if "fault_tolerance" in yaml_data:
-                return yaml_data["fault_tolerance"]
-            else:
-                for key, value in yaml_data.items():
-                    sub_config = FaultToleranceConfig._find_fault_tol_section(value)
-                    if sub_config:
-                        return sub_config
-        elif isinstance(yaml_data, list):
-            for item in yaml_data:
-                sub_config = FaultToleranceConfig._find_fault_tol_section(item)
-                if sub_config:
-                    return sub_config
-        return None
 
     def _fix_rank_termination_signal_type(self):
         if isinstance(self.rank_termination_signal, int):

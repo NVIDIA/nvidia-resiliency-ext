@@ -21,8 +21,7 @@ Pass the shared decision directory to ``ft_launcher``:
      <other-options> train.py
 
 The path must be absolute and accessible to every launcher. Omitting the option
-disables consumption. The equivalent YAML field is
-``fault_tolerance.segment_health_check_dir``.
+disables consumption.
 
 Supported Launch Shape
 ----------------------

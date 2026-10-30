@@ -71,7 +71,4 @@ remain available but are not needed for this integration. See
 :doc:`../configuration` before experimenting with them.
 
 See :doc:`../examples/train_ddp_sections` for runnable commands and checkpoint
-recovery checks. The optional YAML equivalent is:
-
-.. literalinclude:: ../../../../examples/fault_tolerance/fault_tol_cfg_sections.yaml
-   :language: yaml
+recovery checks.
