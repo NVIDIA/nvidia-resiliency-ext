@@ -27,7 +27,11 @@ from .types import (
 )
 
 _SPLITLOG_MODE = "splitlog"
-_ATTRSVC_INCOMPLETE_STATUSES = frozenset({"pending", "in_flight"})
+#: Public lifecycle statuses that mean the analysis has not settled yet. This
+#: is the client-facing vocabulary; the backend's internal names ("registered",
+#: "analyzing") never appear on the wire and must not be tested for.
+ATTRSVC_INCOMPLETE_STATUSES = frozenset({"pending", "in_flight"})
+_ATTRSVC_INCOMPLETE_STATUSES = ATTRSVC_INCOMPLETE_STATUSES
 _ATTRSVC_COMPLETED_STATUS = "completed"
 _ATTRSVC_LIFECYCLE_STATUSES = _ATTRSVC_INCOMPLETE_STATUSES | {_ATTRSVC_COMPLETED_STATUS}
 

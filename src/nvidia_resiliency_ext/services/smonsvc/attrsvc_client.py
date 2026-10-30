@@ -250,6 +250,7 @@ class AttrsvcClient:
         user: str = "unknown",
         cycle: int | None = None,
         analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
+        wait: bool | None = None,
     ) -> None:
         """
         Make an HTTP request to /logs endpoint with retry logic.
@@ -281,6 +282,7 @@ class AttrsvcClient:
                         self._client,
                         log_path,
                         wl_restart=cycle,
+                        wait=wait,
                     )
 
                 if response.status_code == 200:
