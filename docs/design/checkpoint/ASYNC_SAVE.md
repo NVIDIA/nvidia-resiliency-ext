@@ -29,12 +29,14 @@ Scope:
 
 `CheckpointMetadataCache`, one per training process, kept by the caller across saves (Megatron-LM: in the save strategy):
 
-| Field             | Rank        | Content                                                                                                                                                                                                       |
-| ----------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `global_metadata` | all ranks   | A copy of the loaded checkpoint's global metadata, from `set_cached_global_metadata` until the first save. The caller's object is never written to, and the copy drops the local plans older versions attach. |
-|                   | coordinator | Global metadata of the previous save, built or reused.                                                                                                                                                        |
-| `local_plan`      | all ranks   | This rank's local plan of the previous save; `None` before the first save in the process.                                                                                                                     |
-| `central_plan`    | all ranks   | This rank's global plan of the previous save.                                                                                                                                                                 |
+| Field             | Rank        | Content                                                                                                                 |
+| ----------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `global_metadata` | all ranks   | Loaded checkpoint's global metadata without its `storage_data`, from `set_cached_global_metadata` until the first save. |
+|                   | coordinator | Global metadata of the previous save, built or reused.                                                                  |
+| `local_plan`      | all ranks   | This rank's local plan of the previous save; `None` before the first save in the process.                               |
+| `central_plan`    | all ranks   | This rank's global plan of the previous save.                                                                           |
+
+On every save the coordinator hands `finish` a shallow copy of the cached metadata, so the save's `storage_data` is dropped once written. Kept in the cache, it would stay alive on the coordinator and slow down every full garbage collection there, which its data-parallel peers wait for at the next save.
 
 Staging buffers, keyed by a hash of the rank's tensor write items:
 
@@ -85,8 +87,9 @@ sequenceDiagram
     W-->>R: write results (results queue)
 
     Note over C,R: Finalize: maybe_finalize_async_calls (all_reduce of done flags),<br/>then save_state_dict_async_finalize
-    R->>C: gather_object(write results)
-    C->>S: finish: write .metadata (temp file, fsync, rename)
+    R->>C: all_reduce(widest table), gather(write results as tables)
+    Note over C,R: A rank that can't send a table sends its write results pickled
+    C->>S: finish: write .metadata from the tables (temp file, fsync, rename)
     C->>R: broadcast failure flag
 ```
 
@@ -123,7 +126,7 @@ sequenceDiagram
         opt previous checkpoint not finalized yet (drain)
             W-->>C: wait for this rank's worker to finish writing
             W-->>R: wait for this rank's worker to finish writing
-            R->>C: gather_object(previous write results)
+            R->>C: gather(previous write results as tables)
             C->>S: write the previous checkpoint's .metadata
             C->>R: broadcast failure flag
         end
@@ -132,7 +135,7 @@ sequenceDiagram
         and
             R->>R: prepare_write_data: copy GPU to the cached shm tensors
         end
-        Note over C: Writes the cached metadata
+        Note over C: Writes a shallow copy of the cached metadata
     end
 
     C->>W: schedule_async_request, shm tensors not sent again
@@ -168,7 +171,7 @@ sequenceDiagram
     end
     Note over C,R: verify_global_metadata_reuse: all_reduce(SUM) of 5 int64
     alt sum is zero: same chunks, sizes and properties
-        Note over C: Writes the cached copy of the loaded metadata
+        Note over C: Writes a shallow copy of the loaded metadata
         Note over R: Drop the loaded metadata
     else plans differ (e.g. world size or parallelism changed)
         R->>C: gather_object(local plan)
