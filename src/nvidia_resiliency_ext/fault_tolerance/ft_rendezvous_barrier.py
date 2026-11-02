@@ -69,6 +69,7 @@ from ..shared_utils.profiling import (
 )
 from ..shared_utils.telemetry import span
 from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
+from .cycle_outcome import LocalCycleOutcome, decode_outcome
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
@@ -1678,7 +1679,96 @@ class _RendezvousBarrierState:
             # Do not hold the rendezvous release on attribution I/O. The submit helper
             # records the cycle before issuing the bounded attrsvc POST.
             self._submit_attribution_log_for_round(closed_round)
+            # Also after the release: participants do not wait for this read.
+            self._collect_cycle_outcomes_as_host(closed_round)
             return
+
+    def _collect_cycle_outcomes_as_host(self, closed_round: int) -> None:
+        """Collect the launchers' outcome records of the cycle that preceded `closed_round`.
+
+        Launchers append their record before rejoining, so once round N+1 has closed, the
+        records of every launcher that rejoined it are in the store. This never waits:
+        a record appended after the read is not collected.
+        """
+        if self._cycle_info_reporter is None or closed_round < 1:
+            return
+        cycle = closed_round - 1
+        try:
+            start = time.monotonic()
+            data = self._read_cycle_outcome_data(cycle)
+            read_elapsed = time.monotonic() - start
+            start = time.monotonic()
+            outcomes, malformed = self._decode_cycle_outcomes(cycle, data)
+            decode_elapsed = time.monotonic() - start
+        except SignalException:
+            raise
+        except Exception as e:
+            log.warning("Failed to collect the outcomes of cycle %s: %s", cycle, e, exc_info=True)
+            return
+        if not outcomes and not malformed:
+            return
+        ends = defaultdict(int)
+        for outcome in outcomes:
+            ends[outcome.node_end.value] += 1
+        log.info(
+            "Collected the outcomes of cycle %s from %s launchers (%s), %s malformed, "
+            "%s bytes: read %.1fms, decode %.1fms",
+            cycle,
+            len(outcomes),
+            ", ".join(f"{end}={count}" for end, count in sorted(ends.items())),
+            malformed,
+            len(data),
+            read_elapsed * 1000,
+            decode_elapsed * 1000,
+        )
+        if not outcomes:
+            return
+        try:
+            self._cycle_info_reporter.report_cycle_outcomes(cycle, outcomes)
+        except Exception as e:
+            log.warning(
+                "Failed to report the outcomes of cycle %s to cycle info: %s",
+                cycle,
+                e,
+                exc_info=True,
+            )
+
+    def _read_cycle_outcome_data(self, cycle: int) -> bytes:
+        """Read and remove the outcome records of `cycle` from the store; empty if none."""
+        key = self.cycle_outcomes_key(cycle)
+        # get() waits for a missing key; check first so a cycle with no records never blocks.
+        if not self.store.check([key]):
+            return b""
+        data = self.store.get(key)
+        self.store.delete_key(key)
+        return data
+
+    @staticmethod
+    def _decode_cycle_outcomes(cycle: int, data: bytes) -> Tuple[List[LocalCycleOutcome], int]:
+        """Decode the outcome records of `cycle` read from the store.
+
+        Returns:
+            The outcomes, one per launcher, and the number of records skipped as
+            malformed or belonging to another cycle.
+        """
+        outcomes = {}
+        malformed = 0
+        for line in data.splitlines():
+            if not line:
+                continue
+            try:
+                outcome = decode_outcome(line)
+            except ValueError:
+                malformed += 1
+                continue
+            if outcome.cycle != cycle:
+                malformed += 1
+                continue
+            # A launcher's ranks identify it even when launchers share a hostname; keep the
+            # first record if one was appended twice.
+            launcher_key = (outcome.node, tuple(rank.global_rank for rank in outcome.ranks))
+            outcomes.setdefault(launcher_key, outcome)
+        return list(outcomes.values()), malformed
 
     def _submit_attribution_log_for_round(self, round_id: int) -> None:
         """Submit the just-started cycle log from the rendezvous control host."""
@@ -2358,6 +2448,18 @@ class _RendezvousBarrierState:
         self.store.set(next_round_done_key, "0".encode('utf-8'))
         log.debug(f"Opened round {self._round + 1} for joining")
         self._report_cycle_end_as_host(self._round + 1)
+
+    def cycle_outcomes_key(self, cycle: int) -> str:
+        """TCPStore key collecting the launchers' outcome records of `cycle`."""
+        return f"{self.prefix}:cycle_outcomes_{cycle}"
+
+    def append_cycle_outcome(self, cycle: int, record: bytes) -> None:
+        """Append one launcher's encoded outcome record of `cycle`.
+
+        Launchers append before rejoining the rendezvous; records are newline-terminated
+        (see cycle_outcome.encode_outcome), so one key holds every launcher's record.
+        """
+        self.store.append(self.cycle_outcomes_key(cycle), record)
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):

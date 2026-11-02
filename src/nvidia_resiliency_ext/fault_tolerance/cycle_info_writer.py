@@ -25,6 +25,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Sequence, Tuple
@@ -35,6 +36,7 @@ from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2
 
+from .cycle_outcome import CycleEndReason, LocalCycleOutcome
 from .utils import hostnames_to_slurm_nodelist, ranks_to_range_str, slurm_sort_addrs
 
 logger = logging.getLogger(LogConfig.name)
@@ -95,6 +97,7 @@ class _CycleInfoTask:
     def __init__(self, op: str, **kwargs: Any):
         self.op = op
         self.kwargs = kwargs
+        self.enqueued_at = time.monotonic()
 
 
 class CycleInfoWriter:
@@ -173,6 +176,33 @@ class CycleInfoWriter:
             )
         )
 
+    def update_cycle_outcomes(
+        self,
+        job_id: str,
+        attempt_index: int,
+        cycle_number: int,
+        launcher_outcomes: Sequence[Dict[str, Any]],
+        launchers_expected: int,
+        launchers_reported: int,
+    ) -> None:
+        """Enqueue an atomic update of the cycle file with the launchers' outcomes."""
+        if self._shutdown_requested:
+            logger.warning("CycleInfoWriter already shutdown, ignoring update_cycle_outcomes")
+            return
+        self._queue.put(
+            _CycleInfoTask(
+                op=_CycleInfoTask.UPDATE,
+                job_id=job_id,
+                attempt_index=attempt_index,
+                cycle_number=cycle_number,
+                update_payload={
+                    "launcher_outcomes": list(launcher_outcomes),
+                    "outcome_launchers_expected": launchers_expected,
+                    "outcome_launchers_reported": launchers_reported,
+                },
+            )
+        )
+
     def shutdown(self) -> None:
         """Signal the worker to exit and wait for it (drains queue).
         If a cycle was started (write_cycle_start) but cycle end was never recorded
@@ -220,6 +250,7 @@ class CycleInfoWriter:
                         task.kwargs["attempt_index"],
                         task.kwargs["cycle_number"],
                         task.kwargs["update_payload"],
+                        enqueued_at=task.enqueued_at,
                     )
             except Exception as e:
                 logger.exception("CycleInfoWriter task failed: %s", e)
@@ -275,8 +306,10 @@ class CycleInfoWriter:
         attempt_index: int,
         cycle_number: int,
         update_payload: Dict[str, Any],
+        enqueued_at: Optional[float] = None,
     ) -> None:
         """Update the cycle info file by applying update_payload; increment generation by one."""
+        start = time.monotonic()
         filename = _cycle_info_filename(job_id, attempt_index, cycle_number)
         path = os.path.join(self._nvrx_dir, filename)
         if not os.path.isfile(path):
@@ -288,20 +321,33 @@ class CycleInfoWriter:
             with open(path) as f:
                 msg = json_format.Parse(f.read(), nvrx_interface_pb2.NVRxCycleInfo())
             for key, value in update_payload.items():
-                if hasattr(msg, key):
+                if not hasattr(msg, key):
+                    continue
+                if isinstance(value, list):
+                    # Repeated fields cannot be assigned; replace their contents.
+                    msg.ClearField(key)
+                    json_format.ParseDict({key: value}, msg)
+                else:
                     setattr(msg, key, value)
             msg.generation = msg.generation + 1
+            text = json_format.MessageToJson(
+                msg,
+                indent=2,
+                preserving_proto_field_name=True,
+                always_print_fields_with_no_presence=True,
+            )
             with open(tmp_path, "w") as f:
-                f.write(
-                    json_format.MessageToJson(
-                        msg,
-                        indent=2,
-                        preserving_proto_field_name=True,
-                        always_print_fields_with_no_presence=True,
-                    )
-                )
+                f.write(text)
                 f.flush()
             os.replace(tmp_path, path)
+            logger.debug(
+                "Updated %s (%s, %d bytes) in %.1fms after %.1fms queued",
+                filename,
+                ", ".join(update_payload),
+                len(text),
+                (time.monotonic() - start) * 1000,
+                (start - enqueued_at) * 1000 if enqueued_at is not None else 0.0,
+            )
         except (OSError, json_format.ParseError) as e:
             logger.warning("Failed to update cycle info in %s: %s", path, e)
             try:
@@ -337,6 +383,8 @@ class CycleInfoReporter:
         self._attempt_index = attempt_index
         self._current_cycle: Optional[_ReportedCycle] = None
         self._started_cycles: set[int] = set()
+        # Active launchers of each started cycle, until its outcomes are reported.
+        self._active_launchers: Dict[int, int] = {}
         self._shutdown = False
 
     @staticmethod
@@ -372,6 +420,7 @@ class CycleInfoReporter:
         )
         self._current_cycle = _ReportedCycle(job_id, attempt_index, snapshot.cycle_number)
         self._started_cycles.add(snapshot.cycle_number)
+        self._active_launchers[snapshot.cycle_number] = len(snapshot.active_ranks or ())
         return True
 
     def report_cycle_end(self) -> bool:
@@ -384,6 +433,35 @@ class CycleInfoReporter:
             attempt_index=current_cycle.attempt_index,
             cycle_number=current_cycle.cycle_number,
             cycle_end_time=utc_iso_now(),
+        )
+        return True
+
+    def report_cycle_outcomes(
+        self, cycle_number: int, outcomes: Sequence[LocalCycleOutcome]
+    ) -> bool:
+        """Add the launchers' outcomes of `cycle_number` to its cycle info file.
+
+        Launchers that only followed a peer's restart are counted but not listed; the
+        listed ones are sorted by when they observed the end.
+        """
+        if self._shutdown:
+            return False
+        job_id, attempt_index = self._resolve_file_namespace()
+        listed = sorted(
+            (
+                outcome
+                for outcome in outcomes
+                if outcome.node_end is not CycleEndReason.PEER_RESTART
+            ),
+            key=lambda outcome: (outcome.detected_at, outcome.node),
+        )
+        self._writer.update_cycle_outcomes(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=cycle_number,
+            launcher_outcomes=[self._format_outcome(outcome) for outcome in listed],
+            launchers_expected=self._active_launchers.pop(cycle_number, 0),
+            launchers_reported=len(outcomes),
         )
         return True
 
@@ -420,6 +498,35 @@ class CycleInfoReporter:
             addr_to_rank = dict(zip(active_addrs, active_ranks))
             active_ranks = [addr_to_rank[addr] for addr in slurm_sort_addrs(active_addrs)]
         return ranks_to_range_str(active_ranks)
+
+    @staticmethod
+    def _format_outcome(outcome: LocalCycleOutcome) -> Dict[str, Any]:
+        """NVRxLauncherOutcome fields of `outcome`, as a JSON-style dict."""
+        ranks = []
+        for rank in outcome.ranks:
+            fields: Dict[str, Any] = {
+                "global_rank": rank.global_rank,
+                "local_rank": rank.local_rank,
+                "pid": rank.pid,
+                "end": rank.end.value,
+                "timeout_sections": list(rank.timeout_sections),
+            }
+            if rank.exitcode is not None:
+                fields["exitcode"] = rank.exitcode
+            if rank.timeout_kind is not None:
+                fields["timeout_kind"] = rank.timeout_kind.value
+            ranks.append(fields)
+        return {
+            "node": outcome.node,
+            "end": outcome.node_end.value,
+            "detected_at": utc_iso(outcome.detected_at),
+            "ranks": ranks,
+        }
+
+
+def utc_iso(timestamp: float) -> str:
+    """Return `timestamp` (seconds since the epoch) in ISO 8601 UTC, like utc_iso_now()."""
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def utc_iso_now() -> str:

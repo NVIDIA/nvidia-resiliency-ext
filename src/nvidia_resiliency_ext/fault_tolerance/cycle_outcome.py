@@ -9,6 +9,7 @@ Serialize enum members with ``.value``: for ``(str, Enum)`` mixins, ``str()`` an
 f-strings render the member name on newer Python versions.
 """
 
+import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Mapping, Optional, Sequence
@@ -125,3 +126,72 @@ def build_local_cycle_outcome(
         detected_at=detected_at,
         ranks=tuple(ranks),
     )
+
+
+# Wire format: one JSON object per line, so records appended to one store key can be split
+# on newlines (JSON escapes newlines inside strings). Ranks are positional lists to keep
+# records small; bump WIRE_VERSION when changing the layout.
+WIRE_VERSION = 1
+# Bound each record so a workload with many or long section names cannot grow it.
+MAX_TIMEOUT_SECTIONS = 4
+MAX_SECTION_NAME_LEN = 64
+
+
+def encode_outcome(outcome: LocalCycleOutcome) -> bytes:
+    """Serialize `outcome` as one newline-terminated JSON record."""
+    record = {
+        "v": WIRE_VERSION,
+        "c": outcome.cycle,
+        "n": outcome.node,
+        "e": outcome.node_end.value,
+        "t": round(outcome.detected_at, 3),
+        "r": [
+            [
+                rank.global_rank,
+                rank.local_rank,
+                rank.pid,
+                rank.end.value,
+                rank.exitcode,
+                rank.timeout_kind.value if rank.timeout_kind is not None else None,
+                [
+                    name[:MAX_SECTION_NAME_LEN]
+                    for name in rank.timeout_sections[:MAX_TIMEOUT_SECTIONS]
+                ],
+            ]
+            for rank in outcome.ranks
+        ],
+    }
+    return json.dumps(record, separators=(",", ":")).encode() + b"\n"
+
+
+def decode_outcome(line: bytes) -> LocalCycleOutcome:
+    """Parse one record written by `encode_outcome`.
+
+    Raises:
+        ValueError: The record is malformed or has an unsupported version.
+    """
+    try:
+        record = json.loads(line)
+        if record["v"] != WIRE_VERSION:
+            raise ValueError(f"unsupported cycle outcome version {record['v']!r}")
+        ranks = tuple(
+            RankOutcome(
+                global_rank=global_rank,
+                local_rank=local_rank,
+                pid=pid,
+                end=RankEndReason(end),
+                exitcode=exitcode,
+                timeout_kind=TimeoutKind(kind) if kind is not None else None,
+                timeout_sections=tuple(sections),
+            )
+            for global_rank, local_rank, pid, end, exitcode, kind, sections in record["r"]
+        )
+        return LocalCycleOutcome(
+            cycle=record["c"],
+            node=record["n"],
+            node_end=CycleEndReason(record["e"]),
+            detected_at=record["t"],
+            ranks=ranks,
+        )
+    except (KeyError, TypeError) as e:
+        raise ValueError(f"malformed cycle outcome record: {e!r}") from e

@@ -55,4 +55,53 @@ message NVRxCycleInfo {
   // Group ranks of active nodes, aligned with active_nodes (same sort order).
   // SLURM-range-compressed, e.g. "0-3,6".
   string active_ranks = 10;
+
+  // Cycle outcomes, written when the next rendezvous round closes and only with
+  // --ft-cycle-info-outcomes. Each active launcher reports how the cycle ended for it
+  // before rejoining; the store host collects the reports without waiting for absent
+  // launchers.
+
+  // Reports of launchers that observed the end themselves (failed or terminated).
+  // Launchers that only followed a peer's restart are counted, not listed.
+  repeated NVRxLauncherOutcome launcher_outcomes = 11;
+
+  // Active launchers of this cycle (0 if the store host did not see the cycle start),
+  // and how many of them reported. Fewer reports than expected means some launchers
+  // did not rejoin (e.g. their node was lost).
+  uint32 outcome_launchers_expected = 12;
+  uint32 outcome_launchers_reported = 13;
+}
+
+// How a cycle ended on one launcher, as that launcher observed it.
+message NVRxLauncherOutcome {
+  // Launcher host name
+  string node = 1;
+
+  // "failed" (a local worker exited or was stopped by its rank monitor),
+  // "peer_restart", "terminated" (a no-restart decision), or "completed"
+  string end = 2;
+
+  // When the launcher observed the end, ISO 8601 UTC
+  string detected_at = 3;
+
+  repeated NVRxRankOutcome ranks = 4;
+}
+
+// How one worker of a launcher ended.
+message NVRxRankOutcome {
+  uint32 global_rank = 1;
+  uint32 local_rank = 2;
+  uint32 pid = 3;
+
+  // "completed", "failed" (exited on its own), "stopped_by_launcher", or
+  // "stopped_by_rank_monitor" (its rank monitor detected a timeout first)
+  string end = 4;
+
+  // Worker exit code when it exited; negative for a signal
+  optional int32 exitcode = 5;
+
+  // For stopped_by_rank_monitor: "heartbeat", "section", or "out_of_section",
+  // and the workload sections that timed out
+  string timeout_kind = 6;
+  repeated string timeout_sections = 7;
 }

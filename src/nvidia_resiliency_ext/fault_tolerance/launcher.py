@@ -97,6 +97,7 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
     LocalCycleOutcome,
     RankTimeout,
     build_local_cycle_outcome,
+    encode_outcome,
 )
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
@@ -741,6 +742,10 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._remaining_restarts -= 1
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
+            # After opening the round, so peers are not delayed by the write, and before
+            # rejoining it in _restart_workers, so the store host finds the record when
+            # it closes the round.
+            self._write_cycle_outcome()
             self._restart_workers(self._worker_group)
             return True
         else:
@@ -779,6 +784,35 @@ class LocalElasticAgent(SimpleElasticAgent):
         except Exception as e:
             self._cycle_outcome = None
             logger.warning(f"Failed to record the cycle outcome: {e}")
+
+    def _write_cycle_outcome(self) -> None:
+        """Publish the outcome of the cycle that just ended for the store host to collect.
+
+        Call before rejoining the rendezvous: the store host reads the records when it
+        closes the next round, so every launcher that rejoined has published by then.
+        """
+        outcome = self._cycle_outcome
+        # Nothing recorded for this cycle: outcomes are disabled or recording failed.
+        if outcome is None or outcome.cycle != self._get_global_cycle_number():
+            return
+        try:
+            start = time.monotonic()
+            record = encode_outcome(outcome)
+            encoded = time.monotonic()
+            self._rdzv_handler._barrier_state.append_cycle_outcome(outcome.cycle, record)
+            logger.debug(
+                "Published the outcome of cycle %s (%d bytes): encode %.2fms, append %.2fms",
+                outcome.cycle,
+                len(record),
+                (encoded - start) * 1000,
+                (time.monotonic() - encoded) * 1000,
+            )
+        except SignalException:
+            # Termination signals must reach run(), which shuts the workers down.
+            raise
+        except Exception as e:
+            # Best effort: the restart must not depend on a diagnostics write.
+            logger.warning(f"Failed to publish the outcome of cycle {outcome.cycle}: {e}")
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         return self._invoke_run_with_any_failed_policy(role)
@@ -1152,8 +1186,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         timeouts = {}
+        start = time.monotonic()
+        results = []
         try:
-            for result in asyncio.run(query_all()):
+            results = asyncio.run(query_all())
+            for result in results:
                 if isinstance(result, SignalException):
                     raise result
                 if isinstance(result, BaseException):
@@ -1166,6 +1203,13 @@ class LocalElasticAgent(SimpleElasticAgent):
             raise
         except Exception as e:
             logger.error(f"Error querying rank monitors for timeouts: {e}")
+        logger.debug(
+            "Queried %d rank monitors about cycle %s in %.1fms: %d timeouts",
+            len(results),
+            cycle,
+            (time.monotonic() - start) * 1000,
+            len(timeouts),
+        )
         return timeouts
 
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
