@@ -19,6 +19,7 @@ from copy import deepcopy
 from dataclasses import fields
 from time import sleep
 from typing import IO, Any
+from unittest import mock
 
 import pytest
 import torch
@@ -36,6 +37,9 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from nvidia_resiliency_ext.checkpointing.async_ckpt import filesystem_async, state_dict_saver
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, table
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer as md_writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt.cached_metadata_filesystem_reader import (
+    CachedMetadataFileSystemReader,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     AsyncCallsQueue,
     AsyncRequest,
@@ -124,6 +128,67 @@ def rank_state_dict(extra=False):
 
 
 class TestAsyncSave:
+    @pytest.mark.parametrize('mode', ['0', 'python', '1'])
+    def test_cached_reader_survives_save_metadata_reuse(
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode
+    ):
+        """Repeated loads deserialize once, including after a save reuses loaded metadata."""
+        Utils.initialize_distributed()
+        monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
+        md_writer.fast_metadata_enabled.cache_clear()
+        md_writer._select_dumps.cache_clear()
+        CachedMetadataFileSystemReader.clear_metadata_cache()
+        expected = rank_state_dict()
+        try:
+            with (
+                TempNamedDir(tmp_path_dist_ckpt / 'reader_source') as source,
+                TempNamedDir(tmp_path_dist_ckpt / 'reader_resaved') as destination,
+            ):
+                self.async_save_checkpoint(
+                    source, expected, DecentralizedSavePlanner(), async_queue
+                )
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                original_read = FileSystemReader.read_metadata
+                with mock.patch.object(
+                    FileSystemReader, 'read_metadata', autospec=True, side_effect=original_read
+                ) as reads:
+                    reader = CachedMetadataFileSystemReader(source)
+                    metadata = reader.read_metadata()
+                    cache = CheckpointMetadataCache()
+                    cache.set_cached_global_metadata(metadata)
+                    CountingSavePlanner.calls.clear()
+                    self.async_save_checkpoint(
+                        destination,
+                        expected,
+                        DecentralizedSavePlanner(),
+                        async_queue,
+                        caching=True,
+                        metadata_cache=cache,
+                    )
+                    async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                    built = CountingSavePlanner.calls['global']
+                    loaded = []
+                    for _ in range(2):
+                        state_dict = {
+                            key: torch.empty_like(value) for key, value in expected.items()
+                        }
+                        load(state_dict, storage_reader=CachedMetadataFileSystemReader(source))
+                        loaded.append(state_dict)
+                    source_reads = reads.call_count
+                restored = self.load_checkpoint(
+                    destination, {key: torch.empty_like(value) for key, value in expected.items()}
+                )
+            # All ranks finish collectives before making assertions.
+            assert source_reads == 1
+            assert built == 0
+            for state_dict in [*loaded, restored]:
+                for key, value in expected.items():
+                    assert torch.equal(state_dict[key], value)
+        finally:
+            CachedMetadataFileSystemReader.clear_metadata_cache()
+            md_writer.fast_metadata_enabled.cache_clear()
+            md_writer._select_dumps.cache_clear()
+
     def get_async_save_request(self, writer, save_state_dict_ret) -> AsyncRequest:
         """Creates an async save request with a finalization step."""
         save_fn, preload_fn, save_args = writer.get_save_function_and_args()
