@@ -15,9 +15,11 @@
  * limitations under the License.
 */
 
-// Native version of `pickler._MetadataPickler`: writes the standard pickle opcodes for a
-// torch DCP `Metadata` directly. Its output is byte-identical to the Python writer. The few small
-// objects (TensorProperties, StorageMeta, ...) are encoded by the Python `small_pickle` callback.
+// The C++ versions of `StateDictTable.from_metadata` and of `pickler._MetadataPickler`. The first
+// converts a torch DCP `Metadata` into a `StateDictTable`. The second writes the standard pickle
+// opcodes of the Metadata from that table. Both give exactly what the Python versions give. The
+// few small objects (TensorProperties, StorageMeta, ...) are left to the Python `small_pickle`
+// callback.
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -25,9 +27,11 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -48,11 +52,22 @@ constexpr char STACK_GLOBAL = '\x93', MEMOIZE = '\x94', NONE = 'N';
 constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
-// Write-result tables, as table.py encodes them: little-endian int64s, header first.
+// Write-result tables, as write_result_table.py encodes them: little-endian int64s, header first.
 static_assert(std::endian::native == std::endian::little, "write-result tables are little-endian");
 constexpr int64_t TABLE_MAGIC = 0x314C42545852564E;  // the bytes "NVRXTBL1", read little-endian
-constexpr int64_t TABLE_VERSION = 1;
-enum class Header : uint8_t { Magic, Version, Entries, Strings, StringBytes, Offsets };
+constexpr int64_t TABLE_VERSION = 2;
+enum class Header : uint8_t {
+    Magic,
+    Version,
+    Entries,
+    Strings,
+    StringBytes,
+    Offsets,
+    FqnMode,
+    Fingerprint
+};
+// How a table names fqns: by string id, or by entry in the coordinator's fqn list.
+enum class FqnMode : int64_t { Strings = 0, Indices = 1 };
 constexpr size_t HEADER = 8;  // int64s
 enum class Column : uint8_t { Fqn, Index, OffsetNdim, Path, Offset, Length, Flags };
 constexpr size_t COLUMNS = 7;
@@ -127,8 +142,14 @@ class WriteResultTable {
         const Int64s entries(take(Header::Entries, sizeof(int64_t) * COLUMNS));
         const Int64s offsets(take(Header::Offsets, sizeof(int64_t)));
         const std::span<const std::byte> blob = take(Header::StringBytes, 1);
+        const int64_t fqn_mode = header[Header::FqnMode];
+        if (fqn_mode != static_cast<int64_t>(FqnMode::Strings) &&
+            fqn_mode != static_cast<int64_t>(FqnMode::Indices)) {
+            bad_table("unknown fqn mode");
+        }
         return WriteResultTable(string_len, entries, offsets,
-                                {reinterpret_cast<const char*>(blob.data()), blob.size()});
+                                {reinterpret_cast<const char*>(blob.data()), blob.size()},
+                                static_cast<FqnMode>(fqn_mode), header[Header::Fingerprint]);
     }
 
     // The number of entries.
@@ -138,7 +159,8 @@ class WriteResultTable {
     [[nodiscard]] Int64s entry(size_t r) const { return entries_.subspan(COLUMNS * r, COLUMNS); }
 
     // Replace out's contents with the strings, as views into the row. Their bytes are not checked
-    // to be UTF-8: tables come from this job's ranks, which encoded them (see table.py).
+    // to be UTF-8: tables come from this job's ranks, which encoded them (see
+    // write_result_table.py).
     void split_strings(std::vector<std::string_view>& out) const {
         out.clear();
         std::string_view rest = blob_;
@@ -164,6 +186,15 @@ class WriteResultTable {
         return offsets_.subspan(pos, static_cast<size_t>(ndim));
     }
 
+    // Return how the table names fqns.
+    [[nodiscard]] FqnMode fqn_mode() const { return fqn_mode_; }
+
+    // Return the fingerprint of the fqn list an index table was encoded against.
+    [[nodiscard]] int64_t fingerprint() const { return fingerprint_; }
+
+    // Return the number of strings.
+    [[nodiscard]] size_t strings() const { return string_len_.size(); }
+
     // Check that the entries' offsets, used up to position pos, are all of them.
     void check_offsets_used(size_t pos) const {
         if (pos != offsets_.size()) {
@@ -173,13 +204,21 @@ class WriteResultTable {
 
    private:
     // The sections parse found.
-    WriteResultTable(Int64s string_len, Int64s entries, Int64s offsets, std::string_view blob)
-        : string_len_(string_len), entries_(entries), offsets_(offsets), blob_(blob) {}
+    WriteResultTable(Int64s string_len, Int64s entries, Int64s offsets, std::string_view blob,
+                     FqnMode fqn_mode, int64_t fingerprint)
+        : string_len_(string_len),
+          entries_(entries),
+          offsets_(offsets),
+          blob_(blob),
+          fqn_mode_(fqn_mode),
+          fingerprint_(fingerprint) {}
 
     Int64s string_len_;  // the byte length of each string
     Int64s entries_;     // entries() rows of COLUMNS
     Int64s offsets_;     // the entries' offset dims, concatenated
     std::string_view blob_;  // the strings, concatenated
+    FqnMode fqn_mode_;
+    int64_t fingerprint_;
 };
 
 // The tables in the rows of a 2-D uint8 array.
@@ -207,10 +246,15 @@ class WriteResultTable {
     return py::reinterpret_steal<py::object>(r);
 }
 
-// New reference to obj.__dict__, the state pickle writes for the metadata classes.
+// Return a new reference to obj.__dict__, the state pickle writes for the metadata classes. Only
+// objects of exactly those classes get here, whose __dict__ is the generic one, so it is fetched
+// directly rather than looked up as an attribute.
 [[nodiscard]] py::object instance_dict(PyObject* obj) {
-    static PyObject* const name = PyUnicode_InternFromString("__dict__");
-    const py::object d = getattr(obj, name);
+    PyObject* const r = PyObject_GenericGetDict(obj, nullptr);
+    if (!r) {
+        throw py::error_already_set();
+    }
+    const auto d = py::reinterpret_steal<py::object>(r);
     if (!PyDict_CheckExact(d.ptr())) {
         throw py::type_error("expected a __dict__");
     }
@@ -234,6 +278,9 @@ class WriteResultTable {
     }
     return r;
 }
+
+// Return the name of obj's type, for error messages.
+[[nodiscard]] std::string type_name(PyObject* obj) { return Py_TYPE(obj)->tp_name; }
 
 // UTF-8 view of a str's characters, valid while s is alive.
 [[nodiscard]] std::string_view utf8(PyObject* s) {
@@ -262,72 +309,495 @@ class WriteResultTable {
     return v;
 }
 
-// Writes the pickle of one Metadata into out_; use once per dump.
-class Writer {
+// Kinds of state_dict_metadata entries, numbered as in state_dict_table.py.
+enum class Kind : uint8_t { Bytes = 0, Tensor = 1, Other = 2 };
+constexpr std::string_view STATE_DICT_METADATA = "state_dict_metadata";
+constexpr std::string_view STORAGE_DATA = "storage_data";
+
+// Reject a malformed state dict table, before anything reads outside its arrays.
+[[noreturn]] void bad_state_dict_table(std::string_view what) {
+    throw py::value_error("state dict table: " + std::string(what));
+}
+
+// The element types of a state dict table's arrays.
+template <typename T>
+concept TableValue = std::same_as<T, uint8_t> || std::same_as<T, int64_t>;
+
+template <TableValue T>
+using Array = py::array_t<T, py::array::c_style>;
+
+// Return the attribute name of table, which must be exactly a tuple, as a StateDictTable's
+// sequences are.
+[[nodiscard]] py::tuple tuple_attr(py::handle table, const char* name) {
+    py::object value = table.attr(name);
+    if (!PyTuple_CheckExact(value.ptr())) {
+        bad_state_dict_table(std::string(name) + " is not a tuple");
+    }
+    return py::reinterpret_steal<py::tuple>(value.release());
+}
+
+// Return the attribute name of table, which must be a 1-D, C-contiguous, aligned array of exactly
+// the element type T.
+template <TableValue T>
+[[nodiscard]] Array<T> array_attr(py::handle table, const char* name) {
+    py::object value = table.attr(name);
+    if (!Array<T>::check_(value) || py::reinterpret_borrow<py::array>(value).ndim() != 1 ||
+        (py::reinterpret_borrow<py::array>(value).flags() &
+         py::detail::npy_api::NPY_ARRAY_ALIGNED_) == 0) {
+        bad_state_dict_table(std::string(name) + " is not a 1-D array of the expected type");
+    }
+    return py::reinterpret_steal<Array<T>>(value.release());
+}
+
+// Return the values of a 1-D array, valid while the array is held.
+template <TableValue T>
+[[nodiscard]] std::span<const T> values(const Array<T>& a) {
+    return {a.data(), static_cast<size_t>(a.size())};
+}
+
+// Return the bytes of a bytes object, valid while it is alive.
+[[nodiscard]] std::string_view bytes_view(PyObject* b) {
+    return {PyBytes_AS_STRING(b), static_cast<size_t>(PyBytes_GET_SIZE(b))};
+}
+
+// A StateDictTable, checked as StateDictTable._check checks it, so that the writer can read its
+// arrays without further checks.
+class StateDictTableView {
    public:
-    // Look up the metadata classes the encoding checks objects against.
-    explicit Writer(py::object small_pickle) : small_pickle_(std::move(small_pickle)) {
+    // A field of the Metadata: its name, and its opcodes (None for the fields written from the
+    // table or the write results).
+    struct Field {
+        std::string name;
+        py::object opcodes;
+    };
+
+    explicit StateDictTableView(py::handle table)
+        : table_(py::reinterpret_borrow<py::object>(table)),
+          fqns_(tuple_attr(table, "fqns")),
+          properties_(tuple_attr(table, "properties")),
+          others_(tuple_attr(table, "others")),
+          kind_array_(array_attr<uint8_t>(table, "kind")),
+          ref_array_(array_attr<int64_t>(table, "ref")),
+          ndim_array_(array_attr<int64_t>(table, "ndim")),
+          chunk_start_array_(array_attr<int64_t>(table, "chunk_start")),
+          dims_start_array_(array_attr<int64_t>(table, "dims_start")),
+          dims_array_(array_attr<int64_t>(table, "dims")),
+          kind_(values(kind_array_)),
+          ref_(values(ref_array_)),
+          ndim_(values(ndim_array_)),
+          chunk_start_(values(chunk_start_array_)),
+          dims_start_(values(dims_start_array_)),
+          dims_(values(dims_array_)) {
+        const py::tuple fields = tuple_attr(table, "fields");
+        for (const py::handle field : fields) {
+            if (!PyTuple_CheckExact(field.ptr()) || PyTuple_GET_SIZE(field.ptr()) != 2) {
+                bad_state_dict_table("a field is not a (name, opcodes) tuple");
+            }
+            PyObject* const name = PyTuple_GET_ITEM(field.ptr(), 0);
+            PyObject* const opcodes = PyTuple_GET_ITEM(field.ptr(), 1);
+            if (!PyUnicode_CheckExact(name)) {
+                bad_state_dict_table("a field name is a " + type_name(name) + ", not a str");
+            }
+            const std::string_view field_name = utf8(name);
+            const bool written_here =
+                field_name == STATE_DICT_METADATA || field_name == STORAGE_DATA;
+            if (written_here ? opcodes != Py_None : !PyBytes_CheckExact(opcodes)) {
+                bad_state_dict_table("unexpected opcodes of field " + std::string(field_name));
+            }
+            fields_.push_back(
+                {std::string(field_name), py::reinterpret_borrow<py::object>(opcodes)});
+        }
+        check();
+    }
+
+    [[nodiscard]] size_t entries() const { return kind_.size(); }
+    // Return the fingerprint of the table's fqn list, read once, on first use: only index tables
+    // need it.
+    [[nodiscard]] int64_t fqns_fingerprint() const {
+        if (!fqns_fingerprint_) {
+            fqns_fingerprint_ = table_.attr("fqn_list").attr("fingerprint").cast<int64_t>();
+        }
+        return *fqns_fingerprint_;
+    }
+    [[nodiscard]] const std::vector<Field>& fields() const { return fields_; }
+    [[nodiscard]] PyObject* fqn(size_t i) const { return PyTuple_GET_ITEM(fqns_.ptr(), i); }
+    [[nodiscard]] Kind kind(size_t i) const { return static_cast<Kind>(kind_[i]); }
+    [[nodiscard]] std::string_view properties(size_t i) const {
+        return bytes_view(PyTuple_GET_ITEM(properties_.ptr(), ref_[i]));
+    }
+    [[nodiscard]] std::string_view other(size_t i) const {
+        return bytes_view(PyTuple_GET_ITEM(others_.ptr(), ref_[i]));
+    }
+    [[nodiscard]] size_t ndim(size_t i) const { return static_cast<size_t>(ndim_[i]); }
+    [[nodiscard]] std::span<const int64_t> size(size_t i) const {
+        return dims_.subspan(static_cast<size_t>(dims_start_[i]), ndim(i));
+    }
+    [[nodiscard]] size_t chunks(size_t i) const {
+        return static_cast<size_t>(chunk_start_[i + 1] - chunk_start_[i]);
+    }
+    // Return chunk k of entry i: its offsets, then its sizes, after the entry's size.
+    [[nodiscard]] std::span<const int64_t> chunk(size_t i, size_t k) const {
+        const size_t width = 2 * ndim(i);
+        return dims_.subspan(static_cast<size_t>(dims_start_[i]) + ndim(i) + width * k, width);
+    }
+    [[nodiscard]] size_t dims_size() const { return dims_.size(); }
+
+   private:
+    // Check that the arrays describe entries() entries consistently; see StateDictTable._check.
+    void check() const {
+        const size_t n = entries();
+        if (static_cast<size_t>(PyTuple_GET_SIZE(fqns_.ptr())) != n || ref_.size() != n ||
+            ndim_.size() != n) {
+            bad_state_dict_table("arrays of different lengths");
+        }
+        const auto check_starts = [n](std::span<const int64_t> starts,
+                                      std::optional<size_t> pool) {
+            if (starts.size() != n + 1 || starts[0] != 0 ||
+                !std::ranges::is_sorted(starts) ||
+                (pool && static_cast<uint64_t>(starts[n]) != *pool)) {
+                bad_state_dict_table("start offsets out of order or range");
+            }
+        };
+        check_starts(chunk_start_, std::nullopt);
+        check_starts(dims_start_, dims_.size());
+        const auto in = [](int64_t ref, const py::tuple& pickles) {
+            return ref >= 0 && ref < PyTuple_GET_SIZE(pickles.ptr()) &&
+                   PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
+        };
+        for (size_t i = 0; i < n; ++i) {
+            if (!PyUnicode_CheckExact(fqn(i))) {
+                bad_state_dict_table("an fqn is not a str");
+            }
+            const int64_t ndim = ndim_[i];
+            const int64_t chunk_count = chunk_start_[i + 1] - chunk_start_[i];
+            const int64_t values = dims_start_[i + 1] - dims_start_[i];
+            if (ndim < 0) {
+                bad_state_dict_table("a negative number of dims");
+            }
+            switch (kind_[i]) {
+                case static_cast<uint8_t>(Kind::Tensor):
+                    if (!in(ref_[i], properties_) || !holds_chunks(values, ndim, chunk_count)) {
+                        bad_state_dict_table("a tensor entry's dims don't match its chunks");
+                    }
+                    // Its chunks have no dims, so nothing else bounds their number.
+                    if (ndim == 0 && chunk_count > 1) {
+                        bad_state_dict_table("a 0-dim tensor entry with more than one chunk");
+                    }
+                    break;
+                case static_cast<uint8_t>(Kind::Other):
+                    if (!in(ref_[i], others_)) {
+                        bad_state_dict_table("an entry refers to no pickle");
+                    }
+                    [[fallthrough]];
+                case static_cast<uint8_t>(Kind::Bytes):
+                    if (ndim != 0 || chunk_count != 0 || values != 0) {
+                        bad_state_dict_table("a non-tensor entry has dims");
+                    }
+                    break;
+                default:
+                    bad_state_dict_table("unknown entry kind");
+            }
+        }
+    }
+
+    // Return whether values = ndim * (1 + 2 * chunk_count): a tensor's size, and the offsets and
+    // sizes of chunk_count chunks.
+    // All three are non-negative; divides first, so nothing can overflow.
+    [[nodiscard]] static bool holds_chunks(int64_t values, int64_t ndim, int64_t chunk_count) {
+        if (ndim == 0) {
+            return values == 0;
+        }
+        const int64_t per_dim = values / ndim;  // 1 + 2 * chunk_count
+        return values % ndim == 0 && per_dim % 2 == 1 && per_dim / 2 == chunk_count;
+    }
+
+    py::object table_;
+    mutable std::optional<int64_t> fqns_fingerprint_;
+    py::tuple fqns_, properties_, others_;
+    Array<uint8_t> kind_array_;
+    Array<int64_t> ref_array_, ndim_array_, chunk_start_array_, dims_start_array_, dims_array_;
+    std::span<const uint8_t> kind_;
+    std::span<const int64_t> ref_, ndim_, chunk_start_, dims_start_, dims_;
+    std::vector<Field> fields_;
+};
+
+// Return a numpy array that owns the vector's values, without copying them.
+template <TableValue T>
+[[nodiscard]] py::array_t<T> to_array(std::vector<T>&& vector) {
+    auto owned = std::make_unique<std::vector<T>>(std::move(vector));
+    const py::capsule owner(owned.get(),
+                            [](void* p) { delete static_cast<std::vector<T>*>(p); });
+    const std::vector<T>& values = *owned.release();
+    return py::array_t<T>({values.size()}, {sizeof(T)}, values.data(), owner);
+}
+
+// Transparent hash, so a map keyed by std::string can be looked up by string_view without building
+// a std::string per lookup. std::hash<std::string> is not transparent; this hashes both key types
+// the same.
+struct StringHash {
+    using is_transparent = void;
+    [[nodiscard]] size_t operator()(std::string_view s) const noexcept {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
+// A map keyed by strings that can be looked up by string_view.
+template <typename T>
+using StringMap = std::unordered_map<std::string, T, StringHash, std::equal_to<>>;
+
+// Converts a Metadata into a StateDictTable, exactly as StateDictTable.from_metadata does.
+class StateDictTableBuilder {
+   public:
+    // Look up the metadata classes the conversion checks objects against.
+    explicit StateDictTableBuilder(py::object small_pickle)
+        : small_pickle_(std::move(small_pickle)) {
         py::module_ meta = py::module_::import("torch.distributed.checkpoint.metadata");
         metadata_cls_ = meta.attr("Metadata");
         tensor_cls_ = meta.attr("TensorStorageMetadata");
         bytes_cls_ = meta.attr("BytesStorageMetadata");
         chunk_cls_ = meta.attr("ChunkStorageMetadata");
+        size_cls_ = py::module_::import("torch").attr("Size");
+    }
+
+    // Convert metadata, without its storage_data, to an instance of table_cls (a StateDictTable).
+    // Use once, on a temporary builder: it moves its arrays and lists into the table.
+    [[nodiscard]] py::object build(py::handle metadata, const py::object& table_cls) && {
+        if (!is(metadata.ptr(), metadata_cls_)) {
+            throw py::type_error("expected Metadata, got " + type_name(metadata.ptr()));
+        }
+        const py::object state = instance_dict(metadata.ptr());
+        const py::object entries = getattr(metadata.ptr(), a_state_dict_metadata_.ptr());
+        if (!PyDict_CheckExact(entries.ptr())) {
+            throw py::type_error("expected dict for state_dict_metadata, got " +
+                                 type_name(entries.ptr()));
+        }
+        // Snapshots, which hold the items while small_pickle runs Python code that could change
+        // the dicts.
+        py::list fields;
+        for (const py::handle item : items(state.ptr())) {
+            PyObject* const name = PyTuple_GET_ITEM(item.ptr(), 0);
+            const std::string_view field_name = utf8(name);
+            const bool written_here =
+                field_name == STATE_DICT_METADATA || field_name == STORAGE_DATA;
+            const py::object opcodes = written_here
+                                           ? py::object(py::none())
+                                           : py::object(pickled(PyTuple_GET_ITEM(item.ptr(), 1)));
+            fields.append(py::make_tuple(py::handle(name), opcodes));
+        }
+        const py::list entry_items = items(entries.ptr());
+        const size_t n = entry_items.size();
+        py::list fqns(n);
+        kind_.reserve(n);
+        ref_.reserve(n);
+        ndim_.reserve(n);
+        for (auto* starts : {&chunk_start_, &dims_start_}) {
+            starts->reserve(n + 1);
+            starts->push_back(0);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            PyObject* const fqn = PyTuple_GET_ITEM(entry_items[i].ptr(), 0);
+            PyObject* const entry = PyTuple_GET_ITEM(entry_items[i].ptr(), 1);
+            if (!PyUnicode_CheckExact(fqn)) {
+                throw py::type_error("expected str fqn, got " + type_name(fqn));
+            }
+            fqns[i] = py::handle(fqn);
+            size_t ndim = 0, chunks = 0;
+            if (const std::optional<TensorEntry> tensor =
+                    is(entry, tensor_cls_) ? tensor_entry(entry) : std::nullopt) {
+                // After the chunks are counted: small_pickle runs Python code.
+                py::bytes opcodes = pickled(tensor->properties.ptr());
+                const std::string_view key = bytes_view(opcodes.ptr());
+                auto it = property_ids_.find(key);
+                if (it == property_ids_.end()) {
+                    it = property_ids_.emplace(key, properties_.size()).first;
+                    properties_.append(opcodes);
+                }
+                push(Kind::Tensor, static_cast<int64_t>(it->second));
+                ndim = tensor->ndim;
+                chunks = tensor->chunks;
+            } else if (is(entry, bytes_cls_) && PyDict_Size(instance_dict(entry).ptr()) == 0) {
+                push(Kind::Bytes, 0);
+            } else {
+                push(Kind::Other, static_cast<int64_t>(others_.size()));
+                others_.append(pickled(entry));
+            }
+            ndim_.push_back(static_cast<int64_t>(ndim));
+            chunk_start_.push_back(chunk_start_.back() + static_cast<int64_t>(chunks));
+            dims_start_.push_back(static_cast<int64_t>(dims_.size()));
+        }
+        if (static_cast<size_t>(PyDict_Size(entries.ptr())) != n) {
+            throw std::runtime_error("state_dict_metadata changed size while being converted");
+        }
+        return table_cls(py::arg("fields") = fields, py::arg("fqns") = fqns,
+                         py::arg("kind") = to_array(std::move(kind_)),
+                         py::arg("ref") = to_array(std::move(ref_)),
+                         py::arg("ndim") = to_array(std::move(ndim_)),
+                         py::arg("chunk_start") = to_array(std::move(chunk_start_)),
+                         py::arg("dims_start") = to_array(std::move(dims_start_)),
+                         py::arg("dims") = to_array(std::move(dims_)),
+                         py::arg("properties") = std::move(properties_),
+                         py::arg("others") = std::move(others_));
+    }
+
+   private:
+    // A TENSOR entry's properties and number of chunks.
+    struct TensorEntry {
+        py::object properties;
+        size_t ndim;
+        size_t chunks;
+    };
+
+    // Append a TENSOR entry's size and chunks to dims_ and return its properties and numbers of
+    // dims and chunks; nullopt, with nothing appended, if it isn't one (see _tensor_entry in
+    // state_dict_table.py).
+    [[nodiscard]] std::optional<TensorEntry> tensor_entry(PyObject* entry) {
+        const py::object state = instance_dict(entry);
+        PyObject* const properties = dict_get(state.ptr(), a_properties_.ptr());
+        PyObject* const size = dict_get(state.ptr(), a_size_.ptr());
+        PyObject* const chunks = dict_get(state.ptr(), a_chunks_.ptr());
+        if (PyDict_Size(state.ptr()) != 3 || !properties || !size || !is(size, size_cls_) ||
+            !chunks || !PyList_CheckExact(chunks)) {
+            return std::nullopt;
+        }
+        const Py_ssize_t ndim = PyTuple_GET_SIZE(size);
+        const Py_ssize_t chunk_count = PyList_GET_SIZE(chunks);
+        if (ndim == 0 && chunk_count > 1) {
+            return std::nullopt;  // a scalar saved by several ranks without dedup
+        }
+        const size_t mark = dims_.size();
+        if (!append_dims(size, dims_)) {
+            dims_.resize(mark);
+            return std::nullopt;
+        }
+        for (Py_ssize_t k = 0; k < chunk_count; ++k) {
+            PyObject* const chunk = PyList_GET_ITEM(chunks, k);
+            const py::object chunk_state =
+                is(chunk, chunk_cls_) ? instance_dict(chunk) : py::object();
+            PyObject* const offsets =
+                chunk_state ? dict_get(chunk_state.ptr(), a_offsets_.ptr()) : nullptr;
+            PyObject* const sizes =
+                chunk_state ? dict_get(chunk_state.ptr(), a_sizes_.ptr()) : nullptr;
+            if (!chunk_state || PyDict_Size(chunk_state.ptr()) != 2 || !offsets || !sizes ||
+                !is(offsets, size_cls_) || !is(sizes, size_cls_) ||
+                PyTuple_GET_SIZE(offsets) != ndim || PyTuple_GET_SIZE(sizes) != ndim ||
+                !append_dims(offsets, dims_) || !append_dims(sizes, dims_)) {
+                dims_.resize(mark);
+                return std::nullopt;
+            }
+        }
+        return TensorEntry{py::reinterpret_borrow<py::object>(properties),
+                           static_cast<size_t>(ndim),
+                      static_cast<size_t>(chunk_count)};
+    }
+
+    // Append a torch.Size's dims; return false unless each is an int within int64 (a torch.Size
+    // may also hold numpy ints or larger ints, which only pickle writes exactly).
+    [[nodiscard]] static bool append_dims(PyObject* dims, std::vector<int64_t>& out) {
+        const Py_ssize_t n = PyTuple_GET_SIZE(dims);
+        for (Py_ssize_t k = 0; k < n; ++k) {
+            PyObject* const dim = PyTuple_GET_ITEM(dims, k);
+            if (!PyLong_CheckExact(dim)) {
+                return false;
+            }
+            const long long value = PyLong_AsLongLong(dim);
+            if (value == -1 && PyErr_Occurred()) {
+                PyErr_Clear();  // beyond int64
+                return false;
+            }
+            out.push_back(value);
+        }
+        return true;
+    }
+
+    void push(Kind kind, int64_t ref) {
+        kind_.push_back(static_cast<uint8_t>(kind));
+        ref_.push_back(ref);
+    }
+
+    // Return the stdlib pickler's opcodes for obj.
+    [[nodiscard]] py::bytes pickled(PyObject* obj) const {
+        py::object b = small_pickle_(py::handle(obj));
+        if (!PyBytes_CheckExact(b.ptr())) {
+            throw py::type_error("small_pickle returned no bytes");
+        }
+        return py::reinterpret_steal<py::bytes>(b.release());
+    }
+
+    // Return a snapshot of a dict's items, as a list of (key, value) tuples.
+    [[nodiscard]] static py::list items(PyObject* dict) {
+        PyObject* const r = PyDict_Items(dict);
+        if (!r) {
+            throw py::error_already_set();
+        }
+        return py::reinterpret_steal<py::list>(r);
+    }
+
+    [[nodiscard]] static bool is(PyObject* obj, const py::object& cls) {
+        return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
+    }
+
+    py::object small_pickle_;
+    py::object metadata_cls_, tensor_cls_, bytes_cls_, chunk_cls_, size_cls_;
+    py::str a_state_dict_metadata_{"state_dict_metadata"}, a_properties_{"properties"};
+    py::str a_size_{"size"}, a_chunks_{"chunks"}, a_offsets_{"offsets"}, a_sizes_{"sizes"};
+    std::vector<uint8_t> kind_;
+    std::vector<int64_t> ref_, ndim_, chunk_start_, dims_start_, dims_;
+    py::list properties_, others_;
+    StringMap<size_t> property_ids_;  // by their opcodes
+};
+
+// Writes the pickle of one Metadata into out_; use once per dump.
+class Writer {
+   public:
+    // Look up the classes the storage_data encoding checks objects against.
+    explicit Writer(py::object small_pickle) : small_pickle_(std::move(small_pickle)) {
+        py::module_ meta = py::module_::import("torch.distributed.checkpoint.metadata");
         index_cls_ = meta.attr("MetadataIndex");
         info_cls_ =
             py::module_::import("torch.distributed.checkpoint.filesystem").attr("_StorageInfo");
         size_cls_ = py::module_::import("torch").attr("Size");
     }
 
-    // The pickle of md: a NEWOBJ of Metadata built from its __dict__, field by field. With rows
-    // (the gathered write-result tables), storage_data is written from them.
-    [[nodiscard]] py::bytes dumps(PyObject* md, const py::object& rows) {
-        if (!is(md, metadata_cls_)) {
-            throw py::type_error("expected Metadata");
-        }
-        const py::object fields = instance_dict(md);
+    // Pickle the Metadata that table_view's table was converted from, and return the bytes: a
+    // NEWOBJ of Metadata built from its fields, in order. storage_data is written from rows (the
+    // gathered write-result tables) if given, else from the storage_data dict, else as None.
+    [[nodiscard]] py::bytes dumps(const StateDictTableView& table_view, py::handle storage_data,
+                                  const py::object& rows) {
         // Holds the rows the tables point into.
         const Rows rows_array = rows.is_none() ? Rows() : rows.cast<Rows>();
         const std::vector<WriteResultTable> tables =
             rows.is_none() ? std::vector<WriteResultTable>() : parse_tables(rows_array);
         size_t n_storage = 0;
         if (!rows.is_none()) {
-            for (const WriteResultTable& t : tables) {
-                n_storage += t.entries();
+            for (const WriteResultTable& w : tables) {
+                n_storage += w.entries();
             }
-        } else if (PyObject* const storage_data = PyDict_GetItemString(fields.ptr(), "storage_data");
-                   storage_data && PyDict_Check(storage_data)) {
-            n_storage = PyDict_Size(storage_data);
+        } else if (PyDict_Check(storage_data.ptr())) {
+            n_storage = PyDict_Size(storage_data.ptr());
         }
-        // About 98 bytes per storage entry: its MetadataIndex and
-        // _StorageInfo, plus the matching chunk in state_dict_metadata.
-        out_.reserve(4096 + 100 * n_storage);
+        // About 98 bytes per storage entry (its MetadataIndex and _StorageInfo) and about 8 bytes
+        // per chunk dim in state_dict_metadata.
+        out_.reserve(4096 + 100 * n_storage + 8 * table_view.dims_size());
 
         prelude();
         put_get(metadata_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-        // A snapshot, which holds the fields while small() runs Python code that could change them.
-        const auto items = py::reinterpret_steal<py::list>(PyDict_Items(fields.ptr()));
-        if (!items) {
-            throw py::error_already_set();
-        }
-        for (const py::handle item : items) {
-            const std::string_view field = utf8(PyTuple_GET_ITEM(item.ptr(), 0));
-            PyObject* const value = PyTuple_GET_ITEM(item.ptr(), 1);
-            put_str(field);
-            if (field == "state_dict_metadata") {
-                dump_state_dict_metadata(value);
-            } else if (field == "storage_data") {
-                if (rows.is_none()) {
-                    dump_storage_data(value);
-                } else {
-                    dump_storage_tables(tables);
-                }
+        for (const StateDictTableView::Field& field : table_view.fields()) {
+            put_str(field.name);
+            if (field.name == STATE_DICT_METADATA) {
+                dump_state_dict_metadata(table_view);
+            } else if (field.name != STORAGE_DATA) {
+                append(bytes_view(field.opcodes.ptr()));
+            } else if (!rows.is_none()) {
+                dump_storage_tables(tables, table_view);
+            } else if (!storage_data.is_none()) {
+                dump_storage_data(storage_data.ptr());
             } else {
-                small(value);
+                put(NONE);
             }
         }
         put({SETITEMS, BUILD, STOP});
-        return py::bytes(out_);
+        return py::bytes(out_.data(), out_.size());
     }
 
    private:
@@ -354,68 +824,47 @@ class Writer {
         k_chunks_ = key_ref("chunks");
     }
 
-    // Metadata.state_dict_metadata: fqn -> TensorStorageMetadata or BytesStorageMetadata.
-    void dump_state_dict_metadata(PyObject* dict) {
-        if (!PyDict_CheckExact(dict)) {
-            throw py::type_error("expected dict");
-        }
+    // Write Metadata.state_dict_metadata from the table's entries, in order.
+    void dump_state_dict_metadata(const StateDictTableView& table_view) {
         put(EMPTY_DICT);
-        const Py_ssize_t n = PyDict_Size(dict);
-        Py_ssize_t pos = 0;
-        PyObject *fqn, *v;
-        for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &fqn, &v); ++i) {
-            // small() runs Python code, which could change the dict: fqn and v are not used after
-            // it, and the dict's size is checked after it.
+        const size_t n = table_view.entries();
+        fqn_memo_.assign(n, std::nullopt);
+        for (size_t i = 0; i < n; ++i) {
             begin_item(i);
-            string(fqn);
-            if (is(v, bytes_cls_) && PyDict_Size(instance_dict(v).ptr()) == 0) {
-                put_get(bytes_ref_);
-                put({EMPTY_TUPLE, NEWOBJ});
-            } else if (!is(v, tensor_cls_)) {
-                small(v);
-                check_size(dict, n);
-            } else {
-                const py::object state = instance_dict(v);
-                const auto chunks =
-                    py::reinterpret_borrow<py::object>(dict_item(state.ptr(), a_chunks_.ptr()));
-                if (PyDict_Size(state.ptr()) != 3) {
-                    throw py::type_error("unexpected TensorStorageMetadata attributes");
-                }
-                if (!PyList_CheckExact(chunks.ptr())) {
-                    throw py::type_error("expected list of chunks");
-                }
-                put_get(tensor_ref_);
-                put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-                put_get(k_properties_);
-                small(dict_item(state.ptr(), a_properties_.ptr()));
-                put_get(k_size_);
-                size(dict_item(state.ptr(), a_size_.ptr()));
-                put_get(k_chunks_);
-                put(EMPTY_LIST);
-                const Py_ssize_t nc = PyList_GET_SIZE(chunks.ptr());
-                for (Py_ssize_t j = 0; j < nc; ++j) {
-                    begin_item(j);
-                    PyObject* const c = PyList_GET_ITEM(chunks.ptr(), j);
-                    if (!is(c, chunk_cls_)) {
-                        small(c);
-                        check_size(chunks.ptr(), nc);
-                    } else {
-                        const py::object chunk = instance_dict(c);
-                        if (PyDict_Size(chunk.ptr()) != 2) {
-                            throw py::type_error("unexpected ChunkStorageMetadata attributes");
-                        }
+            fqn_memo_[i] = string(table_view.fqn(i));
+            switch (table_view.kind(i)) {
+                case Kind::Bytes:
+                    put_get(bytes_ref_);
+                    put({EMPTY_TUPLE, NEWOBJ});
+                    break;
+                case Kind::Other:
+                    append(table_view.other(i));
+                    break;
+                case Kind::Tensor: {
+                    put_get(tensor_ref_);
+                    put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
+                    put_get(k_properties_);
+                    append(table_view.properties(i));
+                    put_get(k_size_);
+                    size(table_view.size(i));
+                    put_get(k_chunks_);
+                    put(EMPTY_LIST);
+                    const size_t chunk_count = table_view.chunks(i), ndim = table_view.ndim(i);
+                    for (size_t k = 0; k < chunk_count; ++k) {
+                        begin_item(k);
+                        const std::span<const int64_t> chunk = table_view.chunk(i, k);
                         put_get(chunk_ref_);
                         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                         put_get(k_offsets_);
-                        size(dict_item(chunk.ptr(), a_offsets_.ptr()));
+                        size(chunk.first(ndim));
                         put_get(k_sizes_);
-                        size(dict_item(chunk.ptr(), a_sizes_.ptr()));
+                        size(chunk.last(ndim));
                         put({SETITEMS, BUILD});
+                        end_item(k, chunk_count, APPENDS);
                     }
-                    end_item(j, nc, APPENDS);
+                    put({SETITEMS, BUILD});
+                    break;
                 }
-                put({SETITEMS, BUILD});
-                check_size(dict, n);  // after small() of the properties
             }
             end_item(i, n, SETITEMS);
         }
@@ -447,7 +896,9 @@ class Writer {
                 if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
                     throw py::type_error("unexpected MetadataIndex attributes");
                 }
-                put_index_start(utf8(fqn), index == Py_None ? std::nullopt
+                const std::string_view fqn_view = utf8(fqn);
+                put_index_start([&] { string(fqn_view); },
+                                index == Py_None ? std::nullopt
                                                             : std::optional(as_int(index)));
                 if (offset) {
                     put_get(k_offset_);
@@ -472,7 +923,8 @@ class Writer {
                 if (PyDict_Size(state.ptr()) != (transforms ? 4 : 3)) {
                     throw py::type_error("unexpected _StorageInfo attributes");
                 }
-                put_storage_info(utf8(dict_item(state.ptr(), a_relative_path_.ptr())),
+                const std::string_view path = utf8(dict_item(state.ptr(), a_relative_path_.ptr()));
+                put_storage_info([&] { string(path); },
                                  as_int(dict_item(state.ptr(), a_offset_.ptr())),
                                  as_int(dict_item(state.ptr(), a_length_.ptr())));
             }
@@ -482,30 +934,40 @@ class Writer {
 
     // Metadata.storage_data from write-result tables, as dump_storage_data writes the dict that
     // finish builds from the same write results.
-    void dump_storage_tables(const std::vector<WriteResultTable>& tables) {
+    void dump_storage_tables(const std::vector<WriteResultTable>& tables,
+                             const StateDictTableView& table_view) {
         put(EMPTY_DICT);
         size_t total = 0;
         for (const WriteResultTable& t : tables) {
             total += t.entries();
         }
+        fqn_memo_.resize(table_view.entries());
         size_t i = 0;
         std::vector<std::string_view> strings;  // the current table's
+        std::vector<std::optional<uint32_t>> string_memo;  // their memo indices, once written
         for (const WriteResultTable& t : tables) {
+            if (t.fqn_mode() == FqnMode::Indices &&
+                t.fingerprint() != table_view.fqns_fingerprint()) {
+                bad_table("an index table encoded against another fqn list");
+            }
             t.split_strings(strings);
+            string_memo.assign(strings.size(), std::nullopt);
             size_t pos = 0;  // into the table's offsets
             for (size_t r = 0; r < t.entries(); ++r, ++i) {
                 begin_item(i);
-                dump_table_entry(t, t.entry(r), strings, pos);
+                dump_table_entry(t, t.entry(r), strings, string_memo, table_view, pos);
                 end_item(i, total, SETITEMS);
             }
             t.check_offsets_used(pos);
         }
     }
 
-    // One table entry: its MetadataIndex and _StorageInfo. pos is where its offset dims start in
-    // the table's offsets; it moves past them.
+    // Write one table entry: its MetadataIndex and _StorageInfo. pos is where its offset dims
+    // start in the table's offsets; it moves past them.
     void dump_table_entry(const WriteResultTable& t, const Int64s& entry,
-                          const std::vector<std::string_view>& strings, size_t& pos) {
+                          const std::vector<std::string_view>& strings,
+                          std::vector<std::optional<uint32_t>>& string_memo,
+                          const StateDictTableView& table_view, size_t& pos) {
         const int64_t flags = entry[Column::Flags];
         if (flags & ~(FLAG_INDEX | FLAG_OFFSET | FLAG_OFFSET_SIZE)) {
             bad_table("unknown flags");
@@ -515,7 +977,16 @@ class Writer {
         }
         const std::optional<int64_t> index =
             flags & FLAG_INDEX ? std::optional(entry[Column::Index]) : std::nullopt;
-        put_index_start(string_at(strings, entry[Column::Fqn]), index);
+        const int64_t fqn = entry[Column::Fqn];
+        put_index_start(
+            [&] {
+                if (t.fqn_mode() == FqnMode::Indices) {
+                    put_fqn_entry(table_view, fqn);
+                } else {
+                    put_table_string(strings, string_memo, fqn);
+                }
+            },
+            index);
         if (flags & FLAG_OFFSET) {
             put_get(k_offset_);
             if (flags & FLAG_OFFSET_SIZE) {
@@ -527,11 +998,37 @@ class Writer {
             }
         }
         put({SETITEMS, BUILD});
-        put_storage_info(string_at(strings, entry[Column::Path]), entry[Column::Offset],
-                         entry[Column::Length]);
+        put_storage_info([&] { put_table_string(strings, string_memo, entry[Column::Path]); },
+                         entry[Column::Offset], entry[Column::Length]);
     }
 
-    // String id of a table's strings, checked.
+    // Write a table's string id: written or fetched on first use, then fetched by its memo index.
+    void put_table_string(const std::vector<std::string_view>& strings,
+                          std::vector<std::optional<uint32_t>>& string_memo, int64_t id) {
+        const std::string_view value = string_at(strings, id);
+        std::optional<uint32_t>& memo = string_memo[static_cast<size_t>(id)];
+        if (memo) {
+            put_get(*memo);
+        } else {
+            memo = string(value);
+        }
+    }
+
+    // Write the fqn of entry id of the state dict table, by the memo index the
+    // state_dict_metadata pass gave it.
+    void put_fqn_entry(const StateDictTableView& table_view, int64_t id) {
+        if (id < 0 || static_cast<uint64_t>(id) >= table_view.entries()) {
+            bad_table("fqn entry out of range");
+        }
+        std::optional<uint32_t>& memo = fqn_memo_[static_cast<size_t>(id)];
+        if (memo) {
+            put_get(*memo);
+        } else {
+            memo = string(table_view.fqn(static_cast<size_t>(id)));
+        }
+    }
+
+    // Return a string id of a table's strings, checked.
     [[nodiscard]] static std::string_view string_at(const std::vector<std::string_view>& strings,
                                                     int64_t id) {
         if (id < 0 || static_cast<uint64_t>(id) >= strings.size()) {
@@ -540,13 +1037,14 @@ class Writer {
         return strings[static_cast<size_t>(id)];
     }
 
-    // A MetadataIndex up to its offset: the caller writes the offset, if it has one, and closes the
-    // index with put({SETITEMS, BUILD}).
-    void put_index_start(std::string_view fqn, std::optional<int64_t> index) {
+    // Write a MetadataIndex up to its offset, its fqn by write_fqn: the caller writes the offset,
+    // if it has one, and closes the index with put({SETITEMS, BUILD}).
+    template <typename WriteFqn>
+    void put_index_start(WriteFqn&& write_fqn, std::optional<int64_t> index) {
         put_get(index_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
         put_get(k_fqn_);
-        string(fqn);
+        write_fqn();
         put_get(k_index_);
         if (index) {
             put_int(*index);
@@ -555,12 +1053,13 @@ class Writer {
         }
     }
 
-    // A _StorageInfo without transform descriptors.
-    void put_storage_info(std::string_view path, int64_t offset, int64_t length) {
+    // Write a _StorageInfo without transform descriptors, its relative path by write_path.
+    template <typename WritePath>
+    void put_storage_info(WritePath&& write_path, int64_t offset, int64_t length) {
         put_get(info_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
         put_get(k_relative_path_);
-        string(path);
+        write_path();
         put_get(k_offset_);
         put_int(offset);
         put_get(k_length_);
@@ -598,7 +1097,9 @@ class Writer {
 
     // Append raw opcode bytes.
     void put(char c) { out_.push_back(c); }
-    void put(std::initializer_list<char> cs) { out_.append(cs.begin(), cs.end()); }
+    void put(std::initializer_list<char> cs) { out_.insert(out_.end(), cs.begin(), cs.end()); }
+    // Append bytes as they are.
+    void append(std::string_view bytes) { out_.insert(out_.end(), bytes.begin(), bytes.end()); }
 
     // A str, with the opcode the stdlib pickler picks at protocol 4: SHORT_BINUNICODE,
     // BINUNICODE from 256 bytes on, BINUNICODE8 past 4 GiB.
@@ -613,7 +1114,7 @@ class Writer {
             put('\x8d');
             put_le(s.size(), 8);
         }
-        out_.append(s);
+        append(s);
     }
 
     // Fetch memo entry idx: BINGET, or LONG_BINGET from 256 on.
@@ -670,17 +1171,19 @@ class Writer {
 
     // First use writes the string and memoizes it; later uses fetch it from the memo. The memo owns
     // a copy of each distinct string and is looked up by view, so lookups do not allocate.
-    void string(PyObject* s) { string(utf8(s)); }
+    // Return its memo index.
+    uint32_t string(PyObject* s) { return string(utf8(s)); }
 
     // The same, for a string's UTF-8 bytes.
-    void string(std::string_view v) {
+    uint32_t string(std::string_view v) {
         if (const auto it = strings_.find(v); it != strings_.end()) {
             put_get(it->second);
-            return;
+            return it->second;
         }
-        strings_.emplace(v, memo_len_++);
+        strings_.emplace(v, memo_len_);
         put_str(v);
         put(MEMOIZE);
+        return memo_len_++;
     }
 
     // A torch.Size, as pickle reduces it: torch.Size(tuple_of_ints).
@@ -688,23 +1191,23 @@ class Writer {
         if (!is(dims, size_cls_)) {
             throw py::type_error("expected torch.Size");
         }
-        put_get(size_ref_);
-        const Py_ssize_t n = PyTuple_GET_SIZE(dims);
-        if (n == 0) {
-            put(EMPTY_TUPLE);
-        } else {
-            if (n > 3) {
-                put(MARK);
-            }
-            for (Py_ssize_t j = 0; j < n; ++j) put_int(as_int(PyTuple_GET_ITEM(dims, j)));
-            put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
-        }
-        put({TUPLE1, REDUCE});
+        put_size(static_cast<size_t>(PyTuple_GET_SIZE(dims)),
+                 [dims](size_t j) { return as_int(PyTuple_GET_ITEM(dims, j)); });
+    }
+
+    // Write a torch.Size from a state dict table's dims, as size(PyObject*) does.
+    void size(std::span<const int64_t> dims) {
+        put_size(dims.size(), [dims](size_t j) { return dims[j]; });
     }
 
     // The same, for dims from a write-result table.
     void size(const Int64s& dims) {
-        const size_t n = dims.size();
+        put_size(dims.size(), [&dims](size_t j) { return dims[j]; });
+    }
+
+    // Write torch.Size of n dims, the j-th of which dim(j) returns.
+    template <typename Dim>
+    void put_size(const size_t n, Dim dim) {
         put_get(size_ref_);
         if (n == 0) {
             put(EMPTY_TUPLE);
@@ -712,7 +1215,7 @@ class Writer {
             if (n > 3) {
                 put(MARK);
             }
-            for (size_t j = 0; j < n; ++j) put_int(dims[j]);
+            for (size_t j = 0; j < n; ++j) put_int(dim(j));
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
         put({TUPLE1, REDUCE});
@@ -726,7 +1229,7 @@ class Writer {
         if (PyBytes_AsStringAndSize(b.ptr(), &p, &n) != 0) {
             throw py::error_already_set();
         }
-        out_.append(p, n);
+        append(std::string_view(p, static_cast<size_t>(n)));
     }
 
     // The low nbytes bytes of v, least significant first.
@@ -734,20 +1237,8 @@ class Writer {
         for (int k = 0; k < nbytes; ++k) put(static_cast<char>((v >> (8 * k)) & 0xff));
     }
 
-    // Transparent hash, so strings_ can be looked up by string_view without building a std::string
-    // per lookup. std::hash<std::string> is not transparent; this hashes both key types the same.
-    struct StringHash {
-        using is_transparent = void;
-        [[nodiscard]] size_t operator()(std::string_view s) const noexcept {
-            return std::hash<std::string_view>{}(s);
-        }
-    };
-
     py::object small_pickle_;
-    py::object metadata_cls_, tensor_cls_, bytes_cls_, chunk_cls_, index_cls_, info_cls_;
-    py::object size_cls_;
-    py::str a_properties_{"properties"}, a_size_{"size"}, a_chunks_{"chunks"};
-    py::str a_offsets_{"offsets"}, a_sizes_{"sizes"};
+    py::object index_cls_, info_cls_, size_cls_;
     py::str a_fqn_{"fqn"}, a_index_{"index"}, a_offset_{"offset"};
     py::str a_relative_path_{"relative_path"}, a_length_{"length"};
     py::str a_transform_{"transform_descriptors"};
@@ -757,23 +1248,36 @@ class Writer {
     uint32_t k_fqn_ = 0, k_index_ = 0, k_offset_ = 0, k_relative_path_ = 0, k_length_ = 0;
     uint32_t k_offsets_ = 0, k_sizes_ = 0, k_properties_ = 0, k_size_ = 0, k_chunks_ = 0;
 
-    std::string out_;
+    // Not a std::string: libstdc++ declares std::string's members as extern templates, compiled
+    // into the shared library, so they are never inlined, and each byte appended was a function
+    // call through the PLT. std::vector<char> is instantiated here and its push_back inlines.
+    // Building with -fno-plt kept most of the cost: it is the call, more than the PLT.
+    std::vector<char> out_;
     uint32_t memo_len_ = 0;
-    std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> strings_;
+    // Each state dict table entry's fqn memo index, once written; index tables name fqns by entry.
+    std::vector<std::optional<uint32_t>> fqn_memo_;
+    StringMap<uint32_t> strings_;
 };
-
-// Return the pickle of md; small_pickle(obj) returns the opcodes for an object the writer leaves to
-// the stdlib pickler. With storage_rows, storage_data is written from them (see Writer::dumps).
-[[nodiscard]] py::bytes dumps(py::handle md, py::object small_pickle, py::object storage_rows) {
-    return Writer(std::move(small_pickle)).dumps(md.ptr(), storage_rows);
-}
 
 }  // namespace
 
 PYBIND11_MODULE(_native, m) {
-    m.doc() = "Fast pickling of torch.distributed.checkpoint Metadata.";
-    m.def("dumps", &dumps, py::arg("metadata"), py::arg("small_pickle"),
-          py::arg("storage_rows") = py::none(),
-          "Return the pickle of a torch.distributed.checkpoint Metadata, as standard pickle "
-          "bytes.");
+    m.doc() = "Fast conversion and pickling of torch.distributed.checkpoint Metadata.";
+    m.def(
+        "from_metadata",
+        [](py::handle metadata, py::object small_pickle, const py::object& table_cls) {
+            return StateDictTableBuilder(std::move(small_pickle)).build(metadata, table_cls);
+        },
+        py::arg("metadata"), py::arg("small_pickle"), py::arg("table_cls"),
+        "Convert metadata, without its storage_data, to a table_cls (a StateDictTable).");
+    m.def(
+        "dumps_table",
+        [](py::handle table, py::object small_pickle, py::handle storage_data,
+           const py::object& storage_rows) {
+            return Writer(std::move(small_pickle))
+                .dumps(StateDictTableView(table), storage_data, storage_rows);
+        },
+        py::arg("table"), py::arg("small_pickle"), py::arg("storage_data") = py::none(),
+        py::arg("storage_rows") = py::none(),
+        "Pickle the Metadata a state dict table was converted from, and return the bytes.");
 }
