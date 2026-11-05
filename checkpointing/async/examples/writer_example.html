@@ -206,13 +206,13 @@
 <span class="linenos">111</span>        <span class="k">raise</span>
 <span class="linenos">112</span>
 <span class="linenos">113</span>
-<span class="linenos">114</span><span class="k">def</span><span class="w"> </span><span class="nf">get_save_and_finalize_callbacks</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span> <span class="n">save_state_dict_ret</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncRequest</span><span class="p">:</span>
+<span class="linenos">114</span><span class="k">def</span><span class="w"> </span><span class="nf">get_save_and_finalize_callbacks</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span> <span class="n">pending</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">AsyncRequest</span><span class="p">:</span>
 <span class="linenos">115</span><span class="w">    </span><span class="sd">"""Creates an async save request with a finalize function."""</span>
 <span class="linenos">116</span>    <span class="n">save_fn</span><span class="p">,</span> <span class="n">preload_fn</span><span class="p">,</span> <span class="n">save_args</span> <span class="o">=</span> <span class="n">writer</span><span class="o">.</span><span class="n">get_save_function_and_args</span><span class="p">()</span>
 <span class="linenos">117</span>
 <span class="linenos">118</span>    <span class="k">def</span><span class="w"> </span><span class="nf">finalize_fn</span><span class="p">():</span>
 <span class="linenos">119</span><span class="w">        </span><span class="sd">"""Finalizes async checkpointing and synchronizes processes."""</span>
-<span class="linenos">120</span>        <span class="n">save_state_dict_async_finalize</span><span class="p">(</span><span class="o">*</span><span class="n">save_state_dict_ret</span><span class="p">)</span>
+<span class="linenos">120</span>        <span class="n">save_state_dict_async_finalize</span><span class="p">(</span><span class="n">pending</span><span class="p">)</span>
 <span class="linenos">121</span>        <span class="n">dist</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
 <span class="linenos">122</span>
 <span class="linenos">123</span>    <span class="k">return</span> <span class="n">AsyncRequest</span><span class="p">(</span>
@@ -227,10 +227,10 @@
 <span class="linenos">132</span>    <span class="n">writer</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="p">(</span><span class="n">checkpoint_dir</span><span class="p">,</span> <span class="n">thread_count</span><span class="o">=</span><span class="n">thread_count</span><span class="p">,</span> <span class="n">use_msc</span><span class="o">=</span><span class="n">enable_msc</span><span class="p">)</span>
 <span class="linenos">133</span>    <span class="n">coordinator_rank</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="linenos">134</span>
-<span class="linenos">135</span>    <span class="n">save_state_dict_ret</span> <span class="o">=</span> <span class="n">save_state_dict_async_plan</span><span class="p">(</span>
+<span class="linenos">135</span>    <span class="n">pending</span> <span class="o">=</span> <span class="n">save_state_dict_async_plan</span><span class="p">(</span>
 <span class="linenos">136</span>        <span class="n">state_dict</span><span class="p">,</span> <span class="n">writer</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">coordinator_rank</span><span class="p">,</span> <span class="n">planner</span><span class="o">=</span><span class="n">planner</span><span class="p">,</span> <span class="n">enable_cache</span><span class="o">=</span><span class="kc">True</span>
 <span class="linenos">137</span>    <span class="p">)</span>
-<span class="linenos">138</span>    <span class="n">save_request</span> <span class="o">=</span> <span class="n">get_save_and_finalize_callbacks</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span> <span class="n">save_state_dict_ret</span><span class="p">)</span>
+<span class="linenos">138</span>    <span class="n">save_request</span> <span class="o">=</span> <span class="n">get_save_and_finalize_callbacks</span><span class="p">(</span><span class="n">writer</span><span class="p">,</span> <span class="n">pending</span><span class="p">)</span>
 <span class="linenos">139</span>    <span class="n">async_queue</span><span class="o">.</span><span class="n">schedule_async_request</span><span class="p">(</span><span class="n">save_request</span><span class="p">)</span>
 <span class="linenos">140</span>
 <span class="linenos">141</span>

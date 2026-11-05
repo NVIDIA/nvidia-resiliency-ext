@@ -56,10 +56,10 @@
 <li class="toctree-l3"><a class="reference internal" href="filesystem_async.html">Asynchronous FileSystemWriter Implementation</a></li>
 <li class="toctree-l3 current"><a class="current reference internal" href="#">Asynchronous Pytorch Distributed Checkpoint save with optimized <cite>FileSystemWriter</cite></a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache"><code class="docutils literal notranslate"><span class="pre">CheckpointMetadataCache</span></code></a></li>
+<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave"><code class="docutils literal notranslate"><span class="pre">PendingSave</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.init_checkpoint_metadata_cache"><code class="docutils literal notranslate"><span class="pre">init_checkpoint_metadata_cache()</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize"><code class="docutils literal notranslate"><span class="pre">save_state_dict_async_finalize()</span></code></a></li>
 <li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan"><code class="docutils literal notranslate"><span class="pre">save_state_dict_async_plan()</span></code></a></li>
-<li class="toctree-l4"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_metadata_reuse"><code class="docutils literal notranslate"><span class="pre">verify_global_metadata_reuse()</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l3"><a class="reference internal" href="torch_ckpt.html">Asynchronous PyTorch <cite>torch.save</cite> with the Core utility</a></li>
@@ -112,63 +112,58 @@
 <cite>enable_cache</cite>, <cite>save_state_dict_async_plan</cite> avoids that:</p>
 <ul class="simple">
 <li><p>The first save in a process reuses the metadata of a loaded checkpoint (see
-<cite>set_cached_global_metadata</cite>) if all ranks’ local plans write exactly the chunks it lists;
-<cite>verify_global_metadata_reuse</cite> checks that with one all_reduce.</p></li>
+<cite>set_cached_global_metadata</cite>) if all ranks’ local plans write exactly the chunks it lists,
+which one all_reduce checks.</p></li>
 <li><p>Later saves reuse the plans and metadata of the previous save without communicating:
 <cite>enable_cache</cite> promises that the checkpoint structure does not change. Each rank still
 creates its local plan and raises if it differs from the previous one.</p></li>
 </ul>
-<p>The coordinator writes a shallow copy of the cached metadata on every save, so the cache never
-holds a save’s storage_data and never modifies the metadata it was given.</p>
-<dl class="py attribute">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.global_metadata">
-<span class="sig-name descname"><span class="pre">global_metadata</span></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.global_metadata" title="Link to this definition"></a></dt>
-<dd><p>The global metadata to reuse: the loaded checkpoint’s, without
-its storage_data, on every rank until the first save, the previous save’s on the
-coordinator afterwards.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>Metadata</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.local_plan">
-<span class="sig-name descname"><span class="pre">local_plan</span></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.local_plan" title="Link to this definition"></a></dt>
-<dd><p>This rank’s local plan of the previous save, as the planner created
-it; None before the first save in this process.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>SavePlan</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.central_plan">
-<span class="sig-name descname"><span class="pre">central_plan</span></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.central_plan" title="Link to this definition"></a></dt>
-<dd><p>This rank’s global plan of the previous save.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>SavePlan</p>
-</dd>
-</dl>
-</dd></dl>
-
+<p>The metadata is kept without storage_data. With the fast <code class="docutils literal notranslate"><span class="pre">.metadata</span></code> writers it is kept as a
+few arrays, which the garbage collector doesn’t visit, and shares no objects with the Metadata
+it was made from but its fqn strings. The cache never modifies the Metadata it was given.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.set_cached_global_metadata">
 <span class="sig-name descname"><span class="pre">set_cached_global_metadata</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cached_global_metadata</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#CheckpointMetadataCache.set_cached_global_metadata"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache.set_cached_global_metadata" title="Link to this definition"></a></dt>
 <dd><p>Sets the global metadata of a loaded checkpoint, to be reused if it still applies.</p>
 <p>Every rank must set it. The next save checks whether all ranks’ local plans write exactly
 the chunks this metadata lists, and if so reuses it instead of gathering the plans and
-building the global metadata again. The metadata is not modified.</p>
+building the global metadata again. The metadata is not modified, and with the fast
+<code class="docutils literal notranslate"><span class="pre">.metadata</span></code> writers the cache keeps none of its objects, so the caller can free it.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>cached_global_metadata</strong> (<em>Metadata</em>) – The global metadata from a previous checkpoint.</p>
 </dd>
 </dl>
 </dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave">
+<span class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></span><span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">PendingSave</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">storage_writer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dist_wrapper</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">_metadata_template</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_fqn_list_slot</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_delivers_fqn_list</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#PendingSave"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave" title="Link to this definition"></a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/builtins/functions.html#object" title="(in Python v3.15)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>A save planned and staged by <cite>save_state_dict_async_plan</cite>, to pass to
+<cite>save_state_dict_async_finalize</cite>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>storage_writer</strong> (<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><em>FileSystemWriterAsync</em></a>)</p></li>
+<li><p><strong>dist_wrapper</strong> (<em>_DistWrapper</em>)</p></li>
+<li><p><strong>_metadata_template</strong> (<em>MetadataTemplate</em><em> | </em><em>None</em>)</p></li>
+<li><p><strong>_fqn_list_slot</strong> (<em>_FqnListSlot</em><em> | </em><em>None</em>)</p></li>
+<li><p><strong>_delivers_fqn_list</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>)</p></li>
+</ul>
+</dd>
+</dl>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave.dist_wrapper">
+<span class="sig-name descname"><span class="pre">dist_wrapper</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">_DistWrapper</span></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave.dist_wrapper" title="Link to this definition"></a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave.storage_writer">
+<span class="sig-name descname"><span class="pre">storage_writer</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><span class="pre">FileSystemWriterAsync</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave.storage_writer" title="Link to this definition"></a></dt>
+<dd></dd></dl>
 
 </dd></dl>
 
@@ -187,17 +182,20 @@ sets the cached global metadata from the previous checkpoint</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize">
-<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">save_state_dict_async_finalize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">storage_writer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_metadata</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dist_wrapper</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#save_state_dict_async_finalize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize" title="Link to this definition"></a></dt>
-<dd><p>Finalization of save_state_dict_async_plan.</p>
-<p>The input arguments are the same as the save_state_dict_async_plan output,
-the <cite>write_results</cite> are retrieved from the storage_writer. Each rank sends them to the
-coordinator as a table (see <cite>_metadata_pickler.table</cite>) if it can, else pickled.</p>
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">save_state_dict_async_finalize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">pending</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave"><span class="pre">PendingSave</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></span></span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#save_state_dict_async_finalize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_finalize" title="Link to this definition"></a></dt>
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">save_state_dict_async_finalize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">storage_writer</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><span class="pre">FileSystemWriterAsync</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_metadata</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><span class="pre">Any</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">dist_wrapper</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">_DistWrapper</span></span></em>, <em class="sig-param"><span class="positional-only-separator o"><abbr title="Positional-only parameter separator (PEP 570)"><span class="pre">/</span></abbr></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></span></span></dt>
+<dd><p>Finalize the save that save_state_dict_async_plan planned and staged.</p>
+<p>The <cite>write_results</cite> are retrieved from the pending save’s storage_writer. Each rank sends them
+to the coordinator as a table (see <cite>_metadata_pickler.write_result_table</cite>) if it can, else
+pickled.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>storage_writer</strong> (<a class="reference internal" href="filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync" title="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync"><em>FileSystemWriterAsync</em></a>) – storage writer used for planning</p></li>
-<li><p><strong>global_metadata</strong> (<em>Metadata</em>) – metadata created during planning</p></li>
-<li><p><strong>dist_wrapper</strong> (<em>_DistWrapper</em>) – distributed wrapper created during planning</p></li>
+<li><p><strong>pending</strong> (<a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave"><em>PendingSave</em></a>) – the save planned and staged by <cite>save_state_dict_async_plan</cite>.</p></li>
+<li><p><strong>legacy_args</strong> – deprecated: the plan’s global metadata (a Metadata is accepted too) and
+distributed wrapper, after its storage writer as the first argument, as
+save_state_dict_async_plan used to return them in a tuple.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
@@ -241,44 +239,12 @@ for storing and retrieving checkpoint metadata. If not provided, the global cach
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><p>Contains:</p>
-<blockquote>
-<div><ul class="simple">
-<li><p>storage writer (the one passed as input)</p></li>
-<li><p>global metadata to write (on the coordinator; None on other ranks)</p></li>
-<li><p>distributed wrapper used for planning</p></li>
-</ul>
-</div></blockquote>
-</p>
+<dd class="field-even"><p>the planned and staged save, to pass to <cite>save_state_dict_async_finalize</cite>.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple" title="(in Python v3.15)">tuple</a></p>
+<dd class="field-odd"><p><a class="reference internal" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave">PendingSave</a></p>
 </dd>
 </dl>
-<p>The return value of this function should be passed as an input to
-<cite>save_state_dict_async_finalize</cite>.</p>
-</dd></dl>
-
-<dl class="py function">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_metadata_reuse">
-<span class="sig-prename descclassname"><span class="pre">nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.</span></span><span class="sig-name descname"><span class="pre">verify_global_metadata_reuse</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">loaded_metadata</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_plan</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dist_wrapper</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/state_dict_saver.html#verify_global_metadata_reuse"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.verify_global_metadata_reuse" title="Link to this definition"></a></dt>
-<dd><p>Verifies that the metadata of a loaded checkpoint can be reused as this save’s global metadata.</p>
-<p>It can if all ranks’ local plans write exactly the chunks the metadata lists, with the same
-types, global sizes and properties; see <cite>_metadata_reuse</cite>. Collective: every rank of the
-planning group must call it, also ranks without loaded metadata, which vote against reuse.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>loaded_metadata</strong> (<em>Metadata</em><em>, </em><em>optional</em>) – The global metadata of the loaded checkpoint.</p></li>
-<li><p><strong>local_plan</strong> (<em>SavePlan</em>) – This rank’s local save plan.</p></li>
-<li><p><strong>dist_wrapper</strong> (<em>_DistWrapper</em>) – distributed wrapper created during planning</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)">bool</a></p>
-</dd>
-</dl>
-<p>Returns: True iff the global metadata reuse is possible.</p>
 </dd></dl>
 
 </section>

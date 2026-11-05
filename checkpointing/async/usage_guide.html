@@ -268,7 +268,7 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
     <span class="n">planner</span> <span class="o">=</span> <span class="n">DefaultSavePlanner</span><span class="p">()</span>
 
     <span class="c1"># Plan the save operation</span>
-    <span class="n">save_state_dict_ret</span> <span class="o">=</span> <span class="n">save_state_dict_async_plan</span><span class="p">(</span>
+    <span class="n">pending</span> <span class="o">=</span> <span class="n">save_state_dict_async_plan</span><span class="p">(</span>
         <span class="n">state_dict</span><span class="p">,</span> <span class="n">writer</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">coordinator_rank</span><span class="p">,</span> <span class="n">planner</span><span class="o">=</span><span class="n">planner</span>
     <span class="p">)</span>
 
@@ -277,7 +277,7 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 
     <span class="k">def</span><span class="w"> </span><span class="nf">finalize_fn</span><span class="p">():</span>
 <span class="w">        </span><span class="sd">"""Finalizes async checkpointing and synchronizes processes."""</span>
-        <span class="n">save_state_dict_async_finalize</span><span class="p">(</span><span class="o">*</span><span class="n">save_state_dict_ret</span><span class="p">)</span>
+        <span class="n">save_state_dict_async_finalize</span><span class="p">(</span><span class="n">pending</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">is_initialized</span><span class="p">():</span>
             <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">barrier</span><span class="p">()</span>
 
@@ -347,11 +347,19 @@ reuses metadata instead, kept between saves in a
 <li><p>After loading a checkpoint, pass its metadata to <code class="docutils literal notranslate"><span class="pre">set_cached_global_metadata</span></code> on every rank.
 The first save reuses it if all ranks’ local plans write exactly the chunks it lists, checked
 with one <code class="docutils literal notranslate"><span class="pre">all_reduce</span></code>; otherwise the metadata is built as usual. This needs a planner that
-plans each rank’s writes locally (<code class="docutils literal notranslate"><span class="pre">can_run_decentralized_global_plan</span></code>), as Megatron-LM’s does,
-and no planner data.</p></li>
+plans each rank’s writes locally (<code class="docutils literal notranslate"><span class="pre">can_run_decentralized_global_plan</span></code>), and no planner data.</p></li>
 <li><p>Later saves reuse the previous save’s plans and metadata without communicating. The checkpoint
 structure must not change between them: a rank whose local plan changed raises an error.</p></li>
 </ul>
+<p>The cache doesn’t modify the metadata passed to <code class="docutils literal notranslate"><span class="pre">set_cached_global_metadata</span></code>. The caller may
+drop its reference to that metadata afterwards, but must not modify it. <code class="docutils literal notranslate"><span class="pre">.metadata</span></code> holds only
+the fields of torch’s <code class="docutils literal notranslate"><span class="pre">Metadata</span></code>: other attributes a planner sets on the global metadata aren’t
+written.</p>
+<p><code class="docutils literal notranslate"><span class="pre">save_state_dict_async_plan</span></code> returns a
+<a class="reference internal" href="api/state_dict_saver.html#nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave" title="nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave"><code class="xref py py-class docutils literal notranslate"><span class="pre">PendingSave</span></code></a>, to pass
+to <code class="docutils literal notranslate"><span class="pre">save_state_dict_async_finalize</span></code> as it is. Unpacking it into the three arguments
+<code class="docutils literal notranslate"><span class="pre">save_state_dict_async_finalize</span></code> used to take still works, but is deprecated, and sends every
+rank’s write results with their fqns as strings.</p>
 </section>
 <section id="best-practices">
 <h2>Best Practices<a class="headerlink" href="#best-practices" title="Link to this heading"></a></h2>
