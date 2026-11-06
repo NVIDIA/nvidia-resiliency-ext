@@ -151,6 +151,38 @@ def add_no_restart_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_segment_health_check_args(parser: argparse.ArgumentParser) -> None:
+    """Register consumption and optional launcher-managed publication separately."""
+    parser.add_argument(
+        "--ft-segment-health-check-dir",
+        "--ft_segment_health_check_dir",
+        type=str,
+        default=None,
+        dest="ft_segment_health_check_dir",
+        help="Shared directory containing per-task decisions consumed by the segment health check. "
+        "Consumption is disabled when omitted; this option alone does not start a publisher.",
+    )
+    publisher = parser.add_mutually_exclusive_group()
+    publisher.add_argument(
+        "--ft-enable-segment-health-check-publisher",
+        "--ft_enable_segment_health_check_publisher",
+        action="store_true",
+        default=None,
+        dest="ft_enable_segment_health_check_publisher",
+        help="Start the scheduler-state publisher on the rendezvous-store-host launcher. "
+        "Requires --ft-segment-health-check-dir and Slurm access. No boolean value is needed. "
+        "Disabled by default.",
+    )
+    publisher.add_argument(
+        "--ft-disable-segment-health-check-publisher",
+        "--ft_disable_segment_health_check_publisher",
+        action="store_false",
+        default=None,
+        dest="ft_enable_segment_health_check_publisher",
+        help="Disable launcher-managed publishing without disabling the segment health consumer.",
+    )
+
+
 def add_rendezvous_args(
     parser: argparse.ArgumentParser,
     *,

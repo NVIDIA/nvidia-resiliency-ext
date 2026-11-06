@@ -78,6 +78,10 @@ from torch.distributed.elastic.rendezvous.utils import (
 )
 from torch.distributed.elastic.utils import macros
 
+from nvidia_resiliency_ext.attribution.scheduler_exclusions import (
+    PublisherConfig,
+    SegmentHealthPublisherManager,
+)
 from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
     DEFAULT_ATTRIBUTION_PORT,
     AttributionConfig,
@@ -89,6 +93,7 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_log_funnel_args,
     add_no_restart_args,
     add_rendezvous_args,
+    add_segment_health_check_args,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
@@ -155,7 +160,37 @@ _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 # [root, leaf0, ..., leaf_{N-1}] when ft_log_aggregator_count > 1.
 _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 _ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
+_SEGMENT_HEALTH_PUBLISHER: Optional[SegmentHealthPublisherManager] = None
 _DIAGNOSTIC_COLLECTOR = None
+
+
+def _start_segment_health_publisher(cfg, *, is_store_host: bool):
+    global _SEGMENT_HEALTH_PUBLISHER
+    if (
+        not cfg.enable_segment_health_check_publisher
+        or not is_store_host
+        or _SEGMENT_HEALTH_PUBLISHER is not None
+    ):
+        return
+    try:
+        publisher_config = PublisherConfig.from_env(
+            {**os.environ, "NVRX_SEGMENT_HEALTH_CHECK_DIR": cfg.segment_health_check_dir}
+        )
+        manager = SegmentHealthPublisherManager(publisher_config)
+        if manager.start():
+            _SEGMENT_HEALTH_PUBLISHER = manager
+    except Exception:
+        logger.exception("Could not start segment health publisher; training continues")
+
+
+def _stop_segment_health_publisher():
+    global _SEGMENT_HEALTH_PUBLISHER
+    manager, _SEGMENT_HEALTH_PUBLISHER = _SEGMENT_HEALTH_PUBLISHER, None
+    if manager is not None:
+        try:
+            manager.stop()
+        except Exception:
+            logger.exception("Could not stop segment health publisher; continuing launcher cleanup")
 
 
 def _start_diagnostic_collector(cfg, launcher_log_file, *, local_world_size=1):
@@ -1914,6 +1949,7 @@ def launch_agent(
     try:
         metrics.initialize_metrics(metrics.MetricsConfig(config.metrics_cfg))
 
+        _start_segment_health_publisher(config.fault_tol_cfg, is_store_host=is_store_host)
         result = agent.run()
 
         # Classify terminal outcomes before fallible event reporting. Once agent.run()
@@ -1988,6 +2024,7 @@ def launch_agent(
         events.record(agent.get_event_failed())
         raise
     finally:
+        _stop_segment_health_publisher()
         # Shutdown rdzv and rank monitors (may produce logs; reader thread must stay alive).
         if shutdown_rdzv:
             if shutdown_due_to_failure:
@@ -2798,15 +2835,7 @@ def get_args_parser() -> ArgumentParser:
         "before rendezvous. Example: --ft-storage-health-check-path '/data/a,/mnt/b'.",
     )
 
-    parser.add_argument(
-        "--ft-segment-health-check-dir",
-        "--ft_segment_health_check_dir",
-        type=str,
-        default=None,
-        dest="ft_segment_health_check_dir",
-        help="Shared directory containing per-task decisions consumed by the segment health check. "
-        "The feature is disabled when omitted.",
-    )
+    add_segment_health_check_args(parser)
 
     parser.add_argument(
         "--ft-skip-section-response",
@@ -3996,6 +4025,7 @@ def main(args=None):
         exit_code = 0
     finally:
         try:
+            _stop_segment_health_publisher()
             # Also drain errors raised after log setup but before launch_agent() owns cleanup.
             if launcher_error_reporter.logs_specs is not None:
                 launcher_error_reporter.logs_specs.cleanup()

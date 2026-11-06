@@ -8,6 +8,7 @@ Automated log analysis and failure attribution for distributed training jobs.
 |-----------|-------------|---------------|
 | **nvrx-attrsvc** | FastAPI server for LLM-based log analysis and Slack alerts | [attrsvc/README.md](attrsvc/README.md) |
 | **nvrx-smonsvc** | SLURM job monitor for automatic log submission | [smonsvc/README.md](smonsvc/README.md) |
+| **nvrx-scheduler-exclusions** | Scheduler exclusion publisher for all running tasks in one Slurm array job | [scheduler_exclusions/README.md](scheduler_exclusions/README.md) |
 
 See component READMEs for quick start, configuration, and API details.
 
@@ -21,6 +22,7 @@ NVRX_ATTRSVC_ALLOWED_ROOT=/path/to/logs \
 ```
 
 This starts `nvrx-attrsvc` and `nvrx-smonsvc` in a single job with health monitoring.
+The scheduler exclusion publisher is opt-in and is not started by this combined deployment.
 
 For individual deployment, see each component's `deploy/` directory.
 

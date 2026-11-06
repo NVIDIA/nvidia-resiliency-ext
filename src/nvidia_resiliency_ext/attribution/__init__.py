@@ -3,9 +3,9 @@
 
 """Current packaged attribution APIs and shared service wire types.
 
-The built wheel ships restart-agent, FR analysis, request coalescing, and
-shared attrsvc response/config types. Legacy LogSage, SPLITLOG orchestration,
-and LogSage-backed MCP tools live under ``legacy_logsage`` in source checkouts
+The built wheel ships restart-agent, FR analysis, scheduler exclusions, request
+coalescing, and shared attrsvc response/config types. Legacy LogSage, SPLITLOG
+orchestration, and LogSage-backed MCP tools live under ``legacy_logsage`` in source checkouts
 and are intentionally excluded from built wheels.
 """
 
