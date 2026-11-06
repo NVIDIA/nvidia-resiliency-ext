@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 #pragma once
 
@@ -53,7 +53,7 @@ namespace detail {
 class Int64s {
    public:
     // The int64s in bytes, whose size is a multiple of 8.
-    explicit Int64s(std::span<const std::byte> bytes) : bytes_(bytes) {}
+    explicit Int64s(std::span<std::byte const> bytes) : bytes_(bytes) {}
 
     // The number of int64s.
     [[nodiscard]] auto size() const -> size_t { return bytes_.size() / sizeof(int64_t); }
@@ -79,7 +79,7 @@ class Int64s {
     }
 
    private:
-    std::span<const std::byte> bytes_;
+    std::span<std::byte const> bytes_;
 };
 
 // A write-result table within its row of the gathered buffer. parse checks that its sections lie
@@ -87,13 +87,15 @@ class Int64s {
 class WriteResultTable {
    public:
     // The table in a row.
-    [[nodiscard]] static auto parse(std::span<const std::byte> row) -> WriteResultTable;
+    [[nodiscard]] static auto parse(std::span<std::byte const> row) -> WriteResultTable;
 
     // The number of entries.
     [[nodiscard]] auto entries() const -> size_t { return entries_.size() / COLUMNS; }
 
     // Entry r < entries(): its COLUMNS int64s, indexed by Column.
-    [[nodiscard]] auto entry(size_t r) const -> Int64s { return entries_.subspan(COLUMNS * r, COLUMNS); }
+    [[nodiscard]] auto entry(size_t r) const -> Int64s {
+        return entries_.subspan(COLUMNS * r, COLUMNS);
+    }
 
     // Replace out's contents with the strings, as views into the row. Their bytes are not checked
     // to be UTF-8: tables come from this job's ranks, which encoded them (see
@@ -117,18 +119,22 @@ class WriteResultTable {
 
    private:
     // The sections parse found.
-    WriteResultTable(Int64s string_len, Int64s entries, Int64s offsets, std::string_view blob,
-                     FqnMode fqn_mode, int64_t fingerprint);
+    WriteResultTable(Int64s string_len,
+                     Int64s entries,
+                     Int64s offsets,
+                     std::string_view blob,
+                     FqnMode fqn_mode,
+                     int64_t fingerprint);
 
-    Int64s string_len_;  // the byte length of each string
-    Int64s entries_;     // entries() rows of COLUMNS
-    Int64s offsets_;     // the entries' offset dims, concatenated
+    Int64s string_len_;      // the byte length of each string
+    Int64s entries_;         // entries() rows of COLUMNS
+    Int64s offsets_;         // the entries' offset dims, concatenated
     std::string_view blob_;  // the strings, concatenated
     FqnMode fqn_mode_;
     int64_t fingerprint_;
 };
 
 // The tables in the rows of a 2-D uint8 array.
-[[nodiscard]] auto parse_tables(const Rows& rows) -> std::vector<WriteResultTable>;
+[[nodiscard]] auto parse_tables(Rows const& rows) -> std::vector<WriteResultTable>;
 
 }  // namespace nvrx::checkpoint

@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 #pragma once
 
@@ -24,7 +24,9 @@ namespace nvrx::checkpoint {
 namespace py = pybind11;
 
 // Pickle the Metadata a state dict table was converted from, and return the bytes.
-[[nodiscard]] auto dumps_table(py::handle table, py::object small_pickle,
-                                    py::handle storage_data, const py::object& storage_rows) -> py::bytes;
+[[nodiscard]] auto dumps_table(py::handle table,
+                               py::object small_pickle,
+                               py::handle storage_data,
+                               py::object const& storage_rows) -> py::bytes;
 
 }  // namespace nvrx::checkpoint

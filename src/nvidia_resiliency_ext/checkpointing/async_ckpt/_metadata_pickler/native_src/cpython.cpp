@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 #include "cpython.h"
 
@@ -30,7 +30,7 @@ auto detail::instance_dict(PyObject* obj) -> py::object {
     if (r == nullptr) {
         throw py::error_already_set();
     }
-    const auto d = py::reinterpret_steal<py::object>(r);
+    auto const d = py::reinterpret_steal<py::object>(r);
     if (!PyDict_CheckExact(d.ptr())) {
         throw py::type_error("expected a __dict__");
     }
@@ -50,7 +50,7 @@ auto detail::utf8(PyObject* s) -> std::string_view {
         throw py::type_error("expected str");
     }
     Py_ssize_t n = 0;
-    const char* const p = PyUnicode_AsUTF8AndSize(s, &n);
+    char const* const p = PyUnicode_AsUTF8AndSize(s, &n);
     if (p == nullptr) {
         throw py::error_already_set();
     }

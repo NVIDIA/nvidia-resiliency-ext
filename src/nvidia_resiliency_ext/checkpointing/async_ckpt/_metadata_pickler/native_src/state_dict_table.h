@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 #pragma once
 
@@ -64,7 +64,7 @@ class StateDictTableView {
     // Return the fingerprint of the table's fqn list, read once, on first use: only index tables
     // need it.
     [[nodiscard]] auto fqns_fingerprint() const -> int64_t;
-    [[nodiscard]] auto fields() const -> const std::vector<Field>& { return fields_; }
+    [[nodiscard]] auto fields() const -> std::vector<Field> const& { return fields_; }
     [[nodiscard]] auto fqn(size_t i) const -> PyObject* { return PyTuple_GET_ITEM(fqns_.ptr(), i); }
     [[nodiscard]] auto kind(size_t i) const -> Kind { return static_cast<Kind>(kind_[i]); }
     [[nodiscard]] auto properties(size_t i) const -> std::string_view {
@@ -74,15 +74,15 @@ class StateDictTableView {
         return detail::bytes_view(PyTuple_GET_ITEM(others_.ptr(), ref_[i]));
     }
     [[nodiscard]] auto ndim(size_t i) const -> size_t { return static_cast<size_t>(ndim_[i]); }
-    [[nodiscard]] auto size(size_t i) const -> std::span<const int64_t> {
+    [[nodiscard]] auto size(size_t i) const -> std::span<int64_t const> {
         return dims_.subspan(static_cast<size_t>(dims_start_[i]), ndim(i));
     }
     [[nodiscard]] auto chunks(size_t i) const -> size_t {
         return static_cast<size_t>(chunk_start_[i + 1] - chunk_start_[i]);
     }
     // Return chunk k of entry i: its offsets, then its sizes, after the entry's size.
-    [[nodiscard]] auto chunk(size_t i, size_t k) const -> std::span<const int64_t> {
-        const size_t width = 2 * ndim(i);
+    [[nodiscard]] auto chunk(size_t i, size_t k) const -> std::span<int64_t const> {
+        size_t const width = 2 * ndim(i);
         return dims_.subspan(static_cast<size_t>(dims_start_[i]) + ndim(i) + (width * k), width);
     }
     [[nodiscard]] auto dims_size() const -> size_t { return dims_.size(); }
@@ -96,13 +96,14 @@ class StateDictTableView {
     py::tuple fqns_, properties_, others_;
     Array<uint8_t> kind_array_;
     Array<int64_t> ref_array_, ndim_array_, chunk_start_array_, dims_start_array_, dims_array_;
-    std::span<const uint8_t> kind_;
-    std::span<const int64_t> ref_, ndim_, chunk_start_, dims_start_, dims_;
+    std::span<uint8_t const> kind_;
+    std::span<int64_t const> ref_, ndim_, chunk_start_, dims_start_, dims_;
     std::vector<Field> fields_;
 };
 
 // Convert metadata, without its storage_data, to a table_cls (a StateDictTable).
-[[nodiscard]] auto from_metadata(py::handle metadata, py::object small_pickle,
-                                       const py::object& table_cls) -> py::object;
+[[nodiscard]] auto from_metadata(py::handle metadata,
+                                 py::object small_pickle,
+                                 py::object const& table_cls) -> py::object;
 
 }  // namespace nvrx::checkpoint

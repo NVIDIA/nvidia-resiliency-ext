@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 #include "state_dict_table.h"
 
@@ -50,7 +50,9 @@ namespace {
 }
 
 // Return the name of obj's type, for error messages.
-[[nodiscard]] auto type_name(PyObject* obj) -> std::string { return Py_TYPE(obj)->tp_name; }
+[[nodiscard]] auto type_name(PyObject* obj) -> std::string {
+    return Py_TYPE(obj)->tp_name;
+}
 
 // Reject a malformed state dict table, before anything reads outside its arrays.
 [[noreturn]] void bad_state_dict_table(std::string_view what) {
@@ -59,7 +61,7 @@ namespace {
 
 // Return the attribute name of table, which must be exactly a tuple, as a StateDictTable's
 // sequences are.
-[[nodiscard]] auto tuple_attr(py::handle table, const char* name) -> py::tuple {
+[[nodiscard]] auto tuple_attr(py::handle table, char const* name) -> py::tuple {
     py::object value = table.attr(name);
     if (!PyTuple_CheckExact(value.ptr())) {
         bad_state_dict_table(std::string(name) + " is not a tuple");
@@ -70,7 +72,7 @@ namespace {
 // Return the attribute name of table, which must be a 1-D, C-contiguous, aligned array of exactly
 // the element type T.
 template <TableValue T>
-[[nodiscard]] auto array_attr(py::handle table, const char* name) -> Array<T> {
+[[nodiscard]] auto array_attr(py::handle table, char const* name) -> Array<T> {
     py::object value = table.attr(name);
     if (!Array<T>::check_(value) || py::reinterpret_borrow<py::array>(value).ndim() != 1 ||
         (py::reinterpret_borrow<py::array>(value).flags() &
@@ -82,7 +84,7 @@ template <TableValue T>
 
 // Return the values of a 1-D array, valid while the array is held.
 template <TableValue T>
-[[nodiscard]] auto values(const Array<T>& a) -> std::span<const T> {
+[[nodiscard]] auto values(Array<T> const& a) -> std::span<T const> {
     return {a.data(), static_cast<size_t>(a.size())};
 }
 
@@ -93,7 +95,7 @@ template <TableValue T>
     if (ndim == 0) {
         return values == 0;
     }
-    const int64_t per_dim = values / ndim;  // 1 + 2 * chunk_count
+    int64_t const per_dim = values / ndim;  // 1 + 2 * chunk_count
     return values % ndim == 0 && per_dim % 2 == 1 && per_dim / 2 == chunk_count;
 }
 
@@ -101,9 +103,8 @@ template <TableValue T>
 template <TableValue T>
 [[nodiscard]] auto to_array(std::vector<T>&& vector) -> py::array_t<T> {
     auto owned = std::make_unique<std::vector<T>>(std::move(vector));
-    const py::capsule owner(owned.get(),
-                            [](void* p) { delete static_cast<std::vector<T>*>(p); });
-    const std::vector<T>& values = *owned.release();
+    py::capsule const owner(owned.get(), [](void* p) { delete static_cast<std::vector<T>*>(p); });
+    std::vector<T> const& values = *owned.release();
     return py::array_t<T>({values.size()}, {sizeof(T)}, values.data(), owner);
 }
 
@@ -123,12 +124,12 @@ class StateDictTableBuilder {
 
     // Convert metadata, without its storage_data, to an instance of table_cls (a StateDictTable).
     // Use once, on a temporary builder: it moves its arrays and lists into the table.
-    [[nodiscard]] auto build(py::handle metadata, const py::object& table_cls) && -> py::object {
+    [[nodiscard]] auto build(py::handle metadata, py::object const& table_cls) && -> py::object {
         if (!is(metadata.ptr(), metadata_cls_)) {
             throw py::type_error("expected Metadata, got " + type_name(metadata.ptr()));
         }
-        const py::object state = instance_dict(metadata.ptr());
-        const py::object entries = getattr(metadata.ptr(), a_state_dict_metadata_.ptr());
+        py::object const state = instance_dict(metadata.ptr());
+        py::object const entries = getattr(metadata.ptr(), a_state_dict_metadata_.ptr());
         if (!PyDict_CheckExact(entries.ptr())) {
             throw py::type_error("expected dict for state_dict_metadata, got " +
                                  type_name(entries.ptr()));
@@ -136,18 +137,18 @@ class StateDictTableBuilder {
         // Snapshots, which hold the items while small_pickle runs Python code that could change
         // the dicts.
         py::list fields;
-        for (const py::handle item : items(state.ptr())) {
+        for (py::handle const item : items(state.ptr())) {
             PyObject* const name = PyTuple_GET_ITEM(item.ptr(), 0);
-            const std::string_view field_name = utf8(name);
-            const bool written_here =
+            std::string_view const field_name = utf8(name);
+            bool const written_here =
                 field_name == STATE_DICT_METADATA || field_name == STORAGE_DATA;
-            const py::object opcodes = written_here
+            py::object const opcodes = written_here
                                            ? py::object(py::none())
                                            : py::object(pickled(PyTuple_GET_ITEM(item.ptr(), 1)));
             fields.append(py::make_tuple(py::handle(name), opcodes));
         }
-        const py::list entry_items = items(entries.ptr());
-        const size_t n = entry_items.size();
+        py::list const entry_items = items(entries.ptr());
+        size_t const n = entry_items.size();
         py::list const fqns(n);
         kind_.reserve(n);
         ref_.reserve(n);
@@ -165,11 +166,11 @@ class StateDictTableBuilder {
             fqns[i] = py::handle(fqn);
             size_t ndim = 0;
             size_t chunks = 0;
-            if (const std::optional<TensorEntry> tensor =
+            if (std::optional<TensorEntry> const tensor =
                     is(entry, tensor_cls_) ? tensor_entry(entry) : std::nullopt) {
                 // After the chunks are counted: small_pickle runs Python code.
                 py::bytes opcodes = pickled(tensor->properties.ptr());
-                const std::string_view key = bytes_view(opcodes.ptr());
+                std::string_view const key = bytes_view(opcodes.ptr());
                 auto it = property_ids_.find(key);
                 if (it == property_ids_.end()) {
                     it = property_ids_.emplace(key, properties_.size()).first;
@@ -191,7 +192,8 @@ class StateDictTableBuilder {
         if (std::cmp_not_equal(PyDict_Size(entries.ptr()), n)) {
             throw std::runtime_error("state_dict_metadata changed size while being converted");
         }
-        return table_cls(py::arg("fields") = fields, py::arg("fqns") = fqns,
+        return table_cls(py::arg("fields") = fields,
+                         py::arg("fqns") = fqns,
                          py::arg("kind") = to_array(std::move(kind_)),
                          py::arg("ref") = to_array(std::move(ref_)),
                          py::arg("ndim") = to_array(std::move(ndim_)),
@@ -214,55 +216,55 @@ class StateDictTableBuilder {
     // dims and chunks; nullopt, with nothing appended, if it isn't one (see _tensor_entry in
     // state_dict_table.py).
     [[nodiscard]] auto tensor_entry(PyObject* entry) -> std::optional<TensorEntry> {
-        const py::object state = instance_dict(entry);
+        py::object const state = instance_dict(entry);
         PyObject* const properties = dict_get(state.ptr(), a_properties_.ptr());
         PyObject* const size = dict_get(state.ptr(), a_size_.ptr());
         PyObject* const chunks = dict_get(state.ptr(), a_chunks_.ptr());
-        if (PyDict_Size(state.ptr()) != 3 || (properties == nullptr) || (size == nullptr) || !is(size, size_cls_) ||
-            (chunks == nullptr) || !PyList_CheckExact(chunks)) {
+        if (PyDict_Size(state.ptr()) != 3 || (properties == nullptr) || (size == nullptr) ||
+            !is(size, size_cls_) || (chunks == nullptr) || !PyList_CheckExact(chunks)) {
             return std::nullopt;
         }
-        const Py_ssize_t ndim = PyTuple_GET_SIZE(size);
-        const Py_ssize_t chunk_count = PyList_GET_SIZE(chunks);
+        Py_ssize_t const ndim = PyTuple_GET_SIZE(size);
+        Py_ssize_t const chunk_count = PyList_GET_SIZE(chunks);
         if (ndim == 0 && chunk_count > 1) {
             return std::nullopt;  // a scalar saved by several ranks without dedup
         }
-        const size_t mark = dims_.size();
+        size_t const mark = dims_.size();
         if (!append_dims(size, dims_)) {
             dims_.resize(mark);
             return std::nullopt;
         }
         for (Py_ssize_t k = 0; k < chunk_count; ++k) {
             PyObject* const chunk = PyList_GET_ITEM(chunks, k);
-            const py::object chunk_state =
+            py::object const chunk_state =
                 is(chunk, chunk_cls_) ? instance_dict(chunk) : py::object();
             PyObject* const offsets =
                 chunk_state ? dict_get(chunk_state.ptr(), a_offsets_.ptr()) : nullptr;
             PyObject* const sizes =
                 chunk_state ? dict_get(chunk_state.ptr(), a_sizes_.ptr()) : nullptr;
-            if (!chunk_state || PyDict_Size(chunk_state.ptr()) != 2 || (offsets == nullptr) || (sizes == nullptr) ||
-                !is(offsets, size_cls_) || !is(sizes, size_cls_) ||
+            if (!chunk_state || PyDict_Size(chunk_state.ptr()) != 2 || (offsets == nullptr) ||
+                (sizes == nullptr) || !is(offsets, size_cls_) || !is(sizes, size_cls_) ||
                 PyTuple_GET_SIZE(offsets) != ndim || PyTuple_GET_SIZE(sizes) != ndim ||
                 !append_dims(offsets, dims_) || !append_dims(sizes, dims_)) {
                 dims_.resize(mark);
                 return std::nullopt;
             }
         }
-        return TensorEntry{.properties=py::reinterpret_borrow<py::object>(properties),
-                           .ndim=static_cast<size_t>(ndim),
-                      .chunks=static_cast<size_t>(chunk_count)};
+        return TensorEntry{.properties = py::reinterpret_borrow<py::object>(properties),
+                           .ndim = static_cast<size_t>(ndim),
+                           .chunks = static_cast<size_t>(chunk_count)};
     }
 
     // Append a torch.Size's dims; return false unless each is an int within int64 (a torch.Size
     // may also hold numpy ints or larger ints, which only pickle writes exactly).
     [[nodiscard]] static auto append_dims(PyObject* dims, std::vector<int64_t>& out) -> bool {
-        const Py_ssize_t n = PyTuple_GET_SIZE(dims);
+        Py_ssize_t const n = PyTuple_GET_SIZE(dims);
         for (Py_ssize_t k = 0; k < n; ++k) {
             PyObject* const dim = PyTuple_GET_ITEM(dims, k);
             if (!PyLong_CheckExact(dim)) {
                 return false;
             }
-            const long long value = PyLong_AsLongLong(dim);
+            long long const value = PyLong_AsLongLong(dim);
             if (value == -1 && (PyErr_Occurred() != nullptr)) {
                 PyErr_Clear();  // beyond int64
                 return false;
@@ -295,7 +297,7 @@ class StateDictTableBuilder {
         return py::reinterpret_steal<py::list>(r);
     }
 
-    [[nodiscard]] static auto is(PyObject* obj, const py::object& cls) -> bool {
+    [[nodiscard]] static auto is(PyObject* obj, py::object const& cls) -> bool {
         return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
     }
 
@@ -328,8 +330,8 @@ StateDictTableView::StateDictTableView(py::handle table)
       chunk_start_(values(chunk_start_array_)),
       dims_start_(values(dims_start_array_)),
       dims_(values(dims_array_)) {
-    const py::tuple fields = tuple_attr(table, "fields");
-    for (const py::handle field : fields) {
+    py::tuple const fields = tuple_attr(table, "fields");
+    for (py::handle const field : fields) {
         if (!PyTuple_CheckExact(field.ptr()) || PyTuple_GET_SIZE(field.ptr()) != 2) {
             bad_state_dict_table("a field is not a (name, opcodes) tuple");
         }
@@ -338,14 +340,12 @@ StateDictTableView::StateDictTableView(py::handle table)
         if (!PyUnicode_CheckExact(name)) {
             bad_state_dict_table("a field name is a " + type_name(name) + ", not a str");
         }
-        const std::string_view field_name = utf8(name);
-        const bool written_here =
-            field_name == STATE_DICT_METADATA || field_name == STORAGE_DATA;
+        std::string_view const field_name = utf8(name);
+        bool const written_here = field_name == STATE_DICT_METADATA || field_name == STORAGE_DATA;
         if (written_here ? opcodes != Py_None : !PyBytes_CheckExact(opcodes)) {
             bad_state_dict_table("unexpected opcodes of field " + std::string(field_name));
         }
-        fields_.push_back(
-            {std::string(field_name), py::reinterpret_borrow<py::object>(opcodes)});
+        fields_.push_back({std::string(field_name), py::reinterpret_borrow<py::object>(opcodes)});
     }
     check();
 }
@@ -358,22 +358,20 @@ auto StateDictTableView::fqns_fingerprint() const -> int64_t {
 }
 
 void StateDictTableView::check() const {
-    const size_t n = entries();
+    size_t const n = entries();
     if (static_cast<size_t>(PyTuple_GET_SIZE(fqns_.ptr())) != n || ref_.size() != n ||
         ndim_.size() != n) {
         bad_state_dict_table("arrays of different lengths");
     }
-    const auto check_starts = [n](std::span<const int64_t> starts,
-                                  std::optional<size_t> pool) {
-        if (starts.size() != n + 1 || starts[0] != 0 ||
-            !std::ranges::is_sorted(starts) ||
+    auto const check_starts = [n](std::span<int64_t const> starts, std::optional<size_t> pool) {
+        if (starts.size() != n + 1 || starts[0] != 0 || !std::ranges::is_sorted(starts) ||
             (pool && std::cmp_not_equal(starts[n], *pool))) {
             bad_state_dict_table("start offsets out of order or range");
         }
     };
     check_starts(chunk_start_, std::nullopt);
     check_starts(dims_start_, dims_.size());
-    const auto in = [](int64_t ref, const py::tuple& pickles) {
+    auto const in = [](int64_t ref, py::tuple const& pickles) {
         return ref >= 0 && ref < PyTuple_GET_SIZE(pickles.ptr()) &&
                PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
     };
@@ -381,9 +379,9 @@ void StateDictTableView::check() const {
         if (!PyUnicode_CheckExact(fqn(i))) {
             bad_state_dict_table("an fqn is not a str");
         }
-        const int64_t ndim = ndim_[i];
-        const int64_t chunk_count = chunk_start_[i + 1] - chunk_start_[i];
-        const int64_t values = dims_start_[i + 1] - dims_start_[i];
+        int64_t const ndim = ndim_[i];
+        int64_t const chunk_count = chunk_start_[i + 1] - chunk_start_[i];
+        int64_t const values = dims_start_[i + 1] - dims_start_[i];
         if (ndim < 0) {
             bad_state_dict_table("a negative number of dims");
         }
@@ -413,7 +411,8 @@ void StateDictTableView::check() const {
     }
 }
 
-auto nvrx::checkpoint::from_metadata(py::handle metadata, py::object small_pickle,
-                                           const py::object& table_cls) -> py::object {
+auto nvrx::checkpoint::from_metadata(py::handle metadata,
+                                     py::object small_pickle,
+                                     py::object const& table_cls) -> py::object {
     return StateDictTableBuilder(std::move(small_pickle)).build(metadata, table_cls);
 }

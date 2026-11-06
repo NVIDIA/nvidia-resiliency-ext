@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 #include "write_result_table.h"
 
@@ -54,45 +54,48 @@ void detail::bad_table(std::string_view what) {
     throw py::value_error("write-result table: " + std::string(what));
 }
 
-auto WriteResultTable::parse(std::span<const std::byte> row) -> WriteResultTable {
+auto WriteResultTable::parse(std::span<std::byte const> row) -> WriteResultTable {
     if (row.size() < sizeof(int64_t) * HEADER) {
         bad_table("truncated");
     }
-    const Int64s header(row.first(sizeof(int64_t) * HEADER));
+    Int64s const header(row.first(sizeof(int64_t) * HEADER));
     if (header[Header::Magic] != TABLE_MAGIC || header[Header::Version] != TABLE_VERSION) {
         bad_table("not a table of this version");
     }
-    std::span<const std::byte> rest = row.subspan(sizeof(int64_t) * HEADER);
+    std::span<std::byte const> rest = row.subspan(sizeof(int64_t) * HEADER);
     // The next section: as many items of item_size bytes as the header's count field says,
     // checked to fit in the rest of the row (comparing counts, so sizes cannot overflow).
-    const auto take = [&](Header count, size_t item_size) {
-        const int64_t n = header[count];
+    auto const take = [&](Header count, size_t item_size) {
+        int64_t const n = header[count];
         if (n < 0 || static_cast<uint64_t>(n) > rest.size() / item_size) {
             bad_table("truncated");
         }
-        const auto section = rest.first(static_cast<size_t>(n) * item_size);
+        auto const section = rest.first(static_cast<size_t>(n) * item_size);
         rest = rest.subspan(section.size());
         return section;
     };
-    const Int64s string_len(take(Header::Strings, sizeof(int64_t)));
-    const Int64s entries(take(Header::Entries, sizeof(int64_t) * COLUMNS));
-    const Int64s offsets(take(Header::Offsets, sizeof(int64_t)));
-    const std::span<const std::byte> blob = take(Header::StringBytes, 1);
-    const int64_t fqn_mode = header[Header::FqnMode];
+    Int64s const string_len(take(Header::Strings, sizeof(int64_t)));
+    Int64s const entries(take(Header::Entries, sizeof(int64_t) * COLUMNS));
+    Int64s const offsets(take(Header::Offsets, sizeof(int64_t)));
+    std::span<std::byte const> const blob = take(Header::StringBytes, 1);
+    int64_t const fqn_mode = header[Header::FqnMode];
     if (fqn_mode != static_cast<int64_t>(FqnMode::Strings) &&
         fqn_mode != static_cast<int64_t>(FqnMode::Indices)) {
         bad_table("unknown fqn mode");
     }
-    return {string_len, entries, offsets,
-                            {reinterpret_cast<const char*>(blob.data()), blob.size()},
-                            static_cast<FqnMode>(fqn_mode), header[Header::Fingerprint]};
+    return {string_len,
+            entries,
+            offsets,
+            {reinterpret_cast<char const*>(blob.data()), blob.size()},
+            static_cast<FqnMode>(fqn_mode),
+            header[Header::Fingerprint]};
 }
 
 void WriteResultTable::split_strings(std::vector<std::string_view>& out) const {
     out.clear();
     std::string_view rest = blob_;
     for (size_t k = 0; k < string_len_.size(); ++k) {
-        const int64_t len = string_len_[k];
+        int64_t const len = string_len_[k];
         if (len < 0 || static_cast<uint64_t>(len) > rest.size()) {
             bad_table("string lengths exceed the string bytes");
         }
@@ -105,8 +108,7 @@ void WriteResultTable::split_strings(std::vector<std::string_view>& out) const {
 }
 
 auto WriteResultTable::offset_dims(size_t pos, int64_t ndim) const -> Int64s {
-    if (ndim < 0 || pos > offsets_.size() ||
-        static_cast<uint64_t>(ndim) > offsets_.size() - pos) {
+    if (ndim < 0 || pos > offsets_.size() || static_cast<uint64_t>(ndim) > offsets_.size() - pos) {
         bad_table("offsets out of range");
     }
     return offsets_.subspan(pos, static_cast<size_t>(ndim));
@@ -118,8 +120,12 @@ void WriteResultTable::check_offsets_used(size_t pos) const {
     }
 }
 
-WriteResultTable::WriteResultTable(Int64s string_len, Int64s entries, Int64s offsets,
-                                   std::string_view blob, FqnMode fqn_mode, int64_t fingerprint)
+WriteResultTable::WriteResultTable(Int64s string_len,
+                                   Int64s entries,
+                                   Int64s offsets,
+                                   std::string_view blob,
+                                   FqnMode fqn_mode,
+                                   int64_t fingerprint)
     : string_len_(string_len),
       entries_(entries),
       offsets_(offsets),
@@ -127,12 +133,12 @@ WriteResultTable::WriteResultTable(Int64s string_len, Int64s entries, Int64s off
       fqn_mode_(fqn_mode),
       fingerprint_(fingerprint) {}
 
-auto nvrx::checkpoint::parse_tables(const Rows& rows) -> std::vector<WriteResultTable> {
+auto nvrx::checkpoint::parse_tables(Rows const& rows) -> std::vector<WriteResultTable> {
     if (rows.ndim() != 2) {
         throw py::value_error("expected a 2-D array of write-result tables");
     }
-    const auto width = static_cast<size_t>(rows.shape(1));
-    const std::span<const std::byte> bytes =
+    auto const width = static_cast<size_t>(rows.shape(1));
+    std::span<std::byte const> const bytes =
         std::as_bytes(std::span(rows.data(), static_cast<size_t>(rows.size())));
     std::vector<WriteResultTable> tables;
     tables.reserve(rows.shape(0));

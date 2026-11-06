@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 // The C++ versions of `StateDictTable.from_metadata` and of `pickler._MetadataPickler`. The first
 // converts a torch DCP `Metadata` into a `StateDictTable`. The second writes the standard pickle
@@ -30,13 +30,17 @@ using namespace nvrx::checkpoint;
 
 PYBIND11_MODULE(_native, m) {
     m.doc() = "Fast conversion and pickling of torch.distributed.checkpoint Metadata.";
-    m.def(
-        "from_metadata", &from_metadata,
-        py::arg("metadata"), py::arg("small_pickle"), py::arg("table_cls"),
-        "Convert metadata, without its storage_data, to a table_cls (a StateDictTable).");
-    m.def(
-        "dumps_table", &dumps_table,
-        py::arg("table"), py::arg("small_pickle"), py::arg("storage_data") = py::none(),
-        py::arg("storage_rows") = py::none(),
-        "Pickle the Metadata a state dict table was converted from, and return the bytes.");
+    m.def("from_metadata",
+          &from_metadata,
+          py::arg("metadata"),
+          py::arg("small_pickle"),
+          py::arg("table_cls"),
+          "Convert metadata, without its storage_data, to a table_cls (a StateDictTable).");
+    m.def("dumps_table",
+          &dumps_table,
+          py::arg("table"),
+          py::arg("small_pickle"),
+          py::arg("storage_data") = py::none(),
+          py::arg("storage_rows") = py::none(),
+          "Pickle the Metadata a state dict table was converted from, and return the bytes.");
 }

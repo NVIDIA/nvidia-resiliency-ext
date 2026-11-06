@@ -1,0 +1,71 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: Auto
+
+# Indentation
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# Column limit
+ColumnLimit: 100
+
+# Braces
+BreakBeforeBraces: Attach
+InsertBraces: true
+
+# Alignment
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+AlignTrailingComments: true
+
+# Includes — sort within groups; preserve blank-line separators between groups.
+SortIncludes: CaseSensitive
+IncludeBlocks: Preserve
+
+# Pointer/reference alignment and east-const (int const& not const int&)
+PointerAlignment: Left
+ReferenceAlignment: Left
+QualifierAlignment: Right
+
+# Function declarations
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+
+# Line breaking
+BinPackArguments: false
+BinPackParameters: false
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+
+# Trailing return types — keep on same line when possible
+AlwaysBreakAfterReturnType: None
+
+# Spacing
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInAngles: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# Numeric literal case — uncomment when upgrading to clang-format 21+
+# NumericLiteralCaseStyle:
+#   Suffix: Upper        # 1ull -> 1ULL, 1u -> 1U, etc.
+#   HexDigit: Upper      # 0xdeadbeef -> 0xDEADBEEF
+#   Prefix: Lower        # 0XF0 -> 0xF0
+#   ExponentLetter: Upper  # 6.02e23 -> 6.02E23
+
+# C++11 and later
+Cpp11BracedListStyle: true
+
+# Penalty settings to prefer trailing return types on same line
+PenaltyBreakBeforeFirstCallParameter: 1000
+PenaltyReturnTypeOnItsOwnLine: 10000
+...

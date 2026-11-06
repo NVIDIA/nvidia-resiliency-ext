@@ -13,7 +13,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
-*/
+ */
 
 #include "pickler.h"
 
@@ -62,7 +62,7 @@ constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
     if (!PyLong_CheckExact(o)) {
         throw py::type_error("expected int");
     }
-    const long long v = PyLong_AsLongLong(o);
+    long long const v = PyLong_AsLongLong(o);
     if (v == -1 && (PyErr_Occurred() != nullptr)) {
         throw py::error_already_set();
     }
@@ -84,15 +84,16 @@ class Writer {
     // Pickle the Metadata that table_view's table was converted from, and return the bytes: a
     // NEWOBJ of Metadata built from its fields, in order. storage_data is written from rows (the
     // gathered write-result tables) if given, else from the storage_data dict, else as None.
-    [[nodiscard]] auto dumps(const StateDictTableView& table_view, py::handle storage_data,
-                                  const py::object& rows) -> py::bytes {
+    [[nodiscard]] auto dumps(StateDictTableView const& table_view,
+                             py::handle storage_data,
+                             py::object const& rows) -> py::bytes {
         // Holds the rows the tables point into.
-        const Rows rows_array = rows.is_none() ? Rows() : rows.cast<Rows>();
-        const std::vector<WriteResultTable> tables =
+        Rows const rows_array = rows.is_none() ? Rows() : rows.cast<Rows>();
+        std::vector<WriteResultTable> const tables =
             rows.is_none() ? std::vector<WriteResultTable>() : parse_tables(rows_array);
         size_t n_storage = 0;
         if (!rows.is_none()) {
-            for (const WriteResultTable& w : tables) {
+            for (WriteResultTable const& w : tables) {
                 n_storage += w.entries();
             }
         } else if (PyDict_Check(storage_data.ptr())) {
@@ -105,7 +106,7 @@ class Writer {
         prelude();
         put_get(metadata_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
-        for (const StateDictTableView::Field& field : table_view.fields()) {
+        for (StateDictTableView::Field const& field : table_view.fields()) {
             put_str(field.name);
             if (field.name == STATE_DICT_METADATA) {
                 dump_state_dict_metadata(table_view);
@@ -127,7 +128,7 @@ class Writer {
     // Protocol 4 header, then the classes and dict keys the encoding refers to, each memoized once.
     void prelude() {
         put({PROTO, '\x04'});
-        constexpr const char* META = "torch.distributed.checkpoint.metadata";
+        constexpr char const* META = "torch.distributed.checkpoint.metadata";
         size_ref_ = global_ref("torch", "Size");
         metadata_ref_ = global_ref(META, "Metadata");
         index_ref_ = global_ref(META, "MetadataIndex");
@@ -148,9 +149,9 @@ class Writer {
     }
 
     // Write Metadata.state_dict_metadata from the table's entries, in order.
-    void dump_state_dict_metadata(const StateDictTableView& table_view) {
+    void dump_state_dict_metadata(StateDictTableView const& table_view) {
         put(EMPTY_DICT);
-        const size_t n = table_view.entries();
+        size_t const n = table_view.entries();
         fqn_memo_.assign(n, std::nullopt);
         for (size_t i = 0; i < n; ++i) {
             begin_item(i);
@@ -172,11 +173,11 @@ class Writer {
                     size(table_view.size(i));
                     put_get(k_chunks_);
                     put(EMPTY_LIST);
-                    const size_t chunk_count = table_view.chunks(i);
-                    const size_t ndim = table_view.ndim(i);
+                    size_t const chunk_count = table_view.chunks(i);
+                    size_t const ndim = table_view.ndim(i);
                     for (size_t k = 0; k < chunk_count; ++k) {
                         begin_item(k);
-                        const std::span<const int64_t> chunk = table_view.chunk(i, k);
+                        std::span<int64_t const> const chunk = table_view.chunk(i, k);
                         put_get(chunk_ref_);
                         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
                         put_get(k_offsets_);
@@ -200,10 +201,10 @@ class Writer {
             throw py::type_error("expected dict");
         }
         put(EMPTY_DICT);
-        const Py_ssize_t n = PyDict_Size(dict);
+        Py_ssize_t const n = PyDict_Size(dict);
         Py_ssize_t pos = 0;
-        PyObject *idx = nullptr;
-        PyObject *info = nullptr;
+        PyObject* idx = nullptr;
+        PyObject* info = nullptr;
         for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &idx, &info) != 0; ++i) {
             begin_item(i);
             // Owns info while small(idx) runs Python code, which could remove it from the dict.
@@ -214,17 +215,16 @@ class Writer {
                 check_size(dict, n);
             } else {
                 // MetadataIndex sets offset only when it is given; pickle its __dict__.
-                const py::object state = instance_dict(idx);
+                py::object const state = instance_dict(idx);
                 PyObject* const fqn = dict_item(state.ptr(), a_fqn_.ptr());
                 PyObject* const index = dict_item(state.ptr(), a_index_.ptr());
                 PyObject* const offset = dict_get(state.ptr(), a_offset_.ptr());
                 if (PyDict_Size(state.ptr()) != ((offset != nullptr) ? 3 : 2)) {
                     throw py::type_error("unexpected MetadataIndex attributes");
                 }
-                const std::string_view fqn_view = utf8(fqn);
+                std::string_view const fqn_view = utf8(fqn);
                 put_index_start([&] { string(fqn_view); },
-                                index == Py_None ? std::nullopt
-                                                            : std::optional(as_int(index)));
+                                index == Py_None ? std::nullopt : std::optional(as_int(index)));
                 if (offset != nullptr) {
                     put_get(k_offset_);
                     if (offset == Py_None) {
@@ -238,7 +238,7 @@ class Writer {
 
             // _StorageInfo pickles its __dict__ without None values. transform_descriptors exists
             // from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib pickler.
-            const py::object state = is(info, info_cls_) ? instance_dict(info) : py::object();
+            py::object const state = is(info, info_cls_) ? instance_dict(info) : py::object();
             PyObject* const transforms =
                 state ? dict_get(state.ptr(), a_transform_.ptr()) : nullptr;
             if (!state || ((transforms != nullptr) && transforms != Py_None)) {
@@ -248,7 +248,7 @@ class Writer {
                 if (PyDict_Size(state.ptr()) != ((transforms != nullptr) ? 4 : 3)) {
                     throw py::type_error("unexpected _StorageInfo attributes");
                 }
-                const std::string_view path = utf8(dict_item(state.ptr(), a_relative_path_.ptr()));
+                std::string_view const path = utf8(dict_item(state.ptr(), a_relative_path_.ptr()));
                 put_storage_info([&] { string(path); },
                                  as_int(dict_item(state.ptr(), a_offset_.ptr())),
                                  as_int(dict_item(state.ptr(), a_length_.ptr())));
@@ -259,18 +259,18 @@ class Writer {
 
     // Metadata.storage_data from write-result tables, as dump_storage_data writes the dict that
     // finish builds from the same write results.
-    void dump_storage_tables(const std::vector<WriteResultTable>& tables,
-                             const StateDictTableView& table_view) {
+    void dump_storage_tables(std::vector<WriteResultTable> const& tables,
+                             StateDictTableView const& table_view) {
         put(EMPTY_DICT);
         size_t total = 0;
-        for (const WriteResultTable& t : tables) {
+        for (WriteResultTable const& t : tables) {
             total += t.entries();
         }
         fqn_memo_.resize(table_view.entries());
         size_t i = 0;
-        std::vector<std::string_view> strings;  // the current table's
+        std::vector<std::string_view> strings;             // the current table's
         std::vector<std::optional<uint32_t>> string_memo;  // their memo indices, once written
-        for (const WriteResultTable& t : tables) {
+        for (WriteResultTable const& t : tables) {
             if (t.fqn_mode() == FqnMode::Indices &&
                 t.fingerprint() != table_view.fqns_fingerprint()) {
                 bad_table("an index table encoded against another fqn list");
@@ -289,20 +289,22 @@ class Writer {
 
     // Write one table entry: its MetadataIndex and _StorageInfo. pos is where its offset dims
     // start in the table's offsets; it moves past them.
-    void dump_table_entry(const WriteResultTable& t, const Int64s& entry,
-                          const std::vector<std::string_view>& strings,
+    void dump_table_entry(WriteResultTable const& t,
+                          Int64s const& entry,
+                          std::vector<std::string_view> const& strings,
                           std::vector<std::optional<uint32_t>>& string_memo,
-                          const StateDictTableView& table_view, size_t& pos) {
-        const int64_t flags = entry[Column::Flags];
+                          StateDictTableView const& table_view,
+                          size_t& pos) {
+        int64_t const flags = entry[Column::Flags];
         if ((flags & ~(FLAG_INDEX | FLAG_OFFSET | FLAG_OFFSET_SIZE)) != 0) {
             bad_table("unknown flags");
         }
         if (((flags & FLAG_OFFSET_SIZE) != 0) && ((flags & FLAG_OFFSET) == 0)) {
             bad_table("an offset size without an offset");
         }
-        const std::optional<int64_t> index =
+        std::optional<int64_t> const index =
             ((flags & FLAG_INDEX) != 0) ? std::optional(entry[Column::Index]) : std::nullopt;
-        const int64_t fqn = entry[Column::Fqn];
+        int64_t const fqn = entry[Column::Fqn];
         put_index_start(
             [&] {
                 if (t.fqn_mode() == FqnMode::Indices) {
@@ -315,7 +317,7 @@ class Writer {
         if ((flags & FLAG_OFFSET) != 0) {
             put_get(k_offset_);
             if ((flags & FLAG_OFFSET_SIZE) != 0) {
-                const int64_t ndim = entry[Column::OffsetNdim];
+                int64_t const ndim = entry[Column::OffsetNdim];
                 size(t.offset_dims(pos, ndim));
                 pos += static_cast<size_t>(ndim);
             } else {
@@ -324,13 +326,15 @@ class Writer {
         }
         put({SETITEMS, BUILD});
         put_storage_info([&] { put_table_string(strings, string_memo, entry[Column::Path]); },
-                         entry[Column::Offset], entry[Column::Length]);
+                         entry[Column::Offset],
+                         entry[Column::Length]);
     }
 
     // Write a table's string id: written or fetched on first use, then fetched by its memo index.
-    void put_table_string(const std::vector<std::string_view>& strings,
-                          std::vector<std::optional<uint32_t>>& string_memo, int64_t id) {
-        const std::string_view value = string_at(strings, id);
+    void put_table_string(std::vector<std::string_view> const& strings,
+                          std::vector<std::optional<uint32_t>>& string_memo,
+                          int64_t id) {
+        std::string_view const value = string_at(strings, id);
         std::optional<uint32_t>& memo = string_memo[static_cast<size_t>(id)];
         if (memo) {
             put_get(*memo);
@@ -341,7 +345,7 @@ class Writer {
 
     // Write the fqn of entry id of the state dict table, by the memo index the
     // state_dict_metadata pass gave it.
-    void put_fqn_entry(const StateDictTableView& table_view, int64_t id) {
+    void put_fqn_entry(StateDictTableView const& table_view, int64_t id) {
         if (id < 0 || static_cast<uint64_t>(id) >= table_view.entries()) {
             bad_table("fqn entry out of range");
         }
@@ -354,8 +358,8 @@ class Writer {
     }
 
     // Return a string id of a table's strings, checked.
-    [[nodiscard]] static auto string_at(const std::vector<std::string_view>& strings,
-                                                    int64_t id) -> std::string_view {
+    [[nodiscard]] static auto string_at(std::vector<std::string_view> const& strings, int64_t id)
+        -> std::string_view {
         if (id < 0 || static_cast<uint64_t>(id) >= strings.size()) {
             bad_table("string id out of range");
         }
@@ -416,7 +420,7 @@ class Writer {
 
     // Whether obj is exactly of class cls. Objects of exactly the metadata classes are encoded
     // here; others, subclasses included, are left to the stdlib pickler and keep their class.
-    [[nodiscard]] static auto is(PyObject* obj, const py::object& cls) -> bool {
+    [[nodiscard]] static auto is(PyObject* obj, py::object const& cls) -> bool {
         return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
     }
 
@@ -467,10 +471,11 @@ class Writer {
         } else {
             // LONG1 with pickle.encode_long's bytes: the shortest little-endian two's complement.
             // Drop top bytes that only repeat the sign of the byte below them.
-            const auto u = static_cast<uint64_t>(i);
-            const auto byte = [u](int k) { return static_cast<uint8_t>(u >> (8 * k)); };
+            auto const u = static_cast<uint64_t>(i);
+            auto const byte = [u](int k) { return static_cast<uint8_t>(u >> (8 * k)); };
             int nbytes = 8;
-            while (nbytes > 1 && (byte(nbytes - 1) == (((byte(nbytes - 2) & 0x80) != 0) ? 0xff : 0x00))) {
+            while (nbytes > 1 &&
+                   (byte(nbytes - 1) == (((byte(nbytes - 2) & 0x80) != 0) ? 0xff : 0x00))) {
                 --nbytes;
             }
             put('\x8a');
@@ -501,7 +506,7 @@ class Writer {
 
     // The same, for a string's UTF-8 bytes.
     auto string(std::string_view v) -> uint32_t {
-        if (const auto it = strings_.find(v); it != strings_.end()) {
+        if (auto const it = strings_.find(v); it != strings_.end()) {
             put_get(it->second);
             return it->second;
         }
@@ -521,18 +526,18 @@ class Writer {
     }
 
     // Write a torch.Size from a state dict table's dims, as size(PyObject*) does.
-    void size(std::span<const int64_t> dims) {
+    void size(std::span<int64_t const> dims) {
         put_size(dims.size(), [dims](size_t j) { return dims[j]; });
     }
 
     // The same, for dims from a write-result table.
-    void size(const Int64s& dims) {
+    void size(Int64s const& dims) {
         put_size(dims.size(), [&dims](size_t j) { return dims[j]; });
     }
 
     // Write torch.Size of n dims, the j-th of which dim(j) returns.
     template <typename Dim>
-    void put_size(const size_t n, Dim dim) {
+    void put_size(size_t const n, Dim dim) {
         put_get(size_ref_);
         if (n == 0) {
             put(EMPTY_TUPLE);
@@ -540,8 +545,9 @@ class Writer {
             if (n > 3) {
                 put(MARK);
             }
-            for (size_t j = 0; j < n; ++j) { put_int(dim(j));
-}
+            for (size_t j = 0; j < n; ++j) {
+                put_int(dim(j));
+            }
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
         put({TUPLE1, REDUCE});
@@ -549,7 +555,7 @@ class Writer {
 
     // An object left to the stdlib pickler, spliced in from small_pickle's opcodes.
     void small(PyObject* obj) {
-        const py::object b = small_pickle_(py::handle(obj));
+        py::object const b = small_pickle_(py::handle(obj));
         char* p = nullptr;
         Py_ssize_t n = 0;
         if (PyBytes_AsStringAndSize(b.ptr(), &p, &n) != 0) {
@@ -560,8 +566,9 @@ class Writer {
 
     // The low nbytes bytes of v, least significant first.
     void put_le(uint64_t v, int nbytes) {
-        for (int k = 0; k < nbytes; ++k) { put(static_cast<char>((v >> (8 * k)) & 0xff));
-}
+        for (int k = 0; k < nbytes; ++k) {
+            put(static_cast<char>((v >> (8 * k)) & 0xff));
+        }
     }
 
     py::object small_pickle_;
@@ -588,8 +595,10 @@ class Writer {
 
 }  // namespace
 
-auto nvrx::checkpoint::dumps_table(py::handle table, py::object small_pickle,
-                                        py::handle storage_data, const py::object& storage_rows) -> py::bytes {
+auto nvrx::checkpoint::dumps_table(py::handle table,
+                                   py::object small_pickle,
+                                   py::handle storage_data,
+                                   py::object const& storage_rows) -> py::bytes {
     return Writer(std::move(small_pickle))
         .dumps(StateDictTableView(table), storage_data, storage_rows);
 }
