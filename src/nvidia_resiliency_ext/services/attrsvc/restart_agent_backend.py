@@ -251,6 +251,54 @@ def _offset_iso(epoch: float | None, offset_s: float | None) -> str | None:
     return _epoch_iso(epoch + offset_s)
 
 
+def _entry_timing(entry: _AttemptExecution) -> dict[str, Any]:
+    """One attempt's lifecycle, as absolute marks and the spans between them.
+
+    Two requests arrive per cycle and only the second one analyzes. Reporting
+    a single "request to verdict" figure would therefore mean the cycle's own
+    length - hours - rather than how long a verdict took, so the registration
+    and the analysis start are reported as separate marks.
+
+    Marks are read defensively. This also feeds the Slack alert, which is best
+    effort and wrapped in a broad ``except``: raising on an attempt that is
+    missing one would drop the whole alert rather than send it without its
+    timing, which is strictly the worse outcome.
+    """
+
+    def mark(name: str) -> Any:
+        return getattr(entry, name, None)
+
+    terminal_epoch = mark("terminal_epoch")
+    l0_s = mark("deterministic_ready_wall_clock_s")
+    analysis_to_l4_s = mark("analysis_completed_wall_clock_s")
+    terminal_at = mark("terminal_at")
+    registered_at = mark("registered_at")
+    return {
+        "job_id": mark("job_id"),
+        "cycle_id": mark("cycle_id"),
+        # When each thing happened.
+        "cycle_started_at": _epoch_iso(mark("registered_epoch")),
+        "analysis_started_at": _epoch_iso(terminal_epoch),
+        "l0_answer_at": _offset_iso(terminal_epoch, l0_s),
+        "l4_answer_at": _offset_iso(terminal_epoch, analysis_to_l4_s),
+        # How long each span took.
+        "cycle_to_analysis_s": (
+            round(terminal_at - registered_at, 3)
+            if terminal_at is not None and registered_at is not None
+            else None
+        ),
+        "analysis_to_l0_answer_s": l0_s,
+        "analysis_to_l4_answer_s": analysis_to_l4_s,
+        "llm_api_wall_clock_s": mark("l1_model_call_wall_clock_s"),
+        # Stage detail inside the analysis.
+        "drain_wall_clock_s": mark("terminal_drain_wall_clock_s"),
+        "l0a_ready_wall_clock_s": mark("terminal_l0a_ready_wall_clock_s"),
+        "deterministic_ready_wall_clock_s": l0_s,
+        "first_route_ready_wall_clock_s": mark("first_route_ready_wall_clock_s"),
+        "analysis_completed_wall_clock_s": analysis_to_l4_s,
+    }
+
+
 class RestartAgentServiceBackend:
     """Adapt attrsvc's progressive HTTP lifecycle to one RestartAgentRuntime."""
 
@@ -1127,6 +1175,7 @@ class RestartAgentServiceBackend:
             user = entry.user or ""
             log_path = entry.log_path
             cycle_id = entry.cycle_id
+            timing = _entry_timing(entry)
         try:
             public = self._public_result(entry)
             parsed = parse_attrsvc_response(
@@ -1143,7 +1192,7 @@ class RestartAgentServiceBackend:
                 run_name=run_name_from_log_path(log_path, job_id),
                 cycle_id=cycle_id,
             )
-            self._slack_notifier.notify(identity, parsed)
+            self._slack_notifier.notify(identity, parsed, timing)
         except Exception as exc:  # alerting is best effort
             logger.warning(
                 "Slack notification failed for %s: %s: %s", log_path, type(exc).__name__, exc
@@ -1430,49 +1479,12 @@ class RestartAgentServiceBackend:
             if stop_observer.wait(min(max(policy.poll_seconds, 0.01), remaining)):
                 return None
 
-    @staticmethod
-    def _entry_timing(entry: _AttemptExecution) -> dict[str, Any]:
-        """One attempt's lifecycle, as absolute marks and the spans between them.
-
-        Two requests arrive per cycle and only the second one analyzes. Reporting
-        a single "request to verdict" figure would therefore mean the cycle's own
-        length - hours - rather than how long a verdict took, so the registration
-        and the analysis start are reported as separate marks.
-        """
-        analysis_to_l4_s = entry.analysis_completed_wall_clock_s
-        return {
-            "job_id": entry.job_id,
-            "cycle_id": entry.cycle_id,
-            # When each thing happened.
-            "cycle_started_at": _epoch_iso(entry.registered_epoch),
-            "analysis_started_at": _epoch_iso(entry.terminal_epoch),
-            "l0_answer_at": _offset_iso(
-                entry.terminal_epoch, entry.deterministic_ready_wall_clock_s
-            ),
-            "l4_answer_at": _offset_iso(entry.terminal_epoch, analysis_to_l4_s),
-            # How long each span took.
-            "cycle_to_analysis_s": (
-                round(entry.terminal_at - entry.registered_at, 3)
-                if entry.terminal_at is not None
-                else None
-            ),
-            "analysis_to_l0_answer_s": entry.deterministic_ready_wall_clock_s,
-            "analysis_to_l4_answer_s": analysis_to_l4_s,
-            "llm_api_wall_clock_s": entry.l1_model_call_wall_clock_s,
-            # Stage detail inside the analysis.
-            "drain_wall_clock_s": entry.terminal_drain_wall_clock_s,
-            "l0a_ready_wall_clock_s": entry.terminal_l0a_ready_wall_clock_s,
-            "deterministic_ready_wall_clock_s": entry.deterministic_ready_wall_clock_s,
-            "first_route_ready_wall_clock_s": entry.first_route_ready_wall_clock_s,
-            "analysis_completed_wall_clock_s": analysis_to_l4_s,
-        }
-
     @classmethod
     def _latest_terminal_timing(cls, entries: tuple[_AttemptExecution, ...]) -> dict[str, Any]:
         if not entries:
             return {}
         latest = max(entries, key=lambda entry: entry.terminal_at or 0.0)
-        return cls._entry_timing(latest)
+        return _entry_timing(latest)
 
     @classmethod
     def _terminal_timing_summary(cls, entries: tuple[_AttemptExecution, ...]) -> dict[str, Any]:
@@ -1487,7 +1499,7 @@ class RestartAgentServiceBackend:
             "llm_api_wall_clock_s",
             "cycle_to_analysis_s",
         )
-        rows = [cls._entry_timing(entry) for entry in entries]
+        rows = [_entry_timing(entry) for entry in entries]
         summary: dict[str, Any] = {"sampled_attempts": len(rows)}
         for name in fields:
             values = sorted(

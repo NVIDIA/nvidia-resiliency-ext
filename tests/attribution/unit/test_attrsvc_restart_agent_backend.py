@@ -1440,7 +1440,8 @@ def test_an_evicted_entry_still_gets_its_alert(tmp_path):
     backend = _backend(tmp_path, runtime, max_total_records=1)
     sent = []
     backend._slack_notifier = SimpleNamespace(
-        enabled=True, notify=lambda identity, result: sent.append(identity) or True
+        enabled=True,
+        notify=lambda identity, result, timing=None: sent.append(identity) or True,
     )
     backend._public_result = lambda entry: SimpleNamespace(
         result={}, status="completed", recommendation={"action": "STOP", "reason": "", "source": ""}
