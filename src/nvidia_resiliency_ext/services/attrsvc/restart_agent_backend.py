@@ -14,6 +14,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from queue import SimpleQueue
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Callable, Hashable, Mapping
@@ -158,6 +159,11 @@ class _AttemptExecution:
     registered_at: float = field(default_factory=time.monotonic)
     terminal_at: float | None = None
     completed_at: float | None = None
+    # Wall-clock epochs beside the monotonic marks. Durations have to come from
+    # a clock that cannot jump, but "when did this cycle start" is only legible
+    # against one a reader can compare with a job's own timestamps.
+    registered_epoch: float = field(default_factory=time.time)
+    terminal_epoch: float | None = None
     future: Future[None] | None = None
     best_result: AnalysisResult | None = None
     best_source: str = ""
@@ -172,6 +178,10 @@ class _AttemptExecution:
     deterministic_ready_wall_clock_s: float | None = None
     first_route_ready_wall_clock_s: float | None = None
     analysis_completed_wall_clock_s: float | None = None
+    # Time inside the model API itself, summed across calls. Carried back from
+    # the route trace so the share of the verdict spent waiting on the LLM is
+    # readable without parsing a trace.
+    l1_model_call_wall_clock_s: float | None = None
     accumulator: ProgressiveL0Accumulator | None = None
     precompute_future: Future[bool] | None = None
     next_poll_at: float | None = None
@@ -197,6 +207,110 @@ def _enriched_source(result: ModelAnalysisResult) -> str:
     if result.model and result.model != result.route_id:
         label += f" ({result.model})"
     return label
+
+
+def _mapping_get_float(source: Any, key: str) -> float | None:
+    """Read one float out of a trace section, tolerating a missing section.
+
+    Trace shape is owned by the pipeline, not by this backend, so a section it
+    stops emitting must leave the timing report thinner rather than raise in
+    the middle of recording a completed verdict.
+    """
+    if not isinstance(source, Mapping):
+        return None
+    value = source.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _model_call_wall_clock_s(trace: Mapping[str, Any]) -> float | None:
+    """Total time inside the model API for one route completion.
+
+    The trace records it twice, once in its timing summary and once on the L1
+    layer. Either is read, because which sections a trace carries depends on
+    how it was built, and a verdict that reports no model time at all reads as
+    though the route never called out.
+    """
+    direct = _mapping_get_float(trace.get("timing"), "l1_model_call_wall_clock_s")
+    if direct is not None:
+        return direct
+    layers = trace.get("layers")
+    if not isinstance(layers, Mapping):
+        return None
+    return _mapping_get_float(layers.get("L1"), "model_call_wall_clock_s")
+
+
+def _percentile(sorted_values: list[float], fraction: float) -> float:
+    """Nearest-rank percentile over an already-sorted, non-empty list.
+
+    Nearest-rank rather than interpolation: these samples are counted in the
+    tens, where an interpolated p95 reports a duration no attempt actually took.
+    """
+    index = min(len(sorted_values) - 1, max(0, round(fraction * len(sorted_values) + 0.5) - 1))
+    return float(sorted_values[index])
+
+
+def _epoch_iso(epoch: float | None) -> str | None:
+    """Render an epoch as local ISO-8601, or ``None`` when it never happened."""
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
+
+
+def _offset_iso(epoch: float | None, offset_s: float | None) -> str | None:
+    """Absolute time of an event recorded as an offset from ``epoch``."""
+    if epoch is None or offset_s is None:
+        return None
+    return _epoch_iso(epoch + offset_s)
+
+
+def _entry_timing(entry: _AttemptExecution) -> dict[str, Any]:
+    """One attempt's lifecycle, as absolute marks and the spans between them.
+
+    Two requests arrive per cycle and only the second one analyzes. Reporting
+    a single "request to verdict" figure would therefore mean the cycle's own
+    length - hours - rather than how long a verdict took, so the registration
+    and the analysis start are reported as separate marks.
+
+    Marks are read defensively. This also feeds the Slack alert, which is best
+    effort and wrapped in a broad ``except``: raising on an attempt that is
+    missing one would drop the whole alert rather than send it without its
+    timing, which is strictly the worse outcome.
+    """
+
+    def mark(name: str) -> Any:
+        return getattr(entry, name, None)
+
+    terminal_epoch = mark("terminal_epoch")
+    l0_s = mark("deterministic_ready_wall_clock_s")
+    analysis_to_l4_s = mark("analysis_completed_wall_clock_s")
+    terminal_at = mark("terminal_at")
+    registered_at = mark("registered_at")
+    return {
+        "job_id": mark("job_id"),
+        "cycle_id": mark("cycle_id"),
+        # When each thing happened.
+        "cycle_started_at": _epoch_iso(mark("registered_epoch")),
+        "analysis_started_at": _epoch_iso(terminal_epoch),
+        "l0_answer_at": _offset_iso(terminal_epoch, l0_s),
+        "l4_answer_at": _offset_iso(terminal_epoch, analysis_to_l4_s),
+        # How long each span took.
+        "cycle_to_analysis_s": (
+            round(terminal_at - registered_at, 3)
+            if terminal_at is not None and registered_at is not None
+            else None
+        ),
+        "analysis_to_l0_answer_s": l0_s,
+        "analysis_to_l4_answer_s": analysis_to_l4_s,
+        "llm_api_wall_clock_s": mark("l1_model_call_wall_clock_s"),
+        # Stage detail inside the analysis.
+        "drain_wall_clock_s": mark("terminal_drain_wall_clock_s"),
+        "l0a_ready_wall_clock_s": mark("terminal_l0a_ready_wall_clock_s"),
+        "deterministic_ready_wall_clock_s": l0_s,
+        "first_route_ready_wall_clock_s": mark("first_route_ready_wall_clock_s"),
+        "analysis_completed_wall_clock_s": analysis_to_l4_s,
+    }
 
 
 class RestartAgentServiceBackend:
@@ -604,6 +718,7 @@ class RestartAgentServiceBackend:
                 "registry_evictions": eviction_count,
                 "history_record_count": len(history_records),
                 "terminal_timing": self._latest_terminal_timing(terminal_entries),
+                "terminal_timing_summary": self._terminal_timing_summary(terminal_entries),
                 "progressive": {
                     "policy": {
                         "pre_end_poll_seconds": self._progressive.pre_end_poll_seconds,
@@ -799,6 +914,7 @@ class RestartAgentServiceBackend:
         entry.status = _STATUS_ANALYZING
         entry.progressive_phase = "finalizing"
         entry.terminal_at = time.monotonic()
+        entry.terminal_epoch = time.time()
         entry.error = None
         entry.next_poll_at = None
         self._scheduler_wakeup.set()
@@ -894,6 +1010,14 @@ class RestartAgentServiceBackend:
                     current.candidate_result = result.analysis_result
                     current.candidate_source = current.best_source
                     current.route_complete_count += 1
+                    model_call_s = _model_call_wall_clock_s(trace)
+                    if model_call_s is not None:
+                        # Routes can complete more than once; sum rather than
+                        # overwrite, so the figure covers every call the verdict
+                        # actually waited on.
+                        current.l1_model_call_wall_clock_s = (
+                            current.l1_model_call_wall_clock_s or 0.0
+                        ) + model_call_s
                     if (
                         current.first_route_ready_wall_clock_s is None
                         and current.terminal_at is not None
@@ -1076,6 +1200,7 @@ class RestartAgentServiceBackend:
             user = entry.user or ""
             log_path = entry.log_path
             cycle_id = entry.cycle_id
+            timing = _entry_timing(entry)
         try:
             public = self._public_result(entry)
             parsed = parse_attrsvc_response(
@@ -1092,7 +1217,7 @@ class RestartAgentServiceBackend:
                 run_name=run_name_from_log_path(log_path, job_id),
                 cycle_id=cycle_id,
             )
-            self._slack_notifier.notify(identity, parsed)
+            self._slack_notifier.notify(identity, parsed, timing)
         except Exception as exc:  # alerting is best effort
             logger.warning(
                 "Slack notification failed for %s: %s: %s", log_path, type(exc).__name__, exc
@@ -1379,20 +1504,44 @@ class RestartAgentServiceBackend:
             if stop_observer.wait(min(max(policy.poll_seconds, 0.01), remaining)):
                 return None
 
-    @staticmethod
-    def _latest_terminal_timing(entries: tuple[_AttemptExecution, ...]) -> dict[str, Any]:
+    @classmethod
+    def _latest_terminal_timing(cls, entries: tuple[_AttemptExecution, ...]) -> dict[str, Any]:
         if not entries:
             return {}
         latest = max(entries, key=lambda entry: entry.terminal_at or 0.0)
-        return {
-            "job_id": latest.job_id,
-            "cycle_id": latest.cycle_id,
-            "drain_wall_clock_s": latest.terminal_drain_wall_clock_s,
-            "l0a_ready_wall_clock_s": latest.terminal_l0a_ready_wall_clock_s,
-            "deterministic_ready_wall_clock_s": latest.deterministic_ready_wall_clock_s,
-            "first_route_ready_wall_clock_s": latest.first_route_ready_wall_clock_s,
-            "analysis_completed_wall_clock_s": latest.analysis_completed_wall_clock_s,
-        }
+        return _entry_timing(latest)
+
+    @classmethod
+    def _terminal_timing_summary(cls, entries: tuple[_AttemptExecution, ...]) -> dict[str, Any]:
+        """Distribution across retained attempts, so one outlier cannot stand in.
+
+        Entries are evicted as the registry fills, so this describes what the
+        service still holds rather than everything it has ever analyzed.
+        """
+        fields = (
+            "analysis_to_l0_answer_s",
+            "analysis_to_l4_answer_s",
+            "llm_api_wall_clock_s",
+            "cycle_to_analysis_s",
+        )
+        rows = [_entry_timing(entry) for entry in entries]
+        summary: dict[str, Any] = {"sampled_attempts": len(rows)}
+        for name in fields:
+            values = sorted(
+                value
+                for value in (row.get(name) for row in rows)
+                if isinstance(value, (int, float))
+            )
+            if not values:
+                summary[name] = None
+                continue
+            summary[name] = {
+                "count": len(values),
+                "p50": round(_percentile(values, 0.50), 3),
+                "p95": round(_percentile(values, 0.95), 3),
+                "max": round(values[-1], 3),
+            }
+        return summary
 
     def _ensure_accumulator(
         self,
