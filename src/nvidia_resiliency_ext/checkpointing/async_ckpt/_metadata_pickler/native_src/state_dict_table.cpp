@@ -298,7 +298,7 @@ class StateDictTableBuilder {
     }
 
     [[nodiscard]] static auto is(PyObject* obj, py::object const& cls) -> bool {
-        return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
+        return static_cast<void const*>(Py_TYPE(obj)) == static_cast<void const*>(cls.ptr());
     }
 
     py::object small_pickle_;

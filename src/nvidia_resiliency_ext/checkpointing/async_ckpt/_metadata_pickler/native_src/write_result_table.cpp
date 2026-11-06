@@ -86,6 +86,7 @@ auto WriteResultTable::parse(std::span<std::byte const> row) -> WriteResultTable
     return {string_len,
             entries,
             offsets,
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): char may alias any type
             {reinterpret_cast<char const*>(blob.data()), blob.size()},
             static_cast<FqnMode>(fqn_mode),
             header[Header::Fingerprint]};

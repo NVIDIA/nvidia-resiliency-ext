@@ -421,7 +421,7 @@ class Writer {
     // Whether obj is exactly of class cls. Objects of exactly the metadata classes are encoded
     // here; others, subclasses included, are left to the stdlib pickler and keep their class.
     [[nodiscard]] static auto is(PyObject* obj, py::object const& cls) -> bool {
-        return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
+        return static_cast<void const*>(Py_TYPE(obj)) == static_cast<void const*>(cls.ptr());
     }
 
     // Append raw opcode bytes.
