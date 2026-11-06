@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from nvidia_resiliency_ext.attribution.orchestration.client_response import parse_attrsvc_response
+from nvidia_resiliency_ext.attribution.postprocessing.slack import SlackApiError
 from nvidia_resiliency_ext.services.attrsvc import slack as slack_mod
 from nvidia_resiliency_ext.services.attrsvc.slack import (
     DEFAULT_NOTIFY_ACTIONS,
@@ -17,6 +18,7 @@ from nvidia_resiliency_ext.services.attrsvc.slack import (
     format_summary,
     format_timing,
     latest_result_item,
+    parse_channels,
     parse_notify_actions,
     run_name_from_log_path,
 )
@@ -89,7 +91,8 @@ def summary_ts(client):
 def _notifier(monkeypatch, client=None, **config_kwargs):
     """Build an enabled notifier backed by a stub Slack client."""
     monkeypatch.setattr(slack_mod, "HAS_SLACK", True)
-    config = SlackConfig(token="xoxb-test", channel="#trng-alerts", **config_kwargs)
+    config_kwargs.setdefault("channels", ("#trng-alerts",))
+    config = SlackConfig(token="xoxb-test", **config_kwargs)
     notifier = SlackNotifier(config)
     notifier._client = client if client is not None else _StubClient()
     return notifier
@@ -137,7 +140,7 @@ def test_config_is_not_configured_without_channel(monkeypatch):
 
 def test_notifier_disabled_without_slack_sdk(monkeypatch):
     monkeypatch.setattr(slack_mod, "HAS_SLACK", False)
-    notifier = SlackNotifier(SlackConfig(token="xoxb-test", channel="#alerts"))
+    notifier = SlackNotifier(SlackConfig(token="xoxb-test", channels=("#alerts",)))
 
     assert notifier.enabled is False
     assert "slack-sdk" in notifier.describe()
@@ -303,6 +306,7 @@ def test_stats_as_dict_exposes_all_counters(monkeypatch):
         "sent": 1,
         "failed": 0,
         "skipped_action": 1,
+        "channel_failures": 0,
     }
 
 
@@ -1486,3 +1490,115 @@ def test_durations_are_sized_for_a_reader():
     assert "(45.0s into the cycle)" in format_timing(_timing(cycle_to_analysis_s=45))
     assert "(3m20s into the cycle)" in format_timing(_timing(cycle_to_analysis_s=200))
     assert "(2h5m into the cycle)" in format_timing(_timing(cycle_to_analysis_s=7500))
+
+
+def test_channels_parse_from_comma_or_space():
+    """One name or several, in either separator, with repeats dropped."""
+    assert parse_channels("#a") == ("#a",)
+    assert parse_channels("#a,#b") == ("#a", "#b")
+    assert parse_channels("#a #b") == ("#a", "#b")
+    assert parse_channels(" #a , #b ") == ("#a", "#b")
+    # Configured order decides which channel roots the thread first.
+    assert parse_channels("#b,#a") == ("#b", "#a")
+    # Naming a channel twice must not post the same alert to it twice.
+    assert parse_channels("#a,#a") == ("#a",)
+    assert parse_channels("") == ()
+    assert parse_channels(None) == ()
+
+
+def test_alert_fans_out_to_every_configured_channel(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#one", "#two"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+
+    assert [m["channel"] for m in client.summaries] == ["#one", "#two"]
+    assert [m["channel"] for m in client.replies] == ["#one", "#two"]
+    # A thread timestamp belongs to the channel that produced it. The stub
+    # numbers each ts by message order, so these two values differing is what
+    # proves the second reply did not thread onto the first channel's message.
+    assert [m["thread_ts"] for m in client.replies] == [
+        "171000000.000001",
+        "171000000.000003",
+    ]
+    # One alert, not one per channel.
+    assert notifier.stats.attempts == 1
+    assert notifier.stats.sent == 1
+    assert notifier.stats.channel_failures == 0
+
+
+def test_one_dead_channel_does_not_cost_the_other(monkeypatch):
+    """A fan-out that reaches one channel is still a delivered alert."""
+
+    class _HalfDeadClient(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#dead":
+                raise SlackApiError("channel_not_found", {"error": "channel_not_found"})
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _HalfDeadClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#dead", "#live"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    assert [m["channel"] for m in client.summaries] == ["#live"]
+    assert notifier.stats.sent == 1
+    assert notifier.stats.failed == 0
+    # Without this counter the partial failure would look like a clean send.
+    assert notifier.stats.channel_failures == 1
+
+
+def test_a_transport_failure_on_one_channel_does_not_cost_the_rest(monkeypatch):
+    """A timeout is not a SlackApiError, and must not escape the loop.
+
+    Letting one escape would hand every later channel nothing, and lose the
+    delivery the earlier channel did receive.
+    """
+
+    class _TimingOutReplyClient(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#first" and thread_ts is not None:
+                raise TimeoutError("read timed out")
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _TimingOutReplyClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    # The first channel kept its summary; only its threaded detail was lost.
+    assert [m["channel"] for m in client.summaries] == ["#first", "#second"]
+    assert [m["channel"] for m in client.replies] == ["#second"]
+    assert notifier.stats.sent == 1
+    assert notifier.stats.failed == 0
+
+
+def test_a_transport_failure_on_a_summary_still_reaches_later_channels(monkeypatch):
+    class _TimingOutSummaryClient(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#first":
+                raise TimeoutError("connection timed out")
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _TimingOutSummaryClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    assert [m["channel"] for m in client.summaries] == ["#second"]
+    assert notifier.stats.sent == 1
+    assert notifier.stats.channel_failures == 1
+
+
+def test_alert_fails_only_when_no_channel_took_it(monkeypatch):
+    client = _StubClient(error=SlackApiError("nope", {"error": "nope"}))
+    notifier = _notifier(monkeypatch, client=client, channels=("#one", "#two"))
+
+    assert notifier.notify(_job(), _parsed()) is False
+    assert notifier.stats.failed == 1
+    assert notifier.stats.sent == 0
+    assert notifier.stats.channel_failures == 2
+
+
+def test_describe_names_every_channel(monkeypatch):
+    one = _notifier(monkeypatch, channels=("#only",))
+    assert "channel: #only" in one.describe()
+    many = _notifier(monkeypatch, channels=("#one", "#two"))
+    assert "channels: #one, #two" in many.describe()

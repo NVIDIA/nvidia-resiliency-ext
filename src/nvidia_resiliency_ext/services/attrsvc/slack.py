@@ -76,6 +76,10 @@ class SlackStats:
     sent: int = 0
     failed: int = 0
     skipped_action: int = 0
+    #: Per-channel delivery failures when an alert fans out to several channels.
+    #: ``failed`` stays per-alert, so without this a fan-out that reached one
+    #: channel and not another would look like a clean delivery.
+    channel_failures: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -83,6 +87,7 @@ class SlackStats:
             "sent": self.sent,
             "failed": self.failed,
             "skipped_action": self.skipped_action,
+            "channel_failures": self.channel_failures,
         }
 
 
@@ -91,7 +96,10 @@ class SlackConfig:
     """Resolved Slack settings for the monitor."""
 
     token: str = ""
-    channel: str = ""
+    #: Every channel an alert fans out to, in configured order. The first is
+    #: the one a single-channel deployment has always used, so order is kept
+    #: rather than sorted: it decides which channel roots the thread first.
+    channels: tuple[str, ...] = ()
     notify_actions: frozenset[str] = field(
         default_factory=lambda: frozenset(DEFAULT_NOTIFY_ACTIONS)
     )
@@ -101,16 +109,25 @@ class SlackConfig:
     cluster: str = ""
 
     @property
+    def channel(self) -> str:
+        """The first configured channel, or empty when none is set.
+
+        Kept so single-channel callers and existing config assertions read the
+        same as before a deployment could name more than one.
+        """
+        return self.channels[0] if self.channels else ""
+
+    @property
     def configured(self) -> bool:
-        """Whether a token and a channel are both available."""
-        return bool(self.token and self.channel)
+        """Whether a token and at least one channel are both available."""
+        return bool(self.token and self.channels)
 
     @classmethod
     def from_env(cls) -> "SlackConfig":
         """Build from environment variables, ignoring unusable values with a warning."""
         return cls(
             token=load_slack_bot_token(),
-            channel=(os.environ.get(CHANNEL_ENV) or "").strip(),
+            channels=parse_channels(os.environ.get(CHANNEL_ENV)),
             notify_actions=parse_notify_actions(os.environ.get(NOTIFY_ACTIONS_ENV)),
             email_domain=(os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
         )
@@ -137,7 +154,7 @@ class SlackConfig:
         domain_raw = str(getattr(settings, "SLACK_EMAIL_DOMAIN", "") or "").strip()
         return cls(
             token=token or load_slack_bot_token(),
-            channel=str(getattr(settings, "SLACK_CHANNEL", "") or "").strip(),
+            channels=parse_channels(str(getattr(settings, "SLACK_CHANNEL", "") or "")),
             notify_actions=parse_notify_actions(notify_raw or os.environ.get(NOTIFY_ACTIONS_ENV)),
             cluster=str(getattr(settings, "CLUSTER_NAME", "") or "").strip(),
             email_domain=(domain_raw or os.environ.get(EMAIL_DOMAIN_ENV) or "").strip().lstrip("@"),
@@ -157,6 +174,23 @@ def escape_identity(value: Any) -> str:
     text = str(value or "")
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return text.replace("`", "")
+
+
+def parse_channels(raw: Optional[str]) -> tuple[str, ...]:
+    """Parse ``SLACK_CHANNEL`` into the channels an alert fans out to.
+
+    Comma- or space-separated, matching ``parse_notify_actions``. Order is
+    preserved and repeats are dropped, so naming one channel twice does not
+    post the same alert to it twice.
+    """
+    if not raw or not raw.strip():
+        return ()
+    seen: list[str] = []
+    for token in raw.replace(",", " ").split():
+        candidate = token.strip()
+        if candidate and candidate not in seen:
+            seen.append(candidate)
+    return tuple(seen)
 
 
 def parse_notify_actions(raw: Optional[str]) -> frozenset[str]:
@@ -876,10 +910,12 @@ class SlackNotifier:
             return "disabled (slack-sdk not installed)"
         if not self.config.token:
             return "disabled (no bot token; set SLACK_BOT_TOKEN or SLACK_BOT_TOKEN_FILE)"
-        if not self.config.channel:
+        if not self.config.channels:
             return f"disabled (no channel; set {CHANNEL_ENV})"
         actions = ", ".join(sorted(self.config.notify_actions))
-        return f"enabled (channel: {self.config.channel}, actions: {actions})"
+        channels = ", ".join(self.config.channels)
+        label = "channel" if len(self.config.channels) == 1 else "channels"
+        return f"enabled ({label}: {channels}, actions: {actions})"
 
     def _mention(self, user: str) -> str:
         """Resolve ``user`` to an ``@`` mention, or "" when that is not possible.
@@ -922,30 +958,54 @@ class SlackNotifier:
         summary = format_summary(identity, result, self.config.cluster)
         summary += self._mention(identity.user)
 
-        # One top-level message per cycle. Each failure is its own event and
-        # stands on its own in the channel; the detail hangs off it so the
-        # channel view stays one scannable line per alert.
+        details = format_details(identity, result, timing)
+
+        # One top-level message per cycle per channel. Each failure is its own
+        # event and stands on its own in the channel; the detail hangs off it so
+        # the channel view stays one scannable line per alert.
+        #
+        # Each channel is posted independently rather than sharing a thread: a
+        # thread timestamp belongs to the channel that produced it, so replying
+        # into a second channel with the first one's ``ts`` would either fail or
+        # attach the detail to an unrelated message.
+        #
+        # Every failure here is caught, not just ``SlackApiError``. A connection
+        # timeout is not an API error, and letting one escape would cost every
+        # channel after it an alert the others received - the whole point of
+        # fanning out is that the channels do not share a fate.
         self.stats.attempts += 1
-        try:
-            posted = self._web_client().chat_postMessage(channel=self.config.channel, text=summary)
-        except SlackApiError as e:
+        delivered = 0
+        for channel in self.config.channels:
+            try:
+                posted = self._web_client().chat_postMessage(channel=channel, text=summary)
+            except Exception as e:
+                self.stats.channel_failures += 1
+                logger.error(
+                    f"[{identity.job_id}] Slack notification to {channel} failed: "
+                    f"{type(e).__name__}: {e}"
+                )
+                continue
+            delivered += 1
+            logger.info(f"[{identity.job_id}] Slack notification sent to {channel}")
+
+            thread_ts = posted.get("ts") if hasattr(posted, "get") else None
+            if details and thread_ts:
+                # The alert is already delivered; a failed thread reply costs
+                # detail, not the notification, so it must not be a failure.
+                try:
+                    self._web_client().chat_postMessage(
+                        channel=channel, thread_ts=thread_ts, text=details
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[{identity.job_id}] Slack detail reply to {channel} failed: "
+                        f"{type(e).__name__}: {e}"
+                    )
+
+        if not delivered:
             self.stats.failed += 1
-            logger.error(f"[{identity.job_id}] Slack notification failed: {e}")
             return False
         self.stats.sent += 1
-        logger.info(f"[{identity.job_id}] Slack notification sent to {self.config.channel}")
-
-        details = format_details(identity, result, timing)
-        thread_ts = posted.get("ts") if hasattr(posted, "get") else None
-        if details and thread_ts:
-            # The alert is already delivered; a failed thread reply costs detail,
-            # not the notification, so it must not be reported as a failure.
-            try:
-                self._web_client().chat_postMessage(
-                    channel=self.config.channel, thread_ts=thread_ts, text=details
-                )
-            except SlackApiError as e:
-                logger.warning(f"[{identity.job_id}] Slack detail reply failed: {e}")
         return True
 
     def _web_client(self) -> Any:
