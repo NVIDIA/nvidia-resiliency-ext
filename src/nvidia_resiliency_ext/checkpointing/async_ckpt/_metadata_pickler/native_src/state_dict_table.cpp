@@ -359,7 +359,7 @@ auto StateDictTableView::fqns_fingerprint() const -> int64_t {
 
 void StateDictTableView::check() const {
     size_t const n = entries();
-    if (static_cast<size_t>(PyTuple_GET_SIZE(fqns_.ptr())) != n || ref_.size() != n ||
+    if (std::cmp_not_equal(PyTuple_GET_SIZE(fqns_.ptr()), n) || ref_.size() != n ||
         ndim_.size() != n) {
         bad_state_dict_table("arrays of different lengths");
     }

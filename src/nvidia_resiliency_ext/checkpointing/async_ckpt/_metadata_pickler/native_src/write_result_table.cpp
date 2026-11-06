@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace nvrx::checkpoint;
@@ -143,7 +144,7 @@ auto nvrx::checkpoint::parse_tables(Rows const& rows) -> std::vector<WriteResult
         std::as_bytes(std::span(rows.data(), static_cast<size_t>(rows.size())));
     std::vector<WriteResultTable> tables;
     tables.reserve(rows.shape(0));
-    for (size_t r = 0; r < static_cast<size_t>(rows.shape(0)); ++r) {
+    for (size_t r = 0; std::cmp_less(r, rows.shape(0)); ++r) {
         tables.push_back(WriteResultTable::parse(bytes.subspan(width * r, width)));
     }
     return tables;
