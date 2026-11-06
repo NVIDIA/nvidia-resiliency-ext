@@ -103,7 +103,9 @@ template <TableValue T>
 template <TableValue T>
 [[nodiscard]] auto to_array(std::vector<T>&& vector) -> py::array_t<T> {
     auto owned = std::make_unique<std::vector<T>>(std::move(vector));
-    py::capsule const owner(owned.get(), [](void* p) { delete static_cast<std::vector<T>*>(p); });
+    py::capsule const owner(owned.get(), [](void* p) {
+        std::unique_ptr<std::vector<T>> const reclaimed(static_cast<std::vector<T>*>(p));
+    });
     std::vector<T> const& values = *owned.release();
     return py::array_t<T>({values.size()}, {sizeof(T)}, values.data(), owner);
 }
