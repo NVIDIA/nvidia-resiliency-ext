@@ -29,8 +29,8 @@ namespace nvrx::checkpoint::detail {
 // a std::string per lookup. std::hash<std::string> is not transparent; this hashes both key types
 // the same.
 struct StringHash {
-    using is_transparent = void;
-    [[nodiscard]] size_t operator()(std::string_view s) const noexcept {
+    using is_transparent = void;  // NOLINT(readability-identifier-naming): the name std looks up
+    [[nodiscard]] auto operator()(std::string_view s) const noexcept -> size_t {
         return std::hash<std::string_view>{}(s);
     }
 };

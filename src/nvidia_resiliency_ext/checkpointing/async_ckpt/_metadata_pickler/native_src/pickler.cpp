@@ -47,9 +47,9 @@ constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
 // Borrowed reference to dict[key], throwing if key is missing.
-[[nodiscard]] PyObject* dict_item(PyObject* dict, PyObject* key) {
+[[nodiscard]] auto dict_item(PyObject* dict, PyObject* key) -> PyObject* {
     PyObject* const r = dict_get(dict, key);
-    if (!r) {
+    if (r == nullptr) {
         throw py::type_error("missing attribute");
     }
     return r;
@@ -58,12 +58,12 @@ constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 // The value of an int that fits int64. Like the other checks here, it accepts only the exact type:
 // anything else (a bool, a tuple for a torch.Size, ...) would unpickle as a different type, so it
 // raises and the caller falls back to pickle.dump.
-[[nodiscard]] int64_t as_int(PyObject* o) {
+[[nodiscard]] auto as_int(PyObject* o) -> int64_t {
     if (!PyLong_CheckExact(o)) {
         throw py::type_error("expected int");
     }
     const long long v = PyLong_AsLongLong(o);
-    if (v == -1 && PyErr_Occurred()) {
+    if (v == -1 && (PyErr_Occurred() != nullptr)) {
         throw py::error_already_set();
     }
     return v;
@@ -74,7 +74,7 @@ class Writer {
    public:
     // Look up the classes the storage_data encoding checks objects against.
     explicit Writer(py::object small_pickle) : small_pickle_(std::move(small_pickle)) {
-        py::module_ meta = py::module_::import("torch.distributed.checkpoint.metadata");
+        py::module_ const meta = py::module_::import("torch.distributed.checkpoint.metadata");
         index_cls_ = meta.attr("MetadataIndex");
         info_cls_ =
             py::module_::import("torch.distributed.checkpoint.filesystem").attr("_StorageInfo");
@@ -84,8 +84,8 @@ class Writer {
     // Pickle the Metadata that table_view's table was converted from, and return the bytes: a
     // NEWOBJ of Metadata built from its fields, in order. storage_data is written from rows (the
     // gathered write-result tables) if given, else from the storage_data dict, else as None.
-    [[nodiscard]] py::bytes dumps(const StateDictTableView& table_view, py::handle storage_data,
-                                  const py::object& rows) {
+    [[nodiscard]] auto dumps(const StateDictTableView& table_view, py::handle storage_data,
+                                  const py::object& rows) -> py::bytes {
         // Holds the rows the tables point into.
         const Rows rows_array = rows.is_none() ? Rows() : rows.cast<Rows>();
         const std::vector<WriteResultTable> tables =
@@ -100,7 +100,7 @@ class Writer {
         }
         // About 98 bytes per storage entry (its MetadataIndex and _StorageInfo) and about 8 bytes
         // per chunk dim in state_dict_metadata.
-        out_.reserve(4096 + 100 * n_storage + 8 * table_view.dims_size());
+        out_.reserve(4096 + (100 * n_storage) + (8 * table_view.dims_size()));
 
         prelude();
         put_get(metadata_ref_);
@@ -127,14 +127,14 @@ class Writer {
     // Protocol 4 header, then the classes and dict keys the encoding refers to, each memoized once.
     void prelude() {
         put({PROTO, '\x04'});
-        constexpr const char* meta = "torch.distributed.checkpoint.metadata";
+        constexpr const char* META = "torch.distributed.checkpoint.metadata";
         size_ref_ = global_ref("torch", "Size");
-        metadata_ref_ = global_ref(meta, "Metadata");
-        index_ref_ = global_ref(meta, "MetadataIndex");
+        metadata_ref_ = global_ref(META, "Metadata");
+        index_ref_ = global_ref(META, "MetadataIndex");
         info_ref_ = global_ref("torch.distributed.checkpoint.filesystem", "_StorageInfo");
-        chunk_ref_ = global_ref(meta, "ChunkStorageMetadata");
-        tensor_ref_ = global_ref(meta, "TensorStorageMetadata");
-        bytes_ref_ = global_ref(meta, "BytesStorageMetadata");
+        chunk_ref_ = global_ref(META, "ChunkStorageMetadata");
+        tensor_ref_ = global_ref(META, "TensorStorageMetadata");
+        bytes_ref_ = global_ref(META, "BytesStorageMetadata");
         k_fqn_ = key_ref("fqn");
         k_index_ = key_ref("index");
         k_offset_ = key_ref("offset");
@@ -172,7 +172,8 @@ class Writer {
                     size(table_view.size(i));
                     put_get(k_chunks_);
                     put(EMPTY_LIST);
-                    const size_t chunk_count = table_view.chunks(i), ndim = table_view.ndim(i);
+                    const size_t chunk_count = table_view.chunks(i);
+                    const size_t ndim = table_view.ndim(i);
                     for (size_t k = 0; k < chunk_count; ++k) {
                         begin_item(k);
                         const std::span<const int64_t> chunk = table_view.chunk(i, k);
@@ -201,8 +202,9 @@ class Writer {
         put(EMPTY_DICT);
         const Py_ssize_t n = PyDict_Size(dict);
         Py_ssize_t pos = 0;
-        PyObject *idx, *info;
-        for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &idx, &info); ++i) {
+        PyObject *idx = nullptr;
+        PyObject *info = nullptr;
+        for (Py_ssize_t i = 0; PyDict_Next(dict, &pos, &idx, &info) != 0; ++i) {
             begin_item(i);
             // Owns info while small(idx) runs Python code, which could remove it from the dict.
             py::object keep_info;
@@ -216,14 +218,14 @@ class Writer {
                 PyObject* const fqn = dict_item(state.ptr(), a_fqn_.ptr());
                 PyObject* const index = dict_item(state.ptr(), a_index_.ptr());
                 PyObject* const offset = dict_get(state.ptr(), a_offset_.ptr());
-                if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
+                if (PyDict_Size(state.ptr()) != ((offset != nullptr) ? 3 : 2)) {
                     throw py::type_error("unexpected MetadataIndex attributes");
                 }
                 const std::string_view fqn_view = utf8(fqn);
                 put_index_start([&] { string(fqn_view); },
                                 index == Py_None ? std::nullopt
                                                             : std::optional(as_int(index)));
-                if (offset) {
+                if (offset != nullptr) {
                     put_get(k_offset_);
                     if (offset == Py_None) {
                         put(NONE);
@@ -239,11 +241,11 @@ class Writer {
             const py::object state = is(info, info_cls_) ? instance_dict(info) : py::object();
             PyObject* const transforms =
                 state ? dict_get(state.ptr(), a_transform_.ptr()) : nullptr;
-            if (!state || (transforms && transforms != Py_None)) {
+            if (!state || ((transforms != nullptr) && transforms != Py_None)) {
                 small(info);
                 check_size(dict, n);
             } else {
-                if (PyDict_Size(state.ptr()) != (transforms ? 4 : 3)) {
+                if (PyDict_Size(state.ptr()) != ((transforms != nullptr) ? 4 : 3)) {
                     throw py::type_error("unexpected _StorageInfo attributes");
                 }
                 const std::string_view path = utf8(dict_item(state.ptr(), a_relative_path_.ptr()));
@@ -292,14 +294,14 @@ class Writer {
                           std::vector<std::optional<uint32_t>>& string_memo,
                           const StateDictTableView& table_view, size_t& pos) {
         const int64_t flags = entry[Column::Flags];
-        if (flags & ~(FLAG_INDEX | FLAG_OFFSET | FLAG_OFFSET_SIZE)) {
+        if ((flags & ~(FLAG_INDEX | FLAG_OFFSET | FLAG_OFFSET_SIZE)) != 0) {
             bad_table("unknown flags");
         }
-        if ((flags & FLAG_OFFSET_SIZE) && !(flags & FLAG_OFFSET)) {
+        if (((flags & FLAG_OFFSET_SIZE) != 0) && ((flags & FLAG_OFFSET) == 0)) {
             bad_table("an offset size without an offset");
         }
         const std::optional<int64_t> index =
-            flags & FLAG_INDEX ? std::optional(entry[Column::Index]) : std::nullopt;
+            ((flags & FLAG_INDEX) != 0) ? std::optional(entry[Column::Index]) : std::nullopt;
         const int64_t fqn = entry[Column::Fqn];
         put_index_start(
             [&] {
@@ -310,9 +312,9 @@ class Writer {
                 }
             },
             index);
-        if (flags & FLAG_OFFSET) {
+        if ((flags & FLAG_OFFSET) != 0) {
             put_get(k_offset_);
-            if (flags & FLAG_OFFSET_SIZE) {
+            if ((flags & FLAG_OFFSET_SIZE) != 0) {
                 const int64_t ndim = entry[Column::OffsetNdim];
                 size(t.offset_dims(pos, ndim));
                 pos += static_cast<size_t>(ndim);
@@ -352,8 +354,8 @@ class Writer {
     }
 
     // Return a string id of a table's strings, checked.
-    [[nodiscard]] static std::string_view string_at(const std::vector<std::string_view>& strings,
-                                                    int64_t id) {
+    [[nodiscard]] static auto string_at(const std::vector<std::string_view>& strings,
+                                                    int64_t id) -> std::string_view {
         if (id < 0 || static_cast<uint64_t>(id) >= strings.size()) {
             bad_table("string id out of range");
         }
@@ -414,7 +416,7 @@ class Writer {
 
     // Whether obj is exactly of class cls. Objects of exactly the metadata classes are encoded
     // here; others, subclasses included, are left to the stdlib pickler and keep their class.
-    [[nodiscard]] static bool is(PyObject* obj, const py::object& cls) {
+    [[nodiscard]] static auto is(PyObject* obj, const py::object& cls) -> bool {
         return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
     }
 
@@ -465,10 +467,10 @@ class Writer {
         } else {
             // LONG1 with pickle.encode_long's bytes: the shortest little-endian two's complement.
             // Drop top bytes that only repeat the sign of the byte below them.
-            const uint64_t u = static_cast<uint64_t>(i);
+            const auto u = static_cast<uint64_t>(i);
             const auto byte = [u](int k) { return static_cast<uint8_t>(u >> (8 * k)); };
             int nbytes = 8;
-            while (nbytes > 1 && (byte(nbytes - 1) == (byte(nbytes - 2) & 0x80 ? 0xff : 0x00))) {
+            while (nbytes > 1 && (byte(nbytes - 1) == (((byte(nbytes - 2) & 0x80) != 0) ? 0xff : 0x00))) {
                 --nbytes;
             }
             put('\x8a');
@@ -478,7 +480,7 @@ class Writer {
     }
 
     // Push module.name once into the memo; return its memo index.
-    [[nodiscard]] uint32_t global_ref(std::string_view module, std::string_view name) {
+    [[nodiscard]] auto global_ref(std::string_view module, std::string_view name) -> uint32_t {
         put_str(module);
         put_str(name);
         put({STACK_GLOBAL, MEMOIZE, POP});
@@ -486,7 +488,7 @@ class Writer {
     }
 
     // Push a dict key once into the memo; return its memo index.
-    [[nodiscard]] uint32_t key_ref(std::string_view name) {
+    [[nodiscard]] auto key_ref(std::string_view name) -> uint32_t {
         put_str(name);
         put({MEMOIZE, POP});
         return memo_len_++;
@@ -495,10 +497,10 @@ class Writer {
     // First use writes the string and memoizes it; later uses fetch it from the memo. The memo owns
     // a copy of each distinct string and is looked up by view, so lookups do not allocate.
     // Return its memo index.
-    uint32_t string(PyObject* s) { return string(utf8(s)); }
+    auto string(PyObject* s) -> uint32_t { return string(utf8(s)); }
 
     // The same, for a string's UTF-8 bytes.
-    uint32_t string(std::string_view v) {
+    auto string(std::string_view v) -> uint32_t {
         if (const auto it = strings_.find(v); it != strings_.end()) {
             put_get(it->second);
             return it->second;
@@ -538,7 +540,8 @@ class Writer {
             if (n > 3) {
                 put(MARK);
             }
-            for (size_t j = 0; j < n; ++j) put_int(dim(j));
+            for (size_t j = 0; j < n; ++j) { put_int(dim(j));
+}
             put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
         }
         put({TUPLE1, REDUCE});
@@ -547,8 +550,8 @@ class Writer {
     // An object left to the stdlib pickler, spliced in from small_pickle's opcodes.
     void small(PyObject* obj) {
         const py::object b = small_pickle_(py::handle(obj));
-        char* p;
-        Py_ssize_t n;
+        char* p = nullptr;
+        Py_ssize_t n = 0;
         if (PyBytes_AsStringAndSize(b.ptr(), &p, &n) != 0) {
             throw py::error_already_set();
         }
@@ -557,7 +560,8 @@ class Writer {
 
     // The low nbytes bytes of v, least significant first.
     void put_le(uint64_t v, int nbytes) {
-        for (int k = 0; k < nbytes; ++k) put(static_cast<char>((v >> (8 * k)) & 0xff));
+        for (int k = 0; k < nbytes; ++k) { put(static_cast<char>((v >> (8 * k)) & 0xff));
+}
     }
 
     py::object small_pickle_;
@@ -584,8 +588,8 @@ class Writer {
 
 }  // namespace
 
-py::bytes nvrx::checkpoint::dumps_table(py::handle table, py::object small_pickle,
-                                        py::handle storage_data, const py::object& storage_rows) {
+auto nvrx::checkpoint::dumps_table(py::handle table, py::object small_pickle,
+                                        py::handle storage_data, const py::object& storage_rows) -> py::bytes {
     return Writer(std::move(small_pickle))
         .dumps(StateDictTableView(table), storage_data, storage_rows);
 }

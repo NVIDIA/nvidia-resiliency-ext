@@ -24,7 +24,7 @@ namespace nvrx::checkpoint {
 namespace py = pybind11;
 
 // Pickle the Metadata a state dict table was converted from, and return the bytes.
-[[nodiscard]] py::bytes dumps_table(py::handle table, py::object small_pickle,
-                                    py::handle storage_data, const py::object& storage_rows);
+[[nodiscard]] auto dumps_table(py::handle table, py::object small_pickle,
+                                    py::handle storage_data, const py::object& storage_rows) -> py::bytes;
 
 }  // namespace nvrx::checkpoint

@@ -29,16 +29,16 @@ namespace py = pybind11;
 // Return a new reference to obj.__dict__, the state pickle writes for the metadata classes. Only
 // objects of exactly those classes get here, whose __dict__ is the generic one, so it is fetched
 // directly rather than looked up as an attribute.
-[[nodiscard]] py::object instance_dict(PyObject* obj);
+[[nodiscard]] auto instance_dict(PyObject* obj) -> py::object;
 
 // Borrowed reference to dict[key], or nullptr if key is missing.
-[[nodiscard]] PyObject* dict_get(PyObject* dict, PyObject* key);
+[[nodiscard]] auto dict_get(PyObject* dict, PyObject* key) -> PyObject*;
 
 // UTF-8 view of a str's characters, valid while s is alive.
-[[nodiscard]] std::string_view utf8(PyObject* s);
+[[nodiscard]] auto utf8(PyObject* s) -> std::string_view;
 
 // Return the bytes of a bytes object, valid while it is alive.
-[[nodiscard]] inline std::string_view bytes_view(PyObject* b) {
+[[nodiscard]] inline auto bytes_view(PyObject* b) -> std::string_view {
     return {PyBytes_AS_STRING(b), static_cast<size_t>(PyBytes_GET_SIZE(b))};
 }
 

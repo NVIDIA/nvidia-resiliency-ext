@@ -60,32 +60,32 @@ class StateDictTableView {
 
     explicit StateDictTableView(py::handle table);
 
-    [[nodiscard]] size_t entries() const { return kind_.size(); }
+    [[nodiscard]] auto entries() const -> size_t { return kind_.size(); }
     // Return the fingerprint of the table's fqn list, read once, on first use: only index tables
     // need it.
-    [[nodiscard]] int64_t fqns_fingerprint() const;
-    [[nodiscard]] const std::vector<Field>& fields() const { return fields_; }
-    [[nodiscard]] PyObject* fqn(size_t i) const { return PyTuple_GET_ITEM(fqns_.ptr(), i); }
-    [[nodiscard]] Kind kind(size_t i) const { return static_cast<Kind>(kind_[i]); }
-    [[nodiscard]] std::string_view properties(size_t i) const {
+    [[nodiscard]] auto fqns_fingerprint() const -> int64_t;
+    [[nodiscard]] auto fields() const -> const std::vector<Field>& { return fields_; }
+    [[nodiscard]] auto fqn(size_t i) const -> PyObject* { return PyTuple_GET_ITEM(fqns_.ptr(), i); }
+    [[nodiscard]] auto kind(size_t i) const -> Kind { return static_cast<Kind>(kind_[i]); }
+    [[nodiscard]] auto properties(size_t i) const -> std::string_view {
         return detail::bytes_view(PyTuple_GET_ITEM(properties_.ptr(), ref_[i]));
     }
-    [[nodiscard]] std::string_view other(size_t i) const {
+    [[nodiscard]] auto other(size_t i) const -> std::string_view {
         return detail::bytes_view(PyTuple_GET_ITEM(others_.ptr(), ref_[i]));
     }
-    [[nodiscard]] size_t ndim(size_t i) const { return static_cast<size_t>(ndim_[i]); }
-    [[nodiscard]] std::span<const int64_t> size(size_t i) const {
+    [[nodiscard]] auto ndim(size_t i) const -> size_t { return static_cast<size_t>(ndim_[i]); }
+    [[nodiscard]] auto size(size_t i) const -> std::span<const int64_t> {
         return dims_.subspan(static_cast<size_t>(dims_start_[i]), ndim(i));
     }
-    [[nodiscard]] size_t chunks(size_t i) const {
+    [[nodiscard]] auto chunks(size_t i) const -> size_t {
         return static_cast<size_t>(chunk_start_[i + 1] - chunk_start_[i]);
     }
     // Return chunk k of entry i: its offsets, then its sizes, after the entry's size.
-    [[nodiscard]] std::span<const int64_t> chunk(size_t i, size_t k) const {
+    [[nodiscard]] auto chunk(size_t i, size_t k) const -> std::span<const int64_t> {
         const size_t width = 2 * ndim(i);
-        return dims_.subspan(static_cast<size_t>(dims_start_[i]) + ndim(i) + width * k, width);
+        return dims_.subspan(static_cast<size_t>(dims_start_[i]) + ndim(i) + (width * k), width);
     }
-    [[nodiscard]] size_t dims_size() const { return dims_.size(); }
+    [[nodiscard]] auto dims_size() const -> size_t { return dims_.size(); }
 
    private:
     // Check that the arrays describe entries() entries consistently; see StateDictTable._check.
@@ -102,7 +102,7 @@ class StateDictTableView {
 };
 
 // Convert metadata, without its storage_data, to a table_cls (a StateDictTable).
-[[nodiscard]] py::object from_metadata(py::handle metadata, py::object small_pickle,
-                                       const py::object& table_cls);
+[[nodiscard]] auto from_metadata(py::handle metadata, py::object small_pickle,
+                                       const py::object& table_cls) -> py::object;
 
 }  // namespace nvrx::checkpoint

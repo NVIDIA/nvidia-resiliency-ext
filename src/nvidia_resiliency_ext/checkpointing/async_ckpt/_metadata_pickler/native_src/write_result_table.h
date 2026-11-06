@@ -56,12 +56,12 @@ class Int64s {
     explicit Int64s(std::span<const std::byte> bytes) : bytes_(bytes) {}
 
     // The number of int64s.
-    [[nodiscard]] size_t size() const { return bytes_.size() / sizeof(int64_t); }
+    [[nodiscard]] auto size() const -> size_t { return bytes_.size() / sizeof(int64_t); }
 
     // The i-th int64, i < size(). bit_cast needs an object to read, and there is none at an
     // arbitrary offset of the row, so the bytes are copied into one; this compiles to one load.
-    [[nodiscard]] int64_t operator[](size_t i) const {
-        std::array<std::byte, sizeof(int64_t)> v;
+    [[nodiscard]] auto operator[](size_t i) const -> int64_t {
+        std::array<std::byte, sizeof(int64_t)> v{};
         std::ranges::copy(bytes_.subspan(sizeof(int64_t) * i).first<sizeof(int64_t)>(), v.begin());
         return std::bit_cast<int64_t>(v);
     }
@@ -69,12 +69,12 @@ class Int64s {
     // The field of a record (a header or an entry) that an enum names.
     template <typename Field>
         requires std::is_enum_v<Field>
-    [[nodiscard]] int64_t operator[](Field field) const {
+    [[nodiscard]] auto operator[](Field field) const -> int64_t {
         return (*this)[static_cast<size_t>(field)];
     }
 
     // The count int64s from pos, pos + count <= size().
-    [[nodiscard]] Int64s subspan(size_t pos, size_t count) const {
+    [[nodiscard]] auto subspan(size_t pos, size_t count) const -> Int64s {
         return Int64s(bytes_.subspan(sizeof(int64_t) * pos, sizeof(int64_t) * count));
     }
 
@@ -87,13 +87,13 @@ class Int64s {
 class WriteResultTable {
    public:
     // The table in a row.
-    [[nodiscard]] static WriteResultTable parse(std::span<const std::byte> row);
+    [[nodiscard]] static auto parse(std::span<const std::byte> row) -> WriteResultTable;
 
     // The number of entries.
-    [[nodiscard]] size_t entries() const { return entries_.size() / COLUMNS; }
+    [[nodiscard]] auto entries() const -> size_t { return entries_.size() / COLUMNS; }
 
     // Entry r < entries(): its COLUMNS int64s, indexed by Column.
-    [[nodiscard]] Int64s entry(size_t r) const { return entries_.subspan(COLUMNS * r, COLUMNS); }
+    [[nodiscard]] auto entry(size_t r) const -> Int64s { return entries_.subspan(COLUMNS * r, COLUMNS); }
 
     // Replace out's contents with the strings, as views into the row. Their bytes are not checked
     // to be UTF-8: tables come from this job's ranks, which encoded them (see
@@ -101,16 +101,16 @@ class WriteResultTable {
     void split_strings(std::vector<std::string_view>& out) const;
 
     // The ndim offset dims from position pos of the offsets, checked to lie within them.
-    [[nodiscard]] Int64s offset_dims(size_t pos, int64_t ndim) const;
+    [[nodiscard]] auto offset_dims(size_t pos, int64_t ndim) const -> Int64s;
 
     // Return how the table names fqns.
-    [[nodiscard]] FqnMode fqn_mode() const { return fqn_mode_; }
+    [[nodiscard]] auto fqn_mode() const -> FqnMode { return fqn_mode_; }
 
     // Return the fingerprint of the fqn list an index table was encoded against.
-    [[nodiscard]] int64_t fingerprint() const { return fingerprint_; }
+    [[nodiscard]] auto fingerprint() const -> int64_t { return fingerprint_; }
 
     // Return the number of strings.
-    [[nodiscard]] size_t strings() const { return string_len_.size(); }
+    [[nodiscard]] auto strings() const -> size_t { return string_len_.size(); }
 
     // Check that the entries' offsets, used up to position pos, are all of them.
     void check_offsets_used(size_t pos) const;
@@ -129,6 +129,6 @@ class WriteResultTable {
 };
 
 // The tables in the rows of a 2-D uint8 array.
-[[nodiscard]] std::vector<WriteResultTable> parse_tables(const Rows& rows);
+[[nodiscard]] auto parse_tables(const Rows& rows) -> std::vector<WriteResultTable>;
 
 }  // namespace nvrx::checkpoint

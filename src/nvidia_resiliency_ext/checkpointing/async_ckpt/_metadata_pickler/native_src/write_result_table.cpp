@@ -54,7 +54,7 @@ void detail::bad_table(std::string_view what) {
     throw py::value_error("write-result table: " + std::string(what));
 }
 
-WriteResultTable WriteResultTable::parse(std::span<const std::byte> row) {
+auto WriteResultTable::parse(std::span<const std::byte> row) -> WriteResultTable {
     if (row.size() < sizeof(int64_t) * HEADER) {
         bad_table("truncated");
     }
@@ -83,9 +83,9 @@ WriteResultTable WriteResultTable::parse(std::span<const std::byte> row) {
         fqn_mode != static_cast<int64_t>(FqnMode::Indices)) {
         bad_table("unknown fqn mode");
     }
-    return WriteResultTable(string_len, entries, offsets,
+    return {string_len, entries, offsets,
                             {reinterpret_cast<const char*>(blob.data()), blob.size()},
-                            static_cast<FqnMode>(fqn_mode), header[Header::Fingerprint]);
+                            static_cast<FqnMode>(fqn_mode), header[Header::Fingerprint]};
 }
 
 void WriteResultTable::split_strings(std::vector<std::string_view>& out) const {
@@ -104,7 +104,7 @@ void WriteResultTable::split_strings(std::vector<std::string_view>& out) const {
     }
 }
 
-Int64s WriteResultTable::offset_dims(size_t pos, int64_t ndim) const {
+auto WriteResultTable::offset_dims(size_t pos, int64_t ndim) const -> Int64s {
     if (ndim < 0 || pos > offsets_.size() ||
         static_cast<uint64_t>(ndim) > offsets_.size() - pos) {
         bad_table("offsets out of range");
@@ -127,11 +127,11 @@ WriteResultTable::WriteResultTable(Int64s string_len, Int64s entries, Int64s off
       fqn_mode_(fqn_mode),
       fingerprint_(fingerprint) {}
 
-std::vector<WriteResultTable> nvrx::checkpoint::parse_tables(const Rows& rows) {
+auto nvrx::checkpoint::parse_tables(const Rows& rows) -> std::vector<WriteResultTable> {
     if (rows.ndim() != 2) {
         throw py::value_error("expected a 2-D array of write-result tables");
     }
-    const size_t width = static_cast<size_t>(rows.shape(1));
+    const auto width = static_cast<size_t>(rows.shape(1));
     const std::span<const std::byte> bytes =
         std::as_bytes(std::span(rows.data(), static_cast<size_t>(rows.size())));
     std::vector<WriteResultTable> tables;

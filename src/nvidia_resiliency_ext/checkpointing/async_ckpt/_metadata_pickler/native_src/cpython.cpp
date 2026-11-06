@@ -25,9 +25,9 @@
 using namespace nvrx::checkpoint;
 using namespace nvrx::checkpoint::detail;
 
-py::object detail::instance_dict(PyObject* obj) {
+auto detail::instance_dict(PyObject* obj) -> py::object {
     PyObject* const r = PyObject_GenericGetDict(obj, nullptr);
-    if (!r) {
+    if (r == nullptr) {
         throw py::error_already_set();
     }
     const auto d = py::reinterpret_steal<py::object>(r);
@@ -37,21 +37,21 @@ py::object detail::instance_dict(PyObject* obj) {
     return d;
 }
 
-PyObject* detail::dict_get(PyObject* dict, PyObject* key) {
+auto detail::dict_get(PyObject* dict, PyObject* key) -> PyObject* {
     PyObject* const r = PyDict_GetItemWithError(dict, key);
-    if (!r && PyErr_Occurred()) {
+    if ((r == nullptr) && (PyErr_Occurred() != nullptr)) {
         throw py::error_already_set();
     }
     return r;
 }
 
-std::string_view detail::utf8(PyObject* s) {
+auto detail::utf8(PyObject* s) -> std::string_view {
     if (!PyUnicode_CheckExact(s)) {
         throw py::type_error("expected str");
     }
-    Py_ssize_t n;
+    Py_ssize_t n = 0;
     const char* const p = PyUnicode_AsUTF8AndSize(s, &n);
-    if (!p) {
+    if (p == nullptr) {
         throw py::error_already_set();
     }
     return {p, static_cast<size_t>(n)};
