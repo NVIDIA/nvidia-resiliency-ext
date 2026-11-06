@@ -35,7 +35,7 @@ namespace nvrx::checkpoint {
 namespace py = pybind11;
 
 // How a table names fqns: by string id, or by entry in the coordinator's fqn list.
-enum class FqnMode : int64_t { Strings = 0, Indices = 1 };
+enum class FqnMode : uint8_t { Strings = 0, Indices = 1 };
 enum class Column : uint8_t { Fqn, Index, OffsetNdim, Path, Offset, Length, Flags };
 constexpr size_t COLUMNS = 7;
 constexpr int64_t FLAG_INDEX = 0x1, FLAG_OFFSET = 0x2, FLAG_OFFSET_SIZE = 0x4;
