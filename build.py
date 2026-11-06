@@ -191,14 +191,28 @@ def build(setup_kwargs):
 
     # Fast writer for checkpoint .metadata files. Needs only a C++ compiler, not CUDA, so it is
     # built even when the CUPTI extension is skipped. It is optional: if it fails to compile, the
-    # build continues and the checkpointing code falls back to its pure-Python writer.
+    # build continues and the checkpointing code falls back to its pure-Python writer. Link-time
+    # optimization inlines the small helpers across its source files.
+    native_src = 'src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native_src'
     ext_modules = [
         Pybind11Extension(
             'nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler._native',
             [
-                'src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native_src/native.cpp'
+                f'{native_src}/cpython.cpp',
+                f'{native_src}/native.cpp',
+                f'{native_src}/pickler.cpp',
+                f'{native_src}/state_dict_table.cpp',
+                f'{native_src}/write_result_table.cpp',
             ],
-            extra_compile_args=['-O3'],
+            depends=[
+                f'{native_src}/cpython.h',
+                f'{native_src}/pickler.h',
+                f'{native_src}/state_dict_table.h',
+                f'{native_src}/string_map.h',
+                f'{native_src}/write_result_table.h',
+            ],
+            extra_compile_args=['-O3', '-flto=auto'],
+            extra_link_args=['-O3', '-flto=auto'],
             language='c++',
             cxx_std=20,
             optional=True,
