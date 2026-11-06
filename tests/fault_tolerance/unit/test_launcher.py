@@ -1407,6 +1407,68 @@ def _make_launch_agent_config(**overrides):
     return SimpleNamespace(**values)
 
 
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("is_store_host", [False, True])
+def test_launch_agent_owns_publisher_across_agent_run(failed, is_store_host):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    order = []
+    rdzv_handler = MagicMock()
+    agent = MagicMock()
+    agent._rdzv_handler = rdzv_handler
+    manager = MagicMock()
+    manager.start.side_effect = lambda: order.append("start") or is_store_host
+    manager.stop.side_effect = lambda: order.append("stop")
+
+    def run():
+        assert launcher._SEGMENT_HEALTH_PUBLISHER is (manager if is_store_host else None)
+        order.append("run")
+        if failed:
+            raise RuntimeError("worker failure")
+        return None
+
+    agent.run.side_effect = run
+    config = _make_launch_agent_config(
+        fault_tol_cfg=FaultToleranceConfig(
+            enable_segment_health_check_publisher=True,
+            segment_health_check_dir="/shared/decisions",
+        )
+    )
+    with (
+        patch.dict(os.environ, {"SLURM_ARRAY_JOB_ID": "123", "SLURM_JOB_PARTITION": "batch"}),
+        patch.object(launcher, "_SEGMENT_HEALTH_PUBLISHER", None),
+        patch.object(launcher, "SegmentHealthPublisherManager", return_value=manager) as factory,
+        patch.object(launcher, "_get_addr_and_port", return_value=("host", 29500)),
+        patch.object(launcher, "_is_store_host", return_value=is_store_host),
+        patch.object(
+            launcher, "WorkerSpec", return_value=SimpleNamespace(rdzv_handler=rdzv_handler)
+        ),
+        patch.object(launcher.rdzv_registry, "get_rendezvous_handler", return_value=rdzv_handler),
+        patch.object(launcher, "LocalElasticAgent", return_value=agent),
+        patch.object(launcher.metrics, "initialize_metrics"),
+        patch.object(launcher.events, "record"),
+    ):
+        if failed:
+            with pytest.raises(RuntimeError, match="worker failure"):
+                launcher.launch_agent(config, "train.py", [])
+        else:
+            assert launcher.launch_agent(config, "train.py", []) is None
+        assert launcher._SEGMENT_HEALTH_PUBLISHER is None
+    if is_store_host:
+        factory.assert_called_once()
+        publisher_config = factory.call_args.args[0]
+        assert publisher_config.job_id == "123"
+        assert publisher_config.partition == "batch"
+        assert str(publisher_config.directory) == "/shared/decisions"
+        assert factory.call_args.kwargs == {}
+    else:
+        factory.assert_not_called()
+    assert order == (["start", "run", "stop"] if is_store_host else ["run"])
+    agent.shutdown_rank_monitors.assert_called_once()
+
+
 def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
     from types import SimpleNamespace
 

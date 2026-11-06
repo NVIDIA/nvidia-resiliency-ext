@@ -6,7 +6,14 @@ This document describes how `nvidia_resiliency_ext.attribution` is structured an
 
 ## 1. Scope
 
-The packaged attribution surface is **library-only**: restart-agent/attrsvc, FR analysis, request coalescing, and shared attrsvc response/config types. Legacy LogSage, SPLITLOG orchestration, the old `Analyzer` / `LogAnalyzer`, and LogSage-backed MCP tools live under `legacy_logsage/` and are excluded from built wheels.
+The packaged attribution surface is **library-only**: restart-agent/attrsvc, FR analysis, scheduler observations and exclusions, request coalescing, and shared attrsvc response/config types. Legacy LogSage, SPLITLOG orchestration, the old `Analyzer` / `LogAnalyzer`, and LogSage-backed MCP tools live under `legacy_logsage/` and are excluded from built wheels.
+
+`scheduler_exclusions/` is an independent, standard-library-only component. It
+owns Slurm observation, per-array-task publication, the worker polling/signal
+runtime, and process lifecycle management. `ft_launcher` selects the owner and
+supplies explicit job configuration; `services/scheduler_exclusions` adapts CLI
+and environment configuration. Attrsvc hosting would reuse this component but
+still needs job registration and lifecycle integration; it is not implemented.
 
 ---
 

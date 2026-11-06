@@ -16,6 +16,7 @@
 import argparse
 import dataclasses
 import logging
+import os
 import signal
 from dataclasses import dataclass, fields
 from typing import Mapping, Optional
@@ -113,6 +114,9 @@ class FaultToleranceConfig:
     * `segment_health_check_dir` [str|None] Shared directory containing per-task
       segment health decision artifacts. Allocation-unit process 0 checks its artifact
       before joining a rendezvous. Default: None (disabled).
+    * `enable_segment_health_check_publisher` [bool] Start a best-effort scheduler-state
+      publisher on the rendezvous-store-host launcher. Requires an absolute
+      `segment_health_check_dir` and Slurm access. Default: False.
     * `timeout_dump` [TimeoutDumpConfig] Optional stack captures on selected section
       timeouts, uploaded as per-node, per-cycle text files (disabled by default). Set by
       the ``--ft-timeout-dump-*`` options; the shared destination is derived from
@@ -168,6 +172,7 @@ class FaultToleranceConfig:
 
     # Segment health check: shared directory containing per-task decision artifacts
     segment_health_check_dir: Optional[str] = None
+    enable_segment_health_check_publisher: bool = False
 
     # Optional timeout dumps; shared destination is derived from --ft-nvrx-logfile.
     timeout_dump: TimeoutDumpConfig = dataclasses.field(default_factory=TimeoutDumpConfig)
@@ -286,8 +291,20 @@ class FaultToleranceConfig:
         # Fix any type issues
         ft_cfg._fix_log_level_type()
         ft_cfg._fix_rank_termination_signal_type()
+        ft_cfg._validate_segment_health_check_publisher()
 
         return ft_cfg
+
+    def _validate_segment_health_check_publisher(self):
+        if not isinstance(self.enable_segment_health_check_publisher, bool):
+            raise ValueError("enable_segment_health_check_publisher must be a boolean")
+        if self.enable_segment_health_check_publisher and (
+            not self.segment_health_check_dir or not os.path.isabs(self.segment_health_check_dir)
+        ):
+            raise ValueError(
+                "--ft-enable-segment-health-check-publisher requires an absolute "
+                "--ft-segment-health-check-dir"
+            )
 
     def _fix_rank_termination_signal_type(self):
         if isinstance(self.rank_termination_signal, int):
@@ -332,3 +349,4 @@ class FaultToleranceConfig:
     def __post_init__(self):
         self._fix_rank_termination_signal_type()
         self._fix_log_level_type()
+        self._validate_segment_health_check_publisher()
