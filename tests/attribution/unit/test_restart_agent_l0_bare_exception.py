@@ -10,7 +10,10 @@ no exception -- every such failure, in every job, collapsing onto one
 fingerprint.
 """
 
+import pytest
+
 from nvidia_resiliency_ext.attribution.restart_agent.l0 import build_l0_bundle
+from nvidia_resiliency_ext.attribution.restart_agent.l0.assembly import _EXCEPTION_SUMMARY_RE
 
 
 def _interleaved_log() -> str:
@@ -79,3 +82,42 @@ def test_a_frame_line_is_not_mistaken_for_the_summary(tmp_path):
 
     assert "raise" not in (rank9.terminal_exception_quote or "")
     assert (rank9.terminal_exception_quote or "").strip().endswith("EOFError")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "EOFError",
+        "9: EOFError",
+        "[rank180]: EOFError",
+        # Aggregated logs carry both prefixes; this is the dominant real shape,
+        # and a summary regex that misses it never fires in production.
+        "180: [rank180]: EOFError",
+        # A qualified name needs a character before the suffix; a bare one does not.
+        "9: Exception",
+        "Exception: boom",
+        "BaseException",
+        "5315: [rank5315]: torch.distributed.DistBackendError: NCCL error",
+    ],
+)
+def test_summary_is_seen_through_any_rank_prefix(line):
+    assert _EXCEPTION_SUMMARY_RE.search(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # A frame carries indentation of its own past the prefix. Without that
+        # distinction an undefined name's source frame closes the traceback and
+        # publishes the wrong identity, ahead of the NameError that follows it.
+        "    MissingError",
+        "9:     MissingError",
+        "180: [rank180]:     MissingError",
+        "9:     raise EOFError",
+        # Bare "Error:" opens plenty of non-Python output and is not a summary.
+        "Error: could not open file",
+        "cudaErrorIllegalAddress",
+    ],
+)
+def test_source_frames_are_not_mistaken_for_summaries(line):
+    assert not _EXCEPTION_SUMMARY_RE.search(line)

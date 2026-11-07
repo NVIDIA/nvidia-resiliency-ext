@@ -170,12 +170,25 @@ _SPECIFIC_FAILURE_CUE_RE = re.compile(
 # summary is invisible and the episode falls back to its traceback header,
 # publishing an identity that names no exception at all.
 #
-# The second alternative is anchored to the start of the line (after an
-# optional rank prefix) and must reach end of line, so it accepts the summary
-# ``9: EOFError`` while rejecting the ``9:     raise EOFError`` frame above it.
+# ``Exception`` is spelled out as its own alternative: the qualified form needs
+# at least one character before the suffix, which a bare ``raise Exception``
+# does not have. Bare ``Error`` is deliberately not accepted, because plenty of
+# non-Python output opens a line with "Error:".
+_EXCEPTION_CLASS = r"(?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)|Exception)"
+
+# Aggregated logs prefix each line with "<rank>: " and/or "[rank<N>]: ", each
+# followed by exactly one space. Consuming only that one space is what separates
+# a summary from the source frame above it: a frame carries its own indentation,
+# so requiring the class name immediately after the prefix accepts
+# ``180: [rank180]: EOFError`` while rejecting ``180: [rank180]:     EOFError``.
+_RANK_PREFIX = r"(?:\d+:[ ])?(?:\[rank\d+\]:[ ])?"
+
+# The second alternative is anchored to the start of the line and must reach end
+# of line, so it accepts the summary ``9: EOFError`` while rejecting both the
+# ``9:     raise EOFError`` frame above it and a bare-name frame such as the
+# ``    MissingError`` that an undefined name prints before its NameError.
 _EXCEPTION_SUMMARY_RE = re.compile(
-    r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):"
-    r"|^\s*(?:\d+:\s*)?[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)\s*$",
+    rf"(?<![A-Za-z0-9_.]){_EXCEPTION_CLASS}:" rf"|^{_RANK_PREFIX}{_EXCEPTION_CLASS}\s*$",
 )
 _WATCHDOG_EXCEPTION_RE = re.compile(
     r"\bwatchdog thread terminated with exception:\s*"
