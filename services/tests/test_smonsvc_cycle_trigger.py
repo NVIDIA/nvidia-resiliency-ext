@@ -59,7 +59,8 @@ def test_the_oldest_complete_cycle_goes_first_and_the_live_one_is_only_tracked()
     # attempt against completed predecessors, so they must not run together.
     assert [path for _, path in analyze] == [resolved[0]]
     assert [path for _, path in submit] == [resolved[3]]
-    assert monitor.state.cycle_inflight == {"2200200": resolved[0]}
+    run_id = monitor._analysis_job_id(job, resolved[0])
+    assert monitor.state.cycle_inflight == {run_id: resolved[0]}
 
 
 def test_no_further_cycle_starts_while_one_is_in_flight():
@@ -145,7 +146,38 @@ def test_analysis_identity_drops_the_array_task_for_a_shared_app_log():
     monitor = _monitor(_cycles(2))
     job = _job()
 
-    assert monitor._analysis_job_id(job, f"{BASE}_cycle0.log") == "2200200"
+    identity = monitor._analysis_job_id(job, f"{BASE}_cycle0.log")
+
+    # The task index is gone: concurrent tasks share one application log, so
+    # whichever resolved it is incidental, and keeping it would split one
+    # run's history into unrelated fragments.
+    assert identity.startswith("2200200:")
+    assert "_96" not in identity
+
+
+def test_every_cycle_of_one_run_analyzes_under_the_same_identity():
+    """L3 groups attempt history by exact job ID, so a run's cycles must agree."""
+    monitor = _monitor(_cycles(3))
+    job = _job()
+
+    identities = {monitor._analysis_job_id(job, path) for path in _cycles(3)}
+
+    assert len(identities) == 1, "one run is one population"
+
+
+def test_a_second_run_of_the_same_array_job_gets_its_own_identity():
+    """Each run numbers its cycles from zero, so sharing an identity made two
+    runs collide on (job_id, cycle_id). attrsvc refuses the second path with a
+    4xx, which the monitor treats as permanent - so a whole re-run was never
+    analyzed."""
+    monitor = _monitor([])
+    job = _job()
+
+    first = monitor._analysis_job_id(job, f"{BASE}_cycle0.log")
+    other_run = "/logs/trainjob_tierA_s4_phase1_v1_2200200_date_26-10-09_time_11-02-44"
+    second = monitor._analysis_job_id(job, f"{other_run}_cycle0.log")
+
+    assert first != second, "two runs must not share one attempt identity"
 
 
 def test_analysis_identity_keeps_the_task_for_its_own_wrapper():

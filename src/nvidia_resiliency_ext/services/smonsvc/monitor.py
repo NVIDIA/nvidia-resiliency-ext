@@ -19,7 +19,7 @@ from .job_handlers import (
     fetch_results,
     submit_log,
 )
-from .log_resolver import AppLogResolution, base_job_id, resolve_app_logs
+from .log_resolver import AppLogResolution, base_job_id, resolve_app_logs, run_discriminator
 from .models import JobState, MonitorState, SlurmJob, copy_tracking_fields
 from .slurm import SlurmClient, expand_slurm_patterns
 from .stats import format_stats_summary, get_health_status, get_jobs_list, get_stats_dict
@@ -639,12 +639,20 @@ class SlurmJobMonitor:
         ledger counts against the wrong population.
 
         A task's own SLURM wrapper is not shared, so it keeps the task ID.
+
+        The run is folded in because one array job ID can own several runs and
+        each numbers its cycles from zero. attrsvc keys an attempt by
+        (job_id, cycle_id) and refuses a second path under a pair it already
+        holds; the monitor treats that 4xx as permanent, so without this a
+        whole re-run was silently never analyzed. Every cycle of one run
+        produces the same tag, which is what keeps its history together.
         """
         if not self._app_log_resolution.enabled:
             return job.job_id
         if job.stdout_path and log_path == self._expand_slurm_patterns(job.stdout_path, job):
             return job.job_id
-        return base_job_id(job.job_id)
+        base = base_job_id(job.job_id)
+        return f"{base}:{run_discriminator(log_path)}" if log_path else base
 
     def _release_finished_cycles(self) -> None:
         """Clear the in-flight marker for cycles whose analysis has settled.

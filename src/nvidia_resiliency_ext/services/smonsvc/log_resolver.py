@@ -35,6 +35,7 @@ metadata sidecars such as ``.env.log`` and ``.tasks.log`` are never selected.
 from __future__ import annotations
 
 import glob
+import hashlib
 import logging
 import os
 import re
@@ -110,6 +111,22 @@ def _cycle_number(path: Path) -> int:
     """Cycle index, or ``-1`` for a single-cycle log that carries no suffix."""
     match = _CYCLE_RE.search(path.name)
     return int(match.group(1)) if match else -1
+
+
+def run_discriminator(log_path: str) -> str:
+    """A short, stable tag for the run ``log_path`` belongs to.
+
+    One array job ID can own several runs, and every run numbers its cycles
+    from zero, so the job ID alone is not a unique analysis identity: attrsvc
+    keys an attempt by (job_id, cycle_id) and refuses a second path under a
+    pair it already holds. That refusal is a 4xx, which the monitor treats as
+    permanent, so a whole re-run was silently never analyzed.
+
+    Derived from the run stem rather than the cycle, so every cycle of one run
+    agrees - which is what keeps L3's attempt history for that run together.
+    """
+    stem = _run_stem(Path(log_path))
+    return hashlib.sha256(stem.encode("utf-8", "replace")).hexdigest()[:8]
 
 
 def _run_stem(path: Path) -> str:
