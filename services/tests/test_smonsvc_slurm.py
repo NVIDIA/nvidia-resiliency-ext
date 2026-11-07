@@ -34,6 +34,10 @@ def test_slurm_client_resolves_command_paths(monkeypatch):
             "state": "RUNNING",
             "stdout_path": "/tmp/out.log",
             "stderr_path": "/tmp/err.log",
+            # Known paths skip the scontrol fetch, so there is nothing to
+            # carry here; the next test covers the case that does fetch.
+            "work_dir": "",
+            "command": "",
         }
     }
 
@@ -44,3 +48,89 @@ def test_slurm_available_false_when_squeue_missing(monkeypatch):
     client = SlurmClient(partitions=["batch"])
 
     assert client.check_slurm_available() is False
+
+
+_SCONTROL_TWO_JOBS = """JobId=101 JobName=run_a
+   WorkDir=/runs/a
+   Command=/runs/a/run.sh
+   StdOut=/runs/a/slurm_out/slurm-101.out
+   StdErr=/runs/a/slurm_out/slurm-101.err
+
+JobId=102 JobName=run_b
+   WorkDir=/runs/b
+   Command=/runs/b/run_mock.sh
+   StdOut=/runs/b/slurm_out/slurm-102.out
+   StdErr=/runs/b/slurm_out/slurm-102.err
+"""
+
+
+def _client_with_scontrol(monkeypatch, output):
+    monkeypatch.setattr(slurm.shutil, "which", lambda command: f"/usr/bin/{command}")
+
+    def fake_run(cmd, *, timeout):
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    monkeypatch.setattr(slurm, "_run_slurm_command", fake_run)
+    return SlurmClient(partitions=["batch"])
+
+
+def test_scontrol_returns_job_paths_for_every_job(monkeypatch):
+    # Regression: the in-loop "save previous job" branch only runs when a batch
+    # holds more than one job, so a single-job fixture missed that it still
+    # produced a bare tuple and crashed the poll with AttributeError.
+    client = _client_with_scontrol(monkeypatch, _SCONTROL_TWO_JOBS)
+
+    paths = client.get_job_output_paths(["101", "102"])
+
+    assert set(paths) == {"101", "102"}
+    for job_id, info in paths.items():
+        assert isinstance(info, slurm.JobPaths), f"{job_id} returned {type(info).__name__}"
+
+
+def test_scontrol_captures_workdir_and_command(monkeypatch):
+    client = _client_with_scontrol(monkeypatch, _SCONTROL_TWO_JOBS)
+
+    paths = client.get_job_output_paths(["101", "102"])
+
+    assert paths["101"].stdout == "/runs/a/slurm_out/slurm-101.out"
+    assert paths["101"].work_dir == "/runs/a"
+    assert paths["101"].command == "/runs/a/run.sh"
+    # The second job is the one saved by the in-loop branch.
+    assert paths["102"].work_dir == "/runs/b"
+    assert paths["102"].command == "/runs/b/run_mock.sh"
+
+
+def test_discovery_carries_the_submit_script_and_work_dir(monkeypatch):
+    """Resolving a launcher's real log needs the submit script.
+
+    Discovery used to keep only stdout/stderr from the scontrol fetch, so
+    SlurmJob.script stayed empty for every normally discovered job and the
+    submit-script fallback could never run.
+    """
+    monkeypatch.setattr(slurm.shutil, "which", lambda command: f"/usr/bin/{command}")
+    monkeypatch.setattr(
+        slurm,
+        "_run_slurm_command",
+        lambda cmd, *, timeout: SimpleNamespace(
+            returncode=0, stdout="123|train|alice|batch|RUNNING\n", stderr=""
+        ),
+    )
+
+    client = SlurmClient(partitions=["batch"])
+    monkeypatch.setattr(
+        client,
+        "get_job_output_paths",
+        lambda job_ids: {
+            "123": SimpleNamespace(
+                stdout="/runs/slurm_out/train.out",
+                stderr="/runs/slurm_out/train.err",
+                work_dir="/runs",
+                command="submit.sbatch",
+            )
+        },
+    )
+
+    jobs = client.get_running_jobs({})
+
+    assert jobs["123"]["work_dir"] == "/runs"
+    assert jobs["123"]["command"] == "submit.sbatch"

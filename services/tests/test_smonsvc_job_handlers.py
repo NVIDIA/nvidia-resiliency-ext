@@ -5,8 +5,11 @@ from types import SimpleNamespace
 
 from nvidia_resiliency_ext.attribution.orchestration.progressive import ANALYSIS_INTENT_TERMINAL
 from nvidia_resiliency_ext.services.smonsvc.job_handlers import (
+    analyze_completed_cycle,
     fetch_results,
     log_attribution_result,
+    request_terminal_analysis,
+    submit_log,
 )
 from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
 
@@ -120,7 +123,7 @@ def test_fetch_results_signals_terminal_analysis_before_get():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient()
@@ -130,7 +133,7 @@ def test_fetch_results_signals_terminal_analysis_before_get():
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET"]
     assert attrsvc_client.calls[0]["analysis_intent"] == ANALYSIS_INTENT_TERMINAL
     assert attrsvc_client.calls[0]["user"] == "alice"
-    assert job.terminal_signaled is True
+    assert "/tmp/job.log" in job.terminal_signaled_paths
     assert job.result_fetched is True
     assert state.results_fetched == 1
 
@@ -140,7 +143,7 @@ def test_fetch_results_skips_terminal_signal_once_sent():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=True,
+        terminal_signaled_paths={"/tmp/job.log"},
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient()
@@ -155,7 +158,7 @@ def test_fetch_results_terminal_signal_failure_does_not_count_path_error():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient(post_error="permission denied")
@@ -163,7 +166,7 @@ def test_fetch_results_terminal_signal_failure_does_not_count_path_error():
     fetch_results(job, "/tmp/job.log", state, attrsvc_client)
 
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET"]
-    assert job.terminal_signaled is True
+    assert "/tmp/job.log" in job.terminal_signaled_paths
     assert job.result_fetched is True
     assert state.results_fetched == 1
     assert state.path_errors_permission == 0
@@ -177,7 +180,7 @@ def test_fetch_results_terminal_signal_failure_is_not_retried():
         job_id="123",
         user="alice",
         result_fetched=False,
-        terminal_signaled=False,
+        terminal_signaled_paths=set(),
     )
     state = MonitorState()
     attrsvc_client = _AttrsvcClient(post_error="max retries exceeded")
@@ -186,3 +189,137 @@ def test_fetch_results_terminal_signal_failure_is_not_retried():
     fetch_results(job, "/tmp/job.log", state, attrsvc_client)
 
     assert [call["method"] for call in attrsvc_client.calls] == ["POST", "GET", "GET"]
+
+
+# ─── Restart Agent responses carry no "module" key ───
+
+
+def _restart_agent_response(action="STOP"):
+    """Shape produced by the direct Restart Agent backend: no module, no item list."""
+    return {
+        "result": {
+            "decision": action,
+            "decision_basis": "concrete_confirmation_retry_exhausted",
+            "justification": "Line 28693 matched failure class observed_exception.",
+            "schema_version": "restart_agent_response.v1",
+        },
+        "status": "completed",
+        "recommendation": {
+            "action": action,
+            "reason": "Line 28693 matched failure class observed_exception.",
+            "source": "deterministic",
+        },
+    }
+
+
+def test_log_attribution_result_accepts_restart_agent_response(capsys):
+    # The legacy guard required inner["module"], which no Restart Agent result
+    # sets, so every direct-backend result was dropped before being reported.
+    log_attribution_result(_job(), "/lustre/logs/job.log", _restart_agent_response())
+
+    output = capsys.readouterr().out
+    assert "Recommendation: STOP" in output
+    assert "unrecognized" not in output
+
+
+def test_log_attribution_result_still_rejects_unusable_responses(capsys, caplog):
+    log_attribution_result(_job(), "/lustre/logs/job.log", {"result": {}})
+
+    assert capsys.readouterr().out == ""
+    assert "empty or unrecognized" in caplog.text
+
+
+# ─── analyzing a cycle as soon as its successor proves it complete ───
+
+
+def test_completed_cycle_is_analyzed_under_the_array_job_not_the_task():
+    job = SimpleNamespace(job_id="2200200_96", user="alice")
+    client = _AttrsvcClient()
+    state = MonitorState()
+
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
+
+    (call,) = client.calls
+    assert call["method"] == "POST"
+    assert call["analysis_intent"] == ANALYSIS_INTENT_TERMINAL
+    # L3 groups attempt history by exact job ID, so the task index must not
+    # reach it: 149 concurrent tasks share this one log.
+    assert call["job_id"] == "2200200"
+    assert state.completed_cycles_analyzed == 1
+
+
+def test_a_cycle_is_analyzed_only_once():
+    job = SimpleNamespace(job_id="2200200_96", user="alice")
+    client = _AttrsvcClient()
+    state = MonitorState()
+
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
+
+    assert len(client.calls) == 1
+    assert state.completed_cycles_analyzed == 1
+
+
+def test_terminal_fetch_does_not_re_request_an_already_analyzed_cycle():
+    # The cycle trigger already signaled this path; the terminal path must not
+    # pay for a second full analysis of the same log.
+    job = SimpleNamespace(job_id="2200200_96", user="alice")
+    client = _AttrsvcClient()
+    state = MonitorState()
+
+    analyze_completed_cycle(job, "/logs/run_cycle0.log", state, client, "2200200")
+    posts_before = len([c for c in client.calls if c["method"] == "POST"])
+    fetch_results(job, "/logs/run_cycle0.log", state, client, "2200200")
+
+    assert len([c for c in client.calls if c["method"] == "POST"]) == posts_before
+    assert [c["job_id"] for c in client.calls if c["method"] == "GET"] == ["2200200"]
+
+
+def test_submit_log_falls_back_to_the_task_id():
+    job = SimpleNamespace(job_id="123", user="u", log_submitted=False, post_success=False)
+    client = _AttrsvcClient()
+
+    submit_log(job, "/logs/wrapper.out", MonitorState(), client)
+
+    assert client.calls[0]["job_id"] == "123"
+
+
+def test_a_lost_terminal_post_is_reported_as_not_accepted():
+    """The caller releases this cycle's claim on a failure, so "accepted" has
+    to mean settled, not merely issued.
+
+    Reporting "issued" meant a lost POST still looked accepted: the claim was
+    kept, the cycle was skipped permanently, and its successors were analyzed
+    without it in their history - giving L3 a wrong attempt count rather than
+    a missing one.
+    """
+    job = SimpleNamespace(job_id="2200200", user="u")
+    calls = {"n": 0}
+
+    def flaky(method, job_id, log_path, on_success=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return  # retries exhausted; no callback fires
+        on_success(_Response({}))
+
+    client = SimpleNamespace(request_with_retry=flaky)
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is False
+    # The path must not stay signaled, or the retry is blocked too.
+    assert "/logs/c0.log" not in job.terminal_signaled_paths
+
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is True
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is False
+    assert calls["n"] == 2, "a settled path must not be re-sent"
+
+
+def test_a_refused_terminal_post_counts_as_settled():
+    """attrsvc answering with a 4xx is an answer, not a lost request: the same
+    POST would be refused again, so the path stays signaled."""
+    job = SimpleNamespace(job_id="2200200", user="u")
+
+    def refused(method, job_id, log_path, on_client_error=None, **kwargs):
+        on_client_error("400 bad path")
+
+    client = SimpleNamespace(request_with_retry=refused)
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is True
+    assert "/logs/c0.log" in job.terminal_signaled_paths
