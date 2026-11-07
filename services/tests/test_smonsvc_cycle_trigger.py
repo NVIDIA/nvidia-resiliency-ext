@@ -328,3 +328,25 @@ def test_the_squeue_outage_path_claims_one_cycle_at_a_time():
     assert first == cycles[0]
     # A second claim while one is in flight must yield nothing, not the rest.
     assert monitor._claim_next_cycle(job) is None
+
+
+def test_an_squeue_outage_does_not_wedge_the_cycle_gate():
+    """The outage path claims cycles but returns before the release probe.
+
+    Without settlement clearing its own marker, one finished cycle left every
+    later one blocked until squeue recovered - so an outage turned a fan-out
+    into a stall, on the very path that only runs during an outage.
+    """
+    cycles = _cycles(4)
+    monitor = _monitor(cycles)
+    monitor._state_lock = threading.RLock()
+    job = _job(state=JobState.FAILED)
+
+    first = monitor._claim_next_cycle(job)
+    assert first == cycles[0]
+    assert monitor._claim_next_cycle(job) is None, "the gate must hold while one is in flight"
+
+    # The GET answering is itself proof the analysis settled; no probe needed.
+    monitor._settle_analyzed_cycle(job, first)
+    assert not monitor.state.cycle_inflight, "settling releases its own gate"
+    assert monitor._claim_next_cycle(job) == cycles[1], "the next cycle must not be blocked"

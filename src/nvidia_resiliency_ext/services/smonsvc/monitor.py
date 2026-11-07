@@ -258,6 +258,11 @@ class SlurmJobMonitor:
         """Poll SLURM for jobs and process state changes."""
         current_jobs = self._get_slurm_jobs()
 
+        # Before the outage branch: this path claims cycles too, so skipping the
+        # release here left a marker nothing would clear until squeue recovered.
+        # The HTTP is already outside ``_state_lock``.
+        self._release_finished_cycles()
+
         if current_jobs is None:
             logger.warning("Skipping state updates due to squeue failure")
             self._fetch_pending_results()
@@ -265,8 +270,6 @@ class SlurmJobMonitor:
 
         jobs_to_submit: list[tuple[SlurmJob, str]] = []
         jobs_to_fetch: list[tuple[SlurmJob, str]] = []
-
-        self._release_finished_cycles()
 
         with self._state_lock:
             self._mark_disappeared_jobs_finished(current_jobs)
@@ -735,10 +738,17 @@ class SlurmJobMonitor:
         evidence with it. This mirrors the same guard in
         ``_claim_analysis_path``, which a sibling array task already needed.
         """
+        run_id = self._analysis_job_id(job, log_path)
         with self._state_lock:
             if log_path not in self.state.analyzed_log_paths:
                 self.state.analyzed_log_paths.add(log_path)
                 self.state.log_paths_analyzed_total += 1
+            # Releasing here rather than waiting for the probe: an answered GET
+            # already proves this cycle settled, and the probe only runs on a
+            # healthy poll. Leaving it set during an squeue outage would block
+            # every later cycle until squeue recovered.
+            if self.state.cycle_inflight.get(run_id) == log_path:
+                del self.state.cycle_inflight[run_id]
             if all(p in self.state.analyzed_log_paths for p in self._get_log_paths(job)):
                 job.result_fetched = True
 
