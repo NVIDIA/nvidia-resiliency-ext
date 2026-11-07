@@ -113,6 +113,11 @@ def _cycle_number(path: Path) -> int:
     return int(match.group(1)) if match else -1
 
 
+#: The launcher stamps each run with the date and time it started, which is
+#: the only thing that differs between two runs sharing one array job ID.
+_RUN_STAMP_RE = re.compile(r"_date_(?P<date>[\d-]+)_time_(?P<time>[\d-]+)")
+
+
 def run_discriminator(log_path: str) -> str:
     """A short, stable tag for the run ``log_path`` belongs to.
 
@@ -124,8 +129,17 @@ def run_discriminator(log_path: str) -> str:
 
     Derived from the run stem rather than the cycle, so every cycle of one run
     agrees - which is what keeps L3's attempt history for that run together.
+
+    The launcher's own ``date_/time_`` stamp is preferred over a digest of the
+    stem: this tag is appended to the job ID that appears in alerts, and a
+    reader can place "26-10-02_08-18-26" against the run they are looking at
+    where they cannot place a hash. A digest still covers any name that does
+    not carry the stamp, so the identity stays unique either way.
     """
     stem = _run_stem(Path(log_path))
+    stamped = _RUN_STAMP_RE.search(stem)
+    if stamped:
+        return f"{stamped.group('date')}_{stamped.group('time')}"
     return hashlib.sha256(stem.encode("utf-8", "replace")).hexdigest()[:8]
 
 

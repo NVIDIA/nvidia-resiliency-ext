@@ -13,6 +13,7 @@ from nvidia_resiliency_ext.services.smonsvc.log_resolver import (
     logs_from_job_name,
     resolve_app_log,
     resolve_app_logs,
+    run_discriminator,
     script_log_dir_pattern,
 )
 
@@ -972,3 +973,21 @@ def test_the_newest_run_wins_across_sibling_log_directories(tmp_path):
 
     assert resolved, "the job has logs"
     assert all("26-10-02" in path for path in resolved), "the live run, not the finished one"
+
+
+def test_the_run_tag_reads_as_the_time_the_run_started():
+    """This tag is appended to the job ID that appears in alerts, so a reader
+    has to be able to place it against the run they are looking at."""
+    base = "/logs/trainjob_tierA_v5_2200200_date_26-10-09_time_11-02-44"
+
+    assert run_discriminator(f"{base}_cycle0.log") == "26-10-09_11-02-44"
+    # Every cycle of one run has to agree, or L3's history for it splits.
+    assert run_discriminator(f"{base}_cycle7.log") == "26-10-09_11-02-44"
+
+
+def test_a_run_without_a_stamp_still_gets_a_unique_tag():
+    """Readability is the preference; uniqueness is the requirement."""
+    first = run_discriminator("/logs/plain_2200200_cycle0.log")
+    second = run_discriminator("/logs/other_2200200_cycle0.log")
+
+    assert first and second and first != second
