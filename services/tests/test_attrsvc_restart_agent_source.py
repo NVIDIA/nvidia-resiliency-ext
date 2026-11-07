@@ -36,9 +36,21 @@ def test_source_falls_back_to_the_route_when_no_model_is_reported():
     assert src == "l1_enriched:nvrx-default"
 
 
-def test_healthz_reports_which_model_answers(monkeypatch, tmp_path):
-    """A rollout must be identifiable without shell access to the host."""
+def test_healthz_reports_which_model_answers(tmp_path):
+    """A rollout must be identifiable without shell access to the host.
+
+    Asserted against the response ``status()`` actually returns, not against a
+    route list rebuilt from configuration. Rebuilding one here would still pass
+    if the field were dropped from the payload, which is the only place an
+    operator can see it.
+    """
+    import asyncio
+
+    from nvidia_resiliency_ext.attribution.restart_agent import build_restart_agent_runtime
     from nvidia_resiliency_ext.services.attrsvc.config import Settings
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
+        RestartAgentServiceBackend,
+    )
     from nvidia_resiliency_ext.services.attrsvc.restart_agent_config import (
         restart_agent_config_from_settings,
     )
@@ -51,13 +63,24 @@ def test_healthz_reports_which_model_answers(monkeypatch, tmp_path):
         LLM_MODEL="us/azure/openai/eccn-gpt-5.4",
     )
     config = restart_agent_config_from_settings(settings, environ={"LLM_API_KEY_FILE": str(key)})
+    backend = RestartAgentServiceBackend(
+        allowed_root=str(tmp_path),
+        runtime=build_restart_agent_runtime(config),
+        config=config,
+    )
+    try:
+        status = asyncio.run(backend.status())
+    finally:
+        backend.shutdown()
 
-    routes = [
-        {"route_id": s.route_id, "model": s.model, "endpoint": s.endpoint}
-        for s in config.model_route_specs
-    ]
-
+    routes = status["restart_agent"]["model_routes"]
     assert routes, "an enriched config must advertise at least one route"
     assert routes[0]["model"] == "us/azure/openai/eccn-gpt-5.4"
     # The route id alone would not have identified it.
     assert routes[0]["route_id"] == "nvrx-default"
+
+    # The same endpoint is where alerting destinations are reported, and it is
+    # equally unreadable from outside the host.
+    slack = status["slack"]
+    assert set(slack) >= {"enabled", "channels", "notify_actions", "counters"}
+    assert isinstance(slack["channels"], list)

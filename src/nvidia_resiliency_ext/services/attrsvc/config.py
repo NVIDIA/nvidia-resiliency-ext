@@ -13,6 +13,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from urllib.parse import unquote, urlparse
 
 from pydantic import Field, field_validator
@@ -31,6 +32,13 @@ from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode as 
 logger = logging.getLogger(__name__)
 
 _LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+#: Cap the on-disk log at four rotations of 64 MiB. Large enough that an
+#: ordinary run never rotates - the deployed service writes under a megabyte a
+#: month at INFO - and small enough that a DEBUG run cannot quietly fill a
+#: mount that other work depends on.
+_LOG_FILE_MAX_BYTES = 64 * 1024 * 1024
+_LOG_FILE_BACKUPS = 3
 
 # Service-specific constants
 DEFAULT_HOST = "127.0.0.1"
@@ -493,18 +501,32 @@ def _has_file_handler(log_file: str) -> bool:
     )
 
 
-def configure_logging(log_level: str = "INFO") -> None:
-    """Configure attrsvc logging, including the pre-configuration startup window."""
+def configure_logging(log_level: str = "INFO", log_file: str | None = None) -> None:
+    """Configure attrsvc logging, including the pre-configuration startup window.
+
+    ``log_file`` defaults to the environment because the first call runs before
+    ``Settings`` exists. The second call passes the resolved setting, so a path
+    named only in ``.env`` is honored rather than silently dropped - every other
+    setting reads from there, and logging quietly not doing so is a trap.
+    """
 
     root_level = getattr(logging, log_level, logging.INFO)
     logging.basicConfig(level=root_level, format=_LOG_FORMAT)
-    # Read straight from the environment: this runs before Settings is built,
-    # and a standalone function should not need one passed in just for this.
-    log_file = (os.environ.get("NVRX_ATTRSVC_LOG_FILE") or "").strip()
+    if log_file is None:
+        log_file = os.environ.get("NVRX_ATTRSVC_LOG_FILE") or ""
+    log_file = log_file.strip()
     if log_file and not _has_file_handler(log_file):
         try:
             os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
-            handler = logging.FileHandler(log_file)
+            # Rotating rather than plain: this file is long-lived and a
+            # deployment typically points it at shared storage, where a service
+            # that never stops writing eventually fills a mount other work
+            # depends on. Container log limits do not cover a file like this.
+            handler: logging.Handler = RotatingFileHandler(
+                log_file,
+                maxBytes=_LOG_FILE_MAX_BYTES,
+                backupCount=_LOG_FILE_BACKUPS,
+            )
             handler.setFormatter(logging.Formatter(_LOG_FORMAT))
             logging.getLogger().addHandler(handler)
         except OSError as exc:  # a bad path must not stop the service starting
@@ -531,6 +553,6 @@ def setup() -> Settings:
     cfg = Settings()  # type: ignore[call-arg]
     _ = cfg.SERVICE_ENDPOINT
 
-    configure_logging(cfg.LOG_LEVEL)
+    configure_logging(cfg.LOG_LEVEL, cfg.LOG_FILE)
 
     return cfg

@@ -5,8 +5,13 @@
 #
 # Stamp the build so /healthz can identify it:
 #   docker build -t nvrx-attrsvc -f services/attrsvc/deploy/Dockerfile \
-#       --build-arg NVRX_PACKAGE_VERSION="$(git describe --tags --always --dirty)" \
-#       --build-arg NVRX_BUILD_TAG="main-$(git rev-parse --short=8 HEAD)" .
+#       --build-arg NVRX_PACKAGE_VERSION="0.5.0.dev+$(git rev-parse --short=8 HEAD)" \
+#       --build-arg NVRX_BUILD_TAG="$(git describe --tags --always --dirty)" .
+#
+# NVRX_PACKAGE_VERSION has to be a valid package version: it is passed through
+# to POETRY_DYNAMIC_VERSIONING_BYPASS, and between releases "git describe"
+# yields something like v0.5.0-10-gabcdc9c, which the install then rejects.
+# NVRX_BUILD_TAG is free-form, so the readable git description belongs there.
 #
 # Run:
 #   docker run -d \
