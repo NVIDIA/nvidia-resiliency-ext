@@ -195,6 +195,30 @@ class _AttemptExecution:
     source_identity: dict[str, Any] = field(default_factory=dict)
 
 
+def _slack_status(notifier: SlackNotifier) -> dict[str, Any]:
+    """Where alerts go, and whether any have landed.
+
+    ``channels`` is a list even when one channel is configured. A deployment
+    can name more than one, and a reader comparing this against what they set
+    should not have to tell a single value apart from a list of one.
+    """
+    config = notifier.config
+    # Read the plural form when it exists and fall back to the single channel.
+    # Both shapes are in flight across open branches, and a status endpoint is
+    # the wrong place to raise over which one it got.
+    channels = getattr(config, "channels", None)
+    if not channels:
+        single = getattr(config, "channel", "") or ""
+        channels = (single,) if single else ()
+    return {
+        "enabled": notifier.enabled,
+        "channels": list(channels),
+        "notify_actions": sorted(config.notify_actions),
+        "token": "present" if config.token else "missing",
+        "counters": notifier.stats.as_dict(),
+    }
+
+
 def _enriched_source(result: ModelAnalysisResult) -> str:
     """Name the route and the model that answered.
 
@@ -737,6 +761,10 @@ class RestartAgentServiceBackend:
                     "bytes_ingested": sum(state.bytes_ingested for state in accumulator_states),
                     "bytes_reread": sum(state.bytes_reread for state in accumulator_states),
                 },
+                # SlackStats counted every attempt and nothing ever read them
+                # back, so a notification that silently stopped landing looked
+                # identical to a quiet period.
+                "slack": _slack_status(self._slack_notifier),
             },
         }
 
@@ -809,6 +837,10 @@ class RestartAgentServiceBackend:
                     for spec in self._config.model_route_specs
                 ],
             },
+            # Where alerts go is set per deployment and was only ever written to
+            # the startup log, so confirming a channel change meant finding that
+            # log on the host. Reporting it here makes it answerable by request.
+            "slack": _slack_status(self._slack_notifier),
         }
 
     def _register(

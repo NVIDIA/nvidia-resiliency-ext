@@ -1602,3 +1602,48 @@ def test_describe_names_every_channel(monkeypatch):
     assert "channel: #only" in one.describe()
     many = _notifier(monkeypatch, channels=("#one", "#two"))
     assert "channels: #one, #two" in many.describe()
+
+
+def test_healthz_names_the_channels_alerts_go_to(monkeypatch):
+    """Where alerts go was only ever in the startup log, on the host."""
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import _slack_status
+
+    notifier = _notifier(monkeypatch)
+    status = _slack_status(notifier)
+
+    assert status["enabled"] is True
+    # A list even for one channel, so a reader comparing against what they set
+    # does not have to tell a single value apart from a list of one.
+    assert status["channels"] == ["#trng-alerts"]
+    assert status["notify_actions"] == ["STOP"]
+    # The token is reported as present/missing, never echoed.
+    assert status["token"] == "present"
+    assert "xoxb" not in repr(status)
+
+
+def test_healthz_reports_a_disabled_notifier_without_inventing_a_channel(monkeypatch):
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import _slack_status
+
+    monkeypatch.setattr(slack_mod, "HAS_SLACK", True)
+    # Named neither field: an empty config is disabled under both the
+    # single-channel and the multi-channel shape.
+    notifier = SlackNotifier(SlackConfig(token=""))
+    status = _slack_status(notifier)
+
+    assert status["enabled"] is False
+    assert status["channels"] == []
+    assert status["token"] == "missing"
+
+
+def test_slack_counters_are_readable_instead_of_dead(monkeypatch):
+    """They were incremented and never read, so a silent stop looked like quiet."""
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import _slack_status
+
+    notifier = _notifier(monkeypatch)
+    notifier.notify(_job(), _parsed())
+    notifier.notify(_job(), _parsed(action="CONTINUE"))
+
+    counters = _slack_status(notifier)["counters"]
+    assert counters["sent"] == 1
+    assert counters["skipped_action"] == 1
+    assert counters["failed"] == 0
