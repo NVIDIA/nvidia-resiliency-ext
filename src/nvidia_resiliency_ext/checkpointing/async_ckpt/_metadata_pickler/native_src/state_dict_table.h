@@ -90,6 +90,8 @@ class StateDictTableView {
    private:
     // Check that the arrays describe entries() entries consistently; see StateDictTable._check.
     void check() const;
+    // Check entry i's fqn, kind, reference and dims, once check() has found the arrays consistent.
+    void check_entry(size_t i) const;
 
     py::object table_;
     mutable std::optional<int64_t> fqns_fingerprint_;

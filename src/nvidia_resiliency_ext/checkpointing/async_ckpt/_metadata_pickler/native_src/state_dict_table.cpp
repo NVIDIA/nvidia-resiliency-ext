@@ -99,6 +99,12 @@ template <TableValue T>
     return values % ndim == 0 && per_dim % 2 == 1 && per_dim / 2 == chunk_count;
 }
 
+// Return whether ref is the index of a bytes object in pickles.
+[[nodiscard]] auto holds_pickle(int64_t ref, py::tuple const& pickles) -> bool {
+    return ref >= 0 && ref < PyTuple_GET_SIZE(pickles.ptr()) &&
+           PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
+}
+
 // Return a numpy array that owns the vector's values, without copying them.
 template <TableValue T>
 [[nodiscard]] auto to_array(std::vector<T>&& vector) -> py::array_t<T> {
@@ -373,43 +379,43 @@ void StateDictTableView::check() const {
     };
     check_starts(chunk_start_, std::nullopt);
     check_starts(dims_start_, dims_.size());
-    auto const in = [](int64_t ref, py::tuple const& pickles) {
-        return ref >= 0 && ref < PyTuple_GET_SIZE(pickles.ptr()) &&
-               PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
-    };
     for (size_t i = 0; i < n; ++i) {
-        if (!PyUnicode_CheckExact(fqn(i))) {
-            bad_state_dict_table("an fqn is not a str");
-        }
-        int64_t const ndim = ndim_[i];
-        int64_t const chunk_count = chunk_start_[i + 1] - chunk_start_[i];
-        int64_t const values = dims_start_[i + 1] - dims_start_[i];
-        if (ndim < 0) {
-            bad_state_dict_table("a negative number of dims");
-        }
-        switch (kind_[i]) {
-            case static_cast<uint8_t>(Kind::Tensor):
-                if (!in(ref_[i], properties_) || !holds_chunks(values, ndim, chunk_count)) {
-                    bad_state_dict_table("a tensor entry's dims don't match its chunks");
-                }
-                // Its chunks have no dims, so nothing else bounds their number.
-                if (ndim == 0 && chunk_count > 1) {
-                    bad_state_dict_table("a 0-dim tensor entry with more than one chunk");
-                }
-                break;
-            case static_cast<uint8_t>(Kind::Other):
-                if (!in(ref_[i], others_)) {
-                    bad_state_dict_table("an entry refers to no pickle");
-                }
-                [[fallthrough]];
-            case static_cast<uint8_t>(Kind::Bytes):
-                if (ndim != 0 || chunk_count != 0 || values != 0) {
-                    bad_state_dict_table("a non-tensor entry has dims");
-                }
-                break;
-            default:
-                bad_state_dict_table("unknown entry kind");
-        }
+        check_entry(i);
+    }
+}
+
+void StateDictTableView::check_entry(size_t i) const {
+    if (!PyUnicode_CheckExact(fqn(i))) {
+        bad_state_dict_table("an fqn is not a str");
+    }
+    int64_t const ndim = ndim_[i];
+    int64_t const chunk_count = chunk_start_[i + 1] - chunk_start_[i];
+    int64_t const values = dims_start_[i + 1] - dims_start_[i];
+    if (ndim < 0) {
+        bad_state_dict_table("a negative number of dims");
+    }
+    switch (kind_[i]) {
+        case static_cast<uint8_t>(Kind::Tensor):
+            if (!holds_pickle(ref_[i], properties_) || !holds_chunks(values, ndim, chunk_count)) {
+                bad_state_dict_table("a tensor entry's dims don't match its chunks");
+            }
+            // Its chunks have no dims, so nothing else bounds their number.
+            if (ndim == 0 && chunk_count > 1) {
+                bad_state_dict_table("a 0-dim tensor entry with more than one chunk");
+            }
+            break;
+        case static_cast<uint8_t>(Kind::Other):
+            if (!holds_pickle(ref_[i], others_)) {
+                bad_state_dict_table("an entry refers to no pickle");
+            }
+            [[fallthrough]];
+        case static_cast<uint8_t>(Kind::Bytes):
+            if (ndim != 0 || chunk_count != 0 || values != 0) {
+                bad_state_dict_table("a non-tensor entry has dims");
+            }
+            break;
+        default:
+            bad_state_dict_table("unknown entry kind");
     }
 }
 
