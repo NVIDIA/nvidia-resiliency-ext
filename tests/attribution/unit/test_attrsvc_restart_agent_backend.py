@@ -929,6 +929,17 @@ def test_percentile_reports_a_duration_some_attempt_actually_took():
     assert _percentile(values, 1.0) == 4.0
     assert _percentile([7.5], 0.95) == 7.5
 
+    # Exact ranks are where a round(x + 0.5) spelling of ceil goes wrong: a
+    # half rounds to even, so these land one rank high and report the slowest
+    # attempt as though it were typical.
+    twenty = [float(i) for i in range(1, 21)]
+    assert _percentile(twenty, 0.95) == 19.0
+    assert _percentile([1.0, 2.0], 0.5) == 1.0
+    hundred = [float(i) for i in range(1, 101)]
+    assert _percentile(hundred, 0.95) == 95.0
+    # A fraction at or below zero still names a real sample.
+    assert _percentile(twenty, 0.0) == 1.0
+
 
 def test_timing_report_survives_a_trace_without_a_timing_section():
     """Trace shape belongs to the pipeline; a thinner one must not raise here."""

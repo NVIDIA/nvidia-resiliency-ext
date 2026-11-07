@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import stat
 import time
@@ -232,8 +233,15 @@ def _percentile(sorted_values: list[float], fraction: float) -> float:
 
     Nearest-rank rather than interpolation: these samples are counted in the
     tens, where an interpolated p95 reports a duration no attempt actually took.
+
+    The rank is ``ceil(fraction * n)``, taken from ``math`` rather than spelled
+    as ``round(x + 0.5)``. The two disagree exactly when ``fraction * n`` is a
+    whole number, because Python rounds a half to even: at 20 samples a p95
+    wants rank 19, and ``round(19.5)`` gives 20, reporting the slowest attempt
+    as though it were typical.
     """
-    index = min(len(sorted_values) - 1, max(0, round(fraction * len(sorted_values) + 0.5) - 1))
+    rank = math.ceil(fraction * len(sorted_values))
+    index = min(len(sorted_values) - 1, max(0, rank - 1))
     return float(sorted_values[index])
 
 
