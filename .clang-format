@@ -55,7 +55,7 @@ SpacesInContainerLiterals: false
 SpacesInParentheses: false
 SpacesInSquareBrackets: false
 
-# Numeric literal case — uncomment when upgrading to clang-format 21+
+# Numeric literal case — uncomment when upgrading to clang-format 22+
 # NumericLiteralCaseStyle:
 #   Suffix: Upper        # 1ull -> 1ULL, 1u -> 1U, etc.
 #   HexDigit: Upper      # 0xdeadbeef -> 0xDEADBEEF
