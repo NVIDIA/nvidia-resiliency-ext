@@ -4,8 +4,7 @@ dist
 CLAUDE.local.md
 *.egg-info
 __pycache__
-cupti_module.*.so
-src/nvidia_resiliency_ext/checkpointing/async_ckpt/_metadata_pickler/native.*.so
+*.so
 ft_state.json
 .pytest_cache
 *_pb2.py

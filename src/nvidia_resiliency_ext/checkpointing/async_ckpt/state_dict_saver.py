@@ -16,22 +16,30 @@
 """State dict saver for PyT Distributed format allowing asynchronous save."""
 
 import dataclasses
+
+# Issue: [B403:blacklist] Consider possible security implications associated with pickle module.
+# Severity: Low   Confidence: High
+# CWE: CWE-502 (https://cwe.mitre.org/data/definitions/502.html)
+# More Info: https://bandit.readthedocs.io/en/1.8.3/blacklists/blacklist_imports.html#b403-import-pickle
+import pickle  # nosec
 from dataclasses import fields
 from logging import getLogger
 from time import time
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
+import numpy as np
 import torch
 import torch.distributed as dist
 from torch.distributed.checkpoint import CheckpointException
 from torch.distributed.checkpoint.default_planner import DefaultSavePlanner
 from torch.distributed.checkpoint.metadata import STATE_DICT_TYPE, Metadata
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner
-from torch.distributed.checkpoint.utils import _DistWrapper, _get_failure_dict
+from torch.distributed.checkpoint.utils import _DistWrapper, _is_wrapped_exception
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
-from . import _metadata_reuse
+from . import _metadata_pickler, _metadata_reuse
+from ._metadata_pickler import table as _table
 
 if TYPE_CHECKING:
     from .filesystem_async import FileSystemWriterAsync
@@ -53,9 +61,12 @@ class CheckpointMetadataCache:
       `enable_cache` promises that the checkpoint structure does not change. Each rank still
       creates its local plan and raises if it differs from the previous one.
 
+    The coordinator writes a shallow copy of the cached metadata on every save, so the cache never
+    holds a save's storage_data and never modifies the metadata it was given.
+
     Attributes:
-        global_metadata (Metadata): The global metadata to reuse: a copy of the loaded
-            checkpoint's on every rank until the first save, the previous save's on the
+        global_metadata (Metadata): The global metadata to reuse: the loaded checkpoint's, without
+            its storage_data, on every rank until the first save, the previous save's on the
             coordinator afterwards.
         local_plan (SavePlan): This rank's local plan of the previous save, as the planner created
             it; None before the first save in this process.
@@ -78,10 +89,9 @@ class CheckpointMetadataCache:
         Args:
             cached_global_metadata (Metadata): The global metadata from a previous checkpoint.
         """
-        # A copy: finish writes into the metadata it is given. It has only the dataclass fields,
-        # so the local plans that older versions attach (all_local_plans) are not written again.
+        # Without the loaded storage_data: no save needs it, as finish rebuilds it every save.
         self.global_metadata = (
-            dataclasses.replace(cached_global_metadata)
+            dataclasses.replace(cached_global_metadata, storage_data=None)
             if cached_global_metadata is not None
             else None
         )
@@ -99,18 +109,19 @@ class CheckpointMetadataCache:
         """Record a planned save; return the global metadata the coordinator writes for it."""
         self.local_plan = local_plan
         self.central_plan = central_plan
-        if not reused:
-            self.global_metadata = global_metadata if is_coordinator else None
-            return global_metadata
         if not is_coordinator:
             self.global_metadata = None
             return None
-        if self.global_metadata is None:
+        if not reused:
+            self.global_metadata = global_metadata
+        elif self.global_metadata is None:
             raise RuntimeError(
                 "the coordinator holds no global metadata to reuse; with enable_cache, the "
                 "coordinator rank must stay the same between saves"
             )
-        return self.global_metadata
+        # `finish` populates `storage_data` in the `Metadata` object it's given. Create a fresh copy
+        # so that the `storage_data` does not persist in memory after `finish`.
+        return dataclasses.replace(self.global_metadata)
 
 
 _checkpoint_metadata_cache = None
@@ -363,6 +374,76 @@ def verify_global_metadata_reuse(
     return reuse
 
 
+def _encode_write_results(write_results, storage_writer) -> bytes:
+    """This rank's write results for the coordinator: a table if it can and its storage writer
+    writes from tables (see _writes_rows), else pickled. A storage writer whose finish a subclass
+    overrides thus gets the write results from every rank that has the same writer as they are."""
+    if isinstance(write_results, list) and _writes_rows(storage_writer):
+        try:
+            return _table.encode(write_results)
+        except _table.Unencodable:
+            logger.debug(
+                "write results unencodable as a table; sending them pickled", exc_info=True
+            )
+        except Exception:
+            logger.warning("encoding the write results as a table failed", exc_info=True)
+    return pickle.dumps(write_results)
+
+
+def _gather_payloads(payload: bytes, dist_wrapper: _DistWrapper) -> Optional[np.ndarray]:
+    """Collective: the ranks' payloads on the coordinator, one zero-padded row per rank.
+
+    Rows are a multiple of 8 bytes wide, so a table's int64s are aligned and every row holds the
+    8 bytes that tell a table from a pickle.
+    """
+    width = len(payload)
+    device = torch.cuda.current_device() if dist_wrapper.use_dist else None
+    if dist_wrapper.use_dist:
+        widest = torch.tensor([width], dtype=torch.int64, device=device)
+        torch.distributed.all_reduce(
+            widest, op=torch.distributed.ReduceOp.MAX, group=dist_wrapper.group
+        )
+        width = int(widest.item())
+    width = -(-width // 8) * 8
+    row = np.zeros(width, dtype=np.uint8)
+    row[: len(payload)] = np.frombuffer(payload, dtype=np.uint8)
+    if not dist_wrapper.use_dist:
+        return row[None, :]
+    rows = None
+    if dist_wrapper.is_coordinator:
+        rows = torch.empty((dist_wrapper.get_world_size(), width), dtype=torch.uint8, device=device)
+    torch.distributed.gather(
+        torch.from_numpy(row).to(device),
+        list(rows) if rows is not None else None,
+        dst=getattr(dist_wrapper, "global_coordinator_rank", dist_wrapper.coordinator_rank),
+        group=dist_wrapper.group,
+    )
+    return rows.cpu().numpy() if rows is not None else None
+
+
+def _decode_payloads(rows: np.ndarray) -> Tuple[np.ndarray, Dict[int, Any]]:
+    """Which ranks sent a table, and what each other rank pickled: its write results or exception."""
+    is_table = rows[:, :8].copy().view("<i8")[:, 0] == _table.MAGIC
+    # Unpickles only what this job's ranks pickled, as dist.gather_object does.
+    pickled = {
+        int(rank): pickle.loads(rows[rank].tobytes())  # nosec B301
+        for rank in np.flatnonzero(~is_table)
+    }
+    return is_table, pickled
+
+
+def _writes_rows(storage_writer) -> bool:
+    """Whether storage_writer can write storage_data from the gathered tables: a fast .metadata
+    writer, and a FileSystemWriterAsync whose finish a subclass doesn't override."""
+    from .filesystem_async import FileSystemWriterAsync
+
+    return (
+        isinstance(storage_writer, FileSystemWriterAsync)
+        and type(storage_writer).finish is FileSystemWriterAsync.finish
+        and _metadata_pickler.writes_tables()
+    )
+
+
 def save_state_dict_async_finalize(
     storage_writer: "FileSystemWriterAsync",
     global_metadata: Metadata,
@@ -372,7 +453,8 @@ def save_state_dict_async_finalize(
     Finalization of save_state_dict_async_plan.
 
     The input arguments are the same as the save_state_dict_async_plan output,
-    the `write_results` are retrieved from the storage_writer.
+    the `write_results` are retrieved from the storage_writer. Each rank sends them to the
+    coordinator as a table (see `_metadata_pickler.table`) if it can, else pickled.
 
     Args:
         storage_writer (FileSystemWriterAsync): storage writer used for planning
@@ -386,7 +468,7 @@ def save_state_dict_async_finalize(
     # Gather the write results that will be saved to the metadata file.
     gather_start = time()
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.finalize_gather"):
-        all_results = dist_wrapper.gather_object(write_results)
+        rows = _gather_payloads(_encode_write_results(write_results, storage_writer), dist_wrapper)
     gather_end = time()
     logger.debug(
         f"{gather_end}, {torch.distributed.get_rank()}, gather: {gather_end - gather_start}"
@@ -394,14 +476,22 @@ def save_state_dict_async_finalize(
 
     # Store the metadata on coordinator rank
     if dist_wrapper.is_coordinator:
-        node_failures = _get_failure_dict(all_results)
+        is_table, pickled = _decode_payloads(rows)
+        node_failures = {rank: r for rank, r in pickled.items() if _is_wrapped_exception(r)}
         if len(node_failures) == 0:
             assert global_metadata is not None
             with telemetry.span(
                 semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.metadata_write"
             ):
                 write_start = time()
-                storage_writer.finish(global_metadata, all_results)
+                if is_table.all() and _writes_rows(storage_writer):
+                    storage_writer._finish(global_metadata, [], storage_rows=rows)
+                else:
+                    results = [
+                        _table.to_write_results(_table.decode(row)) if sent_table else pickled[rank]
+                        for rank, (row, sent_table) in enumerate(zip(rows, is_table))
+                    ]
+                    storage_writer.finish(global_metadata, results)
                 write_end = time()
                 logger.debug(f"{write_end}, metadata_write: {write_end - write_start}")
     else:

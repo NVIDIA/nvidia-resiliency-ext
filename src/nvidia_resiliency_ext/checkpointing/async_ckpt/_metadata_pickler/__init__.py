@@ -15,8 +15,9 @@
 
 """Internal: fast writer for the ``.metadata`` file of torch distributed checkpoints.
 
-See :mod:`.writer`. ``native`` is the optional C++ extension built from
-``native_src/native.cpp``.
+See :mod:`.writer`, which picks the C++ writer (:mod:`.native`, wrapping the optional ``_native``
+extension built from ``native_src/native.cpp``) or the Python writer (:mod:`.pickler`).
 """
 
-from .writer import TESTED_TORCH_VERSIONS, dump_metadata, fast_metadata_enabled
+from . import table
+from .writer import TESTED_TORCH_VERSIONS, dump_metadata, fast_metadata_enabled, writes_tables

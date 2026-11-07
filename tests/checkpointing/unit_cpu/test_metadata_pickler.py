@@ -22,6 +22,7 @@ tests/checkpointing/unit/test_async_writer.py, on GPUs.
 
 import io
 import logging
+import os
 import pickle
 from collections import OrderedDict
 from dataclasses import fields
@@ -41,13 +42,13 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
+from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import pickler, writer
 
 HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo)}  # torch 2.8+
 NEEDS_NATIVE = pytest.mark.skipif(writer.native is None, reason="native extension not built")
 WRITERS = [
-    pytest.param(writer._python_dumps, id="python"),
-    pytest.param(writer._native_dumps, id="native", marks=NEEDS_NATIVE),
+    pytest.param(pickler.dumps, id="python"),
+    pytest.param(writer.native.dumps if writer.native else None, id="native", marks=NEEDS_NATIVE),
 ]
 
 
@@ -238,7 +239,7 @@ def test_writer_matches_stock_pickle(dumps, md):
 @hypothesis_settings
 @given(metadatas())
 def test_native_matches_python(md):
-    assert writer._native_dumps(md) == writer._python_dumps(md)
+    assert writer.native.dumps(md) == pickler.dumps(md)
 
 
 @pytest.mark.parametrize("dumps", WRITERS)
@@ -251,7 +252,7 @@ def test_writer_matches_stock_pickle_on(dumps, make, tmp_path):
 @pytest.mark.parametrize("make", FIXED_METADATA)
 def test_native_matches_python_on(make, tmp_path):
     md = make(tmp_path)
-    assert writer._native_dumps(md) == writer._python_dumps(md)
+    assert writer.native.dumps(md) == pickler.dumps(md)
 
 
 def _set_index(md, value):
@@ -325,7 +326,7 @@ def test_writer_rejects_unexpected_values(dumps, mutate, python_rejects):
     """A writer rejects a value it does not encode exactly, rather than write something wrong."""
     md = writer._sample_metadata()
     mutate(md)
-    if dumps is writer._native_dumps or python_rejects:
+    if dumps is not pickler.dumps or python_rejects:
         with pytest.raises((TypeError, OverflowError, UnicodeError)):
             dumps(md)
     else:
@@ -410,7 +411,7 @@ CHANGED_WHILE_PICKLED = [
 def test_native_survives_metadata_changed_while_pickled(case):
     md = _metadata_changed_while_pickled(case)
     try:
-        out = writer._native_dumps(md)
+        out = writer.native.dumps(md)
     except RuntimeError as e:
         assert "changed size" in str(e)
     else:
@@ -439,7 +440,7 @@ def test_dump_metadata_raises_or_loads_when_metadata_changes(case):
 )
 def test_str_header(n, header):
     """The str opcode for each length boundary, including BINUNICODE8 past 4 GiB."""
-    assert writer._str_header(n) == header
+    assert pickler._str_header(n) == header
     if n < 2**20:  # small enough to compare with the stdlib pickler
         assert header + b"a" in pickle.dumps("a" * n, protocol=4)
 
@@ -457,19 +458,28 @@ def test_changed_pickled_state_disables_fast_writers(monkeypatch):
 
 
 def test_moved_class_disables_fast_writers(monkeypatch):
-    paths = dict(writer._CLASS_PATHS)
+    paths = dict(pickler.CLASS_PATHS)
     paths[MetadataIndex] = ("torch.distributed.checkpoint.metadata", "MovedMetadataIndex")
-    monkeypatch.setattr(writer, "_CLASS_PATHS", paths)
+    monkeypatch.setattr(pickler, "CLASS_PATHS", paths)
     assert not writer._layout_supported()
+
+
+@pytest.mark.skipif(
+    os.environ.get("NVRX_REQUIRE_NATIVE_WRITER") != "1", reason="NVRX_REQUIRE_NATIVE_WRITER unset"
+)
+def test_native_writer_is_built():
+    """In CI, where the native writer's tests would otherwise skip silently if it failed to build."""
+    assert writer.native is not None
 
 
 def test_layout_supported_on_this_torch():
     assert writer._layout_supported()
 
 
-_FIRST, _LAST = writer.TESTED_TORCH_VERSIONS
+_LAST = max(writer.TESTED_TORCH_VERSIONS)
 _TESTED = f"{_LAST[0]}.{_LAST[1]}.0"  # whatever torch runs the tests
-_FAST = writer._native_dumps if writer.native is not None else writer._python_dumps
+_UNTESTED = f"{_LAST[0]}.{_LAST[1] + 1}.0"
+_FAST = writer.native.dumps if writer.native is not None else pickler.dumps
 
 
 @pytest.mark.parametrize(
@@ -477,17 +487,17 @@ _FAST = writer._native_dumps if writer.native is not None else writer._python_du
     [
         (None, _TESTED, _FAST),
         ("1", _TESTED, _FAST),
-        ("python", _TESTED, writer._python_dumps),
+        ("python", _TESTED, pickler.dumps),
         ("0", _TESTED, None),
         ("off", _TESTED, None),
-        (None, f"{_FIRST[0]}.{_FIRST[1] - 1}.1", None),
-        (None, f"{_LAST[0]}.{_LAST[1] + 1}.0", None),
-        ("force", f"{_LAST[0]}.{_LAST[1] + 1}.0", _FAST),
+        (None, "2.2.1", None),
+        (None, _UNTESTED, None),
+        ("force", _UNTESTED, _FAST),
         ("force", "2.3.1", None),  # in INCOMPATIBLE_TORCH_VERSIONS
         (None, "2.7.0_custom", None),  # not PEP 440: untested
         ("force", "2.7.0_custom", _FAST),
         (None, f"{_LAST[0]}.{_LAST[1]}.0a0+git1234567", _FAST),
-        (None, f"{_FIRST[0]}.{_FIRST[1]}.0+cu121", _FAST),
+        (None, "2.4.0+cu121", _FAST),
     ],
 )
 def test_writer_selection(monkeypatch, mode, version, expected):
@@ -496,6 +506,20 @@ def test_writer_selection(monkeypatch, mode, version, expected):
     monkeypatch.setattr(torch, "__version__", version)
     assert writer.fast_metadata_enabled() is (expected is not None)
     assert writer._select_dumps() is expected
+    # Tables only on tested versions: the force cases here are all untested.
+    assert writer.writes_tables() is (expected is not None and mode != "force")
+
+
+@pytest.mark.parametrize("mode", [None, "force"])
+def test_incompatible_wins_over_tested(monkeypatch, mode):
+    """A tested version later found incompatible gets neither the fast writers nor tables."""
+    if mode is not None:
+        monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", mode)
+    monkeypatch.setattr(torch, "__version__", _TESTED)
+    monkeypatch.setattr(writer, "INCOMPATIBLE_TORCH_VERSIONS", frozenset({_LAST}))
+    assert not writer._tested_torch()
+    assert not writer.fast_metadata_enabled()
+    assert not writer.writes_tables()
 
 
 @pytest.mark.parametrize("version", ["2.3.1", "2.3.0+cu121"])
@@ -510,4 +534,4 @@ def test_force_on_incompatible_torch_logs_error(monkeypatch, caplog, version):
 def test_python_writer_without_native(monkeypatch):
     monkeypatch.setattr(torch, "__version__", _TESTED)
     monkeypatch.setattr(writer, "native", None)
-    assert writer._select_dumps() is writer._python_dumps
+    assert writer._select_dumps() is pickler.dumps
