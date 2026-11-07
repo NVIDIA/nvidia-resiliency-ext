@@ -181,7 +181,12 @@ _EXCEPTION_CLASS = r"(?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)|Exception)"
 # a summary from the source frame above it: a frame carries its own indentation,
 # so requiring the class name immediately after the prefix accepts
 # ``180: [rank180]: EOFError`` while rejecting ``180: [rank180]:     EOFError``.
-_RANK_PREFIX = r"(?:\d+:[ ])?(?:\[rank\d+\]:[ ])?"
+#
+# Padding is allowed only where the multiplexer puts it. It right-aligns the
+# rank to the width of the largest one, so rank 9 of 100 arrives as "  9: ".
+# That padding sits before the digits, never after the colon, which is why it
+# can be accepted without also accepting the indentation of a bare-name frame.
+_RANK_PREFIX = r"(?:[ ]*\d+:[ ])?(?:\[rank\d+\]:[ ])?"
 
 # The second alternative is anchored to the start of the line and must reach end
 # of line, so it accepts the summary ``9: EOFError`` while rejecting both the

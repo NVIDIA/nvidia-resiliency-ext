@@ -93,6 +93,12 @@ def test_a_frame_line_is_not_mistaken_for_the_summary(tmp_path):
         # Aggregated logs carry both prefixes; this is the dominant real shape,
         # and a summary regex that misses it never fires in production.
         "180: [rank180]: EOFError",
+        # The multiplexer right-aligns the rank to the width of the largest
+        # one, so rank 9 of 100 arrives padded. That padding sits before the
+        # digits, never after the colon.
+        "  9: EOFError",
+        " 9: EOFError",
+        "  9: [rank9]: EOFError",
         # A qualified name needs a character before the suffix; a bare one does not.
         "9: Exception",
         "Exception: boom",
@@ -112,6 +118,8 @@ def test_summary_is_seen_through_any_rank_prefix(line):
         # publishes the wrong identity, ahead of the NameError that follows it.
         "    MissingError",
         "9:     MissingError",
+        "  9:     MissingError",
+        "  9:     raise EOFError",
         "180: [rank180]:     MissingError",
         "9:     raise EOFError",
         # Bare "Error:" opens plenty of non-Python output and is not a summary.
