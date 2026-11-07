@@ -251,7 +251,7 @@ def fetch_results(
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
     analysis_job_id: str | None = None,
-    settle_job: "Callable[[SlurmJob, str], None] | None" = None,
+    settle_job: "Callable[[SlurmJob, str, bool], None] | None" = None,
 ) -> None:
     """
     Fetch attribution results for a completed job.
@@ -271,12 +271,20 @@ def fetch_results(
     """
     analysis_job_id = analysis_job_id or job.job_id
 
-    def settled() -> None:
+    def settled(answered: bool) -> None:
+        """``answered`` is whether attrsvc replied, not whether we liked the reply.
+
+        A GET that exhausted its retries against a 429 or a 503 reports an
+        error here, and the analysis may still be running. Passing that on as
+        an answer would open the cycle gate under a server that has not
+        finished, and the successor would be analyzed without this result in
+        its history.
+        """
         state.results_fetched += 1
         if settle_job is None:
             job.result_fetched = True
         else:
-            settle_job(job, log_path)
+            settle_job(job, log_path, answered)
 
     request_terminal_analysis(job, log_path, attrsvc_client, analysis_job_id)
 
@@ -285,13 +293,15 @@ def fetch_results(
             result = response.json()
         except Exception as e:
             logger.warning(f"[{job.job_id}] GET JSON decode error: {e}")
-            settled()
+            # attrsvc answered; the body was unreadable. The analysis is over
+            # either way, so the gate can open.
+            settled(answered=True)
             return
         log_attribution_result(job, log_path, result)
-        settled()
+        settled(answered=True)
 
     def on_client_error(error_msg: str):
-        settled()
+        settled(answered=False)
         categorize_path_error(state, error_msg)
 
     attrsvc_client.request_with_retry(

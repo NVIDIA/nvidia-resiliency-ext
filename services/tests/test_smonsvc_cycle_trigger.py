@@ -350,3 +350,27 @@ def test_an_squeue_outage_does_not_wedge_the_cycle_gate():
     monitor._settle_analyzed_cycle(job, first)
     assert not monitor.state.cycle_inflight, "settling releases its own gate"
     assert monitor._claim_next_cycle(job) == cycles[1], "the next cycle must not be blocked"
+
+
+def test_a_failed_read_does_not_open_the_gate():
+    """Only an answer proves the analysis settled.
+
+    A GET that exhausts its retries against a 429 or 503 reports an error, and
+    the server may still be analyzing. Treating that as settled would start the
+    successor without this result in its history - which hands L3 a wrong
+    attempt count rather than a missing one.
+    """
+    cycles = _cycles(4)
+    monitor = _monitor(cycles)
+    monitor._state_lock = threading.RLock()
+    job = _job(state=JobState.FAILED)
+
+    claimed = monitor._claim_next_cycle(job)
+    monitor._settle_analyzed_cycle(job, claimed, answered=False)
+
+    assert monitor.state.cycle_inflight, "a failed read tells us nothing about the server"
+    assert monitor._claim_next_cycle(job) is None, "the successor must wait"
+
+    # The probe is what reopens it, once attrsvc confirms the analysis is over.
+    monitor._settle_analyzed_cycle(job, claimed, answered=True)
+    assert monitor._claim_next_cycle(job) == cycles[1]

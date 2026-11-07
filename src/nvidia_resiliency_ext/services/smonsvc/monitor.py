@@ -729,7 +729,7 @@ class SlurmJobMonitor:
                 return log_path
         return None
 
-    def _settle_analyzed_cycle(self, job: SlurmJob, log_path: str) -> None:
+    def _settle_analyzed_cycle(self, job: SlurmJob, log_path: str, answered: bool = True) -> None:
         """Retire the job only once no cycle of it is still outstanding.
 
         ``result_fetched`` is a per-job flag and one GET answers for one cycle,
@@ -747,7 +747,11 @@ class SlurmJobMonitor:
             # already proves this cycle settled, and the probe only runs on a
             # healthy poll. Leaving it set during an squeue outage would block
             # every later cycle until squeue recovered.
-            if self.state.cycle_inflight.get(run_id) == log_path:
+            #
+            # Only an answer proves it, though. A GET that exhausted its
+            # retries against a 429 or 503 tells us nothing about the server,
+            # so the gate stays shut and ``_release_finished_cycles`` asks.
+            if answered and self.state.cycle_inflight.get(run_id) == log_path:
                 del self.state.cycle_inflight[run_id]
             if all(p in self.state.analyzed_log_paths for p in self._get_log_paths(job)):
                 job.result_fetched = True
