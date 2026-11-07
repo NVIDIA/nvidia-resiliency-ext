@@ -1443,7 +1443,9 @@ def test_healthz_reports_a_disabled_notifier_without_inventing_a_channel(monkeyp
     from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import _slack_status
 
     monkeypatch.setattr(slack_mod, "HAS_SLACK", True)
-    notifier = SlackNotifier(SlackConfig(token="", channel=""))
+    # Named neither field: an empty config is disabled under both the
+    # single-channel and the multi-channel shape.
+    notifier = SlackNotifier(SlackConfig(token=""))
     status = _slack_status(notifier)
 
     assert status["enabled"] is False
