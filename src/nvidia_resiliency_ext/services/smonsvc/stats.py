@@ -76,9 +76,14 @@ def get_stats_dict(
                 "rate_limited": state.http_rate_limited,
             },
             "log_paths": {
-                "claimed": len(state.submitted_log_paths),
+                # Cumulative, as this section promises. Reporting the set
+                # sizes here made a cleanup look like a process restart to
+                # anything plotting these.
+                "claimed": state.log_paths_claimed_total,
                 "duplicates_skipped": state.duplicate_log_paths,
-                "analyzed": len(state.analyzed_log_paths),
+                "analyzed": state.log_paths_analyzed_total,
+                "currently_tracked_claims": len(state.submitted_log_paths),
+                "currently_tracked_analyses": len(state.analyzed_log_paths),
                 "duplicate_analyses": state.duplicate_analyses,
                 "no_app_log_skipped": state.jobs_without_app_log,
             },

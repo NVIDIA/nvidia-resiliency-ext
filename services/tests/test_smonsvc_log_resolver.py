@@ -942,3 +942,33 @@ def test_a_single_run_is_unaffected_by_the_run_scoping(tmp_path):
     )
 
     assert resolved == [str(path) for path in only]
+
+
+def test_the_newest_run_wins_across_sibling_log_directories(tmp_path):
+    """Run grouping has to span every directory searched, not just the winner's.
+
+    ``_candidate_log_dirs`` deliberately looks one level down, so two runs of
+    one array job can sit under sibling ``*/logs``. Grouping only the winner's
+    directory let an older run with more cycles hide a newer, shorter one -
+    and the monitor then analyzed the run that had already finished.
+    """
+    run = tmp_path / "run"
+    older = run / "phaseA" / "logs"
+    newer = run / "phaseB" / "logs"
+    older.mkdir(parents=True)
+    newer.mkdir(parents=True)
+    for index in range(4):  # more cycles, so it outranks on cycle number
+        path = older / f"t_2200200_date_26-10-01_cycle{index}.log"
+        path.write_text("x" * 200)
+        os.utime(path, (1_000_000 + index, 1_000_000 + index))
+    for index in range(2):
+        path = newer / f"t_2200200_date_26-10-02_cycle{index}.log"
+        path.write_text("x" * 200)
+        os.utime(path, (2_000_000 + index, 2_000_000 + index))
+
+    stdout = run / "slurm-2200200.out"
+    stdout.write_text("")
+    resolved = resolve_app_logs(str(stdout), "2200200", ON, search_root=str(tmp_path))
+
+    assert resolved, "the job has logs"
+    assert all("26-10-02" in path for path in resolved), "the live run, not the finished one"

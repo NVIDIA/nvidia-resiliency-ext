@@ -301,10 +301,10 @@ class SlurmJobMonitor:
                     and not tracked_job.result_fetched
                     and tracked_job.get_attempts < self.MAX_GET_ATTEMPTS
                 ):
-                    for log_path in self._get_log_paths(tracked_job):
-                        if self._claim_analysis_path(tracked_job, log_path):
-                            tracked_job.get_attempts += 1
-                            jobs_to_fetch.append((tracked_job, log_path))
+                    claimed = self._claim_next_cycle(tracked_job)
+                    if claimed is not None:
+                        tracked_job.get_attempts += 1
+                        jobs_to_fetch.append((tracked_job, claimed))
                 elif tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
                     self._mark_get_exhausted(job_id, tracked_job)
 
@@ -423,6 +423,7 @@ class SlurmJobMonitor:
             self.state.duplicate_log_paths += 1
             return False
         self.state.submitted_log_paths.add(log_path)
+        self.state.log_paths_claimed_total += 1
         return True
 
     def release_log_claim(self, log_path: str) -> None:
@@ -458,6 +459,7 @@ class SlurmJobMonitor:
                 job.result_fetched = True
             return False
         self.state.analyzed_log_paths.add(log_path)
+        self.state.log_paths_analyzed_total += 1
         return True
 
     def _fetch_paths_for_terminal_jobs(self) -> None:
@@ -507,19 +509,10 @@ class SlurmJobMonitor:
                 if tracked_job.get_attempts >= self.MAX_GET_ATTEMPTS:
                     self._mark_get_exhausted(job_id, tracked_job)
                     continue
-                # Same gate as the in-flight path: L3 compares an attempt
-                # against those that have *completed*, so a job going terminal
-                # must not fan its remaining cycles out at once.
-                run_paths = self._get_log_paths(tracked_job)
-                run_id = self._analysis_job_id(tracked_job, run_paths[0] if run_paths else "")
-                if self.state.cycle_inflight.get(run_id):
-                    continue
-                for log_path in run_paths:
-                    if self._claim_analysis_path(tracked_job, log_path):
-                        self.state.cycle_inflight[run_id] = log_path
-                        tracked_job.get_attempts += 1
-                        jobs_to_fetch.append((tracked_job, log_path))
-                        break
+                claimed = self._claim_next_cycle(tracked_job)
+                if claimed is not None:
+                    tracked_job.get_attempts += 1
+                    jobs_to_fetch.append((tracked_job, claimed))
 
         return jobs_to_fetch
 
@@ -698,8 +691,48 @@ class SlurmJobMonitor:
     def _fetch_results(self, job: SlurmJob, log_path: str) -> None:
         """Fetch attribution results for a completed job."""
         fetch_results(
-            job, log_path, self.state, self._attrsvc_client, self._analysis_job_id(job, log_path)
+            job,
+            log_path,
+            self.state,
+            self._attrsvc_client,
+            self._analysis_job_id(job, log_path),
+            settle_job=self._settle_analyzed_cycle,
         )
+
+    def _claim_next_cycle(self, job: SlurmJob) -> str | None:
+        """Claim one unanalyzed cycle of a job, or None when one is in flight.
+
+        L3 compares an attempt against those that have *completed*, so a job
+        going terminal must not fan its remaining cycles out at once. Both
+        fetch paths need that gate: the squeue-outage path ran without it, and
+        an outage is exactly when a cluster is unhealthy and attribution
+        matters most. Caller must hold ``_state_lock``.
+        """
+        run_paths = self._get_log_paths(job)
+        run_id = self._analysis_job_id(job, run_paths[0] if run_paths else "")
+        if self.state.cycle_inflight.get(run_id):
+            return None
+        for log_path in run_paths:
+            if self._claim_analysis_path(job, log_path):
+                self.state.cycle_inflight[run_id] = log_path
+                return log_path
+        return None
+
+    def _settle_analyzed_cycle(self, job: SlurmJob, log_path: str) -> None:
+        """Retire the job only once no cycle of it is still outstanding.
+
+        ``result_fetched`` is a per-job flag and one GET answers for one cycle,
+        so setting it on the first answer retired the job with its remaining
+        cycles unanalyzed - and made it eligible for cleanup, which took the
+        evidence with it. This mirrors the same guard in
+        ``_claim_analysis_path``, which a sibling array task already needed.
+        """
+        with self._state_lock:
+            if log_path not in self.state.analyzed_log_paths:
+                self.state.analyzed_log_paths.add(log_path)
+                self.state.log_paths_analyzed_total += 1
+            if all(p in self.state.analyzed_log_paths for p in self._get_log_paths(job)):
+                job.result_fetched = True
 
     def _cleanup_old_jobs(self) -> None:
         """Remove old completed jobs from state to prevent memory growth."""

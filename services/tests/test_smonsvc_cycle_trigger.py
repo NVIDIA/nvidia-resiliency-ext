@@ -9,6 +9,8 @@ eight cycles over six hours and the allocation never left RUNNING until the
 whole array was cancelled.
 """
 
+import threading
+
 from nvidia_resiliency_ext.services.smonsvc.log_resolver import AppLogResolution
 from nvidia_resiliency_ext.services.smonsvc.models import JobState, MonitorState, SlurmJob
 from nvidia_resiliency_ext.services.smonsvc.monitor import SlurmJobMonitor
@@ -255,3 +257,42 @@ def test_the_terminal_path_waits_for_an_in_flight_cycle():
     monitor.state.cycle_inflight[run_id] = _cycles(4)[0]
 
     assert monitor._collect_jobs_for_fetch() == []
+
+
+def test_one_answered_cycle_does_not_retire_a_job_that_has_more():
+    """``result_fetched`` retires the whole job, but one GET answers one cycle.
+
+    Retiring on the first answer dropped every remaining cycle - including the
+    final one, which is the attempt an alert is usually about - and made the
+    job eligible for cleanup, which took the evidence with it.
+    """
+    cycles = _cycles(4)
+    monitor = _monitor(cycles)
+    monitor._state_lock = threading.RLock()
+    job = _job(state=JobState.FAILED)
+
+    for path in cycles[:-1]:
+        monitor._settle_analyzed_cycle(job, path)
+        assert not job.result_fetched, f"retired while {path} was still outstanding"
+
+    monitor._settle_analyzed_cycle(job, cycles[-1])
+    assert job.result_fetched, "every cycle answered, so the job is done"
+
+
+def test_the_squeue_outage_path_claims_one_cycle_at_a_time():
+    """Both fetch paths need the gate; only one of them had it.
+
+    L3 compares an attempt against those that have completed, so fanning a
+    job's remaining cycles out at once gives it the wrong attempt count. The
+    squeue-outage path ran ungated, and an outage is exactly when a cluster is
+    unhealthy and attribution matters most.
+    """
+    cycles = _cycles(4)
+    monitor = _monitor(cycles)
+    monitor._state_lock = threading.RLock()
+    job = _job(state=JobState.FAILED)
+
+    first = monitor._claim_next_cycle(job)
+    assert first == cycles[0]
+    # A second claim while one is in flight must yield nothing, not the rest.
+    assert monitor._claim_next_cycle(job) is None

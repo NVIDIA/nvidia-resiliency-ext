@@ -157,6 +157,10 @@ class MonitorState:
     # Log paths already claimed by a job, so sibling array tasks that resolve to
     # the same application log are not submitted repeatedly.
     submitted_log_paths: set[str] = field(default_factory=set)
+    #: Cumulative claim counts. The sets above are pruned once no retained job
+    #: can resolve to a path, so their sizes shrink; these do not.
+    log_paths_claimed_total: int = 0
+    log_paths_analyzed_total: int = 0
     duplicate_log_paths: int = 0  # sibling tasks skipped as duplicates
     # Log paths already analyzed. Resolution can only succeed once the
     # application log exists, so sibling tasks that submitted their own

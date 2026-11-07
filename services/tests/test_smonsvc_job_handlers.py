@@ -8,6 +8,7 @@ from nvidia_resiliency_ext.services.smonsvc.job_handlers import (
     analyze_completed_cycle,
     fetch_results,
     log_attribution_result,
+    request_terminal_analysis,
     submit_log,
 )
 from nvidia_resiliency_ext.services.smonsvc.models import MonitorState
@@ -281,3 +282,44 @@ def test_submit_log_falls_back_to_the_task_id():
     submit_log(job, "/logs/wrapper.out", MonitorState(), client)
 
     assert client.calls[0]["job_id"] == "123"
+
+
+def test_a_lost_terminal_post_is_reported_as_not_accepted():
+    """The caller releases this cycle's claim on a failure, so "accepted" has
+    to mean settled, not merely issued.
+
+    Reporting "issued" meant a lost POST still looked accepted: the claim was
+    kept, the cycle was skipped permanently, and its successors were analyzed
+    without it in their history - giving L3 a wrong attempt count rather than
+    a missing one.
+    """
+    job = SimpleNamespace(job_id="2200200", user="u")
+    calls = {"n": 0}
+
+    def flaky(method, job_id, log_path, on_success=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return  # retries exhausted; no callback fires
+        on_success(_Response({}))
+
+    client = SimpleNamespace(request_with_retry=flaky)
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is False
+    # The path must not stay signaled, or the retry is blocked too.
+    assert "/logs/c0.log" not in job.terminal_signaled_paths
+
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is True
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is False
+    assert calls["n"] == 2, "a settled path must not be re-sent"
+
+
+def test_a_refused_terminal_post_counts_as_settled():
+    """attrsvc answering with a 4xx is an answer, not a lost request: the same
+    POST would be refused again, so the path stays signaled."""
+    job = SimpleNamespace(job_id="2200200", user="u")
+
+    def refused(method, job_id, log_path, on_client_error=None, **kwargs):
+        on_client_error("400 bad path")
+
+    client = SimpleNamespace(request_with_retry=refused)
+    assert request_terminal_analysis(job, "/logs/c0.log", client, "2200200") is True
+    assert "/logs/c0.log" in job.terminal_signaled_paths

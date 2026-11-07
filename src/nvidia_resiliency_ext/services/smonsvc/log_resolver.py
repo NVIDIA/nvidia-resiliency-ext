@@ -324,7 +324,32 @@ def resolve_app_log(
     job_name: str = "",
     search_root: Optional[str] = None,
 ) -> Optional[str]:
-    """Return the application log for ``job_id``, or ``None`` when there is none.
+    """Return the application log for ``job_id``, or ``None`` when there is none."""
+    candidates = _app_log_candidates(
+        stdout_path, job_id, config, script=script, job_name=job_name, search_root=search_root
+    )
+    if not candidates:
+        return None
+    # The highest cycle is the attempt that produced the terminal outcome, and a
+    # cycle log outranks a plain one. mtime only breaks ties within a rank.
+    return str(max(candidates, key=_rank_key))
+
+
+def _app_log_candidates(
+    stdout_path: str,
+    job_id: str,
+    config: AppLogResolution,
+    *,
+    script: Optional[str] = None,
+    job_name: str = "",
+    search_root: Optional[str] = None,
+) -> list:
+    """Every log file that could be ``job_id``'s, across all searched directories.
+
+    Returned unranked and unfiltered, because the caller decides what to do
+    with them: one wants the single best, the other needs to group them into
+    runs. Grouping only the winner's directory let an older run with more
+    cycles hide a newer run under a sibling ``*/logs``.
 
     Sources are tried cheapest first, and each is anchored on the parent job ID
     so a wrong directory yields a miss rather than another job's log:
@@ -334,9 +359,8 @@ def resolve_app_log(
     3. directories implied by the SLURM job name; and
     4. a ``LOGS_DIR=`` line in the wrapper's own banner.
 
-    ``None`` means resolution is disabled, or the job produced no non-empty log.
-    Callers decide what that means; the monitor skips the job rather than
-    analyzing the wrapper.
+    An empty list means resolution is disabled, or the job produced no
+    non-empty log.
     """
     if not config.enabled or not stdout_path:
         return None
@@ -373,13 +397,7 @@ def resolve_app_log(
         if declared is not None and _is_dir(declared):
             candidates = _logs_for_job(declared, base)
 
-    if not candidates:
-        return None
-
-    # The highest cycle is the attempt that produced the terminal outcome, and a
-    # cycle log outranks a plain one. mtime only breaks ties within a rank.
-    best = max(candidates, key=_rank_key)
-    return str(best)
+    return candidates
 
 
 def _mtime(path: Path) -> float:
@@ -413,7 +431,7 @@ def resolve_app_logs(
 
     Returns ``[]`` when nothing resolves, matching :func:`resolve_app_log`.
     """
-    best = resolve_app_log(
+    siblings = _app_log_candidates(
         stdout_path,
         job_id,
         config,
@@ -421,15 +439,11 @@ def resolve_app_logs(
         job_name=job_name,
         search_root=search_root,
     )
-    if best is None:
-        return []
-
-    chosen = Path(best)
-    # Siblings of the resolved log in the same directory, for this job only.
-    base = base_job_id(job_id)
-    siblings = _logs_for_job(chosen.parent, base)
     if not siblings:
-        return [best]
+        return []
+    # Ranked here rather than taken from resolve_app_log, so the fallback below
+    # agrees with the candidate set the run grouping sees.
+    best = str(max(siblings, key=_rank_key))
     # Only cycle logs form an ordered series; anything else stays a single item.
     cycles = [p for p in siblings if _cycle_number(p) >= 0]
     if len(cycles) < 2:

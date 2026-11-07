@@ -4,7 +4,7 @@
 """Job submission and result handling for nvidia_resiliency_ext.services.smonsvc."""
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from nvidia_resiliency_ext.attribution import (
     RESP_FILES_ANALYZED,
@@ -125,8 +125,15 @@ def request_terminal_analysis(
     POST, so this is the whole notification trigger; the later GET only feeds
     smonsvc's own console summary.
 
-    Returns True when a request was issued, False when the path was already
-    signaled.
+    Returns True when the request settled - attrsvc answered, either with a
+    success or with its own 4xx - and False when it did not, which covers both
+    an already-signaled path and a request that never arrived.
+
+    The difference matters to the caller holding this cycle's claim. Reporting
+    "issued" rather than "settled" meant a lost POST still looked accepted, so
+    the claim was kept, the cycle was skipped permanently, and its successors
+    were analyzed without it in their history - giving L3 a wrong attempt count
+    rather than a missing one.
     """
     analysis_job_id = analysis_job_id or job.job_id
     signaled = getattr(job, "terminal_signaled_paths", None)
@@ -137,10 +144,18 @@ def request_terminal_analysis(
         return False
     signaled.add(log_path)
 
+    settled = False
+
     def on_terminal_success(_response):
+        nonlocal settled
+        settled = True
         logger.info(f"[{analysis_job_id}] Terminal analysis requested: {log_path}")
 
     def on_terminal_client_error(error_msg: str):
+        # attrsvc answered and refused. That is a settled outcome: the same
+        # request would be refused again, so the path stays signaled.
+        nonlocal settled
+        settled = True
         logger.debug(f"[{analysis_job_id}] Terminal analysis request POST failed: {error_msg}")
 
     attrsvc_client.request_with_retry(
@@ -152,6 +167,13 @@ def request_terminal_analysis(
         user=job.user,
         analysis_intent=ANALYSIS_INTENT_TERMINAL,
     )
+
+    if not settled:
+        # Neither callback fired, so the request never reached attrsvc - a
+        # connection outage that exhausted its retries looks exactly like this.
+        # Leaving the path signaled would block the retry as well as the claim.
+        signaled.discard(log_path)
+        return False
     return True
 
 
@@ -229,6 +251,7 @@ def fetch_results(
     state: "MonitorState",
     attrsvc_client: "AttrsvcClient",
     analysis_job_id: str | None = None,
+    settle_job: "Callable[[SlurmJob, str], None] | None" = None,
 ) -> None:
     """
     Fetch attribution results for a completed job.
@@ -239,8 +262,21 @@ def fetch_results(
         state: MonitorState to update counters
         attrsvc_client: Client for attrsvc HTTP requests
         analysis_job_id: Identity to analyze under; defaults to the SLURM task.
+        settle_job: Records that this one cycle is done and retires the job only
+            when no cycle of it is still outstanding. One GET covers one cycle,
+            but ``result_fetched`` retires the whole job, so setting it here
+            dropped every remaining cycle - including the final one, which is
+            the attempt an alert is usually about. Defaults to retiring the job,
+            which is correct for a caller that has only one log path.
     """
     analysis_job_id = analysis_job_id or job.job_id
+
+    def settled() -> None:
+        state.results_fetched += 1
+        if settle_job is None:
+            job.result_fetched = True
+        else:
+            settle_job(job, log_path)
 
     request_terminal_analysis(job, log_path, attrsvc_client, analysis_job_id)
 
@@ -249,16 +285,13 @@ def fetch_results(
             result = response.json()
         except Exception as e:
             logger.warning(f"[{job.job_id}] GET JSON decode error: {e}")
-            job.result_fetched = True
-            state.results_fetched += 1
+            settled()
             return
         log_attribution_result(job, log_path, result)
-        job.result_fetched = True
-        state.results_fetched += 1
+        settled()
 
     def on_client_error(error_msg: str):
-        job.result_fetched = True
-        state.results_fetched += 1
+        settled()
         categorize_path_error(state, error_msg)
 
     attrsvc_client.request_with_retry(
