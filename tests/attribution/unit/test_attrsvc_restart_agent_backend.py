@@ -34,6 +34,9 @@ from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
     LogConvergencePolicy,
     ProgressiveAnalysisPolicy,
     RestartAgentServiceBackend,
+    _mapping_get_float,
+    _model_call_wall_clock_s,
+    _percentile,
 )
 from nvidia_resiliency_ext.services.attrsvc.restart_agent_logging import (
     RestartAgentLogContext,
@@ -887,8 +890,86 @@ def test_terminal_drain_ingests_late_rank_output_and_precomputes_final_boundary(
             terminal_timing["analysis_completed_wall_clock_s"]
             >= terminal_timing["first_route_ready_wall_clock_s"]
         )
+
+        # The lifecycle marks a reader asks for: when the cycle opened, when
+        # analysis actually began, and when each answer landed.
+        assert terminal_timing["cycle_started_at"].startswith("20")
+        assert terminal_timing["analysis_started_at"].startswith("20")
+        assert terminal_timing["l0_answer_at"].startswith("20")
+        assert terminal_timing["l4_answer_at"].startswith("20")
+        # Registration precedes the terminal POST, so the gap cannot be negative.
+        assert terminal_timing["cycle_to_analysis_s"] >= 0
+        assert (
+            terminal_timing["analysis_to_l4_answer_s"]
+            == terminal_timing["analysis_completed_wall_clock_s"]
+        )
+        assert (
+            terminal_timing["analysis_to_l0_answer_s"]
+            == terminal_timing["deterministic_ready_wall_clock_s"]
+        )
+        # Carried back off the route trace, so the LLM's share of the verdict
+        # is readable without anyone parsing a trace.
+        assert terminal_timing["llm_api_wall_clock_s"] == pytest.approx(0.3)
+
+        summary = stats["restart_agent"]["terminal_timing_summary"]
+        assert summary["sampled_attempts"] >= 1
+        latency = summary["analysis_to_l4_answer_s"]
+        assert latency["count"] >= 1
+        assert latency["p50"] <= latency["p95"] <= latency["max"]
     finally:
         backend.shutdown()
+
+
+def test_percentile_reports_a_duration_some_attempt_actually_took():
+    """Nearest-rank, so a small sample never yields an interpolated figure."""
+    values = [1.0, 2.0, 3.0, 4.0]
+    for fraction in (0.0, 0.5, 0.95, 1.0):
+        assert _percentile(values, fraction) in values
+    assert _percentile(values, 0.5) == 2.0
+    assert _percentile(values, 1.0) == 4.0
+    assert _percentile([7.5], 0.95) == 7.5
+
+    # Exact ranks are where a round(x + 0.5) spelling of ceil goes wrong: a
+    # half rounds to even, so these land one rank high and report the slowest
+    # attempt as though it were typical.
+    twenty = [float(i) for i in range(1, 21)]
+    assert _percentile(twenty, 0.95) == 19.0
+    assert _percentile([1.0, 2.0], 0.5) == 1.0
+    hundred = [float(i) for i in range(1, 101)]
+    assert _percentile(hundred, 0.95) == 95.0
+    # A fraction at or below zero still names a real sample.
+    assert _percentile(twenty, 0.0) == 1.0
+
+
+def test_timing_report_survives_a_trace_without_a_timing_section():
+    """Trace shape belongs to the pipeline; a thinner one must not raise here."""
+    assert _mapping_get_float(None, "l1_model_call_wall_clock_s") is None
+    assert _mapping_get_float({}, "l1_model_call_wall_clock_s") is None
+    assert (
+        _mapping_get_float({"l1_model_call_wall_clock_s": "1.5"}, "l1_model_call_wall_clock_s")
+        is None
+    )
+    # A bool is an int in Python; reporting True as 1.0 seconds would be wrong.
+    assert _mapping_get_float({"x": True}, "x") is None
+    assert _mapping_get_float({"x": 2}, "x") == 2.0
+
+
+def test_model_call_time_is_read_from_either_trace_section():
+    """Both sections carry it; a trace with only one must still report it."""
+    assert _model_call_wall_clock_s({"timing": {"l1_model_call_wall_clock_s": 1.25}}) == 1.25
+    assert _model_call_wall_clock_s({"layers": {"L1": {"model_call_wall_clock_s": 0.75}}}) == 0.75
+    # The timing summary wins when a trace carries both.
+    assert (
+        _model_call_wall_clock_s(
+            {
+                "timing": {"l1_model_call_wall_clock_s": 1.25},
+                "layers": {"L1": {"model_call_wall_clock_s": 0.75}},
+            }
+        )
+        == 1.25
+    )
+    assert _model_call_wall_clock_s({}) is None
+    assert _model_call_wall_clock_s({"layers": "not-a-mapping"}) is None
 
 
 def test_terminal_drain_requires_minimum_observation_before_quiet_convergence(tmp_path):
@@ -1370,7 +1451,8 @@ def test_an_evicted_entry_still_gets_its_alert(tmp_path):
     backend = _backend(tmp_path, runtime, max_total_records=1)
     sent = []
     backend._slack_notifier = SimpleNamespace(
-        enabled=True, notify=lambda identity, result: sent.append(identity) or True
+        enabled=True,
+        notify=lambda identity, result, timing=None: sent.append(identity) or True,
     )
     backend._public_result = lambda entry: SimpleNamespace(
         result={}, status="completed", recommendation={"action": "STOP", "reason": "", "source": ""}

@@ -15,6 +15,7 @@ from nvidia_resiliency_ext.services.attrsvc.slack import (
     SlackNotifier,
     format_details,
     format_summary,
+    format_timing,
     latest_result_item,
     parse_notify_actions,
     run_name_from_log_path,
@@ -821,7 +822,7 @@ def test_backend_notifies_on_terminal_completion(monkeypatch):
     class _Recorder:
         enabled = True
 
-        def notify(self, identity, result):
+        def notify(self, identity, result, timing=None):
             sent.append((identity, result))
             return True
 
@@ -862,7 +863,7 @@ def test_backend_notification_failure_does_not_break_analysis():
     class _Exploding:
         enabled = True
 
-        def notify(self, identity, result):
+        def notify(self, identity, result, timing=None):
             raise RuntimeError("slack is down")
 
     entry = SimpleNamespace(job_id="1", user="u", log_path="/x.log", cycle_id=None)
@@ -1180,7 +1181,9 @@ def test_backend_passes_the_cycle_to_the_alert():
         cycle_id=2,
     )
     backend = SimpleNamespace(
-        _slack_notifier=SimpleNamespace(enabled=True, notify=lambda i, r: sent.append(i) or True),
+        _slack_notifier=SimpleNamespace(
+            enabled=True, notify=lambda i, r, t=None: sent.append(i) or True
+        ),
         _lock=threading.RLock(),
         _entries={"k": entry},
         _public_result=lambda e: SimpleNamespace(
@@ -1420,3 +1423,66 @@ def test_identity_fields_from_the_wire_are_escaped():
 
 
 # ─── one run opens exactly one thread ───
+
+
+def _timing(**over):
+    base = {
+        "cycle_started_at": "2026-11-05T12:18:44-08:00",
+        "analysis_started_at": "2026-11-05T15:18:44-08:00",
+        "l0_answer_at": "2026-11-05T15:18:58-08:00",
+        "l4_answer_at": "2026-11-05T15:19:26-08:00",
+        "cycle_to_analysis_s": 10800.0,
+        "analysis_to_l0_answer_s": 14.2,
+        "analysis_to_l4_answer_s": 42.1,
+        "llm_api_wall_clock_s": 26.8,
+    }
+    base.update(over)
+    return base
+
+
+def test_timing_block_reports_each_mark_and_the_llm_share():
+    text = format_timing(_timing())
+
+    assert "*Analysis timing:*" in text
+    assert "`12:18:44`" in text  # cycle start, time only
+    assert "`15:18:44`" in text  # analysis start
+    assert "(3h0m into the cycle)" in text
+    assert "`15:18:58`" in text and "(+14.2s)" in text
+    assert "`15:19:26`" in text and "(+42.1s)" in text
+    assert "`26.8s` of `42.1s`" in text and "(64%)" in text
+
+
+def test_timing_block_is_last_so_it_never_precedes_the_verdict():
+    detail = format_details(_job(), _parsed(), _timing())
+    assert detail.index("*Analysis timing:*") > detail.index("*Terminal issue:*")
+
+
+def test_timing_is_absent_when_not_supplied():
+    """Every existing caller passes nothing and must get the old message."""
+    assert format_timing(None) == ""
+    assert format_timing({}) == ""
+    assert "*Analysis timing:*" not in format_details(_job(), _parsed())
+
+
+def test_timing_block_survives_a_half_measured_attempt():
+    """An attempt that never reached L4 still reports what it did reach."""
+    text = format_timing(
+        _timing(l4_answer_at=None, analysis_to_l4_answer_s=None, llm_api_wall_clock_s=None)
+    )
+    assert "*Analysis timing:*" in text
+    assert "`15:18:58`" in text
+    assert "L4 answer" not in text
+    assert "LLM API" not in text
+
+
+def test_llm_share_is_omitted_rather_than_divided_by_zero():
+    text = format_timing(_timing(analysis_to_l4_answer_s=0))
+    assert "`26.8s`" in text
+    assert "%" not in text
+
+
+def test_durations_are_sized_for_a_reader():
+    # A span is rendered at a scale a reader can size up at a glance.
+    assert "(45.0s into the cycle)" in format_timing(_timing(cycle_to_analysis_s=45))
+    assert "(3m20s into the cycle)" in format_timing(_timing(cycle_to_analysis_s=200))
+    assert "(2h5m into the cycle)" in format_timing(_timing(cycle_to_analysis_s=7500))
