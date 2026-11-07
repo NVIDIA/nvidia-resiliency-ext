@@ -1,9 +1,15 @@
 # Runtime dependencies for the standalone Attribution Service image.
 # The root package is installed with --no-deps so workload-side dependencies,
 # notably PyTorch and CUDA, are not included in this CPU service image.
+#
+# That also excludes the service's own non-workload dependencies, so anything
+# attrsvc imports at runtime has to be listed here as well. slack-sdk is one:
+# without it the service still starts and serves, and reports alerting as
+# "disabled (slack-sdk not installed)", so a missing entry is silent.
 fastapi>=0.100.0
 httpx>=0.24.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
+slack-sdk>=3.35.0
 slowapi>=0.1.9
 uvicorn[standard]>=0.20.0

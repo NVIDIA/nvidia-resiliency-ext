@@ -110,8 +110,8 @@ analysis as a threaded reply. A channel of full attributions is unscannable, so
 the channel keeps one line per job and the detail stays one click away.
 
 ```
-*NVRx attribution:* `RESTART` on *aws-cmh-slurm-1* _(source: l1_enriched:eccn-gpt-5.4)_
-*Job ID:* `4103814_0 (nemotron4_ultra_60t_phase1_v0) cycle 3`
+*NVRx attribution:* `RESTART` on *clusterB-slurm-1* _(source: l1_enriched:eccn-gpt-5.4)_
+*Job ID:* `2200300_0 (trainjob_tierA_s4_phase1_v0) cycle 3`
 *Log path:* `/scratch/.../logs/..._cycle3.log`
 ```
 

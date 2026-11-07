@@ -185,6 +185,44 @@ class _AttemptExecution:
     source_identity: dict[str, Any] = field(default_factory=dict)
 
 
+def _slack_status(notifier: SlackNotifier) -> dict[str, Any]:
+    """Where alerts go, and whether any have landed.
+
+    ``channels`` is a list even when one channel is configured. A deployment
+    can name more than one, and a reader comparing this against what they set
+    should not have to tell a single value apart from a list of one.
+    """
+    config = notifier.config
+    # Read the plural form when it exists and fall back to the single channel.
+    # Both shapes are in flight across open branches, and a status endpoint is
+    # the wrong place to raise over which one it got.
+    channels = getattr(config, "channels", None)
+    if not channels:
+        single = getattr(config, "channel", "") or ""
+        channels = (single,) if single else ()
+    return {
+        "enabled": notifier.enabled,
+        "channels": list(channels),
+        "notify_actions": sorted(config.notify_actions),
+        "token": "present" if config.token else "missing",
+        "counters": notifier.stats.as_dict(),
+    }
+
+
+def _enriched_source(result: ModelAnalysisResult) -> str:
+    """Name the route and the model that answered.
+
+    The route id is whatever the deployment called the route, so it says
+    nothing about which model ran unless someone happened to name it after
+    one. A route built from the environment is always called "nvrx-default",
+    which left no way to tell what produced a verdict without host access.
+    """
+    label = f"l1_enriched:{result.route_id}"
+    if result.model and result.model != result.route_id:
+        label += f" ({result.model})"
+    return label
+
+
 class RestartAgentServiceBackend:
     """Adapt attrsvc's progressive HTTP lifecycle to one RestartAgentRuntime."""
 
@@ -608,6 +646,10 @@ class RestartAgentServiceBackend:
                     "bytes_ingested": sum(state.bytes_ingested for state in accumulator_states),
                     "bytes_reread": sum(state.bytes_reread for state in accumulator_states),
                 },
+                # SlackStats counted every attempt and nothing ever read them
+                # back, so a notification that silently stopped landing looked
+                # identical to a quiet period.
+                "slack": _slack_status(self._slack_notifier),
             },
         }
 
@@ -668,7 +710,22 @@ class RestartAgentServiceBackend:
                 "config_version": self._config.config_version,
                 "config_fingerprint": self._config.config_fingerprint,
                 "attempts": counts,
+                # Which model answers is otherwise invisible from outside the
+                # host: a route built from the environment is always called
+                # "nvrx-default", and no message or endpoint named the model.
+                "model_routes": [
+                    {
+                        "route_id": spec.route_id,
+                        "model": spec.model,
+                        "endpoint": spec.endpoint,
+                    }
+                    for spec in self._config.model_route_specs
+                ],
             },
+            # Where alerts go is set per deployment and was only ever written to
+            # the startup log, so confirming a channel change meant finding that
+            # log on the host. Reporting it here makes it answerable by request.
+            "slack": _slack_status(self._slack_notifier),
         }
 
     def _register(
@@ -862,7 +919,7 @@ class RestartAgentServiceBackend:
                         return
                     current.best_result = result.analysis_result
                     current.best_source = (
-                        f"{candidate_kind}:{result.route_id}"
+                        _enriched_source(result)
                         if candidate_kind == "l1_enriched"
                         else candidate_kind
                     )
