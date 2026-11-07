@@ -9,6 +9,8 @@ The peer reports are the cascade. Attributing them as the cause describes the
 wrong failure and routes a deterministic, node-bound condition to restart.
 """
 
+import pytest
+
 from nvidia_resiliency_ext.attribution.restart_agent.identity import extract_node
 from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import CATEGORIES
 
@@ -84,3 +86,34 @@ def test_the_description_describes_the_failure_not_the_policy():
         "excluded",
     ):
         assert policy_word not in description, f"policy wording leaked: {policy_word}"
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("fabrichost-a01:12345:12400 [0] NCCL WARN Cuda failure", "fabrichost-a01"),
+        # A letter-led, two-character-minimum host pattern drops both of these,
+        # leaving faulting_node null so repeated failures cannot be tied to the
+        # node. The sibling prefix regex accepts them, and so should this.
+        ("123gpu:45:67 [0] NCCL WARN out of memory", "123gpu"),
+        ("a:1:2 [3] NCCL WARN out of memory", "a"),
+        ("3573: [rank3573]: fabrichost-b02:9:9 [1] NCCL WARN x", "fabrichost-b02"),
+        ("node=fabrichost-c03", "fabrichost-c03"),
+    ],
+)
+def test_node_is_named_for_any_host_nccl_accepts(line, expected):
+    assert extract_node(line) == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Same two ":<digits>" groups as an NCCL prefix; only the bracketed
+        # device tells a host apart from a clock.
+        "12:34:56 starting run",
+        "[2026-11-06 12:34:56] iteration 10",
+        "at file.cc:376 in frobnicate",
+    ],
+)
+def test_a_timestamp_is_not_a_host(line):
+    assert extract_node(line) is None

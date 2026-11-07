@@ -171,12 +171,17 @@ def extract_gpu(text: str) -> str | None:
     return next(group for group in match.groups() if group is not None)
 
 
-# NCCL prefixes each line with "<host>:<pid>:<tid> [gpu]". Anchoring on that
-# shape rather than on a hostname family keeps this working across clusters,
-# and the two ":<digits>" groups are what separate a host from a timestamp or
-# a "file.cc:376" source reference.
+# NCCL prefixes each line with "<host>:<pid>:<tid> [<gpu>]". Anchoring on that
+# shape rather than on a hostname family keeps this working across clusters.
+#
+# The bracketed device is part of the match, not decoration: a timestamp like
+# "12:34:56 " carries the same two ":<digits>" groups, and the bracket is the
+# only thing that tells them apart. Requiring it is what lets the hostname
+# charset match _NCCL_HOST_ROUTING_PREFIX_RE, which accepts the names a
+# letter-led, two-character-minimum pattern would drop - a host leading with a
+# digit, or one a single character long.
 _NODE_RE = re.compile(
-    r"\bnode[=:\s]+([a-z0-9_.-]+)" r"|(?:^|[\s\]])([a-z][a-z0-9_.-]*[a-z0-9])(?::\d+){2}\s",
+    r"\bnode[=:\s]+([a-z0-9_.-]+)" r"|(?:^|[\s\]])([A-Za-z0-9_.-]+):\d+:\d+\s+\[\d+\]",
     re.I,
 )
 
