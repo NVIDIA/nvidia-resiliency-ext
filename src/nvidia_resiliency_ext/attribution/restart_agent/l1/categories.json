@@ -246,6 +246,12 @@
       "name": "DataLoader worker lost / multiprocessing IPC peer failure",
       "description": "A data-pipeline feeder thread fails because the worker process it was reading from is gone, after training has already progressed. The stack runs through a queue feed into multiprocessing IPC: _feed_queue or a QueueThread, queue.get, _ForkingPickler.loads, rebuild_storage_fd, resource_sharer.detach, get_connection, Client, answer_challenge, recv_bytes. It ends on EOFError, often with no message at all, or ConnectionResetError [Errno 104] Connection reset by peer, or BrokenPipeError, on a minority of ranks while the rest keep running. What killed the worker is not in this log: only the surviving thread's view of the peer disappearing is recorded. Not cat 28: no launch configuration and no workload code raised here. The frames are Python's own multiprocessing and torch's reduction machinery, reached through an unmodified data pipeline that had been feeding batches successfully. Not cat 15, which needs an I/O failure visible inside the worker - a Bus error, /dev/shm exhaustion, or a failed read of a backing file. Here the worker is simply absent and no I/O error of its own appears. Prefer this over cat 3, which says only that the cause is off-file: both are true, and this one also names the mechanism that failed.",
       "decision": "RESTART"
+    },
+    {
+      "id": 42,
+      "name": "Fabric resource allocation failure at init (NVLS / multicast)",
+      "description": "A node cannot acquire a fabric resource while communicators are being built, before any iteration completes: NCCL WARN from nvlsAllocateMem 'Failed to bind NVLink SHARP (NVLS) Multicast memory', commonly with CUDA error 802 'system not yet initialized', or an equivalent multicast/fabric allocation failure on one node. Its own ranks then raise a DistBackendError 'unhandled cuda error' and every other rank reports 'remote process exited or there was a network error'. Those peer reports are the cascade, not the cause - pick this rather than cat 13 when an allocation failure names the node that went first. Zero completed iterations is required: the allocation is attempted during setup, so a job that reached training did not fail this way. Use cat 7 instead when the log carries an Xid, ECC or peer-access hardware fault rather than an allocation refusal. The refusal is bound to one node or rack; the workload is unmodified and runs elsewhere, which is what separates this from a workload fault.",
+      "decision": "EXCLUDED"
     }
   ]
 }
