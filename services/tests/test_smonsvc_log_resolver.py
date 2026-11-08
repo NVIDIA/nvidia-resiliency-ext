@@ -499,7 +499,7 @@ def test_all_logs_empty_resolves_to_nothing(tmp_path):
 
 def test_nested_search_does_not_match_another_jobs_log(tmp_path):
     stub, logs = _nested_layout(tmp_path, job="2200400")
-    (logs / "run_4074334_date_x.log").write_text("a different job")
+    (logs / "run_2209999_date_x.log").write_text("a different job")
 
     assert resolve_app_log(str(stub), "2200400", ON) is None
 
