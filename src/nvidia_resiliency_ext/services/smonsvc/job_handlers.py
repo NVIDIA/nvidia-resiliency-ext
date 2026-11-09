@@ -309,7 +309,7 @@ def log_attribution_result(job: "SlurmJob", log_path: str, response: dict) -> No
     Args:
         job: The SLURM job
         log_path: Path to the log file
-        response: Attribution result response dict (may be single-file or splitlog mode)
+        response: Attribution result response dict
     """
     try:
         logger.debug(f"[{job.job_id}] Raw response: {response}")

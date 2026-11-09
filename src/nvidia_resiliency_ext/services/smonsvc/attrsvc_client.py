@@ -248,7 +248,6 @@ class AttrsvcClient:
         on_client_error: Callable[[str], None],
         on_404: Callable | None = None,
         user: str = "unknown",
-        cycle: int | None = None,
         analysis_intent: str | None = ANALYSIS_INTENT_TRACK_ONLY,
         wait: bool | None = None,
     ) -> None:
@@ -257,13 +256,12 @@ class AttrsvcClient:
 
         Args:
             method: "POST" or "GET"
-            job_id: Job ID for logging (also sent to attrsvc for splitlog mode)
+            job_id: Job ID for logging, and the identity attrsvc analyzes under
             log_path: Log file path
             on_success: Callback for 200 response, receives response
             on_client_error: Callback for 4xx errors, receives error message string
             on_404: Optional callback for 404 errors (POST only - file not found)
             user: SLURM job user (for POST requests)
-            cycle: Cycle number for GET requests in splitlog mode (None = latest)
             analysis_intent: Attribution analysis intent for POST requests.
         """
         for attempt in range(self._max_attempts):
@@ -281,7 +279,6 @@ class AttrsvcClient:
                     response = get_log_response(
                         self._client,
                         log_path,
-                        wl_restart=cycle,
                         wait=wait,
                     )
 
