@@ -148,6 +148,8 @@ class WriteResultTable {
             bad_table("unknown fqn mode");
         }
         return WriteResultTable(string_len, entries, offsets,
+                                // char may alias any type.
+                                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
                                 {reinterpret_cast<const char*>(blob.data()), blob.size()},
                                 static_cast<FqnMode>(fqn_mode), header[Header::Fingerprint]);
     }
@@ -733,7 +735,7 @@ class StateDictTableBuilder {
     }
 
     [[nodiscard]] static bool is(PyObject* obj, const py::object& cls) {
-        return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
+        return static_cast<const void*>(Py_TYPE(obj)) == static_cast<const void*>(cls.ptr());
     }
 
     py::object small_pickle_;
@@ -1092,7 +1094,7 @@ class Writer {
     // Whether obj is exactly of class cls. Objects of exactly the metadata classes are encoded
     // here; others, subclasses included, are left to the stdlib pickler and keep their class.
     [[nodiscard]] static bool is(PyObject* obj, const py::object& cls) {
-        return reinterpret_cast<PyObject*>(Py_TYPE(obj)) == cls.ptr();
+        return static_cast<const void*>(Py_TYPE(obj)) == static_cast<const void*>(cls.ptr());
     }
 
     // Append raw opcode bytes.
