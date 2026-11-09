@@ -465,43 +465,44 @@ class StateDictTableView {
         };
         check_starts(chunk_start_, std::nullopt);
         check_starts(dims_start_, dims_.size());
-        const auto in = [](int64_t ref, const py::tuple& pickles) {
-            return ref >= 0 && ref < PyTuple_GET_SIZE(pickles.ptr()) &&
-                   PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
-        };
         for (size_t i = 0; i < n; ++i) {
-            if (!PyUnicode_CheckExact(fqn(i))) {
-                bad_state_dict_table("an fqn is not a str");
-            }
-            const int64_t ndim = ndim_[i];
-            const int64_t chunk_count = chunk_start_[i + 1] - chunk_start_[i];
-            const int64_t values = dims_start_[i + 1] - dims_start_[i];
-            if (ndim < 0) {
-                bad_state_dict_table("a negative number of dims");
-            }
-            switch (kind_[i]) {
-                case static_cast<uint8_t>(Kind::Tensor):
-                    if (!in(ref_[i], properties_) || !holds_chunks(values, ndim, chunk_count)) {
-                        bad_state_dict_table("a tensor entry's dims don't match its chunks");
-                    }
-                    // Its chunks have no dims, so nothing else bounds their number.
-                    if (ndim == 0 && chunk_count > 1) {
-                        bad_state_dict_table("a 0-dim tensor entry with more than one chunk");
-                    }
-                    break;
-                case static_cast<uint8_t>(Kind::Other):
-                    if (!in(ref_[i], others_)) {
-                        bad_state_dict_table("an entry refers to no pickle");
-                    }
-                    [[fallthrough]];
-                case static_cast<uint8_t>(Kind::Bytes):
-                    if (ndim != 0 || chunk_count != 0 || values != 0) {
-                        bad_state_dict_table("a non-tensor entry has dims");
-                    }
-                    break;
-                default:
-                    bad_state_dict_table("unknown entry kind");
-            }
+            check_entry(i);
+        }
+    }
+
+    // Check entry i's fqn, kind, reference and dims, once check() has found the arrays consistent.
+    void check_entry(size_t i) const {
+        if (!PyUnicode_CheckExact(fqn(i))) {
+            bad_state_dict_table("an fqn is not a str");
+        }
+        const int64_t ndim = ndim_[i];
+        const int64_t chunk_count = chunk_start_[i + 1] - chunk_start_[i];
+        const int64_t values = dims_start_[i + 1] - dims_start_[i];
+        if (ndim < 0) {
+            bad_state_dict_table("a negative number of dims");
+        }
+        switch (kind_[i]) {
+            case static_cast<uint8_t>(Kind::Tensor):
+                if (!holds_pickle(ref_[i], properties_) || !holds_chunks(values, ndim, chunk_count)) {
+                    bad_state_dict_table("a tensor entry's dims don't match its chunks");
+                }
+                // Its chunks have no dims, so nothing else bounds their number.
+                if (ndim == 0 && chunk_count > 1) {
+                    bad_state_dict_table("a 0-dim tensor entry with more than one chunk");
+                }
+                break;
+            case static_cast<uint8_t>(Kind::Other):
+                if (!holds_pickle(ref_[i], others_)) {
+                    bad_state_dict_table("an entry refers to no pickle");
+                }
+                [[fallthrough]];
+            case static_cast<uint8_t>(Kind::Bytes):
+                if (ndim != 0 || chunk_count != 0 || values != 0) {
+                    bad_state_dict_table("a non-tensor entry has dims");
+                }
+                break;
+            default:
+                bad_state_dict_table("unknown entry kind");
         }
     }
 
@@ -514,6 +515,12 @@ class StateDictTableView {
         }
         const int64_t per_dim = values / ndim;  // 1 + 2 * chunk_count
         return values % ndim == 0 && per_dim % 2 == 1 && per_dim / 2 == chunk_count;
+    }
+
+    // Return whether ref is the index of a bytes object in pickles.
+    [[nodiscard]] static bool holds_pickle(int64_t ref, const py::tuple& pickles) {
+        return ref >= 0 && ref < PyTuple_GET_SIZE(pickles.ptr()) &&
+               PyBytes_CheckExact(PyTuple_GET_ITEM(pickles.ptr(), ref));
     }
 
     py::object table_;
