@@ -530,8 +530,9 @@ class StateDictTableView {
 template <TableValue T>
 [[nodiscard]] py::array_t<T> to_array(std::vector<T>&& vector) {
     auto owned = std::make_unique<std::vector<T>>(std::move(vector));
-    const py::capsule owner(owned.get(),
-                            [](void* p) { delete static_cast<std::vector<T>*>(p); });
+    const py::capsule owner(owned.get(), [](void* p) {
+        const std::unique_ptr<std::vector<T>> reclaimed(static_cast<std::vector<T>*>(p));
+    });
     const std::vector<T>& values = *owned.release();
     return py::array_t<T>({values.size()}, {sizeof(T)}, values.data(), owner);
 }
