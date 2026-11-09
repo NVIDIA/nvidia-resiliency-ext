@@ -738,3 +738,25 @@ class TestServeRequiresAllowedRoots:
         )
         assert proc.returncode != 0
         assert "--allowed-root" in proc.stderr
+
+
+class TestCycleInfoServicer:
+    """The root server accepts the cycle records; handing them on is not implemented yet."""
+
+    def test_publish_calls_are_acknowledged(self):
+        from nvidia_resiliency_ext.shared_utils.grpc_log_server import CycleInfoServicer
+        from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2
+
+        servicer = CycleInfoServicer()
+        context = MagicMock()
+        assert (
+            servicer.PublishCycleStart(cycle_info_pb2.CycleStart(cycle=3), context)
+            == cycle_info_pb2.PublishReply()
+        )
+        assert (
+            servicer.PublishCycleOutcome(
+                cycle_info_pb2.CycleOutcome(cycle=3, node="node0"), context
+            )
+            == cycle_info_pb2.PublishReply()
+        )
+        context.abort.assert_not_called()

@@ -91,6 +91,8 @@ from nvidia_resiliency_ext.shared_utils.os_utils import (
 # Note: Proto files are in shared_utils/proto/ and compiled during build (build.py)
 try:
     from nvidia_resiliency_ext.shared_utils.proto import (
+        cycle_info_pb2,
+        cycle_info_pb2_grpc,
         log_aggregation_pb2,
         log_aggregation_pb2_grpc,
     )
@@ -101,6 +103,8 @@ except ImportError:
 
     # Add shared_utils/proto to path
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_utils', 'proto'))
+    import cycle_info_pb2
+    import cycle_info_pb2_grpc
     import log_aggregation_pb2
     import log_aggregation_pb2_grpc
 
@@ -723,6 +727,22 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         )
 
 
+class CycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceServicer):
+    """Receives the cycle records on the root server, for the CycleAnalyzer.
+
+    The store host publishes the cycle starts and every launcher its outcomes, each to the
+    server it sends logs to: this root directly, or a leaf that forwards them.
+    """
+
+    def PublishCycleStart(self, request, context):
+        # TODO: hand the cycle start over to the CycleAnalyzer.
+        return cycle_info_pb2.PublishReply()
+
+    def PublishCycleOutcome(self, request, context):
+        # TODO: hand the outcome over to the CycleAnalyzer.
+        return cycle_info_pb2.PublishReply()
+
+
 def serve(
     host: str,
     port: int,
@@ -787,6 +807,8 @@ def serve(
 
     # Add servicer to server
     log_aggregation_pb2_grpc.add_LogAggregationServiceServicer_to_server(servicer, server)
+    # Same port: launchers publish their cycle records to the server they send logs to.
+    cycle_info_pb2_grpc.add_CycleInfoServiceServicer_to_server(CycleInfoServicer(), server)
 
     # Bind to address
     server_address = f'{host}:{port}'

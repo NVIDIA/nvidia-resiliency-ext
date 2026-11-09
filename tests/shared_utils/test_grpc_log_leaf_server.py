@@ -15,14 +15,21 @@ from unittest.mock import MagicMock
 import grpc
 import pytest
 
+from nvidia_resiliency_ext.shared_utils.grpc_async_sender import AsyncUnarySender
 from nvidia_resiliency_ext.shared_utils.grpc_log_leaf_server import (
     _STOP,
+    LeafCycleInfoServicer,
     LeafLogServicer,
     _LeafChunkQueue,
     _UpstreamForwarder,
 )
 from nvidia_resiliency_ext.shared_utils.grpc_log_server import LogAggregationServicer
-from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
+from nvidia_resiliency_ext.shared_utils.proto import (
+    cycle_info_pb2,
+    cycle_info_pb2_grpc,
+    log_aggregation_pb2,
+    log_aggregation_pb2_grpc,
+)
 
 # These tests exercise queueing/forwarding behaviour, not path confinement (see
 # test_grpc_log_server_confinement.py). Every path they write to lives under the temp dir.
@@ -562,3 +569,85 @@ class TestLeafCliRequiresAllowedRoots:
         )
         assert proc.returncode != 0
         assert "--allowed-root" in proc.stderr
+
+
+class TestLeafCycleInfoServicer:
+    """The leaf forwards the cycle records to the root without waiting for it."""
+
+    @pytest.mark.parametrize(
+        ("rpc", "request_"),
+        [
+            ("PublishCycleStart", cycle_info_pb2.CycleStart(cycle=3)),
+            ("PublishCycleOutcome", cycle_info_pb2.CycleOutcome(cycle=3, node="node0")),
+        ],
+    )
+    def test_record_is_forwarded_and_acknowledged(self, rpc, request_):
+        upstream, sender, context = MagicMock(), MagicMock(), MagicMock()
+        sender.send.return_value = True
+        servicer = LeafCycleInfoServicer(upstream, sender)
+
+        reply = getattr(servicer, rpc)(request_, context)
+
+        assert reply == cycle_info_pb2.PublishReply()
+        assert sender.send.call_args.args[:2] == (getattr(upstream, rpc), request_)
+        context.abort.assert_not_called()
+
+    def test_dropped_record_is_answered_unavailable(self):
+        sender, context = MagicMock(), MagicMock()
+        sender.send.return_value = False
+        servicer = LeafCycleInfoServicer(MagicMock(), sender)
+
+        servicer.PublishCycleOutcome(cycle_info_pb2.CycleOutcome(cycle=3), context)
+
+        assert context.abort.call_args.args[0] == grpc.StatusCode.UNAVAILABLE
+
+    def test_records_reach_the_root_through_the_leaf(self):
+        class _Root(cycle_info_pb2_grpc.CycleInfoServiceServicer):
+            def __init__(self):
+                self.records = []
+                self.received = threading.Event()
+
+            def PublishCycleStart(self, request, context):
+                return self._record(request)
+
+            def PublishCycleOutcome(self, request, context):
+                return self._record(request)
+
+            def _record(self, request):
+                self.records.append(request)
+                if len(self.records) == 2:
+                    self.received.set()
+                return cycle_info_pb2.PublishReply()
+
+        def start_server(servicer):
+            server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+            cycle_info_pb2_grpc.add_CycleInfoServiceServicer_to_server(servicer, server)
+            port = server.add_insecure_port("127.0.0.1:0")
+            server.start()
+            return server, f"127.0.0.1:{port}"
+
+        root = _Root()
+        root_server, root_addr = start_server(root)
+        root_channel = grpc.insecure_channel(root_addr)
+        sender = AsyncUnarySender(MagicMock())
+        leaf_server, leaf_addr = start_server(
+            LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceStub(root_channel), sender)
+        )
+        launcher_channel = grpc.insecure_channel(leaf_addr)
+        start = cycle_info_pb2.CycleStart(cycle=3, active_nodes=["node0"])
+        outcome = cycle_info_pb2.CycleOutcome(cycle=3, node="node0")
+        try:
+            launcher = cycle_info_pb2_grpc.CycleInfoServiceStub(launcher_channel)
+            launcher.PublishCycleStart(start, timeout=5)
+            launcher.PublishCycleOutcome(outcome, timeout=5)
+
+            assert root.received.wait(timeout=5)
+            # The forwards are independent calls: they can reach the root in either order.
+            by_type = {type(record): record for record in root.records}
+            assert by_type == {type(start): start, type(outcome): outcome}
+        finally:
+            sender.close()
+            for channel in (launcher_channel, root_channel):
+                channel.close()
+            for server in (leaf_server, root_server):
+                server.stop(grace=None)

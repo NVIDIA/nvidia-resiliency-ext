@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import socket
 import threading
 from concurrent import futures
 from unittest.mock import MagicMock, patch
@@ -151,12 +150,6 @@ def receiver():
         server.stop(grace=None)
 
 
-def _unused_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
 @pytest.mark.parametrize("kind", ["start", "outcome"])
 def test_records_reach_the_receiver(receiver, kind):
     servicer, stub = receiver
@@ -175,19 +168,6 @@ def test_records_reach_the_receiver(receiver, kind):
         assert servicer.outcomes == [outcome_to_proto(OUTCOME)]
 
 
-def test_unreachable_receiver_is_logged_without_raising():
-    channel = grpc.insecure_channel(f"127.0.0.1:{_unused_port()}")
-    publisher = GrpcCycleInfoPublisher(pb_grpc.CycleInfoServiceStub(channel), close_timeout=5)
-    try:
-        with patch.object(grpc_transport, "logger") as logger:
-            publisher.publish_outcome(OUTCOME)  # returns before the call fails
-            publisher.close()  # waits for the call, whose failure is logged
-        logger.warning.assert_called_once()
-        assert "UNAVAILABLE" in logger.warning.call_args.args[0]
-    finally:
-        channel.close()
-
-
 def test_publish_does_not_wait_for_the_call():
     stub = MagicMock()
     publisher = GrpcCycleInfoPublisher(stub, rpc_timeout=2.0)
@@ -198,18 +178,6 @@ def test_publish_does_not_wait_for_the_call():
     stub.PublishCycleOutcome.assert_not_called()  # no blocking call
 
 
-def test_records_are_dropped_beyond_max_pending():
-    stub = MagicMock()
-    # A new future per call, never completing.
-    stub.PublishCycleOutcome.future.side_effect = lambda *args, **kwargs: MagicMock()
-    publisher = GrpcCycleInfoPublisher(stub, max_pending=2)
-    with patch.object(grpc_transport, "logger") as logger:
-        for _ in range(3):
-            publisher.publish_outcome(OUTCOME)
-    assert stub.PublishCycleOutcome.future.call_count == 2
-    logger.warning.assert_called_once()
-
-
 def test_nothing_is_published_after_close():
     stub = MagicMock()
     publisher = GrpcCycleInfoPublisher(stub)
@@ -218,15 +186,6 @@ def test_nothing_is_published_after_close():
     publisher.publish_outcome(OUTCOME)
     stub.PublishCycleStart.future.assert_not_called()
     stub.PublishCycleOutcome.future.assert_not_called()
-
-
-def test_call_failing_to_start_is_logged_without_raising():
-    stub = MagicMock()
-    stub.PublishCycleOutcome.future.side_effect = RuntimeError("channel closed")
-    publisher = GrpcCycleInfoPublisher(stub)
-    with patch.object(grpc_transport, "logger") as logger:
-        publisher.publish_outcome(OUTCOME)
-    logger.warning.assert_called_once()
 
 
 def test_record_failing_to_encode_is_logged_without_raising():

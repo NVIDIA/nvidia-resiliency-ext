@@ -3,11 +3,8 @@
 """gRPC transport of the cycle records, over CycleInfoService (cycle_info.proto)."""
 
 import logging
-import threading
-import time
 
-import grpc
-
+from nvidia_resiliency_ext.shared_utils.grpc_async_sender import AsyncUnarySender
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2 as pb
 from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2_grpc as pb_grpc
@@ -90,10 +87,9 @@ def outcome_to_proto(outcome: LocalCycleOutcome) -> pb.CycleOutcome:
 class GrpcCycleInfoPublisher(CycleInfoPublisher):
     """Publishes each record with an asynchronous unary call on a CycleInfoService stub.
 
-    A publish starts the call and returns; the channel's threads complete it. A failed
-    call is logged and its record dropped. At most `max_pending` calls are in flight:
-    while the receiver is slow or unreachable, further records are dropped rather than
-    queued. The caller owns the stub's channel; `close` only waits for pending calls.
+    A publish converts the record and starts the call without waiting for it (see
+    `AsyncUnarySender`): failures are logged and the record dropped, and at most
+    `max_pending` calls are in flight. The caller owns the stub's channel.
     """
 
     def __init__(
@@ -104,12 +100,12 @@ class GrpcCycleInfoPublisher(CycleInfoPublisher):
         close_timeout: float = 1.0,
     ):
         self._stub = stub
-        self._rpc_timeout = rpc_timeout
-        self._max_pending = max_pending
-        self._close_timeout = close_timeout
-        self._lock = threading.Lock()
-        self._pending = set()
-        self._closed = False
+        self._sender = AsyncUnarySender(
+            logger,
+            rpc_timeout=rpc_timeout,
+            max_pending=max_pending,
+            close_timeout=close_timeout,
+        )
 
     def publish_cycle_start(self, info: CycleStartInfo) -> None:
         what = f"start of cycle {info.cycle}"
@@ -118,7 +114,7 @@ class GrpcCycleInfoPublisher(CycleInfoPublisher):
         except Exception as e:
             logger.warning(f"Failed to encode the {what}: {e!r}")
             return
-        self._call(self._stub.PublishCycleStart, request, what)
+        self._sender.send(self._stub.PublishCycleStart, request, what)
 
     def publish_outcome(self, outcome: LocalCycleOutcome) -> None:
         what = f"outcome of cycle {outcome.cycle}"
@@ -127,49 +123,8 @@ class GrpcCycleInfoPublisher(CycleInfoPublisher):
         except Exception as e:
             logger.warning(f"Failed to encode the {what}: {e!r}")
             return
-        self._call(self._stub.PublishCycleOutcome, request, what)
+        self._sender.send(self._stub.PublishCycleOutcome, request, what)
 
     def close(self) -> None:
         """Wait up to `close_timeout` for pending calls, then cancel the rest."""
-        with self._lock:
-            self._closed = True
-            pending = list(self._pending)
-        deadline = time.monotonic() + self._close_timeout
-        for future in pending:
-            try:
-                future.result(timeout=max(0.0, deadline - time.monotonic()))
-            except grpc.FutureTimeoutError:
-                future.cancel()
-            except (grpc.RpcError, grpc.FutureCancelledError):
-                pass  # logged by _on_done
-
-    def _call(self, rpc, request, what: str) -> None:
-        try:
-            with self._lock:
-                if self._closed:
-                    logger.debug(f"Publisher closed, dropped the {what}")
-                    return
-                if len(self._pending) >= self._max_pending:
-                    logger.warning(
-                        f"{len(self._pending)} cycle records still in flight, dropped the {what}"
-                    )
-                    return
-                future = rpc.future(request, timeout=self._rpc_timeout)
-                self._pending.add(future)
-            # Outside the lock: runs immediately if the call has already completed.
-            future.add_done_callback(lambda f: self._on_done(f, what))
-        except Exception as e:
-            logger.warning(f"Failed to publish the {what}: {e!r}")
-
-    def _on_done(self, future, what: str) -> None:
-        with self._lock:
-            self._pending.discard(future)
-        if future.cancelled():
-            logger.warning(f"Cancelled publishing the {what}")
-            return
-        error = future.exception()
-        if error is None:
-            return
-        if isinstance(error, grpc.RpcError):
-            error = f"{error.code().name}: {error.details()}"
-        logger.warning(f"Failed to publish the {what}: {error}")
+        self._sender.close()
