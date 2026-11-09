@@ -31,13 +31,11 @@ from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
     CycleEndReason,
     RankEndReason,
     RankTimeout,
     TimeoutKind,
-    decode_outcome,
-    encode_outcome,
 )
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
@@ -1410,9 +1408,67 @@ def _make_launch_agent_config(**overrides):
         workers_stop_timeout=1,
         restart_policy="any-failed",
         rank_monitors={},
+        log_server_address=None,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize(
+    ("cycle_info_dir", "log_server_address"),
+    [(None, "localhost:50051"), ("/nvrx", None)],
+    ids=["no_cycle_info_dir", "no_log_server"],
+)
+def test_no_cycle_info_publisher_without_cycle_info_and_log_server(
+    cycle_info_dir, log_server_address
+):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    config = _make_launch_agent_config(
+        fault_tol_cfg=FaultToleranceConfig(cycle_info_dir=cycle_info_dir),
+        log_server_address=log_server_address,
+    )
+    assert launcher._create_cycle_info_publisher(config) == (None, None)
+
+
+def test_cycle_info_publisher_uses_its_own_channel_to_the_log_server():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    config = _make_launch_agent_config(log_server_address="head:50051")
+    with patch.object(launcher.grpc, "insecure_channel") as insecure_channel:
+        publisher, channel = launcher._create_cycle_info_publisher(config)
+
+    insecure_channel.assert_called_once_with("head:50051")
+    assert channel is insecure_channel.return_value
+    assert isinstance(publisher, launcher.GrpcCycleInfoPublisher)
+
+    publisher.close = MagicMock()
+    launcher._close_cycle_info_publisher(publisher, channel)
+    publisher.close.assert_called_once_with()
+    channel.close.assert_called_once_with()
+
+
+def test_cycle_info_publisher_creation_failure_is_logged():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    config = _make_launch_agent_config(log_server_address="head:50051")
+    with (
+        patch.object(launcher.grpc, "insecure_channel", side_effect=ValueError("bad address")),
+        patch.object(launcher, "logger") as logger,
+    ):
+        assert launcher._create_cycle_info_publisher(config) == (None, None)
+    logger.warning.assert_called_once()
+
+
+def test_closing_the_cycle_info_publisher_does_not_raise():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    publisher = MagicMock()
+    publisher.close.side_effect = RuntimeError("boom")
+    with patch.object(launcher, "logger") as logger:
+        launcher._close_cycle_info_publisher(publisher, MagicMock())
+        launcher._close_cycle_info_publisher(None, None)
+    logger.warning.assert_called_once()
 
 
 def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
@@ -2085,43 +2141,46 @@ class TestRecordCycleOutcome:
             agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
 
 
-class TestWriteCycleOutcome:
+class TestPublishCycleOutcome:
     def _agent_with_outcome(self):
         agent = _outcome_agent()
-        agent._rdzv_handler = MagicMock()
+        agent._cycle_info_publisher = MagicMock()
         agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
-        return agent, agent._rdzv_handler._barrier_state.append_cycle_outcome
+        return agent, agent._cycle_info_publisher.publish_outcome
 
-    def test_outcome_is_appended_under_its_cycle(self):
-        agent, append = self._agent_with_outcome()
-        agent._write_cycle_outcome()
+    def test_outcome_is_published(self):
+        agent, publish = self._agent_with_outcome()
+        agent._publish_cycle_outcome()
+        publish.assert_called_once_with(agent._cycle_outcome)
 
-        append.assert_called_once_with(3, encode_outcome(agent._cycle_outcome))
-        assert decode_outcome(append.call_args.args[1]) == agent._cycle_outcome
-
-    def test_nothing_is_written_without_an_outcome_of_this_cycle(self):
-        agent, append = self._agent_with_outcome()
+    def test_nothing_is_published_without_an_outcome_of_this_cycle(self):
+        agent, publish = self._agent_with_outcome()
         agent._get_global_cycle_number.return_value = 4  # recorded outcome is of cycle 3
-        agent._write_cycle_outcome()
+        agent._publish_cycle_outcome()
         agent._cycle_outcome = None  # outcomes disabled, or recording failed
-        agent._write_cycle_outcome()
-        append.assert_not_called()
+        agent._publish_cycle_outcome()
+        publish.assert_not_called()
 
-    def test_store_failure_is_logged_and_does_not_interrupt_the_caller(self):
-        agent, append = self._agent_with_outcome()
-        append.side_effect = RuntimeError("store unreachable")
+    def test_nothing_is_published_without_a_publisher(self):
+        agent, _ = self._agent_with_outcome()
+        agent._cycle_info_publisher = None
+        agent._publish_cycle_outcome()  # must not raise
+
+    def test_publisher_failure_is_logged_and_does_not_interrupt_the_caller(self):
+        agent, publish = self._agent_with_outcome()
+        publish.side_effect = RuntimeError("queue full")
         with patch.object(launcher, "logger") as logger:
-            agent._write_cycle_outcome()
+            agent._publish_cycle_outcome()
         logger.warning.assert_called_once()
 
     def test_termination_signal_propagates(self):
-        agent, append = self._agent_with_outcome()
-        append.side_effect = launcher.SignalException("terminated", signal.SIGTERM)
+        agent, publish = self._agent_with_outcome()
+        publish.side_effect = launcher.SignalException("terminated", signal.SIGTERM)
         with pytest.raises(launcher.SignalException):
-            agent._write_cycle_outcome()
+            agent._publish_cycle_outcome()
 
     @pytest.mark.parametrize("open_rendezvous", [True, False], ids=["failed", "peer_restart"])
-    def test_restart_writes_after_opening_the_round_and_before_rejoining(self, open_rendezvous):
+    def test_restart_publishes_after_opening_the_round_and_before_rejoining(self, open_rendezvous):
         agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
@@ -2129,24 +2188,24 @@ class TestWriteCycleOutcome:
         agent._worker_group = MagicMock()
         calls = MagicMock()
         agent._open_rendezvous_for_restart = calls.open_rendezvous
-        agent._write_cycle_outcome = calls.write
+        agent._publish_cycle_outcome = calls.publish
         agent._restart_workers = calls.restart
 
         assert agent._handle_restart_decision(
             "trainer", MagicMock(), "[%s] restarting", open_rendezvous=open_rendezvous
         )
 
-        expected = [unittest.mock.call.write(), unittest.mock.call.restart(agent._worker_group)]
+        expected = [unittest.mock.call.publish(), unittest.mock.call.restart(agent._worker_group)]
         if open_rendezvous:
             expected.insert(0, unittest.mock.call.open_rendezvous())
         assert calls.mock_calls == expected
 
-    def test_no_write_when_there_is_no_restart(self):
+    def test_no_publish_when_there_is_no_restart(self):
         agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 0
-        agent._write_cycle_outcome = MagicMock()
+        agent._publish_cycle_outcome = MagicMock()
 
         assert not agent._handle_restart_decision("trainer", MagicMock(), "[%s] restarting")
-        agent._write_cycle_outcome.assert_not_called()
+        agent._publish_cycle_outcome.assert_not_called()

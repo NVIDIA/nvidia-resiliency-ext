@@ -12,7 +12,7 @@ import torch.multiprocessing
 from psutil import STATUS_SLEEPING, STATUS_ZOMBIE, NoSuchProcess
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import RankTimeout, TimeoutKind
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import RankTimeout, TimeoutKind
 from nvidia_resiliency_ext.fault_tolerance.data import (
     AuthkeyMsg,
     HeartbeatMsg,

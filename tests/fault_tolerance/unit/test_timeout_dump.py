@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import RankTimeout, TimeoutKind
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import RankTimeout, TimeoutKind
 from nvidia_resiliency_ext.fault_tolerance.data import InitMsg, RankInfo
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump import (

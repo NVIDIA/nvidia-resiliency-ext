@@ -68,8 +68,12 @@ from ..shared_utils.profiling import (
     set_profiling_cycle,
 )
 from ..shared_utils.telemetry import span
-from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
-from .cycle_outcome import LocalCycleOutcome, decode_outcome
+from .cycle_info.records import CycleStartInfo
+from .cycle_info.transport import CycleInfoPublisher
+
+# Cycle info is moving to the CycleAnalyzer; the rendezvous no longer writes it.
+# from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot
+from .cycle_info_writer import cycle_log_file
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
@@ -636,7 +640,9 @@ class _RendezvousBarrierState:
         self._standby_node_addrs: Optional[List[str]] = None
         # Group ranks of active nodes, parallel to _active_node_addrs (same slot order)
         self._active_ranks: Optional[List[int]] = None
-        self._cycle_info_reporter: Optional[CycleInfoReporter] = None
+        # self._cycle_info_reporter: Optional[CycleInfoReporter] = None
+        # Sends the cycle start info towards the CycleAnalyzer when this host closes a round.
+        self._cycle_info_publisher: Optional[CycleInfoPublisher] = None
         self._cycle_log_prefix = cycle_log_prefix
 
         # Reference to agent (set via set_agent() method in handler)
@@ -1120,7 +1126,7 @@ class _RendezvousBarrierState:
             return False
         # The next round may be opened by a non-store-host. The store host closes the
         # active cycle when it creates or observes round N+1.
-        self._report_cycle_end_as_host(self._round + 1)
+        # self._report_cycle_end_as_host(self._round + 1)
         return True
 
     def _sync_from_per_round_state(self) -> bool:
@@ -1159,8 +1165,8 @@ class _RendezvousBarrierState:
             if self._agent is not None:
                 self._agent._progress_tracker.sync_cycle_number(N)
             log.debug(f"Synced round {old_round} -> {N} (per-round scan)")
-            if observed_open_round is not None:
-                self._report_cycle_end_as_host(observed_open_round)
+            # if observed_open_round is not None:
+            #     self._report_cycle_end_as_host(observed_open_round)
             return True
 
         return False
@@ -1674,117 +1680,42 @@ class _RendezvousBarrierState:
                 standby_only_participants=incomplete_replacement_group_participants,
             )
             closed_round = self._round
-            self._report_cycle_start_as_host(closed_round)
+            # self._report_cycle_start_as_host(closed_round)
             self.store.set(self.round_done_key, "1".encode('utf-8'))
+            # After the release, so it never holds the participants, and before the
+            # attribution POST, so the start time is not delayed by it.
+            self._publish_cycle_start_as_host(closed_round)
             # Do not hold the rendezvous release on attribution I/O. The submit helper
             # records the cycle before issuing the bounded attrsvc POST.
             self._submit_attribution_log_for_round(closed_round)
-            # Keep this short: after returning, this host still publishes the bootstrap
-            # store info (MASTER_ADDR/MASTER_PORT, as group rank 0), which every launcher
-            # waits for. Only the store read happens here; the rest is queued.
-            self._collect_cycle_outcomes_as_host(closed_round)
             return
 
-    def _collect_cycle_outcomes_as_host(self, closed_round: int) -> None:
-        """Collect the launchers' outcome records of the cycle that preceded `closed_round`.
+    def _publish_cycle_start_as_host(self, round_id: int) -> None:
+        """Publish how the just-closed round starts its cycle, from this host's rank assignment.
 
-        Launchers append their record before rejoining, so once round N+1 has closed, the
-        records of every launcher that rejoined it are in the store. Only the store read
-        happens here; decoding and writing the records happen on the cycle info writer
-        thread. This never waits: a record appended after the read is not collected.
+        Best effort: publishers only enqueue, and a failure is logged without delaying
+        the rendezvous.
         """
-        if self._cycle_info_reporter is None or closed_round < 1:
+        if self._cycle_info_publisher is None:
             return
-        cycle = closed_round - 1
         try:
-            start = time.monotonic()
-            data = self._read_cycle_outcome_data(cycle)
-            read_elapsed = time.monotonic() - start
+            info = CycleStartInfo(
+                cycle=round_id,
+                started_at=time.time(),
+                active_nodes=tuple(self._active_node_addrs or ()),
+                standby_nodes=tuple(self._standby_node_addrs or ()),
+                active_ranks=tuple(self._active_ranks or ()),
+                cycle_log_file=(
+                    cycle_log_file(self._cycle_log_prefix, round_id)
+                    if self._cycle_log_prefix
+                    else ""
+                ),
+            )
+            self._cycle_info_publisher.publish_cycle_start(info)
         except SignalException:
             raise
         except Exception as e:
-            log.warning("Failed to read the outcomes of cycle %s: %s", cycle, e, exc_info=True)
-            return
-        if not data:
-            return
-        try:
-            self._cycle_info_reporter.report_cycle_outcomes(
-                cycle, lambda: self._decode_collected_outcomes(cycle, data, read_elapsed)
-            )
-        except Exception as e:
-            log.warning(
-                "Failed to report the outcomes of cycle %s to cycle info: %s",
-                cycle,
-                e,
-                exc_info=True,
-            )
-
-    def _decode_collected_outcomes(
-        self, cycle: int, data: bytes, read_elapsed: float
-    ) -> List[LocalCycleOutcome]:
-        """Decode the outcome records of `cycle` read from the store; empty on failure.
-
-        Runs on the cycle info writer thread.
-        """
-        try:
-            start = time.monotonic()
-            outcomes, malformed = self._decode_cycle_outcomes(cycle, data)
-            decode_elapsed = time.monotonic() - start
-        except Exception as e:
-            log.warning("Failed to decode the outcomes of cycle %s: %s", cycle, e, exc_info=True)
-            return []
-        ends = defaultdict(int)
-        for outcome in outcomes:
-            ends[outcome.node_end.value] += 1
-        log.info(
-            "Collected the outcomes of cycle %s from %s launchers (%s), %s malformed, "
-            "%s bytes: read %.1fms, decode %.1fms",
-            cycle,
-            len(outcomes),
-            ", ".join(f"{end}={count}" for end, count in sorted(ends.items())),
-            malformed,
-            len(data),
-            read_elapsed * 1000,
-            decode_elapsed * 1000,
-        )
-        return outcomes
-
-    def _read_cycle_outcome_data(self, cycle: int) -> bytes:
-        """Read and remove the outcome records of `cycle` from the store; empty if none."""
-        key = self.cycle_outcomes_key(cycle)
-        # get() waits for a missing key; check first so a cycle with no records never blocks.
-        if not self.store.check([key]):
-            return b""
-        data = self.store.get(key)
-        self.store.delete_key(key)
-        return data
-
-    @staticmethod
-    def _decode_cycle_outcomes(cycle: int, data: bytes) -> Tuple[List[LocalCycleOutcome], int]:
-        """Decode the outcome records of `cycle` read from the store.
-
-        Returns:
-            The outcomes, one per launcher, and the number of records skipped as
-            malformed or belonging to another cycle.
-        """
-        outcomes = {}
-        malformed = 0
-        for line in data.splitlines():
-            if not line:
-                continue
-            try:
-                outcome = decode_outcome(line)
-            except ValueError:
-                malformed += 1
-                continue
-            if outcome.cycle != cycle:
-                malformed += 1
-                continue
-            # A launcher's ranks identify it even when launchers share a hostname; keep the
-            # first record if one was appended twice.
-            launcher_key = (outcome.node, tuple(rank.global_rank for rank in outcome.ranks))
-            outcomes.setdefault(launcher_key, outcome)
-        return list(outcomes.values()), malformed
+            log.warning("Failed to publish the start of cycle %s: %s", round_id, e, exc_info=True)
 
     def _submit_attribution_log_for_round(self, round_id: int) -> None:
         """Submit the just-started cycle log from the rendezvous control host."""
@@ -1826,40 +1757,40 @@ class _RendezvousBarrierState:
         self._attribution_service.request_terminal_analysis()
         self._attribution_terminal_requested_cycle = round_id
 
-    def _report_cycle_start_as_host(self, round_id: int) -> None:
-        """Report cycle start from the rendezvous-host rank assignment snapshot."""
-        if self._cycle_info_reporter is None:
-            return
-        try:
-            self._cycle_info_reporter.report_cycle_start(
-                CycleInfoRoundSnapshot(
-                    cycle_number=round_id,
-                    active_node_addrs=self._active_node_addrs,
-                    standby_node_addrs=self._standby_node_addrs,
-                    active_ranks=self._active_ranks,
-                )
-            )
-        except Exception as e:
-            log.warning(
-                "Failed to report cycle info after closing rendezvous round %s: %s",
-                round_id,
-                e,
-                exc_info=True,
-            )
+    # def _report_cycle_start_as_host(self, round_id: int) -> None:
+    #     """Report cycle start from the rendezvous-host rank assignment snapshot."""
+    #     if self._cycle_info_reporter is None:
+    #         return
+    #     try:
+    #         self._cycle_info_reporter.report_cycle_start(
+    #             CycleInfoRoundSnapshot(
+    #                 cycle_number=round_id,
+    #                 active_node_addrs=self._active_node_addrs,
+    #                 standby_node_addrs=self._standby_node_addrs,
+    #                 active_ranks=self._active_ranks,
+    #             )
+    #         )
+    #     except Exception as e:
+    #         log.warning(
+    #             "Failed to report cycle info after closing rendezvous round %s: %s",
+    #             round_id,
+    #             e,
+    #             exc_info=True,
+    #         )
 
-    def _report_cycle_end_as_host(self, opened_round_id: int) -> None:
-        """Report cycle end from the rendezvous host when a later round is observed."""
-        if self._cycle_info_reporter is None:
-            return
-        try:
-            self._cycle_info_reporter.report_cycle_end()
-        except Exception as e:
-            log.warning(
-                "Failed to report cycle info end after opening rendezvous round %s: %s",
-                opened_round_id,
-                e,
-                exc_info=True,
-            )
+    # def _report_cycle_end_as_host(self, opened_round_id: int) -> None:
+    #     """Report cycle end from the rendezvous host when a later round is observed."""
+    #     if self._cycle_info_reporter is None:
+    #         return
+    #     try:
+    #         self._cycle_info_reporter.report_cycle_end()
+    #     except Exception as e:
+    #         log.warning(
+    #             "Failed to report cycle info end after opening rendezvous round %s: %s",
+    #             opened_round_id,
+    #             e,
+    #             exc_info=True,
+    #         )
 
     def _wait_for_round_done(self, node_desc: _NodeDesc, rank_key: str) -> Tuple[int, int]:
         """Step 3 (all participants): Wait for round_done_key=1 then read the assigned rank.
@@ -2458,24 +2389,12 @@ class _RendezvousBarrierState:
         next_round_done_key = f"{self.prefix}:round_done_{self._round + 1}"
         if self.store.check([next_round_done_key]):
             log.debug(f"open_rendezvous() deferred - round_done_{self._round + 1} already exists.")
-            self._report_cycle_end_as_host(self._round + 1)
+            # self._report_cycle_end_as_host(self._round + 1)
             return
 
         self.store.set(next_round_done_key, "0".encode('utf-8'))
         log.debug(f"Opened round {self._round + 1} for joining")
-        self._report_cycle_end_as_host(self._round + 1)
-
-    def cycle_outcomes_key(self, cycle: int) -> str:
-        """TCPStore key collecting the launchers' outcome records of `cycle`."""
-        return f"{self.prefix}:cycle_outcomes_{cycle}"
-
-    def append_cycle_outcome(self, cycle: int, record: bytes) -> None:
-        """Append one launcher's encoded outcome record of `cycle`.
-
-        Launchers append before rejoining the rendezvous; records are newline-terminated
-        (see cycle_outcome.encode_outcome), so one key holds every launcher's record.
-        """
-        self.store.append(self.cycle_outcomes_key(cycle), record)
+        # self._report_cycle_end_as_host(self._round + 1)
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):
@@ -2511,7 +2430,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
         attribution_enforce_stop: bool = False,
-        cycle_info_dir: Optional[str] = None,
+        # cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
         segment_health_check_dir: Optional[str] = None,
     ):
@@ -2579,7 +2498,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
             attribution_enforce_stop=attribution_enforce_stop,
-            cycle_info_dir=cycle_info_dir,
+            # cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
         )
 
@@ -2596,7 +2515,7 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
         attribution_enforce_stop: bool = False,
-        cycle_info_dir: Optional[str] = None,
+        # cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
@@ -2640,13 +2559,13 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             stale_check_interval=10.0,  # Check for stale rounds every 10 seconds
             cycle_log_prefix=cycle_log_prefix,
         )
-        self._cycle_info_reporter: Optional[CycleInfoReporter] = None
-        if is_store_host and cycle_info_dir:
-            self._cycle_info_reporter = CycleInfoReporter(
-                cycle_info_dir,
-                cycle_log_prefix=cycle_log_prefix,
-            )
-            self._barrier_state._cycle_info_reporter = self._cycle_info_reporter
+        # self._cycle_info_reporter: Optional[CycleInfoReporter] = None
+        # if is_store_host and cycle_info_dir:
+        #     self._cycle_info_reporter = CycleInfoReporter(
+        #         cycle_info_dir,
+        #         cycle_log_prefix=cycle_log_prefix,
+        #     )
+        #     self._barrier_state._cycle_info_reporter = self._cycle_info_reporter
         self._assigned_rank = None
         self._world_size = None
         self._agent = None  # Reference to the agent (set via set_agent())
@@ -2714,6 +2633,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._barrier_state._agent = agent
         # Complete initialization now that agent is set
         self._complete_initialization()
+
+    def set_cycle_info_publisher(self, publisher: Optional[CycleInfoPublisher]) -> None:
+        """Set the publisher of the cycle start infos; used only when this host closes rounds."""
+        self._barrier_state._cycle_info_publisher = publisher
 
     def _complete_initialization(self) -> None:
         """Complete initialization tasks that require agent reference.
@@ -3144,14 +3067,14 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """Broadcast to the whole job that it must not be restarted."""
         self._barrier_state.signal_no_restart(reason)
 
-    def shutdown_cycle_info_reporter(self) -> None:
-        if self._cycle_info_reporter is not None:
-            self._cycle_info_reporter.shutdown()
+    # def shutdown_cycle_info_reporter(self) -> None:
+    #     if self._cycle_info_reporter is not None:
+    #         self._cycle_info_reporter.shutdown()
 
     def _close(self, reason: str = RDZV_SHUTDOWN_REASON_GRACEFUL) -> None:
         """Permanently shut down the rendezvous (no further rounds)."""
         self._barrier_state.set_shutdown(reason)
-        self.shutdown_cycle_info_reporter()
+        # self.shutdown_cycle_info_reporter()
         if self._attribution_service is not None:
             # No one will consume a verdict once the job is ending. The final cycle's
             # terminal POST is still issued afterwards for post-mortem analysis.
@@ -3275,7 +3198,7 @@ def create_handler(
         attribution_enforce_stop = (
             str(params.config.get('attribution_enforce_stop', '')).lower() == 'true'
         )
-        cycle_info_dir = params.config.get('cycle_info_dir', None)
+        # cycle_info_dir = params.config.get('cycle_info_dir', None)
         cycle_log_prefix = params.config.get('cycle_log_prefix', None)
         segment_health_check_dir = params.config.get('segment_health_check_dir', None)
 
@@ -3297,7 +3220,7 @@ def create_handler(
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
             attribution_enforce_stop=attribution_enforce_stop,
-            cycle_info_dir=cycle_info_dir,
+            # cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
             segment_health_check_dir=segment_health_check_dir,
         )

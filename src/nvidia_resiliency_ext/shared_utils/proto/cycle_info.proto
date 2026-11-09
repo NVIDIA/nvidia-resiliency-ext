@@ -1,0 +1,99 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+// Internal transport of the cycle records to the CycleAnalyzer, mirroring
+// fault_tolerance/cycle_info/records.py. The public cycle info file format is
+// NVRxCycleInfo in nvrx_interface.proto; keep the two independent.
+package nvidia_resiliency_ext.fault_tolerance.cycle_info;
+
+// Publishes cycle records towards the CycleAnalyzer. Served by the gRPC log
+// servers, which forward the records, and by the CycleAnalyzer. Best effort.
+service CycleInfoService {
+  // Sent by the store host once per cycle, when it closes the rendezvous round.
+  rpc PublishCycleStart(CycleStart) returns (PublishReply);
+
+  // Sent by each launcher once per cycle, when the cycle ends for it.
+  rpc PublishCycleOutcome(CycleOutcome) returns (PublishReply);
+}
+
+// How the rendezvous started a cycle, as the store host assigned it.
+message CycleStart {
+  uint32 cycle = 1;
+
+  // When the store host closed the round: seconds since the Unix epoch, UTC
+  double started_at = 2;
+
+  repeated string active_nodes = 3;
+
+  // Hot spares: joined the round, run no workers
+  repeated string standby_nodes = 4;
+
+  // Group ranks of the active nodes, aligned with active_nodes
+  repeated uint32 active_ranks = 5;
+
+  // Empty when per-cycle logs are not configured
+  string cycle_log_file = 6;
+}
+
+// How a cycle ended on one launcher, as that launcher observed it.
+message CycleOutcome {
+  uint32 cycle = 1;
+
+  // Launcher host name
+  string node = 2;
+
+  CycleEndReason node_end = 3;
+
+  // When the launcher observed the end: seconds since the Unix epoch, UTC
+  double detected_at = 4;
+
+  repeated RankOutcome ranks = 5;
+}
+
+// How one worker of a launcher ended.
+message RankOutcome {
+  uint32 global_rank = 1;
+  uint32 local_rank = 2;
+  uint32 pid = 3;
+  RankEndReason end = 4;
+
+  // Worker exit code when it exited; negative for a signal
+  optional sint32 exitcode = 5;
+
+  // How the worker ended beyond its exit code, e.g. an exception summary; empty
+  // when not captured
+  string exit_details = 6;
+
+  // Set only when end is RANK_END_REASON_STOPPED_BY_RANK_MONITOR
+  TimeoutKind timeout_kind = 7;
+  repeated string timeout_sections = 8;
+}
+
+enum CycleEndReason {
+  CYCLE_END_REASON_UNSPECIFIED = 0;
+  CYCLE_END_REASON_COMPLETED = 1;
+  CYCLE_END_REASON_FAILED = 2;
+  CYCLE_END_REASON_PEER_RESTART = 3;
+  CYCLE_END_REASON_TERMINATED = 4;
+}
+
+enum RankEndReason {
+  RANK_END_REASON_UNSPECIFIED = 0;
+  RANK_END_REASON_COMPLETED = 1;
+  RANK_END_REASON_FAILED = 2;
+  RANK_END_REASON_STOPPED_BY_LAUNCHER = 3;
+  RANK_END_REASON_STOPPED_BY_RANK_MONITOR = 4;
+}
+
+enum TimeoutKind {
+  TIMEOUT_KIND_UNSPECIFIED = 0;  // no timeout
+  TIMEOUT_KIND_HEARTBEAT = 1;
+  TIMEOUT_KIND_SECTION = 2;
+  TIMEOUT_KIND_OUT_OF_SECTION = 3;
+}
+
+// Acknowledges that a hop accepted the record; not that it reached the CycleAnalyzer.
+message PublishReply {
+}

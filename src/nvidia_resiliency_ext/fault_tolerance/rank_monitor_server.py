@@ -35,7 +35,7 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 from .config import FaultToleranceConfig
-from .cycle_outcome import RankTimeout, TimeoutKind
+from .cycle_info.records import RankTimeout, TimeoutKind
 from .data import (
     AuthkeyMsg,
     ErrorMsg,

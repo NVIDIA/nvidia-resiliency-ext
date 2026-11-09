@@ -23,7 +23,7 @@ from typing import Mapping, Optional, Set
 
 import torch.distributed as dist
 
-from .cycle_outcome import RankTimeout
+from .cycle_info.records import RankTimeout
 
 """Env variable name that stores the path of IPC socket connecting a rank with its monitor"""
 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR = "FT_RANK_MONITOR_IPC_SOCKET"

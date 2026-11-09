@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
+import grpc
 import torch
 from torch.distributed.argparse_util import check_env, env
 from torch.distributed.elastic import events, metrics, timer
@@ -91,14 +92,15 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_rendezvous_args,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
-from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
     CycleEndReason,
     LocalCycleOutcome,
     RankTimeout,
     build_local_cycle_outcome,
-    encode_outcome,
 )
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.transport import CycleInfoPublisher
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -136,6 +138,7 @@ from nvidia_resiliency_ext.shared_utils.profiling import (
     get_profiling_cycle,
     record_profiling_event,
 )
+from nvidia_resiliency_ext.shared_utils.proto.cycle_info_pb2_grpc import CycleInfoServiceStub
 
 __imports_finished__ = time.time()
 
@@ -475,6 +478,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
         rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
+        cycle_info_publisher: Optional[CycleInfoPublisher] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -521,6 +525,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._run_phase = telemetry.Phase()
         # How the latest cycle ended on this launcher, recorded when the end is observed.
         self._cycle_outcome: Optional[LocalCycleOutcome] = None
+        # Sends the outcomes towards the CycleAnalyzer; None publishes nothing.
+        self._cycle_info_publisher = cycle_info_publisher
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -742,10 +748,8 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._remaining_restarts -= 1
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
-            # After opening the round, so peers are not delayed by the write, and before
-            # rejoining it in _restart_workers, so the store host finds the record when
-            # it closes the round.
-            self._write_cycle_outcome()
+            # After opening the round, so peers are not delayed by the publish.
+            self._publish_cycle_outcome()
             self._restart_workers(self._worker_group)
             return True
         else:
@@ -785,33 +789,24 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._cycle_outcome = None
             logger.warning(f"Failed to record the cycle outcome: {e}")
 
-    def _write_cycle_outcome(self) -> None:
-        """Publish the outcome of the cycle that just ended for the store host to collect.
+    def _publish_cycle_outcome(self) -> None:
+        """Publish the outcome of the cycle that just ended towards the CycleAnalyzer.
 
-        Call before rejoining the rendezvous: the store host reads the records when it
-        closes the next round, so every launcher that rejoined has published by then.
+        Best effort: publishers only enqueue, and a failure is logged without
+        interrupting the restart path.
         """
         outcome = self._cycle_outcome
         # Nothing recorded for this cycle: outcomes are disabled or recording failed.
         if outcome is None or outcome.cycle != self._get_global_cycle_number():
             return
+        if self._cycle_info_publisher is None:
+            return
         try:
-            start = time.monotonic()
-            record = encode_outcome(outcome)
-            encoded = time.monotonic()
-            self._rdzv_handler._barrier_state.append_cycle_outcome(outcome.cycle, record)
-            logger.debug(
-                "Published the outcome of cycle %s (%d bytes): encode %.2fms, append %.2fms",
-                outcome.cycle,
-                len(record),
-                (encoded - start) * 1000,
-                (time.monotonic() - encoded) * 1000,
-            )
+            self._cycle_info_publisher.publish_outcome(outcome)
         except SignalException:
             # Termination signals must reach run(), which shuts the workers down.
             raise
         except Exception as e:
-            # Best effort: the restart must not depend on a diagnostics write.
             logger.warning(f"Failed to publish the outcome of cycle {outcome.cycle}: {e}")
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
@@ -1852,6 +1847,8 @@ class LaunchConfig:
     metrics_cfg: Dict[str, str] = field(default_factory=dict)
     local_addr: Optional[str] = None
     rank_monitors: Dict[int, "RankMonitorState"] = field(default_factory=dict)
+    # gRPC log server this launcher sends its logs to; it also takes the cycle records.
+    log_server_address: Optional[str] = None
 
     def __post_init__(self):
         default_timeout = 900
@@ -1968,6 +1965,41 @@ def _is_store_host(params: RendezvousParameters) -> bool:
     return _is_store_host_from_config(host, params.config)
 
 
+def _create_cycle_info_publisher(
+    config: LaunchConfig,
+) -> Tuple[Optional[CycleInfoPublisher], Optional[grpc.Channel]]:
+    """Create the publisher of the cycle records, on its own channel to the gRPC log server.
+
+    Returns:
+        The publisher and its channel; both None when cycle info or the gRPC log server
+        is not configured, or when creating them failed.
+    """
+    if not config.fault_tol_cfg.cycle_info_dir or not config.log_server_address:
+        return None, None
+    try:
+        # The channel connects lazily, on the first publish.
+        channel = grpc.insecure_channel(config.log_server_address)
+        publisher = GrpcCycleInfoPublisher(CycleInfoServiceStub(channel))
+    except Exception as e:
+        logger.warning(f"Cycle records will not be published: {e}")
+        return None, None
+    logger.debug("Publishing cycle records to %s", config.log_server_address)
+    return publisher, channel
+
+
+def _close_cycle_info_publisher(
+    publisher: Optional[CycleInfoPublisher], channel: Optional[grpc.Channel]
+) -> None:
+    """Give pending cycle records a short time to be delivered, then close the channel."""
+    try:
+        if publisher is not None:
+            publisher.close()
+        if channel is not None:
+            channel.close()
+    except Exception as e:
+        logger.warning(f"Failed to close the cycle record publisher: {e}")
+
+
 def launch_agent(
     config: LaunchConfig,
     entrypoint: Union[Callable, str, None],
@@ -2046,6 +2078,9 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
+    # One publisher for this launcher's outcomes and, on the store host, the cycle starts.
+    cycle_info_publisher, cycle_info_channel = _create_cycle_info_publisher(config)
+
     agent = LocalElasticAgent(
         spec=spec,
         fault_tol_cfg=config.fault_tol_cfg,
@@ -2057,12 +2092,14 @@ def launch_agent(
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
         rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
+        cycle_info_publisher=cycle_info_publisher,
     )
 
     # Set agent reference in rendezvous handler for callbacks
     # This allows the handler to directly sync agent state (like progress tracker)
     # when important events occur (e.g., rendezvous round updates)
     spec.rdzv_handler.set_agent(agent)
+    spec.rdzv_handler.set_cycle_info_publisher(cycle_info_publisher)
 
     # Keep the rendezvous open unless this launcher reaches an explicitly terminal
     # outcome. An unexpected exception is local to this launcher until proven
@@ -2154,6 +2191,7 @@ def launch_agent(
                 agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
         _stop_diagnostic_collector()
+        _close_cycle_info_publisher(cycle_info_publisher, cycle_info_channel)
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
         # ends. Wait a short grace period so other nodes can read final state (e.g. permanent close key,
@@ -3454,6 +3492,8 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     if base_log_file:
         rdzv_configs['cycle_log_prefix'] = base_log_file
 
+    # Set only when this launcher sends its logs to a gRPC log server.
+    grpc_server_address = None
     if base_log_file:
         # Validate that the path is absolute (not relative)
         if not os.path.isabs(base_log_file):
@@ -3475,7 +3515,6 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         is_tcp_store_host = _is_store_host_from_config(host, rdzv_configs)
 
         # Configure gRPC if enabled
-        grpc_server_address = None
         node_id = None
         log_funnel_ports = None
 
@@ -3593,6 +3632,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         logs_specs=logs_specs,
         fault_tol_cfg=fault_tol_cfg,
         rank_monitors=rank_monitors,  # Pass pre-created rank monitors
+        log_server_address=grpc_server_address,
     )
 
     with_python = not args.no_python

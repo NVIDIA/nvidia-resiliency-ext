@@ -24,18 +24,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
-    CycleInfoReporter,
-    CycleInfoRoundSnapshot,
-    CycleInfoWriter,
-    utc_iso_now,
-)
-from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
     CycleEndReason,
     LocalCycleOutcome,
     RankEndReason,
     RankOutcome,
     TimeoutKind,
+)
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
+    CycleInfoReporter,
+    CycleInfoRoundSnapshot,
+    CycleInfoWriter,
+    utc_iso_now,
 )
 
 
