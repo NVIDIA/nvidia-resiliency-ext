@@ -894,47 +894,55 @@ class Writer {
                 small(idx);
                 check_size(dict, n);
             } else {
-                // MetadataIndex sets offset only when it is given; pickle its __dict__.
-                const py::object state = instance_dict(idx);
-                PyObject* const fqn = dict_item(state.ptr(), a_fqn_.ptr());
-                PyObject* const index = dict_item(state.ptr(), a_index_.ptr());
-                PyObject* const offset = dict_get(state.ptr(), a_offset_.ptr());
-                if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
-                    throw py::type_error("unexpected MetadataIndex attributes");
-                }
-                const std::string_view fqn_view = utf8(fqn);
-                put_index_start([&] { string(fqn_view); },
-                                index == Py_None ? std::nullopt
-                                                            : std::optional(as_int(index)));
-                if (offset) {
-                    put_get(k_offset_);
-                    if (offset == Py_None) {
-                        put(NONE);
-                    } else {
-                        size(offset);
-                    }
-                }
-                put({SETITEMS, BUILD});
+                dump_metadata_index(idx);
             }
-
-            // _StorageInfo pickles its __dict__ without None values. transform_descriptors exists
-            // from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib pickler.
-            const py::object state = is(info, info_cls_) ? instance_dict(info) : py::object();
-            PyObject* const transforms =
-                state ? dict_get(state.ptr(), a_transform_.ptr()) : nullptr;
-            if (!state || (transforms && transforms != Py_None)) {
-                small(info);
-                check_size(dict, n);
-            } else {
-                if (PyDict_Size(state.ptr()) != (transforms ? 4 : 3)) {
-                    throw py::type_error("unexpected _StorageInfo attributes");
-                }
-                const std::string_view path = utf8(dict_item(state.ptr(), a_relative_path_.ptr()));
-                put_storage_info([&] { string(path); },
-                                 as_int(dict_item(state.ptr(), a_offset_.ptr())),
-                                 as_int(dict_item(state.ptr(), a_length_.ptr())));
-            }
+            dump_storage_info(info, dict, n);
             end_item(i, n, SETITEMS);
+        }
+    }
+
+    // MetadataIndex sets offset only when it is given; pickle its __dict__.
+    void dump_metadata_index(PyObject* idx) {
+        const py::object state = instance_dict(idx);
+        PyObject* const fqn = dict_item(state.ptr(), a_fqn_.ptr());
+        PyObject* const index = dict_item(state.ptr(), a_index_.ptr());
+        PyObject* const offset = dict_get(state.ptr(), a_offset_.ptr());
+        if (PyDict_Size(state.ptr()) != (offset ? 3 : 2)) {
+            throw py::type_error("unexpected MetadataIndex attributes");
+        }
+        const std::string_view fqn_view = utf8(fqn);
+        put_index_start([&] { string(fqn_view); },
+                        index == Py_None ? std::nullopt
+                                                    : std::optional(as_int(index)));
+        if (offset) {
+            put_get(k_offset_);
+            if (offset == Py_None) {
+                put(NONE);
+            } else {
+                size(offset);
+            }
+        }
+        put({SETITEMS, BUILD});
+    }
+
+    // _StorageInfo pickles its __dict__ without None values. transform_descriptors exists
+    // from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib pickler, after which
+    // check_size checks that the Python code it ran left dict with its n items.
+    void dump_storage_info(PyObject* info, PyObject* dict, Py_ssize_t n) {
+        const py::object state = is(info, info_cls_) ? instance_dict(info) : py::object();
+        PyObject* const transforms =
+            state ? dict_get(state.ptr(), a_transform_.ptr()) : nullptr;
+        if (!state || (transforms && transforms != Py_None)) {
+            small(info);
+            check_size(dict, n);
+        } else {
+            if (PyDict_Size(state.ptr()) != (transforms ? 4 : 3)) {
+                throw py::type_error("unexpected _StorageInfo attributes");
+            }
+            const std::string_view path = utf8(dict_item(state.ptr(), a_relative_path_.ptr()));
+            put_storage_info([&] { string(path); },
+                             as_int(dict_item(state.ptr(), a_offset_.ptr())),
+                             as_int(dict_item(state.ptr(), a_length_.ptr())));
         }
     }
 
