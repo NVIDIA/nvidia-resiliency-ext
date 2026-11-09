@@ -803,7 +803,7 @@ class Writer {
             }
         }
         put({SETITEMS, BUILD, STOP});
-        return py::bytes(out_.data(), out_.size());
+        return {out_.data(), out_.size()};
     }
 
    private:
