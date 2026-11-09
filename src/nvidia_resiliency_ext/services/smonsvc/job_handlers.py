@@ -7,14 +7,9 @@ import logging
 from typing import TYPE_CHECKING, Callable
 
 from nvidia_resiliency_ext.attribution import (
-    RESP_FILES_ANALYZED,
-    RESP_LOGS_DIR,
-    RESP_MODE,
     RESP_MODULE,
     RESP_RECOMMENDATION,
     RESP_RESULT,
-    RESP_SCHED_RESTARTS,
-    JobMode,
     parse_attrsvc_response,
 )
 from nvidia_resiliency_ext.attribution.orchestration.client_response import (
@@ -72,22 +67,13 @@ def submit_log(
     def on_success(response):
         job.log_submitted = True
         state.logs_submitted += 1
-        try:
-            result = response.json()
-        except Exception as e:
-            logger.warning(f"[{analysis_job_id}] POST 2xx but JSON parse failed: {e}")
-            return
-        mode = result.get(RESP_MODE, JobMode.SINGLE.value)
-        if mode == JobMode.SPLITLOG.value:
-            logs_dir = result.get(RESP_LOGS_DIR, "")
-            sched_restarts = result.get(RESP_SCHED_RESTARTS, 0)
-            files_analyzed = result.get(RESP_FILES_ANALYZED, 0)
-            logger.info(
-                f"[{analysis_job_id}] POST submitted (splitlog mode): {log_path} "
-                f"(logs_dir={logs_dir}, sched_restarts={sched_restarts}, files_analyzed={files_analyzed})"
-            )
-        else:
-            logger.info(f"[{analysis_job_id}] POST submitted: {log_path}")
+        # The body is not read: a 2xx is the whole contract here. The only
+        # thing it used to be read for was a splitlog-mode banner, and the
+        # direct backend does not implement that mode - attrsvc calls the
+        # selector "legacy splitlog ... unsupported by the direct backend".
+        # Monitoring for new cycle files is this service's job now, and
+        # carrying both abstractions only makes the design harder to follow.
+        logger.info(f"[{analysis_job_id}] POST submitted: {log_path}")
         job.post_success = True
         state.post_success += 1
 
