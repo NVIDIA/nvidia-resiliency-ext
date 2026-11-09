@@ -167,6 +167,17 @@ _SPECIFIC_FAILURE_CUE_RE = re.compile(
 _EXCEPTION_SUMMARY_RE = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):",
 )
+# A worker's exception re-raised in the parent. The summary repeats the class
+# and nothing else - "Caught FileNotFoundError in DataLoader worker process 0."
+# names no file - while the cause sits in the wrapped traceback below it.
+_WRAPPED_EXCEPTION_SUMMARY_RE = re.compile(
+    r"\bCaught\s+[A-Za-z_][A-Za-z0-9_.]*\s+in\s+[A-Za-z_][A-Za-z0-9_ ]*?worker process\b",
+    re.I,
+)
+
+# The wrapped traceback's own header. It opens the cause, so it is a
+# continuation of the failure already being read, not the next one.
+_ORIGINAL_TRACEBACK_RE = re.compile(r"\bOriginal Traceback \(most recent call last\)", re.I)
 _WATCHDOG_EXCEPTION_RE = re.compile(
     r"\bwatchdog thread terminated with exception:\s*"
     r"(?P<message>.*\b(?:CUDA|NCCL|c10)\s+error:.*)$",
@@ -4047,10 +4058,15 @@ def _ranked_traceback_terminal_line(
         (
             item.line
             for item in traceback_starts
-            if item.line > start_line and extract_rank(item.text) == rank
+            # "Original Traceback" opens the wrapped cause of the failure being
+            # read, so it does not end the search the way a fresh traceback does.
+            if item.line > start_line
+            and extract_rank(item.text) == rank
+            and not _ORIGINAL_TRACEBACK_RE.search(item.text)
         ),
         None,
     )
+    wrapper_line: int | None = None
     for item in exception_summaries:
         if item.line <= start_line:
             continue
@@ -4060,8 +4076,15 @@ def _ranked_traceback_terminal_line(
             continue
         if retry_lifecycle_blocks_primary(classify_retry_lifecycle(item.text)):
             continue
+        if _WRAPPED_EXCEPTION_SUMMARY_RE.search(item.text):
+            # Keep looking: the wrapped traceback below carries the cause. Held
+            # as a fallback, because a truncated log may never reach it and the
+            # wrapper still names the failure better than the header does.
+            if wrapper_line is None:
+                wrapper_line = item.line
+            continue
         return True, item.line
-    return True, None
+    return True, wrapper_line
 
 
 def _traceback_causal_role_hint(
