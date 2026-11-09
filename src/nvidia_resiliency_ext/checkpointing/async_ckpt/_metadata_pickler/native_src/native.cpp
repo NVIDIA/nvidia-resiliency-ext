@@ -1043,7 +1043,7 @@ class Writer {
     // Write a MetadataIndex up to its offset, its fqn by write_fqn: the caller writes the offset,
     // if it has one, and closes the index with put({SETITEMS, BUILD}).
     template <typename WriteFqn>
-    void put_index_start(WriteFqn&& write_fqn, std::optional<int64_t> index) {
+    void put_index_start(const WriteFqn& write_fqn, std::optional<int64_t> index) {
         put_get(index_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
         put_get(k_fqn_);
@@ -1058,7 +1058,7 @@ class Writer {
 
     // Write a _StorageInfo without transform descriptors, its relative path by write_path.
     template <typename WritePath>
-    void put_storage_info(WritePath&& write_path, int64_t offset, int64_t length) {
+    void put_storage_info(const WritePath& write_path, int64_t offset, int64_t length) {
         put_get(info_ref_);
         put({EMPTY_TUPLE, NEWOBJ, EMPTY_DICT, MARK});
         put_get(k_relative_path_);
