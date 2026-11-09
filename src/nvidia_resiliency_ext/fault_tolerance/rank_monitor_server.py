@@ -221,7 +221,7 @@ class RankMonitorServer:
         # without affecting core functionality.
         return
 
-    def _shutdown_rank(self, rank_process):
+    def _shutdown_rank(self, rank_process, timeout_stop=None):
         # First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it
         sig = self.cfg.rank_termination_signal
         try:
@@ -236,16 +236,25 @@ class RankMonitorServer:
                 f"Rank monitor could not send {sig.name} to the rank (PID={rank_process.pid}). Exception={e}"
             )
             # do nothing, most probably rank process is terminated anyway
+            return
+        if timeout_stop is not None:
+            # No await since the signal: the launcher's query, served by this event loop,
+            # cannot run before the record is set.
+            self._record_timeout_stop(timeout_stop)
 
-    def _shutdown_rank_if_alive(self, rank_process=None):
-        """Terminate `rank_process`, or by default the currently connected rank."""
+    def _shutdown_rank_if_alive(self, rank_process=None, timeout_stop=None):
+        """Terminate `rank_process`, or by default the currently connected rank.
+
+        `timeout_stop` is the draft from `_draft_timeout_stop` when a timeout triggered the
+        shutdown; it is recorded only if the worker is still alive and gets signalled.
+        """
         try:
             if rank_process is None:
                 if self.rank_info is None:
                     return
                 rank_process = Process(self.rank_info.pid)
             if rank_process.is_running() and rank_process.status() != STATUS_ZOMBIE:
-                self._shutdown_rank(rank_process)
+                self._shutdown_rank(rank_process, timeout_stop)
             else:
                 self.logger.debug(
                     f"_shutdown_rank_if_alive: rank process {rank_process.pid} is dead."
@@ -261,12 +270,15 @@ class RankMonitorServer:
     async def _handle_unhealthy_nic(self):
         self._shutdown_rank_if_alive()
 
-    async def _handle_timeout(self, timed_out_sections):
-        """Terminate the timed-out rank, first capturing it if a selected section expired."""
+    async def _handle_timeout(self, timed_out_sections, timeout_stop=None):
+        """Terminate the timed-out rank, first capturing it if a selected section expired.
+
+        `timeout_stop` is passed on to every shutdown attempt (see `_shutdown_rank_if_alive`).
+        """
         rank_info = self.rank_info
         reasons = self.timeout_dump.reasons(timed_out_sections) if self.timeout_dump else set()
         if not reasons or rank_info is None:
-            self._shutdown_rank_if_alive()
+            self._shutdown_rank_if_alive(timeout_stop=timeout_stop)
             return
         cycle = self.current_cycle
         try:
@@ -278,11 +290,14 @@ class RankMonitorServer:
         except Exception as exc:
             self.logger.warning("Could not retain timeout worker identity: %s", exc)
             # Preserve recovery without yielding or attempting diagnostics.
-            self._shutdown_rank_if_alive()
+            self._shutdown_rank_if_alive(timeout_stop=timeout_stop)
             return
 
         timer = asyncio.get_running_loop().call_later(
-            self.cfg.timeout_dump.capture_timeout, self._shutdown_rank_if_alive, rank_process
+            self.cfg.timeout_dump.capture_timeout,
+            self._shutdown_rank_if_alive,
+            rank_process,
+            timeout_stop,
         )
         captures = []
         cancelled = False
@@ -297,7 +312,7 @@ class RankMonitorServer:
             self.logger.warning("Timeout capture failed: %s", exc)
         finally:
             timer.cancel()
-            self._shutdown_rank_if_alive(rank_process)
+            self._shutdown_rank_if_alive(rank_process, timeout_stop)
         # Local filesystem writes happen after worker termination was requested,
         # so they cannot extend the capture grace period.
         self.timeout_dump.stage(captures, rank_info, cycle, reasons)
@@ -604,23 +619,34 @@ class RankMonitorServer:
             )
         return is_elapsed
 
-    def _record_timeout_stop(self, expired_sections, out_of_section_timed_out) -> None:
-        """Remember the first timeout that stops the worker in the current cycle.
+    def _draft_timeout_stop(
+        self, expired_sections, out_of_section_timed_out
+    ) -> Optional[Tuple[int, RankTimeout]]:
+        """Describe the timeout just detected in the current cycle, as (cycle, timeout).
 
+        Only a draft: it is recorded once the monitor signals the worker, so a worker
+        that exits on its own first is not reported as stopped by the monitor.
         Best effort: this runs in the periodic check, which must keep running.
         """
         try:
-            if self._timeout_stop is not None and self._timeout_stop[0] == self.current_cycle:
-                return
             if expired_sections:
                 timeout = RankTimeout(TimeoutKind.SECTION, tuple(sorted(expired_sections)))
             elif out_of_section_timed_out:
                 timeout = RankTimeout(TimeoutKind.OUT_OF_SECTION)
             else:
                 timeout = RankTimeout(TimeoutKind.HEARTBEAT)
-            self._timeout_stop = (self.current_cycle, timeout)
+            return (self.current_cycle, timeout)
         except Exception as e:
-            self.logger.warning(f"Failed to record the timeout: {e}")
+            self.logger.warning(f"Failed to describe the timeout: {e}")
+            return None
+
+    def _record_timeout_stop(self, timeout_stop: Tuple[int, RankTimeout]) -> None:
+        """Remember the first timeout that stopped the worker in its cycle, for launcher queries."""
+        recorded = self._timeout_stop
+        # Cycles only grow; a late shutdown of an earlier cycle must not replace a newer record.
+        if recorded is not None and recorded[0] >= timeout_stop[0]:
+            return
+        self._timeout_stop = timeout_stop
 
     async def _handle_timeout_query_msg(self, msg: TimeoutQueryMsg, writer):
         timeout = None
@@ -638,11 +664,12 @@ class RankMonitorServer:
                 expired_sections = self._expired_sections(curr_time)
                 out_of_section_timed_out = self._is_out_of_section_timeout_elapsed(curr_time)
                 if hb_timed_out or expired_sections or out_of_section_timed_out:
-                    # Record before stopping the worker: the launcher queries the record
-                    # only after it sees the worker exit.
+                    timeout_stop = None
                     if self.cfg.is_cycle_outcome_enabled:
-                        self._record_timeout_stop(expired_sections, out_of_section_timed_out)
-                    await self._handle_timeout(expired_sections)
+                        timeout_stop = self._draft_timeout_stop(
+                            expired_sections, out_of_section_timed_out
+                        )
+                    await self._handle_timeout(expired_sections, timeout_stop)
             await asyncio.sleep(self.cfg.workload_check_interval)
 
     async def _periodic_restart_check(self):

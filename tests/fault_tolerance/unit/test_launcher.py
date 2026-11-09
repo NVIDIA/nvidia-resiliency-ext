@@ -36,6 +36,8 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
     RankEndReason,
     RankTimeout,
     TimeoutKind,
+    decode_outcome,
+    encode_outcome,
 )
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
@@ -2081,3 +2083,70 @@ class TestRecordCycleOutcome:
         )
         with pytest.raises(launcher.SignalException):
             agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
+
+
+class TestWriteCycleOutcome:
+    def _agent_with_outcome(self):
+        agent = _outcome_agent()
+        agent._rdzv_handler = MagicMock()
+        agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
+        return agent, agent._rdzv_handler._barrier_state.append_cycle_outcome
+
+    def test_outcome_is_appended_under_its_cycle(self):
+        agent, append = self._agent_with_outcome()
+        agent._write_cycle_outcome()
+
+        append.assert_called_once_with(3, encode_outcome(agent._cycle_outcome))
+        assert decode_outcome(append.call_args.args[1]) == agent._cycle_outcome
+
+    def test_nothing_is_written_without_an_outcome_of_this_cycle(self):
+        agent, append = self._agent_with_outcome()
+        agent._get_global_cycle_number.return_value = 4  # recorded outcome is of cycle 3
+        agent._write_cycle_outcome()
+        agent._cycle_outcome = None  # outcomes disabled, or recording failed
+        agent._write_cycle_outcome()
+        append.assert_not_called()
+
+    def test_store_failure_is_logged_and_does_not_interrupt_the_caller(self):
+        agent, append = self._agent_with_outcome()
+        append.side_effect = RuntimeError("store unreachable")
+        with patch.object(launcher, "logger") as logger:
+            agent._write_cycle_outcome()
+        logger.warning.assert_called_once()
+
+    def test_termination_signal_propagates(self):
+        agent, append = self._agent_with_outcome()
+        append.side_effect = launcher.SignalException("terminated", signal.SIGTERM)
+        with pytest.raises(launcher.SignalException):
+            agent._write_cycle_outcome()
+
+    @pytest.mark.parametrize("open_rendezvous", [True, False], ids=["failed", "peer_restart"])
+    def test_restart_writes_after_opening_the_round_and_before_rejoining(self, open_rendezvous):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 1
+        agent._worker_group = MagicMock()
+        calls = MagicMock()
+        agent._open_rendezvous_for_restart = calls.open_rendezvous
+        agent._write_cycle_outcome = calls.write
+        agent._restart_workers = calls.restart
+
+        assert agent._handle_restart_decision(
+            "trainer", MagicMock(), "[%s] restarting", open_rendezvous=open_rendezvous
+        )
+
+        expected = [unittest.mock.call.write(), unittest.mock.call.restart(agent._worker_group)]
+        if open_rendezvous:
+            expected.insert(0, unittest.mock.call.open_rendezvous())
+        assert calls.mock_calls == expected
+
+    def test_no_write_when_there_is_no_restart(self):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 0
+        agent._write_cycle_outcome = MagicMock()
+
+        assert not agent._handle_restart_decision("trainer", MagicMock(), "[%s] restarting")
+        agent._write_cycle_outcome.assert_not_called()

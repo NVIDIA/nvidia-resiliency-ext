@@ -30,6 +30,13 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
     CycleInfoWriter,
     utc_iso_now,
 )
+from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import (
+    CycleEndReason,
+    LocalCycleOutcome,
+    RankEndReason,
+    RankOutcome,
+    TimeoutKind,
+)
 
 
 @pytest.fixture
@@ -326,6 +333,142 @@ def test_cycle_info_reporter_closes_previous_cycle_on_next_start(tmp_dir):
     )
     assert writer.write_cycle_start.call_count == 2
     assert writer.write_cycle_start.call_args_list[1].kwargs["cycle_number"] == 1
+
+
+def _launcher_outcome(node, node_end, detected_at, ranks):
+    return LocalCycleOutcome(3, node, node_end, detected_at, tuple(ranks))
+
+
+def test_cycle_info_writer_update_cycle_outcomes(tmp_dir):
+    """Outcomes are added to the existing file; a second update replaces them."""
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start("job1", 0, 3, "2024-01-01T00:00:00Z", "/log", "node[001-002]")
+    writer.update_cycle_end("job1", 0, 3, "2024-01-01T00:01:00Z")
+    first = [{"node": "node001", "end": "failed", "detected_at": "x", "ranks": []}]
+    second = [
+        {
+            "node": "node002",
+            "end": "failed",
+            "detected_at": "2024-01-01T00:00:59Z",
+            "ranks": [
+                {"global_rank": 4, "local_rank": 0, "pid": 100, "end": "failed", "exitcode": -9}
+            ],
+        }
+    ]
+
+    def update(outcomes, reported):
+        return lambda: {
+            "launcher_outcomes": outcomes,
+            "outcome_launchers_expected": 2,
+            "outcome_launchers_reported": reported,
+        }
+
+    writer.update_cycle_later("job1", 0, 3, update(first, 2))
+    writer.update_cycle_later("job1", 0, 3, update(second, 1))
+    writer.update_cycle_later("job1", 0, 3, lambda: None)  # nothing to add: file unchanged
+    writer.shutdown()
+
+    with open(os.path.join(tmp_dir, "cycle_info.job1.0.3")) as f:
+        data = json.load(f)
+    assert data["cycle_end_time"] == "2024-01-01T00:01:00Z"
+    assert data["launcher_outcomes"] == [
+        {
+            "node": "node002",
+            "end": "failed",
+            "detected_at": "2024-01-01T00:00:59Z",
+            "ranks": [
+                {
+                    "global_rank": 4,
+                    "local_rank": 0,
+                    "pid": 100,
+                    "end": "failed",
+                    "exitcode": -9,
+                    "timeout_kind": "",
+                    "timeout_sections": [],
+                    "exit_details": "",
+                }
+            ],
+        }
+    ]
+    assert (data["outcome_launchers_expected"], data["outcome_launchers_reported"]) == (2, 1)
+    assert data["generation"] == "3"  # create, end, and two outcome updates
+
+
+def test_cycle_info_reporter_reports_cycle_outcomes(tmp_dir):
+    """Launchers that observed the end are listed by detection time; peers are counted."""
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    reporter.report_cycle_start(
+        CycleInfoRoundSnapshot(
+            cycle_number=3,
+            active_node_addrs=["node001", "node002", "node003"],
+            active_ranks=[0, 1, 2],
+        )
+    )
+    stopped = RankOutcome(8, 0, 300, RankEndReason.STOPPED_BY_LAUNCHER)
+    timed_out = RankOutcome(
+        9,
+        1,
+        301,
+        RankEndReason.STOPPED_BY_RMON,
+        exitcode=-9,
+        timeout_kind=TimeoutKind.SECTION,
+        timeout_sections=("step",),
+    )
+    late = _launcher_outcome("node003", CycleEndReason.FAILED, 20.5, [stopped, timed_out])
+    early = _launcher_outcome(
+        "node001", CycleEndReason.FAILED, 10.25, [RankOutcome(0, 0, 100, RankEndReason.FAILED, 1)]
+    )
+    peer = _launcher_outcome("node002", CycleEndReason.PEER_RESTART, 11.0, [stopped])
+
+    collect = MagicMock(return_value=[late, peer, early])
+    assert reporter.report_cycle_outcomes(3, collect)
+
+    # Only enqueued: collecting and formatting happen when the writer builds the update.
+    collect.assert_not_called()
+    job_id, attempt_index, cycle_number, build_update = writer.update_cycle_later.call_args.args
+    assert (job_id, attempt_index, cycle_number) == ("job1", 0, 3)
+    payload = build_update()
+    assert (payload["outcome_launchers_expected"], payload["outcome_launchers_reported"]) == (3, 3)
+    assert [o["node"] for o in payload["launcher_outcomes"]] == ["node001", "node003"]
+    assert payload["launcher_outcomes"][0]["detected_at"] == "1970-01-01T00:00:10.250000Z"
+    assert payload["launcher_outcomes"][1]["ranks"] == [
+        {
+            "global_rank": 8,
+            "local_rank": 0,
+            "pid": 300,
+            "end": "stopped_by_launcher",
+            "timeout_sections": [],
+        },
+        {
+            "global_rank": 9,
+            "local_rank": 1,
+            "pid": 301,
+            "end": "stopped_by_rank_monitor",
+            "timeout_sections": ["step"],
+            "exitcode": -9,
+            "timeout_kind": "section",
+        },
+    ]
+
+
+def test_cycle_info_reporter_expected_launchers_unknown_for_unseen_cycle(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    peer = _launcher_outcome("node002", CycleEndReason.PEER_RESTART, 11.0, [])
+
+    reporter.report_cycle_outcomes(3, lambda: [peer])
+
+    payload = writer.update_cycle_later.call_args.args[3]()
+    assert (payload["outcome_launchers_expected"], payload["outcome_launchers_reported"]) == (0, 1)
+    assert payload["launcher_outcomes"] == []
+
+
+def test_cycle_info_reporter_no_update_without_outcomes(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    reporter.report_cycle_outcomes(3, lambda: [])
+    assert writer.update_cycle_later.call_args.args[3]() is None
 
 
 def test_utc_iso_now_format():

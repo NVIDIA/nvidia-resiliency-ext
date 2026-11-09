@@ -1679,7 +1679,9 @@ class _RendezvousBarrierState:
             # Do not hold the rendezvous release on attribution I/O. The submit helper
             # records the cycle before issuing the bounded attrsvc POST.
             self._submit_attribution_log_for_round(closed_round)
-            # Also after the release: participants do not wait for this read.
+            # Keep this short: after returning, this host still publishes the bootstrap
+            # store info (MASTER_ADDR/MASTER_PORT, as group rank 0), which every launcher
+            # waits for. Only the store read happens here; the rest is queued.
             self._collect_cycle_outcomes_as_host(closed_round)
             return
 
@@ -1687,8 +1689,9 @@ class _RendezvousBarrierState:
         """Collect the launchers' outcome records of the cycle that preceded `closed_round`.
 
         Launchers append their record before rejoining, so once round N+1 has closed, the
-        records of every launcher that rejoined it are in the store. This never waits:
-        a record appended after the read is not collected.
+        records of every launcher that rejoined it are in the store. Only the store read
+        happens here; decoding and writing the records happen on the cycle info writer
+        thread. This never waits: a record appended after the read is not collected.
         """
         if self._cycle_info_reporter is None or closed_round < 1:
             return
@@ -1697,16 +1700,39 @@ class _RendezvousBarrierState:
             start = time.monotonic()
             data = self._read_cycle_outcome_data(cycle)
             read_elapsed = time.monotonic() - start
-            start = time.monotonic()
-            outcomes, malformed = self._decode_cycle_outcomes(cycle, data)
-            decode_elapsed = time.monotonic() - start
         except SignalException:
             raise
         except Exception as e:
-            log.warning("Failed to collect the outcomes of cycle %s: %s", cycle, e, exc_info=True)
+            log.warning("Failed to read the outcomes of cycle %s: %s", cycle, e, exc_info=True)
             return
-        if not outcomes and not malformed:
+        if not data:
             return
+        try:
+            self._cycle_info_reporter.report_cycle_outcomes(
+                cycle, lambda: self._decode_collected_outcomes(cycle, data, read_elapsed)
+            )
+        except Exception as e:
+            log.warning(
+                "Failed to report the outcomes of cycle %s to cycle info: %s",
+                cycle,
+                e,
+                exc_info=True,
+            )
+
+    def _decode_collected_outcomes(
+        self, cycle: int, data: bytes, read_elapsed: float
+    ) -> List[LocalCycleOutcome]:
+        """Decode the outcome records of `cycle` read from the store; empty on failure.
+
+        Runs on the cycle info writer thread.
+        """
+        try:
+            start = time.monotonic()
+            outcomes, malformed = self._decode_cycle_outcomes(cycle, data)
+            decode_elapsed = time.monotonic() - start
+        except Exception as e:
+            log.warning("Failed to decode the outcomes of cycle %s: %s", cycle, e, exc_info=True)
+            return []
         ends = defaultdict(int)
         for outcome in outcomes:
             ends[outcome.node_end.value] += 1
@@ -1721,17 +1747,7 @@ class _RendezvousBarrierState:
             read_elapsed * 1000,
             decode_elapsed * 1000,
         )
-        if not outcomes:
-            return
-        try:
-            self._cycle_info_reporter.report_cycle_outcomes(cycle, outcomes)
-        except Exception as e:
-            log.warning(
-                "Failed to report the outcomes of cycle %s to cycle info: %s",
-                cycle,
-                e,
-                exc_info=True,
-            )
+        return outcomes
 
     def _read_cycle_outcome_data(self, cycle: int) -> bytes:
         """Read and remove the outcome records of `cycle` from the store; empty if none."""

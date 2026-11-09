@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import RankTimeout, TimeoutKind
 from nvidia_resiliency_ext.fault_tolerance.data import InitMsg, RankInfo
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.timeout_dump import (
@@ -626,6 +627,41 @@ def test_original_worker_terminated_across_connection_changes(
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=2)
+
+
+@pytest.mark.parametrize("exits_during_capture", [False, True])
+def test_timeout_is_recorded_only_if_the_monitor_stops_the_worker(
+    cfg, monkeypatch, exits_during_capture
+):
+    from psutil import Process
+
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.Process", Process
+    )
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    server = monitor(cfg)
+    server.rank_info.pid = worker.pid
+    server._shutdown_rank_if_alive = RankMonitorServer._shutdown_rank_if_alive.__get__(server)
+    draft = (0, RankTimeout(TimeoutKind.SECTION, ("step",)))
+
+    async def capture(**kwargs):
+        if exits_during_capture:
+            worker.kill()
+            worker.wait(timeout=2)
+
+    try:
+        with patch(
+            "nvidia_resiliency_ext.fault_tolerance.timeout_dump.capture_manager.create_capture"
+        ) as cls:
+            cls.return_value.run = capture
+            cls.return_value.is_running.return_value = False
+            asyncio.run(server._handle_timeout({"step"}, draft))
+        worker.wait(timeout=2)
+        assert server._timeout_stop == (None if exits_during_capture else draft)
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+        worker.wait(timeout=2)
 
 
 def test_reused_pid_is_not_signalled(cfg):

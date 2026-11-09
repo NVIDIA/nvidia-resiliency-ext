@@ -28,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from google.protobuf import json_format
 
@@ -176,18 +176,20 @@ class CycleInfoWriter:
             )
         )
 
-    def update_cycle_outcomes(
+    def update_cycle_later(
         self,
         job_id: str,
         attempt_index: int,
         cycle_number: int,
-        launcher_outcomes: Sequence[Dict[str, Any]],
-        launchers_expected: int,
-        launchers_reported: int,
+        build_update: Callable[[], Optional[Dict[str, Any]]],
     ) -> None:
-        """Enqueue an atomic update of the cycle file with the launchers' outcomes."""
+        """Enqueue an atomic update of the cycle file whose payload is built on the writer thread.
+
+        For updates that are expensive to prepare: the caller only enqueues `build_update`.
+        If it returns no payload, the file is left unchanged.
+        """
         if self._shutdown_requested:
-            logger.warning("CycleInfoWriter already shutdown, ignoring update_cycle_outcomes")
+            logger.warning("CycleInfoWriter already shutdown, ignoring update_cycle_later")
             return
         self._queue.put(
             _CycleInfoTask(
@@ -195,11 +197,7 @@ class CycleInfoWriter:
                 job_id=job_id,
                 attempt_index=attempt_index,
                 cycle_number=cycle_number,
-                update_payload={
-                    "launcher_outcomes": list(launcher_outcomes),
-                    "outcome_launchers_expected": launchers_expected,
-                    "outcome_launchers_reported": launchers_reported,
-                },
+                build_update=build_update,
             )
         )
 
@@ -245,12 +243,25 @@ class CycleInfoWriter:
                 if task.op == _CycleInfoTask.CREATE:
                     self._do_create(task.kwargs["payload"])
                 elif task.op == _CycleInfoTask.UPDATE:
+                    enqueued_at = task.enqueued_at
+                    prepare_seconds = 0.0
+                    update_payload = task.kwargs.get("update_payload")
+                    build_update = task.kwargs.get("build_update")
+                    if build_update is not None:
+                        start = time.monotonic()
+                        update_payload = build_update()
+                        prepare_seconds = time.monotonic() - start
+                        # Report queueing and preparation separately.
+                        enqueued_at += prepare_seconds
+                    if not update_payload:
+                        continue
                     self._do_update(
                         task.kwargs["job_id"],
                         task.kwargs["attempt_index"],
                         task.kwargs["cycle_number"],
-                        task.kwargs["update_payload"],
-                        enqueued_at=task.enqueued_at,
+                        update_payload,
+                        enqueued_at=enqueued_at,
+                        prepare_ms=prepare_seconds * 1000,
                     )
             except Exception as e:
                 logger.exception("CycleInfoWriter task failed: %s", e)
@@ -307,6 +318,7 @@ class CycleInfoWriter:
         cycle_number: int,
         update_payload: Dict[str, Any],
         enqueued_at: Optional[float] = None,
+        prepare_ms: float = 0.0,
     ) -> None:
         """Update the cycle info file by applying update_payload; increment generation by one."""
         start = time.monotonic()
@@ -341,12 +353,13 @@ class CycleInfoWriter:
                 f.flush()
             os.replace(tmp_path, path)
             logger.debug(
-                "Updated %s (%s, %d bytes) in %.1fms after %.1fms queued",
+                "Updated %s (%s, %d bytes) in %.1fms after %.1fms queued, %.1fms preparing",
                 filename,
                 ", ".join(update_payload),
                 len(text),
                 (time.monotonic() - start) * 1000,
                 (start - enqueued_at) * 1000 if enqueued_at is not None else 0.0,
+                prepare_ms,
             )
         except (OSError, json_format.ParseError) as e:
             logger.warning("Failed to update cycle info in %s: %s", path, e)
@@ -437,32 +450,40 @@ class CycleInfoReporter:
         return True
 
     def report_cycle_outcomes(
-        self, cycle_number: int, outcomes: Sequence[LocalCycleOutcome]
+        self, cycle_number: int, collect: Callable[[], Sequence[LocalCycleOutcome]]
     ) -> bool:
         """Add the launchers' outcomes of `cycle_number` to its cycle info file.
 
-        Launchers that only followed a peer's restart are counted but not listed; the
-        listed ones are sorted by when they observed the end.
+        `collect` returns the outcomes; it runs on the writer thread, together with the
+        formatting and the write, so the caller only enqueues (e.g. decoding records it
+        already read). Launchers that only followed
+        a peer's restart are counted but not listed; the listed ones are sorted by when they
+        observed the end.
         """
         if self._shutdown:
             return False
         job_id, attempt_index = self._resolve_file_namespace()
-        listed = sorted(
-            (
-                outcome
-                for outcome in outcomes
-                if outcome.node_end is not CycleEndReason.PEER_RESTART
-            ),
-            key=lambda outcome: (outcome.detected_at, outcome.node),
-        )
-        self._writer.update_cycle_outcomes(
-            job_id=job_id,
-            attempt_index=attempt_index,
-            cycle_number=cycle_number,
-            launcher_outcomes=[self._format_outcome(outcome) for outcome in listed],
-            launchers_expected=self._active_launchers.pop(cycle_number, 0),
-            launchers_reported=len(outcomes),
-        )
+        launchers_expected = self._active_launchers.pop(cycle_number, 0)
+
+        def build_update() -> Optional[Dict[str, Any]]:
+            outcomes = collect()
+            if not outcomes:
+                return None
+            listed = sorted(
+                (
+                    outcome
+                    for outcome in outcomes
+                    if outcome.node_end is not CycleEndReason.PEER_RESTART
+                ),
+                key=lambda outcome: (outcome.detected_at, outcome.node),
+            )
+            return {
+                "launcher_outcomes": [self._format_outcome(outcome) for outcome in listed],
+                "outcome_launchers_expected": launchers_expected,
+                "outcome_launchers_reported": len(outcomes),
+            }
+
+        self._writer.update_cycle_later(job_id, attempt_index, cycle_number, build_update)
         return True
 
     def shutdown(self) -> None:
@@ -513,6 +534,8 @@ class CycleInfoReporter:
             }
             if rank.exitcode is not None:
                 fields["exitcode"] = rank.exitcode
+            if rank.exitdetails:
+                fields["exit_details"] = rank.exitdetails
             if rank.timeout_kind is not None:
                 fields["timeout_kind"] = rank.timeout_kind.value
             ranks.append(fields)

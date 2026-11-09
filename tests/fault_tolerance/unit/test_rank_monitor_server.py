@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import torch
 import torch.multiprocessing
-from psutil import STATUS_SLEEPING, STATUS_ZOMBIE
+from psutil import STATUS_SLEEPING, STATUS_ZOMBIE, NoSuchProcess
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_outcome import RankTimeout, TimeoutKind
@@ -541,7 +541,7 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         ):
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(server._periodic_rank_check())
-        server._handle_timeout.assert_awaited_once_with(set())
+        server._handle_timeout.assert_awaited_once_with(set(), None)
 
     def test_zombie_rank_is_not_signalled(self):
         server = self._create_server(rank_section_timeouts={"step": 30.0})
@@ -583,15 +583,15 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
     def _run_one_check(self, server, hb_timed_out, expired_sections, out_of_section_timed_out):
         """Run one pass of the periodic check.
 
-        Returns a mock whose `record` and `handle_timeout` children stand in for
-        _record_timeout_stop and _handle_timeout; `mock_calls` lists both in call order.
+        Returns a mock whose `draft` and `handle_timeout` children stand in for
+        _draft_timeout_stop and _handle_timeout; `mock_calls` lists both in call order.
         """
         server.rank_info = RankInfo(global_rank=0, local_rank=0, pid=12345, host="node0")
         server._is_hb_timeout_elapsed = MagicMock(return_value=hb_timed_out)
         server._expired_sections = MagicMock(return_value=expired_sections)
         server._is_out_of_section_timeout_elapsed = MagicMock(return_value=out_of_section_timed_out)
         calls = MagicMock()
-        server._record_timeout_stop = calls.record
+        server._draft_timeout_stop = calls.draft
         server._handle_timeout = calls.handle_timeout
         calls.handle_timeout.side_effect = AsyncMock()
         with patch(
@@ -602,7 +602,14 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
                 asyncio.run(server._periodic_rank_check())
         return calls
 
-    def test_timeout_is_recorded_before_the_worker_is_stopped(self):
+    @staticmethod
+    def _process(is_running=True, status=STATUS_SLEEPING):
+        process = MagicMock()
+        process.is_running.return_value = is_running
+        process.status.return_value = status
+        return process
+
+    def test_detected_timeout_is_drafted_and_passed_to_the_shutdown(self):
         triggers = {
             "heartbeat": (True, set(), False),
             "section": (False, {"step"}, False),
@@ -610,26 +617,29 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
         }
         for name, (hb, sections, oos) in triggers.items():
             with self.subTest(trigger=name):
-                calls = self._run_one_check(self._create_server(), hb, sections, oos)
+                server = self._create_server()
+                calls = self._run_one_check(server, hb, sections, oos)
                 self.assertEqual(
                     calls.mock_calls,
                     [
-                        unittest.mock.call.record(sections, oos),
-                        unittest.mock.call.handle_timeout(sections),
+                        unittest.mock.call.draft(sections, oos),
+                        unittest.mock.call.handle_timeout(sections, calls.draft.return_value),
                     ],
                 )
+                # Detection alone records nothing.
+                self.assertIsNone(server._timeout_stop)
 
-    def test_timeout_is_not_recorded_when_cycle_outcomes_are_disabled(self):
+    def test_no_draft_when_cycle_outcomes_are_disabled(self):
         for cycle_info_dir, cycle_info_outcomes in ((None, True), ("/cycle_infos", False)):
             with self.subTest(cycle_info_dir=cycle_info_dir, outcomes=cycle_info_outcomes):
                 server = self._create_server(cycle_info_dir, cycle_info_outcomes)
                 calls = self._run_one_check(server, False, {"step"}, False)
-                calls.record.assert_not_called()
-                calls.handle_timeout.assert_called_once_with({"step"})
+                calls.draft.assert_not_called()
+                calls.handle_timeout.assert_called_once_with({"step"}, None)
 
-    def test_nothing_is_recorded_without_a_timeout(self):
+    def test_nothing_is_drafted_without_a_timeout(self):
         calls = self._run_one_check(self._create_server(), False, set(), False)
-        calls.record.assert_not_called()
+        calls.draft.assert_not_called()
         calls.handle_timeout.assert_not_called()
 
     def test_timeout_kind_and_sections(self):
@@ -647,30 +657,74 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
         for sections, oos, expected in cases:
             with self.subTest(sections=sections, out_of_section=oos):
                 server = self._create_server()
-                server._record_timeout_stop(sections, oos)
-                self.assertEqual(server._timeout_stop, (3, expected))
+                self.assertEqual(server._draft_timeout_stop(sections, oos), (3, expected))
 
-    def test_first_timeout_of_a_cycle_is_kept(self):
-        server = self._create_server()
-        server._record_timeout_stop({"step"}, False)
-        server._record_timeout_stop(set(), True)
-        self.assertEqual(server._timeout_stop, (3, RankTimeout(TimeoutKind.SECTION, ("step",))))
-
-    def test_record_of_an_earlier_cycle_is_replaced(self):
-        server = self._create_server()
-        server._timeout_stop = (2, RankTimeout(TimeoutKind.SECTION, ("step",)))
-        server._record_timeout_stop(set(), True)
-        self.assertEqual(server._timeout_stop, (3, RankTimeout(TimeoutKind.OUT_OF_SECTION)))
-
-    def test_recording_failure_is_logged_and_does_not_raise(self):
+    def test_draft_failure_is_logged_and_does_not_raise(self):
         server = self._create_server()
         with patch(
             "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.RankTimeout",
             side_effect=RuntimeError("boom"),
         ):
-            server._record_timeout_stop({"step"}, False)
-        self.assertIsNone(server._timeout_stop)
+            self.assertIsNone(server._draft_timeout_stop({"step"}, False))
         server.logger.warning.assert_called_once()
+
+    def test_draft_is_passed_to_the_shutdown_without_a_timeout_dump(self):
+        server = self._create_server()
+        server.rank_info = RankInfo(global_rank=0, local_rank=0, pid=12345, host="node0")
+        server._shutdown_rank_if_alive = MagicMock()
+        draft = (3, RankTimeout(TimeoutKind.HEARTBEAT))
+        asyncio.run(server._handle_timeout(set(), draft))
+        server._shutdown_rank_if_alive.assert_called_once_with(timeout_stop=draft)
+
+    def test_draft_is_recorded_when_the_worker_is_signalled(self):
+        server = self._create_server()
+        draft = (3, RankTimeout(TimeoutKind.SECTION, ("step",)))
+        process = self._process()
+        server._shutdown_rank_if_alive(process, draft)
+        process.send_signal.assert_called()
+        self.assertEqual(server._timeout_stop, draft)
+
+    def test_draft_is_dropped_when_the_worker_already_exited(self):
+        """A worker that exits on its own before the monitor signals it is not stopped by it."""
+        cases = {
+            "exited": self._process(is_running=False),
+            "zombie": self._process(status=STATUS_ZOMBIE),
+            "gone_while_signalled": self._process(),
+        }
+        cases["gone_while_signalled"].send_signal.side_effect = NoSuchProcess(12345)
+        for name, process in cases.items():
+            with self.subTest(case=name):
+                server = self._create_server()
+                server._shutdown_rank_if_alive(process, (3, RankTimeout(TimeoutKind.HEARTBEAT)))
+                self.assertIsNone(server._timeout_stop)
+
+    def test_shutdown_without_a_draft_records_nothing(self):
+        """Health-check shutdowns are not timeouts."""
+        server = self._create_server()
+        process = self._process()
+        server._shutdown_rank_if_alive(process)
+        process.send_signal.assert_called()
+        self.assertIsNone(server._timeout_stop)
+
+    def test_first_timeout_of_a_cycle_is_kept(self):
+        server = self._create_server()
+        first = (3, RankTimeout(TimeoutKind.SECTION, ("step",)))
+        server._record_timeout_stop(first)
+        server._record_timeout_stop((3, RankTimeout(TimeoutKind.OUT_OF_SECTION)))
+        self.assertEqual(server._timeout_stop, first)
+
+    def test_record_of_an_earlier_cycle_is_replaced(self):
+        server = self._create_server()
+        server._timeout_stop = (2, RankTimeout(TimeoutKind.SECTION, ("step",)))
+        server._record_timeout_stop((3, RankTimeout(TimeoutKind.OUT_OF_SECTION)))
+        self.assertEqual(server._timeout_stop, (3, RankTimeout(TimeoutKind.OUT_OF_SECTION)))
+
+    def test_late_draft_of_an_earlier_cycle_is_ignored(self):
+        server = self._create_server()
+        newer = (3, RankTimeout(TimeoutKind.OUT_OF_SECTION))
+        server._timeout_stop = newer
+        server._record_timeout_stop((2, RankTimeout(TimeoutKind.SECTION, ("step",))))
+        self.assertEqual(server._timeout_stop, newer)
 
 
 if __name__ == '__main__':

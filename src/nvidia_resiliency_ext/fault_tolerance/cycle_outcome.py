@@ -30,20 +30,16 @@ class CycleEndReason(str, Enum):
 
 
 class RankEndReason(str, Enum):
-    """How one local worker ended."""
-
     COMPLETED = "completed"
     FAILED = "failed"  # exited with a nonzero code or a signal on its own
     STOPPED_BY_LAUNCHER = "stopped_by_launcher"
-    # Exited after its rank monitor detected a timeout. The monitor records the timeout
-    # before signaling, so a worker that died on its own just after detection (or during
-    # a timeout dump capture) is reported here too: the monitor saw the hang first.
+    # Exited after its rank monitor detected a timeout and signalled it. The monitor records
+    # the timeout only once it signals the worker, so a worker that exits on its own after
+    # detection (e.g. during a timeout dump capture) is reported as FAILED.
     STOPPED_BY_RMON = "stopped_by_rank_monitor"
 
 
 class TimeoutKind(str, Enum):
-    """Which rank monitor timeout stopped the worker."""
-
     HEARTBEAT = "heartbeat"  # initial or subsequent heartbeat
     SECTION = "section"
     OUT_OF_SECTION = "out_of_section"
@@ -51,8 +47,6 @@ class TimeoutKind(str, Enum):
 
 @dataclass(frozen=True)
 class RankTimeout:
-    """The rank monitor timeout that stopped a worker, as reported to the launcher."""
-
     kind: TimeoutKind
     sections: tuple[str, ...] = ()  # set only for SECTION
 
@@ -64,6 +58,9 @@ class RankOutcome:
     pid: int
     end: RankEndReason
     exitcode: Optional[int] = None  # negative for a signal, as reported by torchelastic
+    # How the worker ended beyond its exit code, e.g. an exception summary. Not captured
+    # yet: always empty for now.
+    exitdetails: str = ""
     timeout_kind: Optional[TimeoutKind] = None  # set only when end is STOPPED_BY_RMON
     # Workload section names; several open sections can time out at once.
     timeout_sections: tuple[str, ...] = ()
@@ -74,8 +71,40 @@ class LocalCycleOutcome:
     cycle: int
     node: str
     node_end: CycleEndReason
-    detected_at: float  # time.time() when the launcher observed the end
+    # When the launcher observed the end: time.time(), seconds since the Unix epoch in UTC.
+    # Comparable across nodes only up to their clock skew (NTP/chrony, typically
+    # milliseconds); NVRx does not synchronize or correct node clocks.
+    detected_at: float
     ranks: tuple[RankOutcome, ...]
+
+
+# global start
+
+
+class JobEndReason(str, Enum):
+    """How the cycle ended for the job, as concluded from all launchers' outcomes."""
+
+    COMPLETED = "completed"
+    RANK_FAILURE = "rank_failure"  # a worker failed on its own
+    TIMEOUT_FAILURE = "timeout_failure"  # a rank monitor stopped a hung worker
+    TERMINATED = "terminated"  # a no-restart decision
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class CycleSummary:
+    # aggregated outcomes for the whole job
+    cycle: int
+    outcomes: tuple[LocalCycleOutcome, ...]  # one per reporting launcher, de-duplicated
+    missing: tuple[
+        int, ...
+    ] = ()  # group ranks of active launchers that did not report - may end up not needing that
+    # Filled by optional aggregation steps; None means "not computed".
+    end_reason: Optional[JobEndReason] = None
+    first_detected: tuple[int, ...] = ()  # group ranks that detected an issue first
+
+
+# global end
 
 
 def build_local_cycle_outcome(
@@ -115,6 +144,7 @@ def build_local_cycle_outcome(
                 pid=worker.id,
                 end=end,
                 exitcode=exitcode,
+                exitdetails="",
                 timeout_kind=timeout.kind if timeout is not None else None,
                 timeout_sections=timeout.sections if timeout is not None else (),
             )
@@ -131,10 +161,12 @@ def build_local_cycle_outcome(
 # Wire format: one JSON object per line, so records appended to one store key can be split
 # on newlines (JSON escapes newlines inside strings). Ranks are positional lists to keep
 # records small; bump WIRE_VERSION when changing the layout.
-WIRE_VERSION = 1
-# Bound each record so a workload with many or long section names cannot grow it.
+WIRE_VERSION = 2
+# Bound each record so a workload with many or long section names, or long exit details,
+# cannot grow it.
 MAX_TIMEOUT_SECTIONS = 4
 MAX_SECTION_NAME_LEN = 64
+MAX_EXIT_DETAILS_LEN = 256
 
 
 def encode_outcome(outcome: LocalCycleOutcome) -> bytes:
@@ -152,6 +184,7 @@ def encode_outcome(outcome: LocalCycleOutcome) -> bytes:
                 rank.pid,
                 rank.end.value,
                 rank.exitcode,
+                rank.exitdetails[:MAX_EXIT_DETAILS_LEN],
                 rank.timeout_kind.value if rank.timeout_kind is not None else None,
                 [
                     name[:MAX_SECTION_NAME_LEN]
@@ -181,10 +214,13 @@ def decode_outcome(line: bytes) -> LocalCycleOutcome:
                 pid=pid,
                 end=RankEndReason(end),
                 exitcode=exitcode,
+                exitdetails=exitdetails,
                 timeout_kind=TimeoutKind(kind) if kind is not None else None,
                 timeout_sections=tuple(sections),
             )
-            for global_rank, local_rank, pid, end, exitcode, kind, sections in record["r"]
+            for global_rank, local_rank, pid, end, exitcode, exitdetails, kind, sections in record[
+                "r"
+            ]
         )
         return LocalCycleOutcome(
             cycle=record["c"],

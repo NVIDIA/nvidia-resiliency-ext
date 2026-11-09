@@ -94,7 +94,7 @@ message NVRxRankOutcome {
   uint32 pid = 3;
 
   // "completed", "failed" (exited on its own), "stopped_by_launcher", or
-  // "stopped_by_rank_monitor" (its rank monitor detected a timeout first)
+  // "stopped_by_rank_monitor" (its rank monitor detected a timeout and signalled it)
   string end = 4;
 
   // Worker exit code when it exited; negative for a signal
@@ -104,4 +104,8 @@ message NVRxRankOutcome {
   // and the workload sections that timed out
   string timeout_kind = 6;
   repeated string timeout_sections = 7;
+
+  // How the worker ended beyond its exit code, e.g. an exception summary; empty when
+  // not captured
+  string exit_details = 8;
 }
