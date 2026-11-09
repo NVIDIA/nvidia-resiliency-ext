@@ -51,6 +51,8 @@ constexpr char EMPTY_DICT = '}', EMPTY_LIST = ']', EMPTY_TUPLE = ')';
 constexpr char SETITEMS = 'u', APPENDS = 'e', BUILD = 'b', NEWOBJ = '\x81', REDUCE = 'R';
 constexpr char STACK_GLOBAL = '\x93', MEMOIZE = '\x94', NONE = 'N';
 constexpr char TUPLE = 't', TUPLE1 = '\x85', TUPLE2 = '\x86', TUPLE3 = '\x87';
+// The opcodes that build a tuple of 1, 2 or 3 items without a MARK.
+constexpr std::array<char, 3> SMALL_TUPLE = {TUPLE1, TUPLE2, TUPLE3};
 constexpr size_t BATCH = 1000;  // same batching as the stdlib pickler
 
 // Write-result tables, as write_result_table.py encodes them: little-endian int64s, header first.
@@ -1215,11 +1217,11 @@ class Writer {
         if (n == 0) {
             put(EMPTY_TUPLE);
         } else {
-            if (n > 3) {
+            if (n > SMALL_TUPLE.size()) {
                 put(MARK);
             }
             for (size_t j = 0; j < n; ++j) put_int(dim(j));
-            put(n == 1 ? TUPLE1 : n == 2 ? TUPLE2 : n == 3 ? TUPLE3 : TUPLE);
+            put(n <= SMALL_TUPLE.size() ? SMALL_TUPLE.at(n - 1) : TUPLE);
         }
         put({TUPLE1, REDUCE});
     }
