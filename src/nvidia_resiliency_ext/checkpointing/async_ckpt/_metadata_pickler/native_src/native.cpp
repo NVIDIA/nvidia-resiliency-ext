@@ -70,7 +70,7 @@ enum class Header : uint8_t {
     Fingerprint
 };
 // How a table names fqns: by string id, or by entry in the coordinator's fqn list.
-enum class FqnMode : int64_t { Strings = 0, Indices = 1 };
+enum class FqnMode : uint8_t { Strings = 0, Indices = 1 };
 constexpr size_t HEADER = 8;  // int64s
 enum class Column : uint8_t { Fqn, Index, OffsetNdim, Path, Offset, Length, Flags };
 constexpr size_t COLUMNS = 7;
