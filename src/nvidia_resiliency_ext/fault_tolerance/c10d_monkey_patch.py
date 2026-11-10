@@ -113,8 +113,10 @@ def _patched_create_tcp_store(params: "RendezvousParameters") -> "TCPStore":  # 
     """
     Patched version of _create_tcp_store that supports use_libuv parameter.
 
-    This function is identical to the original _create_tcp_store except it
-    extracts and uses the use_libuv parameter from RendezvousParameters.
+    Select the server/client role once, honoring an explicit is_host setting or
+    matching the endpoint hostname. Launchers sharing an endpoint on the same
+    host must explicitly select one server and configure the others with is_host=False.
+    Initialization failures are propagated without retrying in a different role.
     """
     import os
     from datetime import timedelta
@@ -163,40 +165,29 @@ def _patched_create_tcp_store(params: "RendezvousParameters") -> "TCPStore":  # 
         )
         _wait_for_tcp_store_server(host, port, max_wait_seconds=store_connect_wait_seconds)
 
-    # In specific cases we attempt to instantiate the store twice. For details
-    # see the explanation in the except clause below.
-    for is_server in [is_host, False]:
-        try:
-            store = TCPStore(
-                host,
-                port,
-                is_master=is_server,
-                multi_tenant=True,
-                timeout=timedelta(seconds=read_timeout),
-                use_libuv=use_libuv,  # NEW PARAMETER
-            )
+    try:
+        store = TCPStore(
+            host,
+            port,
+            is_master=is_host,
+            multi_tenant=True,
+            timeout=timedelta(seconds=read_timeout),
+            use_libuv=use_libuv,
+        )
+    except (ValueError, RuntimeError, TimeoutError) as exc:
+        role = "server" if is_host else "client"
+        raise RendezvousConnectionError(
+            f"Failed to initialize the C10d TCPStore {role} at {host}:{port}: {exc}"
+        ) from exc
 
-            if is_server:
-                msg = f"Process {os.getpid()} hosts the TCP store for the C10d rendezvous backend."
-                construct_and_record_rdzv_event(
-                    run_id=params.run_id, message=msg, node_state=NodeState.INIT
-                )
-                logger.info(msg)
+    if is_host:
+        msg = f"Process {os.getpid()} hosts the TCP store for the C10d rendezvous backend."
+        construct_and_record_rdzv_event(
+            run_id=params.run_id, message=msg, node_state=NodeState.INIT
+        )
+        logger.info(msg)
 
-            break
-        except (ValueError, RuntimeError, TimeoutError) as exc:
-            # If we heuristically inferred the value of is_host as True and our
-            # first attempt to instantiate the TCP store has failed, try it one
-            # more time with is_host set to False. As an edge case there can be
-            # more than one process that is part of the same rendezvous on this
-            # machine and only one of them will eventually host the store.
-
-            if not is_server or cfg_is_host is not None:
-                raise RendezvousConnectionError(
-                    "The connection to the C10d store has failed. See inner exception for details."
-                ) from exc
-
-    return store  # type: ignore[possibly-undefined]
+    return store
 
 
 def apply_c10d_patch():

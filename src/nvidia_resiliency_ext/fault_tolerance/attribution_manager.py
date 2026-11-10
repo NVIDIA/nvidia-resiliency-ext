@@ -31,7 +31,7 @@ _ATTRIBUTION_READY_POLL_INTERVAL = 0.5
 _MANAGED_ATTRIBUTION_ENDPOINT = "localhost"
 _EXTERNAL_ATTRIBUTION_SCHEMES = {"http", "grpc"}
 _ATTRSVC_EXPORT_URL_ENV = "NVRX_ATTRSVC_EXPORT_URL"
-_ATTRIBUTION_EXPORT_URL_CONFIG = "--ft-attribution-export-url / attribution_export_url"
+_ATTRIBUTION_EXPORT_URL_CONFIG = "--ft-attribution-export-url"
 _EXPORT_URL_SCHEMES = {"http", "https"}
 # Acting on an attribution STOP is opt-in. "log" observes and records verdicts without
 # terminating anything, so a site can measure its own false-positive rate before enabling
@@ -107,15 +107,15 @@ class AttributionConfig:
         base_log_file: str,
         ft_cfg: FaultToleranceConfig,
     ) -> "AttributionConfig":
-        endpoint = getattr(args, "ft_attribution_endpoint", None)
-        if endpoint is None:
-            endpoint = ft_cfg.attribution_endpoint
+        """Settings with a `FaultToleranceConfig` field (endpoint, stop action, export URL)
+        come from `ft_cfg`; the launcher-only attribution options come from `args`."""
+        endpoint = ft_cfg.attribution_endpoint
         if endpoint is not None:
             endpoint = str(endpoint).strip() or None
         if endpoint is not None:
             _validate_attribution_endpoint(endpoint)
 
-        export_url = _resolve_export_url(args, ft_cfg)
+        export_url = _normalize_export_url(ft_cfg.attribution_export_url)
         if export_url is not None and (
             endpoint is None or not is_managed_attribution_endpoint(endpoint)
         ):
@@ -132,7 +132,7 @@ class AttributionConfig:
         if startup_timeout <= 0:
             raise ValueError("--ft-attribution-startup-timeout must be positive")
 
-        stop_action = _resolve_stop_action(args, ft_cfg)
+        stop_action = _normalize_stop_action(ft_cfg.attribution_stop_action)
 
         if endpoint is None:
             return cls(
@@ -298,7 +298,7 @@ class AttributionManager:
     def _child_env(self, api_key_file: str) -> dict[str, str]:
         assert self.cfg.applog_dir is not None
         env = os.environ.copy()
-        # Export URL for launcher-managed attrsvc is explicit via CLI/YAML, not parent env.
+        # Export URL for launcher-managed attrsvc is explicit via the CLI, not parent env.
         env.pop(_ATTRSVC_EXPORT_URL_ENV, None)
         env["LLM_API_KEY_FILE"] = api_key_file
         # nvrx-attrsvc owns the service-side environment variable contract.
@@ -408,10 +408,7 @@ def _validate_attribution_endpoint(endpoint: str) -> None:
     _validate_attribution_endpoint_host(parsed.hostname)
 
 
-def _resolve_stop_action(args: Any, ft_cfg: FaultToleranceConfig) -> str:
-    value = getattr(args, "ft_attribution_stop_action", None)
-    if value is None:
-        value = getattr(ft_cfg, "attribution_stop_action", None)
+def _normalize_stop_action(value: Optional[str]) -> str:
     if value is None:
         return DEFAULT_ATTRIBUTION_STOP_ACTION
     normalized = str(value).strip().lower()
@@ -423,10 +420,7 @@ def _resolve_stop_action(args: Any, ft_cfg: FaultToleranceConfig) -> str:
     return normalized
 
 
-def _resolve_export_url(args: Any, ft_cfg: FaultToleranceConfig) -> Optional[str]:
-    value = getattr(args, "ft_attribution_export_url", None)
-    if value is None:
-        value = getattr(ft_cfg, "attribution_export_url", None)
+def _normalize_export_url(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
 

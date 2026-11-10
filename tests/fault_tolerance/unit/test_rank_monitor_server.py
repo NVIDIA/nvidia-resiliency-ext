@@ -5,10 +5,11 @@ import socket
 import tempfile
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import torch
 import torch.multiprocessing
+from psutil import STATUS_SLEEPING, STATUS_ZOMBIE
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.data import (
@@ -427,7 +428,7 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         server.out_of_section_time = time.monotonic() - 1000
         server._step_section_seen_this_cycle = False
         curr_time = time.monotonic()
-        self.assertFalse(server._is_section_timeout_elapsed(curr_time))
+        self.assertFalse(server._is_out_of_section_timeout_elapsed(curr_time))
 
     def test_out_of_section_checked_when_warmup_not_in_config_but_step_seen(self):
         """Out-of-section timeout is enforced when warmup not in config but step was already seen."""
@@ -439,7 +440,7 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         server.out_of_section_time = time.monotonic() - 1000
         server._step_section_seen_this_cycle = True
         curr_time = time.monotonic()
-        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+        self.assertTrue(server._is_out_of_section_timeout_elapsed(curr_time))
 
     def test_out_of_section_checked_when_warmup_in_config(self):
         """Out-of-section timeout is enforced when warmup is in config (no skip)."""
@@ -451,7 +452,7 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         server.out_of_section_time = time.monotonic() - 1000
         server._step_section_seen_this_cycle = False
         curr_time = time.monotonic()
-        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+        self.assertTrue(server._is_out_of_section_timeout_elapsed(curr_time))
 
     def test_step_section_uses_warmup_timeout_when_iteration_in_warmup_range(self):
         """When step is open and iteration is in warmup range, warmup section timeout is used."""
@@ -464,10 +465,10 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         server._initial_iteration = 0
         server._current_iteration = 1  # within warmup (0, 1, 2)
         # 50 < 100 (warmup) so not elapsed
-        self.assertFalse(server._is_section_timeout_elapsed(curr_time))
+        self.assertFalse(server._expired_sections(curr_time))
         # 150s elapsed > 100 (warmup)
         server.open_sections = {"step": curr_time - 150}
-        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+        self.assertTrue(server._expired_sections(curr_time))
 
     def test_step_section_uses_step_timeout_when_iteration_past_warmup(self):
         """When step is open and iteration is past warmup range, step section timeout is used."""
@@ -480,7 +481,7 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         server._initial_iteration = 0
         server._current_iteration = 5  # past warmup
         # 10 > 5 (step timeout) so elapsed
-        self.assertTrue(server._is_section_timeout_elapsed(curr_time))
+        self.assertTrue(server._expired_sections(curr_time))
 
     def test_iteration_not_updated_from_setup_section(self):
         """Iteration is only updated from 'step' section messages, not 'setup'."""
@@ -525,6 +526,32 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
         self.assertIsNone(server._initial_iteration)
         self.assertIsNone(server._current_iteration)
         self.assertFalse(server._step_section_seen_this_cycle)
+
+    def test_out_of_section_timeout_alone_triggers_timeout_handling(self):
+        server = self._create_server(rank_section_timeouts={"step": 30.0})
+        server.rank_info = RankInfo(global_rank=0, local_rank=0, pid=12345, host="node0")
+        server._is_hb_timeout_elapsed = MagicMock(return_value=False)
+        server._expired_sections = MagicMock(return_value=set())
+        server._is_out_of_section_timeout_elapsed = MagicMock(return_value=True)
+        server._handle_timeout = AsyncMock()
+        with patch(
+            "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.asyncio.sleep",
+            side_effect=asyncio.CancelledError,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(server._periodic_rank_check())
+        server._handle_timeout.assert_awaited_once_with(set())
+
+    def test_zombie_rank_is_not_signalled(self):
+        server = self._create_server(rank_section_timeouts={"step": 30.0})
+        for status, signalled in ((STATUS_ZOMBIE, False), (STATUS_SLEEPING, True)):
+            with self.subTest(status=status):
+                server._shutdown_rank = MagicMock()
+                process = MagicMock()
+                process.is_running.return_value = True
+                process.status.return_value = status
+                server._shutdown_rank_if_alive(process)
+                self.assertEqual(server._shutdown_rank.called, signalled)
 
 
 if __name__ == '__main__':

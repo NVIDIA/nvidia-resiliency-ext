@@ -19,8 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SBATCH_SCRIPT="${SCRIPT_DIR}/nvrx_singleton_array.sbatch"
 SEGMENT_HEALTH_PRODUCER="${SCRIPT_DIR}/scheduler_segment_health.sh"
 
-# Shape. Defaults form the smallest run that shows a hand-off: 1 training node + 1 hot
-# spare + 1 cold spare. Scale up for real training (see the README).
+# Shape. Defaults form the default no-progress demo: 1 training node + 1 hot
+# spare + 3 cold spares. Scale up for real training (see the README).
 export NVRX_TRAIN_TASKS="${NVRX_TRAIN_TASKS:-1}"     # tasks the model is sized for
 export NVRX_HOT_SPARES="${NVRX_HOT_SPARES:-1}"       # running, standby, absorb a failure
 NVRX_COLD_SPARES="${NVRX_COLD_SPARES:-3}"            # queued; several so the teardown

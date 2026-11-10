@@ -243,6 +243,25 @@ class Settings(BaseSettings):
         description="Slack channel for alerts",
         validation_alias="SLACK_CHANNEL",
     )
+    SLACK_BOT_TOKEN_FILE: str = Field(
+        default="",
+        description="Path to a file holding the Slack bot token. Declared so it can "
+        "be set in .env; load_slack_bot_token() otherwise reads only the process "
+        "environment, leaving a token configured there silently unused",
+        validation_alias="SLACK_BOT_TOKEN_FILE",
+    )
+    SLACK_NOTIFY_ACTIONS: str = Field(
+        default="",
+        description="Comma-separated recommendation actions that alert "
+        "(e.g. 'STOP,RESTART'); empty uses the default set",
+        validation_alias="NVRX_ATTRSVC_SLACK_NOTIFY_ACTIONS",
+    )
+    SLACK_EMAIL_DOMAIN: str = Field(
+        default="",
+        description="Email domain used to resolve a job owner to an @-mention; "
+        "empty disables mentions",
+        validation_alias="NVRX_ATTRSVC_SLACK_EMAIL_DOMAIN",
+    )
 
     # Cache persistence (optional - empty = no persistence)
     CACHE_FILE: str = Field(

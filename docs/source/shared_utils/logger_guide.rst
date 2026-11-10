@@ -114,7 +114,6 @@ Integration with Other NVRx Components
 
 The logger automatically integrates with these NVRx components:
 - **Fault Tolerance**: Automatic logging of restart events and health checks
-- **In-Process Restart**: Logging of restart boundaries and process state
 - **Health Check**: Logging of system health monitoring events
 
 **Note**: Checkpointing and Straggler Detection components use their own logging mechanisms and do not integrate with the NVRx logger.

@@ -1,8 +1,8 @@
 # Singleton job-array chain on Slurm
 
-Colocated in-job restart with a spare pool, plus a singleton chain that survives the
-one failure in-job restart cannot repair: the loss of array task 0, which is both a
-training rank and the rendezvous host. See [../README.md](../README.md) for why.
+Colocated InJob restart with a spare pool, plus a singleton chain that survives a
+colocated control-service failure: the loss of array task 0, which runs training
+workers and hosts rendezvous. See [../README.md](../README.md) for why.
 
 ```
 nvrx_singleton_array.sbatch   one generation: rendezvous, gate, ft_launcher, teardown
@@ -15,14 +15,16 @@ scheduler_segment_health.sh    optional: publishes scheduler-unavailable array t
 - Slurm with job arrays and `--dependency=singleton`
 - A filesystem shared by every node (the rendezvous host is published through it)
 - `nvidia-resiliency-ext` installed where the job runs (provides `ft_launcher`)
-- A [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) checkout — public `main` is
-  enough; the example trains on mock data with `NullTokenizer`, so there is no corpus,
-  no vocab file and nothing to download
+- A [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) checkout — public `main` alone is
+  not a compatibility guarantee. Pin and qualify Megatron, NVRx, and the container
+  together; see the [integration contract](../../../../docs/source/fault_tolerance/integration/megatron.rst).
+  The example trains on mock data with `NullTokenizer`, so no corpus or vocab file is needed
 
 ## Run it
 
-Everything below is an environment variable with a working default. Only two have no
-safe default, because only two depend on where *you* keep things:
+Settings are supplied through environment variables. Start with the shared work
+directory and Megatron checkout paths below, then choose GPU count, NVLink mode,
+and the training/container environment for your site:
 
 ```bash
 export NVRX_WORK_DIR=/shared/$USER/nvrx-run   # must be visible from every node
@@ -53,11 +55,11 @@ Scheduler settings are sbatch's own, not ours: pass them through
 > exit 93, and `cancel_chain` the whole queued chain (~2–3 min). The chain is 4
 > generations deep so you can see several cancelled at once. Two other modes:
 > ```bash
-> # hand-off demo: workload fault -> in-job restart, then GPU failure on task 0 ->
+> # hand-off demo: workload fault -> InJob restart, then GPU failure on task 0 ->
 > # singleton hand-off resuming from checkpoint
 > NVRX_NO_RESTART_DEMO=0 ./submit_chain.sh
 >
-> # real training: all injection off, scaled up
+> # injection-free scaled mock training: all injection off, scaled up
 > NVRX_NO_RESTART_DEMO=0 NVRX_FAULT_INJECT=0 NVRX_INJECT_GPU_FAILURE= \
 > NVRX_MODEL_PROFILE=8b NVRX_TRAIN_TASKS=32 NVRX_HOT_SPARES=1 NVRX_COLD_SPARES=32 \
 > NVRX_CHAIN_DEPTH=8 NVRX_TIME_LIMIT=02:00:00 ./submit_chain.sh
@@ -83,7 +85,12 @@ name would cancel each other's pending generations.
 **Workload** — `NVRX_WORK_DIR`, `MEGATRON_PATH`, `NVRX_MODEL_PROFILE` (small|8b),
 `NVRX_CONTAINER_IMAGE`, `NVRX_CONTAINER_MOUNTS` (/lustre:/lustre), `MICRO_BATCH_SIZE`,
 `GLOBAL_BATCH_SIZE`, `TENSOR_PARALLEL`, `PIPELINE_PARALLEL`,
-`SAVE_INTERVAL`, `SAVE_RETAIN_INTERVAL`, `TRAIN_SAMPLES`, `EXIT_DURATION_IN_MINS`.
+`SAVE_INTERVAL`, `SAVE_RETAIN_INTERVAL`, `TRAIN_SAMPLES`, `EXIT_DURATION_IN_MINS`,
+`NVRX_FT_WARMUP_ITERS` (0), `NVRX_SETUP_TIMEOUT` (900), `NVRX_STEP_TIMEOUT` (120),
+`NVRX_CHECKPOINT_TIMEOUT` (600), `NVRX_OUT_OF_SECTION_TIMEOUT` (180).
+Timeout values are examples to qualify, not guaranteed phase durations. Do not enable
+`--calc-ft-timeouts` for the recommended fixed-timeout path. Archive stale calculated
+`ft_state.json` deliberately before a fixed-timeout run; retain training checkpoints.
 
 **NVRx** — `NVRX_MAX_RESTARTS` (7), `NVRX_JOIN_TIMEOUT` (1200),
 `NVRX_STORE_CONNECT_WAIT` (300), `NVRX_HEALTH_CHECK_ENDPOINT` (off),
@@ -107,9 +114,9 @@ the scheduler and could kill a generation that was about to work.
 **Fault injection** — three injectors behind the demo modes. The **default** mode is the
 no-restart demo (below); `NVRX_NO_RESTART_DEMO=0` switches to the hand-off demo (both
 faults below); adding `NVRX_FAULT_INJECT=0 NVRX_INJECT_GPU_FAILURE=` turns everything off
-for real training.
+for injection-free mock training.
 
-- *Workload fault* (in-job restart on a training rank): `NVRX_FAULT_INJECT` (1),
+- *Workload fault* (InJob restart on a training rank): `NVRX_FAULT_INJECT` (1),
   `NVRX_FAULT_RANKS` (2), `NVRX_FAULT_DELAY` (60), `NVRX_FAULT_TYPES` (async_exc). Uses
   `megatron.core.fault_injector`. Used by both demos (it forces the restart).
 - *Node HW failure* (the rank-0 hand-off path, hand-off demo only): `NVRX_INJECT_GPU_FAILURE`
@@ -140,7 +147,7 @@ baseline → "no progress" → with a threshold of 1, NVRx signals `no_progress`
 after a single fault. Tunables: `NVRX_MAX_NO_PROGRESS_CYCLES` (1 — raise it to watch NVRx
 restart a few times before giving up) and `NVRX_FAULT_DELAY` (60).
 
-**Timing:** **~1 fault cycle** — roughly **2–3 min after the job starts running** (model
+**Timing:** **~1 fault cycle** — an estimated **2–3 min after the job starts running** (model
 init + `NVRX_FAULT_DELAY` + the progress check; lower `NVRX_FAULT_DELAY` to speed it up).
 Watch for `ft_launcher` exit `93`, then `cancel_chain` in task 0's stdout; the watcher
 then reports `chain_exhausted` (and, if `cancel_chain` had failed, `chain_not_cancelled`).
@@ -163,8 +170,10 @@ A **cold spare** is a queued array task. It costs nothing while it waits, and is
 admitted when a slot frees. Slower than a hot spare — it must be scheduled and start a
 container — but a deep pool is what lets one generation absorb many failures.
 
-`GLOBAL_BATCH_SIZE` must be divisible by the data-parallel size, computed from
-`NVRX_TRAIN_TASKS` only. Hot spares never enlarge the world, so the batch size stays
+`GLOBAL_BATCH_SIZE` must be divisible by microbatch size times the data-parallel size, computed from
+`NVRX_TRAIN_TASKS * NODES_PER_TASK * GPUS_PER_NODE / (TENSOR_PARALLEL * PIPELINE_PARALLEL)`
+for this recipe.
+Hot spares never enlarge the world, so the batch size stays
 valid whether or not one is in use.
 
 ### Watch it
@@ -186,8 +195,9 @@ neither the job nor `squeue` will tell you about.
    empty file and launch against `:29400`.
 2. **Peers gate.** Every other task waits for `rdzv_host`, checking `RDZV_CLOSED` first:
    when both are present, task 0 is gone and the host it left is stale.
-3. **`ft_launcher` runs.** Sections bound each phase — `setup:900,step:60,
-   checkpointing:300` — and out-of-section code gets 90s. NVRx restarts in place, up to
+3. **`ft_launcher` runs.** Fixed sections bound instrumented phases — `setup:900,step:120,
+   checkpointing:600` — and out-of-section code gets 180s. The default
+   `NVRX_FT_WARMUP_ITERS=0` includes the first step; qualify deadlines for the model. NVRx restarts in place, up to
    `--max-restarts`, promoting standby nodes as needed.
 4. **Teardown.** Task 0's trap writes `RDZV_CLOSED`, cancels the queued chain if NVRx
    returned the no-restart verdict (otherwise the singleton dependency would start the
@@ -289,3 +299,24 @@ path scales with the number of running tasks and their total allocated nodes.
 The initial deployment requires an explicitly non-requeued array and an output
 directory scoped to `SLURM_ARRAY_JOB_ID`. Producer logs remain in batch
 stdout/stderr.
+
+## Checkpoint and recovery qualification
+
+This script uses NVRx-backed async checkpointing through Megatron, including
+distributed optimizer state. The checkpoint marker represents a completed save;
+background submission alone is not recoverable progress. The hand-off demo's
+wall-clock injector does not prove a checkpoint completed before a fault. Check
+the marker and restored iteration in the logs, and adjust save/injection intervals
+for the deployed model. Fault injection can rearm in each new worker process.
+
+Start with the [small GPT walkthrough](../../../../docs/source/fault_tolerance/examples/megatron_gpt.rst)
+for a once-only fault gated on checkpoint completion. Then qualify hot-spare
+promotion, cold allocation replacement, task-0 failure, generation cleanup, and
+exit-93 chain cancellation on the target Slurm site. Verify optimizer steps and
+new checkpoint progress after restoration, not just a new process. A passing
+source/dry-run check does not establish GPU/Slurm recovery.
+
+For hard host loss, the batch EXIT trap may not run. `nvrx-watch` defaults to
+observe-only; owners must explicitly enable `--act` to cancel orphaned pending
+spares. That action does not cancel all possible running peers. The singleton
+successor remains blocked until every task in the old generation ends.

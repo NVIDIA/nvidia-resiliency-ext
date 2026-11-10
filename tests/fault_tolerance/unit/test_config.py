@@ -14,10 +14,7 @@
 # limitations under the License.
 
 import logging
-import os
 import signal
-import tempfile
-from contextlib import contextmanager
 
 import pytest
 
@@ -138,106 +135,3 @@ def test_log_level_field_with_invalid_values():
         fault_tolerance.FaultToleranceConfig(log_level=-999)
     with pytest.raises(ValueError):
         fault_tolerance.FaultToleranceConfig(log_level="not a loglevel")
-
-
-@contextmanager
-def tmp_yaml_file(lines):
-    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
-    temp_file.write('\n'.join(lines))
-    temp_file.close()
-    try:
-        yield temp_file.name
-    finally:
-        os.remove(temp_file.name)
-
-
-def test_from_args_preserves_progress_tracking_yaml_when_cli_absent():
-    from nvidia_resiliency_ext.fault_tolerance.launcher import get_args_parser
-
-    YAML_LINES = [
-        "fault_tolerance:",
-        "    max_no_progress_cycles: 3",
-        "    min_progress_iterations: 7",
-    ]
-
-    parser = get_args_parser()
-    with tmp_yaml_file(YAML_LINES) as temp_file:
-        args = parser.parse_args(["--ft-cfg-path", temp_file, "dummy.py"])
-        ft = fault_tolerance.FaultToleranceConfig.from_args(args)
-
-    assert ft.max_no_progress_cycles == 3
-    assert ft.min_progress_iterations == 7
-
-
-def test_read_from_yaml():
-    YAML_LINES = [
-        "fault_tolerance:",
-        "    initial_rank_heartbeat_timeout: 987",
-        "    rank_heartbeat_timeout: 121212",
-        "    rank_termination_signal: SIGUSR2",
-        "    rank_section_timeouts:",
-        "        custom1: 111.0",
-        "        custom2: 222.0",
-        "    rank_out_of_section_timeout: 333.0",
-    ]
-    with tmp_yaml_file(YAML_LINES) as temp_file:
-        ft = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file)
-        assert ft.initial_rank_heartbeat_timeout == 987
-        assert ft.rank_heartbeat_timeout == 121212
-        assert ft.rank_termination_signal == signal.SIGUSR2
-        assert ft.rank_section_timeouts == {'custom1': 111.0, 'custom2': 222.0}
-        assert ft.rank_out_of_section_timeout == 333.0
-
-
-def test_read_from_yaml_nested():
-    YAML_LINES = [
-        "some_other_section:",
-        "   fault_tolerance:",
-        "       initial_rank_heartbeat_timeout: 987",
-        "       rank_heartbeat_timeout: 121212",
-        "       rank_termination_signal: SIGUSR2",
-    ]
-    with tmp_yaml_file(YAML_LINES) as temp_file:
-        ft = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file)
-        assert ft.initial_rank_heartbeat_timeout == 987
-        assert ft.rank_heartbeat_timeout == 121212
-        assert ft.rank_termination_signal == signal.SIGUSR2
-
-
-def test_fails_when_missing_ft_section():
-    YAML_LINES = [
-        "some_other_section:",
-        "   almost_like_fault_tolerance:",
-        "       initial_rank_heartbeat_timeout: 987",
-        "       rank_heartbeat_timeout: 121212",
-        "       rank_termination_signal: SIGUSR2",
-    ]
-    with tmp_yaml_file(YAML_LINES) as temp_file:
-        with pytest.raises(ValueError):
-            _ = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file)
-
-
-def test_fails_when_ft_section_has_invald_items():
-    YAML_LINES = [
-        "fault_tolerance:",
-        "    unknown_config_item: 987",
-        "    rank_heartbeat_timeout: 121212",
-        "    rank_termination_signal: SIGUSR2",
-    ]
-    with tmp_yaml_file(YAML_LINES) as temp_file:
-        with pytest.raises(ValueError):
-            _ = fault_tolerance.FaultToleranceConfig.from_yaml_file(
-                temp_file, ignore_not_recognized=False
-            )
-
-
-def test_to_yaml_file():
-    ref_conf = fault_tolerance.FaultToleranceConfig()
-    ref_conf.rank_termination_signal = signal.SIGUSR2
-    ref_conf.log_level = logging.FATAL
-    ref_conf.rank_heartbeat_timeout = 123.0
-    ref_conf.rank_section_timeouts == {'custom1': 111.0, 'custom2': 222.0}
-    with tempfile.NamedTemporaryFile() as temp_file:
-        ref_conf.to_yaml_file(temp_file.name)
-        restored_conf = fault_tolerance.FaultToleranceConfig.from_yaml_file(temp_file.name)
-    assert restored_conf == ref_conf

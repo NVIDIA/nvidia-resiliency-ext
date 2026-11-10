@@ -54,7 +54,6 @@ except ImportError:
 from nvidia_resiliency_ext.shared_utils import semconv
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
-from ..inprocess.utils import format_rank_set_verbose
 from ..shared_utils.health_check import (
     AttributionService,
     DistributedStorageHealthCheck,
@@ -85,6 +84,7 @@ from .utils import (  # noqa: F401  (shutdown reasons are re-exported for existi
     RDZV_SHUTDOWN_REASON_FAILURE,
     RDZV_SHUTDOWN_REASON_GRACEFUL,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+    format_rank_set_verbose,
     get_infrastructure_rank,
     is_slurm_job_array,
     parse_bool_env,

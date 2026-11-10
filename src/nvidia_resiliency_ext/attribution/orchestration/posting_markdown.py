@@ -50,7 +50,7 @@ def format_attribution_markdown(
         f"```{expl}```"
     )
     if log_path:
-        body += f"*Log path:*\n```{log_path}```"
+        body += f"\n*Log path:*\n```{log_path}```"
     return body
 
 

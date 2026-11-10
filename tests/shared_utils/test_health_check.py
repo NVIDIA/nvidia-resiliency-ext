@@ -15,11 +15,14 @@
 # limitations under the License.
 
 import os
+import signal
 import tempfile
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
+
+from torch.distributed.elastic.multiprocessing import SignalException
 
 from nvidia_resiliency_ext.shared_utils.health_check import (
     AttributionService,
@@ -625,6 +628,27 @@ class TestNodeHealthCheck(unittest.TestCase):
         request = stub.RunHealthCheck.call_args.args[0]
         self.assertEqual(request.args, ["--group", "epilog"])
 
+    def test_perform_health_check_propagates_shutdown_signal(self):
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signal=sig):
+                checker, stub = self._checker_with_mocked_grpc()
+                shutdown = SignalException("Shutdown during health check", sigval=sig)
+                stub.RunHealthCheck.side_effect = shutdown
+
+                with self.assertRaises(SignalException) as raised:
+                    checker()
+
+                self.assertIs(raised.exception, shutdown)
+                checker._grpc.insecure_channel.return_value.__exit__.assert_called_once()
+
+    def test_perform_health_check_still_skips_ordinary_errors(self):
+        for error in (OSError("unavailable"), RuntimeError("unexpected client error")):
+            with self.subTest(error=type(error).__name__):
+                checker, stub = self._checker_with_mocked_grpc()
+                stub.RunHealthCheck.side_effect = error
+
+                self.assertTrue(checker())
+
     def test_perform_health_check_fails_for_nonempty_failed_checks(self):
         checker, _ = self._checker_with_mocked_grpc(
             output='{"fail_count": 2, "failed_checks": ["bcm_healthcheck"]}'
@@ -878,6 +902,32 @@ class TestAttributionService(unittest.TestCase):
     @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
     def test_submit_reports_failure_on_transport_error(self, mock_client):
         mock_client.return_value.__enter__.return_value.post.side_effect = OSError("refused")
+        service = AttributionService(endpoint="http://attr.example:8000/")
+
+        self.assertFalse(service._do_submit_log("/tmp/train.log"))
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_submit_propagates_shutdown_signal(self, mock_client):
+        client = mock_client.return_value.__enter__.return_value
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            for intent in ("progressive", "terminal"):
+                with self.subTest(signal=sig, intent=intent):
+                    mock_client.reset_mock()
+                    service = AttributionService(endpoint="http://attr.example:8000/")
+                    shutdown = SignalException("Shutdown during attribution POST", sigval=sig)
+                    client.post.side_effect = shutdown
+
+                    with self.assertRaises(SignalException) as raised:
+                        service._do_submit_log("/tmp/train.log", analysis_intent=intent)
+
+                    self.assertIs(raised.exception, shutdown)
+                    mock_client.return_value.__exit__.assert_called_once()
+
+    @patch("nvidia_resiliency_ext.shared_utils.health_check.httpx.Client")
+    def test_submit_still_reports_failure_on_unexpected_error(self, mock_client):
+        mock_client.return_value.__enter__.return_value.post.side_effect = RuntimeError(
+            "unexpected client error"
+        )
         service = AttributionService(endpoint="http://attr.example:8000/")
 
         self.assertFalse(service._do_submit_log("/tmp/train.log"))

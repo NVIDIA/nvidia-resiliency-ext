@@ -15,6 +15,8 @@
 
 #!/bin/bash
 
+set -euo pipefail
+
 NUM_TESTS=4
 RES_DIR="./ddp_test_sections_results"
 WORLD_SIZE=8
@@ -79,13 +81,15 @@ do
    echo "### Starting TEST ${i}/${NUM_TESTS} ###"
    mkdir ${RES_DIR}/output_$i
 
-   echo "TEST ${i}, run ${training_parts_num}"
+   echo "TEST ${i}"
 
    # launch the training
    TRAIN_CMD="examples/fault_tolerance/train_ddp_sections_api.py "
    TRAIN_CMD+=" --device cuda "
    TRAIN_CMD+=" --output_dir ${RES_DIR}/output_$i "
    TRAIN_CMD+=" --logging_interval=100 "
+   # Keep coverage of the experimental calibration path separate from the fixed-timeout default.
+   TRAIN_CMD+=" --calculate_timeouts "
    
    # 1st run should be full, uninterrupted run,
    # other runs will be interrupted with simulated faults.
@@ -108,7 +112,9 @@ do
 
    ft_launcher --nproc-per-node=${WORLD_SIZE} --max-restarts=${MAX_RESTARTS} \
       --rdzv-backend=c10d --rdzv-endpoint=localhost:0 --ft-restart-check-interval=0.5 \
-      --ft-cfg-path="examples/fault_tolerance/fault_tol_cfg_sections.yaml" --term-timeout=15 \
+      --ft-initial-rank-heartbeat-timeout=None --ft-rank-heartbeat-timeout=None \
+      --ft-rank-section-timeouts=init:120,step:30,checkpoint:120 \
+      --ft-rank-out-of-section-timeout=60 --ft-log-level=DEBUG --term-timeout=15 \
       ${TRAIN_CMD} 2>&1 | tee -a ${RES_DIR}/output_$i/log.log
 
    if [ $? -ne 0 ]

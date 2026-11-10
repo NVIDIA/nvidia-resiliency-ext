@@ -134,22 +134,103 @@ class TestTrainingProgressTracker(unittest.TestCase):
         finally:
             os.unlink(path)
 
-    def test_missing_iteration_file_warns_once_not_every_cycle(self):
-        """The pre-first-checkpoint phase is expected and must not warn on every cycle."""
-        tracker = TrainingProgressTracker(
-            min_progress_iterations=1,
-            max_no_progress_cycles=3,
-            checkpoint_iteration_file="/nonexistent/latest_checkpointed_iteration.txt",
-        )
+    def test_missing_iteration_file_counts_toward_early_termination(self):
+        """Startup crashes must stop even if no checkpoint has ever been saved."""
+        with tempfile.TemporaryDirectory() as directory:
+            tracker = TrainingProgressTracker(
+                checkpoint_iteration_file=os.path.join(
+                    directory, "latest_checkpointed_iteration.txt"
+                )
+            )
 
-        with self.assertLogs("nvrx", level="WARNING") as captured:
+            for count in range(1, 4):
+                tracker.analyze_previous_cycle()
+                self.assertEqual(tracker.no_progress_count, count)
+                self.assertEqual(tracker.cycle_number, count)
+                self.assertEqual(tracker.should_terminate_early(), count == 3)
+
+    def test_first_checkpoint_resets_missing_file_no_progress_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "latest_checkpointed_iteration.txt")
+            tracker = TrainingProgressTracker(checkpoint_iteration_file=path)
             tracker.analyze_previous_cycle()
             tracker.analyze_previous_cycle()
+            self.assertEqual(tracker.no_progress_count, 2)
+
+            with open(path, "w") as f:
+                f.write("100\n")
             tracker.analyze_previous_cycle()
 
-        skips = [r for r in captured.records if "progress check skipped" in r.getMessage()]
-        self.assertEqual(len(skips), 1)
-        self.assertEqual(tracker.no_progress_count, 0)
+            self.assertEqual(tracker.no_progress_count, 0)
+            self.assertEqual(tracker.last_restart_iteration, 100)
+            self.assertFalse(tracker.should_terminate_early())
+
+    def test_disappearing_marker_preserves_baseline_and_counts_no_progress(self):
+        """A reappearing unchanged checkpoint must not look like new progress."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "latest_checkpointed_iteration.txt")
+            with open(path, "w") as f:
+                f.write("351500\n")
+            tracker = TrainingProgressTracker(checkpoint_iteration_file=path)
+            tracker.analyze_previous_cycle()
+            os.unlink(path)
+
+            tracker.analyze_previous_cycle()
+            self.assertEqual(tracker.no_progress_count, 2)
+            self.assertEqual(tracker.last_restart_iteration, 351500)
+
+            with open(path, "w") as f:
+                f.write("351500\n")
+            tracker.analyze_previous_cycle()
+            self.assertEqual(tracker.no_progress_count, 3)
+            self.assertTrue(tracker.should_terminate_early())
+
+    def test_zero_iteration_file_counts_as_no_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "latest_checkpointed_iteration.txt")
+            with open(path, "w") as f:
+                f.write("0\n")
+            tracker = TrainingProgressTracker(checkpoint_iteration_file=path)
+
+            for _ in range(3):
+                tracker.analyze_previous_cycle()
+
+            self.assertEqual(tracker.no_progress_count, 3)
+            self.assertTrue(tracker.should_terminate_early())
+
+    def test_missing_iteration_file_when_tracking_disabled(self):
+        for threshold in (0, -1):
+            with self.subTest(threshold=threshold), tempfile.TemporaryDirectory() as directory:
+                tracker = TrainingProgressTracker(
+                    checkpoint_iteration_file=os.path.join(directory, "missing.txt"),
+                    max_no_progress_cycles=threshold,
+                )
+                for _ in range(4):
+                    tracker.analyze_previous_cycle()
+                self.assertEqual(tracker.no_progress_count, 0)
+                self.assertFalse(tracker.should_terminate_early())
+
+    def test_empty_or_malformed_marker_preserves_tracking_state(self):
+        """An existing but unusable marker remains unknown rather than missing."""
+        for contents in ("", "\n", "not-an-integer\n"):
+            with self.subTest(contents=contents), tempfile.TemporaryDirectory() as directory:
+                path = os.path.join(directory, "latest_checkpointed_iteration.txt")
+                with open(path, "w") as f:
+                    f.write("100\n")
+                tracker = TrainingProgressTracker(checkpoint_iteration_file=path)
+                tracker.analyze_previous_cycle()
+                with open(path, "w") as f:
+                    f.write(contents)
+
+                tracker.analyze_previous_cycle()
+                self.assertEqual(tracker.no_progress_count, 1)
+                self.assertEqual(tracker.last_restart_iteration, 100)
+                self.assertEqual(tracker.cycle_number, 2)
+
+                with open(path, "w") as f:
+                    f.write("100\n")
+                tracker.analyze_previous_cycle()
+                self.assertEqual(tracker.no_progress_count, 2)
 
     def test_update_iteration(self):
         """Test that iteration updates track maximum value."""
