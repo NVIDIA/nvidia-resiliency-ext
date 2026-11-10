@@ -65,6 +65,11 @@ class CachedMetadataFileSystemReader(FileSystemReader):
         Read metadata from file system, caching for subsequent calls.
         Shared across instances when the checkpoint directory and arguments are the same.
 
+        Note:
+            A cache miss turns the garbage collector off for the whole process while it reads,
+            then restores the collector's previous state. If another thread changes the
+            collector's state during a miss, that change can be undone.
+
         Returns:
             Metadata: Checkpoint metadata. A shallow copy of the cached metadata, so that its
                 storage_meta carries this reader's load_id.
