@@ -3848,12 +3848,20 @@ _GRPC_LOG_FUNNEL_BIND_HOST = "0.0.0.0"  # nosec B104
 
 
 def _start_grpc_log_servers(
-    args: Any, log_prefix: str, funnel_ports: LogFunnelPorts
+    args: Any,
+    log_prefix: str,
+    funnel_ports: LogFunnelPorts,
+    cycle_analyzer_address: Optional[str] = None,
 ) -> List[subprocess.Popen]:
     """
     On TCP store host: start root log server (Lustre writer), and optionally N leaf
     aggregators that forward to the root. In two-level mode the root is given
     ``2 * graceful_shutdown_timeout`` so it outlasts leaf drain after SIGTERM.
+
+    Args:
+        cycle_analyzer_address: Where the root forwards the cycle records (the
+            CycleAnalyzer started by nvrx-control); None drops them.
+            Only set when called by nvrx-control
 
     Returns:
         Non-empty list of Popen [root] or [root, leaf0, ...] on success, [] on failure.
@@ -3881,6 +3889,10 @@ def _start_grpc_log_servers(
         for root in allowed_roots:
             allowed_root_args += ['--allowed-root', root]
         logger.info(f"gRPC log server(s) confined to allowed roots: {allowed_roots}")
+        # Only the root forwards cycle records to the CycleAnalyzer; leaves forward to it.
+        root_only_args: List[str] = []
+        if cycle_analyzer_address:
+            root_only_args = ['--cycle-analyzer-address', cycle_analyzer_address]
 
         if not funnel_ports.uses_two_level:
             grpc_server_log = _grpc_log_path(log_prefix, '_root.log')
@@ -3902,6 +3914,7 @@ def _start_grpc_log_servers(
                         '--graceful-shutdown-timeout',
                         str(graceful_shutdown_timeout),
                         *allowed_root_args,
+                        *root_only_args,
                     ],
                     stdout=fd,
                     stderr=subprocess.STDOUT,
@@ -3946,6 +3959,7 @@ def _start_grpc_log_servers(
                     '--graceful-shutdown-timeout',
                     str(root_graceful_shutdown_timeout),
                     *allowed_root_args,
+                    *root_only_args,
                 ],
                 stdout=root_fd,
                 stderr=subprocess.STDOUT,

@@ -42,7 +42,7 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_rendezvous_args,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer import CycleAnalyzerProcess
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _NodeDescGenerator,
     _RendezvousBarrierState,
@@ -70,7 +70,7 @@ class ControlServices:
     grpc_processes: list[Any] = field(default_factory=list)
     attribution_manager: Optional[AttributionManager] = None
     attribution_service: Optional[AttributionService] = None
-    cycle_info_reporter: Optional[CycleInfoReporter] = None
+    cycle_analyzer: Optional[CycleAnalyzerProcess] = None
 
 
 def get_args_parser() -> argparse.ArgumentParser:
@@ -139,6 +139,27 @@ def _create_tcp_store(args: argparse.Namespace, read_timeout: float) -> TCPStore
     )
 
 
+def _start_cycle_analyzer(
+    args: argparse.Namespace, ft_cfg: FaultToleranceConfig
+) -> Optional[CycleAnalyzerProcess]:
+    """Start the CycleAnalyzer, the only writer of the cycle info files.
+
+    Best effort: cycle info is diagnostics, so a failure is logged and control continues
+    without it.
+    """
+    analyzer = CycleAnalyzerProcess(
+        ft_cfg.cycle_info_dir,
+        cycle_info_job_id=args.ft_cycle_info_job_id,
+        cycle_log_prefix=args.ft_per_cycle_applog_prefix,
+    )
+    try:
+        analyzer.start()
+    except Exception as e:
+        logger.error("Cycle info will not be written: failed to start the CycleAnalyzer: %s", e)
+        return None
+    return analyzer
+
+
 def _start_control_services(
     args: argparse.Namespace,
     ft_cfg: FaultToleranceConfig,
@@ -146,12 +167,7 @@ def _start_control_services(
     services = ControlServices()
     try:
         if ft_cfg.cycle_info_dir:
-            services.cycle_info_reporter = CycleInfoReporter(
-                ft_cfg.cycle_info_dir,
-                cycle_log_prefix=args.ft_per_cycle_applog_prefix,
-                cycle_info_job_id=args.ft_cycle_info_job_id,
-                attempt_index=0,
-            )
+            services.cycle_analyzer = _start_cycle_analyzer(args, ft_cfg)
 
         applog_prefix = args.ft_per_cycle_applog_prefix
         log_funnel_ports = None
@@ -197,8 +213,14 @@ def _start_control_services(
         if log_funnel_enabled:
             assert log_funnel_ports is not None
             assert grpc_log_prefix is not None
+            # The analyzer started above, so the root can forward the cycle records to it.
             services.grpc_processes = _start_grpc_log_servers(
-                args, grpc_log_prefix, log_funnel_ports
+                args,
+                grpc_log_prefix,
+                log_funnel_ports,
+                cycle_analyzer_address=(
+                    services.cycle_analyzer.address if services.cycle_analyzer else None
+                ),
             )
             if not services.grpc_processes:
                 raise RuntimeError("failed to start gRPC log funnel process(es)")
@@ -218,8 +240,8 @@ def _start_control_services(
             if services.attribution_manager is not None:
                 services.attribution_manager.stop()
         with contextlib.suppress(Exception):
-            if services.cycle_info_reporter is not None:
-                services.cycle_info_reporter.shutdown()
+            if services.cycle_analyzer is not None:
+                services.cycle_analyzer.stop()
         raise
 
 
@@ -258,8 +280,6 @@ def _run_control_rendezvous_loop(
         args.nnodes,
         args.rdzv_endpoint,
     )
-    if services.cycle_info_reporter is not None:
-        state._cycle_info_reporter = services.cycle_info_reporter
     state._attribution_service = services.attribution_service
 
     while not stop_event.is_set():
@@ -328,14 +348,15 @@ def run(args: argparse.Namespace) -> None:
     finally:
         rendezvous_loop_ended = time.monotonic()
         with contextlib.suppress(Exception):
-            if services.cycle_info_reporter is not None:
-                services.cycle_info_reporter.shutdown()
-        with contextlib.suppress(Exception):
             if services.grpc_processes:
                 stop_grpc_log_servers(
                     services.grpc_processes,
                     float(args.ft_log_server_graceful_shutdown_timeout),
                 )
+        with contextlib.suppress(Exception):
+            # After the log servers, which forward the last cycle records to it.
+            if services.cycle_analyzer is not None:
+                services.cycle_analyzer.stop()
         with contextlib.suppress(Exception):
             # Stop polling before the service being polled goes away, otherwise the
             # daemon keeps issuing requests at attrsvc through its shutdown and logs

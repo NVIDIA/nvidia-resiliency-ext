@@ -120,12 +120,15 @@ class CycleSummary:
     # aggregated outcomes for the whole job
     cycle: int
     outcomes: tuple[LocalCycleOutcome, ...]  # one per reporting launcher, de-duplicated
-    missing: tuple[
-        int, ...
-    ] = ()  # group ranks of active launchers that did not report - may end up not needing that
+    start: Optional[CycleStartInfo] = None  # None when the start was not received
+    # TODO: group ranks instead of node names for missing and first_detected, once outcomes
+    # carry their launcher's group rank; node names repeat when launchers share a host.
+    missing: tuple[str, ...] = ()  # nodes of active launchers that did not report
     # Filled by optional aggregation steps; None means "not computed".
     end_reason: Optional[JobEndReason] = None
-    first_detected: tuple[int, ...] = ()  # group ranks that detected an issue first
+    first_detected: tuple[str, ...] = ()  # nodes that detected an issue first
+    # When the cycle ended, in UTC epoch seconds like LocalCycleOutcome.detected_at.
+    ended_at: Optional[float] = None
 
 
 # global end

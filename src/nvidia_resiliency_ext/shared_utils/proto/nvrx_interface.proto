@@ -56,20 +56,43 @@ message NVRxCycleInfo {
   // SLURM-range-compressed, e.g. "0-3,6".
   string active_ranks = 10;
 
-  // Cycle outcomes, written when the next rendezvous round closes and only with
-  // --ft-cycle-info-outcomes. Each active launcher reports how the cycle ended for it
-  // before rejoining; the store host collects the reports without waiting for absent
-  // launchers.
+  // Moved into NVRxCycleOutcome.
+  reserved 11, 12, 13;
 
-  // Reports of launchers that observed the end themselves (failed or terminated).
-  // Launchers that only followed a peer's restart are counted, not listed.
-  repeated NVRxLauncherOutcome launcher_outcomes = 11;
+  // How the cycle ended for the job, concluded by the CycleAnalyzer from all launchers'
+  // outcomes. Unset until the cycle's end is written. The time it ended is
+  // cycle_end_time.
+  NVRxCycleOutcome outcome = 14;
+}
 
-  // Active launchers of this cycle (0 if the store host did not see the cycle start),
-  // and how many of them reported. Fewer reports than expected means some launchers
-  // did not rejoin (e.g. their node was lost).
-  uint32 outcome_launchers_expected = 12;
-  uint32 outcome_launchers_reported = 13;
+// How a cycle ended for the job. Each launcher reports how the cycle ended for it; the
+// CycleAnalyzer writes this once every active launcher reported, or after a grace period
+// without waiting for absent launchers.
+message NVRxCycleOutcome {
+  // "completed", "rank_failure" (a worker failed on its own), "timeout_failure" (a rank
+  // monitor stopped a hung worker), "terminated" (a no-restart decision), or "unknown"
+  string end_reason = 1;
+
+  // When the cycle ended, ISO 8601 UTC: when its end was first observed, or when the
+  // last launcher completed. Also written to NVRxCycleInfo.cycle_end_time.
+  string ended_at = 2;
+
+  // Nodes whose launchers observed the end first (several when they tie)
+  repeated string first_detected_nodes = 3;
+
+  // Active nodes of the cycle whose launchers did not report an outcome (e.g. their node
+  // was lost)
+  repeated string missing_nodes = 4;
+
+  // Reports of launchers that observed the end themselves (failed or terminated),
+  // sorted by when they observed it. Launchers that only followed a peer's restart are
+  // counted, not listed.
+  repeated NVRxLauncherOutcome launcher_outcomes = 5;
+
+  // Active launchers of this cycle (0 if its start was not received), and how many of
+  // them reported.
+  uint32 launchers_expected = 6;
+  uint32 launchers_reported = 7;
 }
 
 // How a cycle ended on one launcher, as that launcher observed it.

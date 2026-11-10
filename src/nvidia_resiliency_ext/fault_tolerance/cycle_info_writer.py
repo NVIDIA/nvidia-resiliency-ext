@@ -36,7 +36,7 @@ from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2
 
-from .cycle_outcome import CycleEndReason, LocalCycleOutcome
+from .cycle_info.records import CycleEndReason, CycleSummary, LocalCycleOutcome
 from .utils import hostnames_to_slurm_nodelist, ranks_to_range_str, slurm_sort_addrs
 
 logger = logging.getLogger(LogConfig.name)
@@ -78,6 +78,8 @@ class CycleInfoRoundSnapshot:
     standby_node_addrs: Optional[Sequence[str]] = None
     active_ranks: Optional[Sequence[int]] = None
     cycle_log_file: str = ""
+    # When the cycle started, in seconds since the epoch; None stamps the time of reporting.
+    started_at: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -335,8 +337,8 @@ class CycleInfoWriter:
             for key, value in update_payload.items():
                 if not hasattr(msg, key):
                     continue
-                if isinstance(value, list):
-                    # Repeated fields cannot be assigned; replace their contents.
+                if isinstance(value, (list, dict)):
+                    # Repeated and message fields cannot be assigned; replace their contents.
                     msg.ClearField(key)
                     json_format.ParseDict({key: value}, msg)
                 else:
@@ -387,17 +389,23 @@ class CycleInfoReporter:
         cycle_info_job_id: Optional[str] = None,
         attempt_index: Optional[int] = None,
         writer: Optional[CycleInfoWriter] = None,
+        end_previous_on_start: bool = True,
     ) -> None:
+        """
+        Args:
+            end_previous_on_start: Starting a cycle ends the previous one at that time if
+                it is still open. Disable when the ends are reported explicitly, e.g. from
+                the launchers' outcomes (report_cycle_end, report_cycle_summary).
+        """
         if cycle_info_job_id is not None and not cycle_info_job_id.strip():
             raise ValueError("cycle_info_job_id must be non-empty when set")
         self._writer = writer or CycleInfoWriter(cycle_info_dir)
         self._cycle_log_prefix = cycle_log_prefix
         self._cycle_info_job_id = cycle_info_job_id
         self._attempt_index = attempt_index
+        self._end_previous_on_start = end_previous_on_start
         self._current_cycle: Optional[_ReportedCycle] = None
         self._started_cycles: set[int] = set()
-        # Active launchers of each started cycle, until its outcomes are reported.
-        self._active_launchers: Dict[int, int] = {}
         self._shutdown = False
 
     @staticmethod
@@ -418,14 +426,16 @@ class CycleInfoReporter:
             return False
 
         job_id, attempt_index = self._resolve_file_namespace()
-        if self._current_cycle is not None:
+        if self._current_cycle is not None and self._end_previous_on_start:
             self.report_cycle_end()
 
         self._writer.write_cycle_start(
             job_id=job_id,
             attempt_index=attempt_index,
             cycle_number=snapshot.cycle_number,
-            cycle_start_time=utc_iso_now(),
+            cycle_start_time=(
+                utc_iso(snapshot.started_at) if snapshot.started_at is not None else utc_iso_now()
+            ),
             cycle_log_file=self._resolve_cycle_log_file(snapshot),
             active_nodes=self._format_nodes(snapshot.active_node_addrs),
             standby_nodes=self._format_nodes(snapshot.standby_node_addrs),
@@ -433,57 +443,76 @@ class CycleInfoReporter:
         )
         self._current_cycle = _ReportedCycle(job_id, attempt_index, snapshot.cycle_number)
         self._started_cycles.add(snapshot.cycle_number)
-        self._active_launchers[snapshot.cycle_number] = len(snapshot.active_ranks or ())
         return True
 
-    def report_cycle_end(self) -> bool:
-        if self._shutdown or self._current_cycle is None:
-            return False
-        current_cycle = self._current_cycle
-        self._current_cycle = None
-        self._writer.update_cycle_end(
-            job_id=current_cycle.job_id,
-            attempt_index=current_cycle.attempt_index,
-            cycle_number=current_cycle.cycle_number,
-            cycle_end_time=utc_iso_now(),
-        )
-        return True
-
-    def report_cycle_outcomes(
-        self, cycle_number: int, collect: Callable[[], Sequence[LocalCycleOutcome]]
+    def report_cycle_end(
+        self, cycle_number: Optional[int] = None, ended_at: Optional[float] = None
     ) -> bool:
-        """Add the launchers' outcomes of `cycle_number` to its cycle info file.
+        """Write the end time of `cycle_number`, by default the open cycle.
 
-        `collect` returns the outcomes; it runs on the writer thread, together with the
-        formatting and the write, so the caller only enqueues (e.g. decoding records it
-        already read). Launchers that only followed
-        a peer's restart are counted but not listed; the listed ones are sorted by when they
-        observed the end.
+        Args:
+            cycle_number: The cycle to end; any started cycle, not only the open one.
+            ended_at: When it ended, in seconds since the epoch; None stamps the time of
+                reporting.
         """
         if self._shutdown:
             return False
-        job_id, attempt_index = self._resolve_file_namespace()
-        launchers_expected = self._active_launchers.pop(cycle_number, 0)
+        if cycle_number is None:
+            if self._current_cycle is None:
+                return False
+            cycle_number = self._current_cycle.cycle_number
+        if cycle_number not in self._started_cycles:
+            return False
+        if self._current_cycle is not None and self._current_cycle.cycle_number == cycle_number:
+            reported = self._current_cycle
+            self._current_cycle = None
+            job_id, attempt_index = reported.job_id, reported.attempt_index
+        else:
+            job_id, attempt_index = self._resolve_file_namespace()
+        self._writer.update_cycle_end(
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=cycle_number,
+            cycle_end_time=utc_iso(ended_at) if ended_at is not None else utc_iso_now(),
+        )
+        return True
 
-        def build_update() -> Optional[Dict[str, Any]]:
-            outcomes = collect()
-            if not outcomes:
-                return None
+    def report_cycle_summary(self, summary: CycleSummary) -> bool:
+        """Write how `summary.cycle` ended for the job, in one update of its file.
+
+        Sets the outcome (NVRxCycleOutcome) and, when known, cycle_end_time. Formatting
+        happens on the writer thread, so the caller only enqueues. Launchers that only
+        followed a peer's restart are counted but not listed; the listed ones are sorted by
+        when they observed the end.
+        """
+        if self._shutdown or summary.cycle not in self._started_cycles:
+            return False
+        job_id, attempt_index = self._resolve_file_namespace()
+        if self._current_cycle is not None and self._current_cycle.cycle_number == summary.cycle:
+            # Ended here, so the writer's shutdown does not stamp it again.
+            self._current_cycle = None
+
+        def build_update() -> Dict[str, Any]:
             listed = sorted(
-                (
-                    outcome
-                    for outcome in outcomes
-                    if outcome.node_end is not CycleEndReason.PEER_RESTART
-                ),
+                (o for o in summary.outcomes if o.node_end is not CycleEndReason.PEER_RESTART),
                 key=lambda outcome: (outcome.detected_at, outcome.node),
             )
-            return {
-                "launcher_outcomes": [self._format_outcome(outcome) for outcome in listed],
-                "outcome_launchers_expected": launchers_expected,
-                "outcome_launchers_reported": len(outcomes),
+            ended_at = utc_iso(summary.ended_at) if summary.ended_at is not None else ""
+            outcome: Dict[str, Any] = {
+                "end_reason": summary.end_reason.value if summary.end_reason else "",
+                "ended_at": ended_at,
+                "first_detected_nodes": list(summary.first_detected),
+                "missing_nodes": list(summary.missing),
+                "launcher_outcomes": [self._format_outcome(o) for o in listed],
+                "launchers_expected": len(summary.start.active_nodes) if summary.start else 0,
+                "launchers_reported": len(summary.outcomes),
             }
+            update: Dict[str, Any] = {"outcome": outcome}
+            if ended_at:
+                update["cycle_end_time"] = ended_at
+            return update
 
-        self._writer.update_cycle_later(job_id, attempt_index, cycle_number, build_update)
+        self._writer.update_cycle_later(job_id, attempt_index, summary.cycle, build_update)
         return True
 
     def shutdown(self) -> None:
