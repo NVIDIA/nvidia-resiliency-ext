@@ -167,17 +167,24 @@ _SPECIFIC_FAILURE_CUE_RE = re.compile(
 _EXCEPTION_SUMMARY_RE = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):",
 )
-# A worker's exception re-raised in the parent. The summary repeats the class
-# and nothing else - "Caught FileNotFoundError in DataLoader worker process 0."
-# names no file - while the cause sits in the wrapped traceback below it.
+# An exception caught elsewhere and re-raised here. Both forms repeat a class
+# and name no cause: "Caught FileNotFoundError in DataLoader worker process 0."
+# names no file, and "CheckpointException ranks:dict_keys([600, ...])" names no
+# error at all. The cause sits in the wrapped traceback printed below.
 _WRAPPED_EXCEPTION_SUMMARY_RE = re.compile(
-    r"\bCaught\s+[A-Za-z_][A-Za-z0-9_.]*\s+in\s+[A-Za-z_][A-Za-z0-9_ ]*?worker process\b",
+    r"\bCaught\s+[A-Za-z_][A-Za-z0-9_.]*\s+in\s+[A-Za-z_][A-Za-z0-9_ ]*?worker process\b"
+    r"|\bCheckpointException\s+ranks:",
     re.I,
 )
 
-# The wrapped traceback's own header. It opens the cause, so it is a
-# continuation of the failure already being read, not the next one.
-_ORIGINAL_TRACEBACK_RE = re.compile(r"\bOriginal Traceback \(most recent call last\)", re.I)
+# The wrapped traceback's own header, in either spelling. It opens the cause,
+# so it is a continuation of the failure already being read, not the next one.
+# Checkpoint aggregation tags its header with the rank the frames came from.
+_ORIGINAL_TRACEBACK_RE = re.compile(
+    r"\bOriginal Traceback \(most recent call last\)"
+    r"|\bTraceback \(most recent call last\):\s*\(RANK\s+\d+\)",
+    re.I,
+)
 _WATCHDOG_EXCEPTION_RE = re.compile(
     r"\bwatchdog thread terminated with exception:\s*"
     r"(?P<message>.*\b(?:CUDA|NCCL|c10)\s+error:.*)$",
