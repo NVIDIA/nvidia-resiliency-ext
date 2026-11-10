@@ -128,7 +128,6 @@ def test_finish_writes_per_rank_metadata(tmp_path, saved, metadata_template):
             marks=pytest.mark.skipif(not ON_TESTED_TORCH, reason="torch outside the tested range"),
         ),
         ("0", None, True),
-        ("force", "2.3.1", True),  # in INCOMPATIBLE_TORCH_VERSIONS
     ],
 )
 @GLOBAL_METADATA

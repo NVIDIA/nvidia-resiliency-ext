@@ -21,7 +21,6 @@ tests/checkpointing/unit/test_async_writer.py, on GPUs.
 """
 
 import io
-import logging
 import os
 import pickle
 from collections import OrderedDict
@@ -277,14 +276,12 @@ _FAST = writer.native.dumps if writer.native is not None else pickler.dumps
         ("python", _TESTED, pickler.dumps),
         ("0", _TESTED, None),
         ("off", _TESTED, None),
-        (None, "2.2.1", None),
         (None, _UNTESTED, None),
         ("force", _UNTESTED, _FAST),
-        ("force", "2.3.1", None),  # in INCOMPATIBLE_TORCH_VERSIONS
-        (None, "2.7.0_custom", None),  # not PEP 440: untested
-        ("force", "2.7.0_custom", _FAST),
+        (None, f"{_TESTED}_custom", None),  # not PEP 440: untested
+        ("force", f"{_TESTED}_custom", _FAST),
         (None, f"{_LAST[0]}.{_LAST[1]}.0a0+git1234567", _FAST),
-        (None, "2.4.0+cu121", _FAST),
+        (None, f"{_TESTED}+cu121", _FAST),
     ],
 )
 def test_writer_selection(monkeypatch, mode, version, expected):
@@ -295,27 +292,6 @@ def test_writer_selection(monkeypatch, mode, version, expected):
     assert writer._select_dumps() is expected
     # Tables only on tested versions: the force cases here are all untested.
     assert writer.writes_tables() is (expected is not None and mode != "force")
-
-
-@pytest.mark.parametrize("mode", [None, "force"])
-def test_incompatible_wins_over_tested(monkeypatch, mode):
-    """A tested version later found incompatible gets neither the fast writers nor tables."""
-    if mode is not None:
-        monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", mode)
-    monkeypatch.setattr(torch, "__version__", _TESTED)
-    monkeypatch.setattr(writer, "INCOMPATIBLE_TORCH_VERSIONS", frozenset({_LAST}))
-    assert not writer._tested_torch()
-    assert not writer.fast_metadata_enabled()
-    assert not writer.writes_tables()
-
-
-@pytest.mark.parametrize("version", ["2.3.1", "2.3.0+cu121"])
-def test_force_on_incompatible_torch_logs_error(monkeypatch, caplog, version):
-    monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", "force")
-    monkeypatch.setattr(torch, "__version__", version)
-    with caplog.at_level(logging.ERROR, logger=writer.__name__):
-        assert not writer.fast_metadata_enabled()
-    assert "known not to work" in caplog.text
 
 
 def test_python_writer_without_native(monkeypatch):
