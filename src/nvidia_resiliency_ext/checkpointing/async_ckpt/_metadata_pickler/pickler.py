@@ -71,7 +71,7 @@ CLASS_PATHS = {
 }
 # The state each class is encoded with: these attributes, in this order. A MetadataIndex has no
 # offset attribute when it was created without one, and its state then has no offset either. A
-# _StorageInfo whose transform_descriptors (PyTorch 2.8+) is set is left to the stdlib pickler.
+# _StorageInfo whose transform_descriptors is set is left to the stdlib pickler.
 STATE_KEYS = {
     MetadataIndex: ("fqn", "index", "offset"),
     _StorageInfo: ("relative_path", "offset", "length"),
@@ -332,9 +332,8 @@ class _MetadataPickler:
                         )
                         + END
                     )
-                # _StorageInfo pickles its __dict__ without None values. transform_descriptors
-                # exists from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib
-                # pickler.
+                # _StorageInfo pickles its __dict__ without None values, so an unpickled one
+                # has no transform_descriptors. One with it set is left to the stdlib pickler.
                 state = vars(info) if type(info) is _StorageInfo else None
                 if state is None or state.get("transform_descriptors") is not None:
                     out.append(small_pickle(info))

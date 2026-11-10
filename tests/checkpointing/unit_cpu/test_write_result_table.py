@@ -182,11 +182,10 @@ UNENCODABLE = {
     "fqn is a str subclass": lambda: _result(idx=MetadataIndex(SubclassedStr("w"))),
     "offset beyond int64": lambda: _result(info=_StorageInfo("__0_0.distcp", 2**63, 1)),
     "fqn not UTF-8": lambda: _result(idx=MetadataIndex("w\ud800", torch.Size([0]))),
-}
-if "transform_descriptors" in {f.name for f in dataclasses.fields(_StorageInfo)}:
-    UNENCODABLE["transform descriptors"] = lambda: _result(
+    "transform descriptors": lambda: _result(
         info=_StorageInfo("__0_0.distcp", 0, 1, transform_descriptors=["zstd"])
-    )
+    ),
+}
 
 
 @pytest.mark.parametrize("make", UNENCODABLE.values(), ids=UNENCODABLE.keys())

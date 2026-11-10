@@ -75,7 +75,7 @@ classDiagram
         relative_path : str
         offset : int
         length : int
-        transform_descriptors : 2.8+
+        transform_descriptors : list of str or None
     }
     class StorageMeta {
         checkpoint_id

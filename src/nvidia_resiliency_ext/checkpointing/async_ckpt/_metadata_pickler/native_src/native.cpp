@@ -948,8 +948,8 @@ class Writer {
         put({SETITEMS, BUILD});
     }
 
-    // _StorageInfo pickles its __dict__ without None values. transform_descriptors exists
-    // from PyTorch 2.8; a _StorageInfo with it set is left to the stdlib pickler, after which
+    // _StorageInfo pickles its __dict__ without None values, so an unpickled one has no
+    // transform_descriptors. One with it set is left to the stdlib pickler, after which
     // check_size checks that the Python code it ran left dict with its n items.
     void dump_storage_info(PyObject* info, PyObject* dict, Py_ssize_t n) {
         py::object const state = is(info, info_cls_) ? instance_dict(info) : py::object();
