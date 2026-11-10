@@ -164,8 +164,36 @@ _SPECIFIC_FAILURE_CUE_RE = re.compile(
     r"failed to|failure|timed out|timeout|errno)\b",
     re.I,
 )
+# A traceback's last line is the exception class name, followed by ": message"
+# only when the exception carries arguments. ``raise EOFError`` ends the
+# traceback with a bare ``EOFError``, so a colon cannot be required or the
+# summary is invisible and the episode falls back to its traceback header,
+# publishing an identity that names no exception at all.
+#
+# ``Exception`` is spelled out as its own alternative: the qualified form needs
+# at least one character before the suffix, which a bare ``raise Exception``
+# does not have. Bare ``Error`` is deliberately not accepted, because plenty of
+# non-Python output opens a line with "Error:".
+_EXCEPTION_CLASS = r"(?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)|Exception)"
+
+# Aggregated logs prefix each line with "<rank>: " and/or "[rank<N>]: ", each
+# followed by exactly one space. Consuming only that one space is what separates
+# a summary from the source frame above it: a frame carries its own indentation,
+# so requiring the class name immediately after the prefix accepts
+# ``180: [rank180]: EOFError`` while rejecting ``180: [rank180]:     EOFError``.
+#
+# Padding is allowed only where the multiplexer puts it. It right-aligns the
+# rank to the width of the largest one, so rank 9 of 100 arrives as "  9: ".
+# That padding sits before the digits, never after the colon, which is why it
+# can be accepted without also accepting the indentation of a bare-name frame.
+_RANK_PREFIX = r"(?:[ ]*\d+:[ ])?(?:\[rank\d+\]:[ ])?"
+
+# The second alternative is anchored to the start of the line and must reach end
+# of line, so it accepts the summary ``9: EOFError`` while rejecting both the
+# ``9:     raise EOFError`` frame above it and a bare-name frame such as the
+# ``    MissingError`` that an undefined name prints before its NameError.
 _EXCEPTION_SUMMARY_RE = re.compile(
-    r"\b[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception):",
+    rf"(?<![A-Za-z0-9_.]){_EXCEPTION_CLASS}:" rf"|^{_RANK_PREFIX}{_EXCEPTION_CLASS}\s*$",
 )
 _WATCHDOG_EXCEPTION_RE = re.compile(
     r"\bwatchdog thread terminated with exception:\s*"
