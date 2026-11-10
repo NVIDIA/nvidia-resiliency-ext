@@ -2520,7 +2520,32 @@ def _primary_episode_order_key(episode: FailureEpisode) -> tuple[int, int, int, 
         or episode.first_exception_line
     )
     terminal_line = episode.terminal_exception_line or episode.end_line
-    return (identity_line, episode.start_line, terminal_line, episode.episode_id)
+    # An episode whose traceback never closed anchors on its own header, which
+    # is necessarily earlier than any closed episode's exception line - so in a
+    # purely positional order, failing to close wins. Rank those last instead,
+    # keeping source order within each group.
+    return (
+        _episode_closed_rank(episode),
+        identity_line,
+        episode.start_line,
+        terminal_line,
+        episode.episode_id,
+    )
+
+
+def _episode_closed_rank(episode: FailureEpisode) -> int:
+    """0 when the episode closed on an exception, 1 when it closed on a header.
+
+    A traceback header names no failure, so an episode that ends on one has
+    told us only that a rank started printing. Any episode that reached its
+    exception describes the failure better, wherever it sits in the file.
+    """
+    quote = episode.terminal_exception_quote or ""
+    if not quote:
+        return 1
+    if _EXCEPTION_SUMMARY_RE.search(quote):
+        return 0
+    return 1 if _TRACEBACK_RE.search(quote) else 0
 
 
 def _ordered_primary_episodes(
