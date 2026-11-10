@@ -707,7 +707,7 @@ def _consecutive_no_advance_attempts(
     Those agree while progress only moves forward, and diverge on a rollback.
     A run that resumes from an earlier checkpoint sits below several
     predecessors at once by design, inflating the count by that many and
-    exhausting the guard on one cycle - which is how job 4234179 reached STOP
+    exhausting the guard on one cycle - which is how one observed job reached STOP
     with three counted attempts while its own cycle 1 reported progress
     advancing.
     """
