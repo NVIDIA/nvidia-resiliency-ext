@@ -18,7 +18,6 @@
 The full save path, on GPUs, is tested in tests/checkpointing/unit/test_async_writer.py.
 """
 
-import inspect
 import os
 import pickle
 from dataclasses import fields
@@ -33,10 +32,6 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import wri
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import MetadataTemplate
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
 
-# FileSystemWriter.set_up_storage_writer takes rank and use_collectives from PyTorch 2.9.
-HAS_PER_RANK_METADATA = (
-    "kwargs" in inspect.signature(FileSystemWriter.set_up_storage_writer).parameters
-)
 ON_TESTED_TORCH = writer.fast_metadata_enabled()
 writer.fast_metadata_enabled.cache_clear()
 
@@ -111,7 +106,6 @@ def test_finish_writes_what_torch_writes(tmp_path, saved, sync_files, metadata_t
 
 
 @GLOBAL_METADATA
-@pytest.mark.skipif(not HAS_PER_RANK_METADATA, reason="per-rank metadata needs PyTorch 2.9+")
 def test_finish_writes_per_rank_metadata(tmp_path, saved, metadata_template):
     assert_same_as_torch(
         tmp_path, saved, rank=3, use_collectives=False, metadata_template=metadata_template
