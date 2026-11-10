@@ -195,6 +195,24 @@ _RANK_PREFIX = r"(?:[ ]*\d+:[ ])?(?:\[rank\d+\]:[ ])?"
 _EXCEPTION_SUMMARY_RE = re.compile(
     rf"(?<![A-Za-z0-9_.]){_EXCEPTION_CLASS}:" rf"|^{_RANK_PREFIX}{_EXCEPTION_CLASS}\s*$",
 )
+# An exception caught elsewhere and re-raised here. Both forms repeat a class
+# and name no cause: "Caught FileNotFoundError in DataLoader worker process 0."
+# names no file, and "CheckpointException ranks:dict_keys([600, ...])" names no
+# error at all. The cause sits in the wrapped traceback printed below.
+_WRAPPED_EXCEPTION_SUMMARY_RE = re.compile(
+    r"\bCaught\s+[A-Za-z_][A-Za-z0-9_.]*\s+in\s+[A-Za-z_][A-Za-z0-9_ ]*?worker process\b"
+    r"|\bCheckpointException\s+ranks:",
+    re.I,
+)
+
+# The wrapped traceback's own header, in either spelling. It opens the cause,
+# so it is a continuation of the failure already being read, not the next one.
+# Checkpoint aggregation tags its header with the rank the frames came from.
+_ORIGINAL_TRACEBACK_RE = re.compile(
+    r"\bOriginal Traceback \(most recent call last\)"
+    r"|\bTraceback \(most recent call last\):\s*\(RANK\s+\d+\)",
+    re.I,
+)
 _WATCHDOG_EXCEPTION_RE = re.compile(
     r"\bwatchdog thread terminated with exception:\s*"
     r"(?P<message>.*\b(?:CUDA|NCCL|c10)\s+error:.*)$",
@@ -4075,10 +4093,15 @@ def _ranked_traceback_terminal_line(
         (
             item.line
             for item in traceback_starts
-            if item.line > start_line and extract_rank(item.text) == rank
+            # "Original Traceback" opens the wrapped cause of the failure being
+            # read, so it does not end the search the way a fresh traceback does.
+            if item.line > start_line
+            and extract_rank(item.text) == rank
+            and not _ORIGINAL_TRACEBACK_RE.search(item.text)
         ),
         None,
     )
+    wrapper_line: int | None = None
     for item in exception_summaries:
         if item.line <= start_line:
             continue
@@ -4088,8 +4111,15 @@ def _ranked_traceback_terminal_line(
             continue
         if retry_lifecycle_blocks_primary(classify_retry_lifecycle(item.text)):
             continue
+        if _WRAPPED_EXCEPTION_SUMMARY_RE.search(item.text):
+            # Keep looking: the wrapped traceback below carries the cause. Held
+            # as a fallback, because a truncated log may never reach it and the
+            # wrapper still names the failure better than the header does.
+            if wrapper_line is None:
+                wrapper_line = item.line
+            continue
         return True, item.line
-    return True, None
+    return True, wrapper_line
 
 
 def _traceback_causal_role_hint(
