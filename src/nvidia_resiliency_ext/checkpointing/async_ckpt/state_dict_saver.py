@@ -496,16 +496,6 @@ def _encode_write_results(
     return pickle.dumps(write_results)
 
 
-def _global_coordinator_rank(dist_wrapper: _DistWrapper) -> int:
-    """Return the coordinator's global rank, which collectives over a group take as src or dst.
-
-    _DistWrapper.global_coordinator_rank only exists from torch 2.7 on.
-    """
-    if dist_wrapper.group is None:
-        return dist_wrapper.coordinator_rank
-    return dist.get_global_rank(dist_wrapper.group, dist_wrapper.coordinator_rank)
-
-
 def _gather_payloads(
     payload: bytes, dist_wrapper: _DistWrapper, delivered_length: int = 0
 ) -> Tuple[Optional[np.ndarray], int]:
@@ -535,7 +525,7 @@ def _gather_payloads(
     torch.distributed.gather(
         torch.from_numpy(row).to(device),
         list(rows) if rows is not None else None,
-        dst=_global_coordinator_rank(dist_wrapper),
+        dst=dist_wrapper.global_coordinator_rank,
         group=dist_wrapper.group,
     )
     return (rows.cpu().numpy() if rows is not None else None), delivered_length
@@ -676,7 +666,7 @@ def save_state_dict_async_finalize(pending, *legacy_args) -> None:
             broadcast[8:] = torch.frombuffer(bytearray(delivered), dtype=torch.uint8)
     with telemetry.span(semconv.SPAN_GROUP_CKPT_PROFILING, "nv.nvrx.ckpt.save.broadcast_failures"):
         torch.distributed.broadcast(
-            broadcast, src=_global_coordinator_rank(dist_wrapper), group=dist_wrapper.group
+            broadcast, src=dist_wrapper.global_coordinator_rank, group=dist_wrapper.group
         )
     broadcast = broadcast.cpu().numpy()
     if delivered_length and not dist_wrapper.is_coordinator:
