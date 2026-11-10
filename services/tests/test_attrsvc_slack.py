@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import http.client
 import threading
+import urllib.error
 from types import SimpleNamespace
 
 import pytest
@@ -286,13 +288,60 @@ def test_notify_sends_for_configured_non_default_action(monkeypatch):
 
 
 def test_notify_counts_failures_without_raising(monkeypatch):
-    monkeypatch.setattr(slack_mod, "SlackApiError", RuntimeError)
-    notifier = _notifier(monkeypatch, client=_StubClient(error=RuntimeError("channel_not_found")))
+    notifier = _notifier(
+        monkeypatch, client=_StubClient(error=SlackApiError("channel_not_found", response=None))
+    )
 
     assert notifier.notify(_job(), _parsed()) is False
     assert notifier.stats.attempts == 1
     assert notifier.stats.failed == 1
     assert notifier.stats.sent == 0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        SlackApiError("channel_not_found", response=None),
+        TimeoutError("timed out"),
+        ConnectionResetError("peer reset"),
+        urllib.error.URLError("name resolution failed"),
+        http.client.RemoteDisconnected("closed without response"),
+    ],
+    ids=["api_error", "timeout", "conn_reset", "url_error", "disconnected"],
+)
+def test_one_channel_failing_still_delivers_the_rest(monkeypatch, failure):
+    """The point of fanning out is that channels do not share a fate.
+
+    Only the first of these is an API error. The rest come from the HTTP layer
+    under WebClient, and an earlier revision let them escape the loop, so a
+    timeout on the first channel cost every later channel its alert.
+    """
+
+    class _FirstChannelFails(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#first":
+                raise failure
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _FirstChannelFails()
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    assert [m["channel"] for m in client.summaries] == ["#second"]
+    assert notifier.stats.channel_failures == 1
+    assert notifier.stats.sent == 1
+    assert notifier.stats.failed == 0
+
+
+def test_a_programming_error_is_not_swallowed_as_a_delivery_failure(monkeypatch):
+    """A narrow catch, so a bug here surfaces instead of being logged once per
+    channel and counted as Slack being unreachable."""
+
+    client = _StubClient(error=AttributeError("notifier bug"))
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    with pytest.raises(AttributeError):
+        notifier.notify(_job(), _parsed())
 
 
 def test_stats_as_dict_exposes_all_counters(monkeypatch):
@@ -1107,10 +1156,9 @@ def test_a_failed_reply_does_not_fail_the_alert(monkeypatch):
     class _ReplyFails(_StubClient):
         def chat_postMessage(self, channel, text, thread_ts=None):
             if thread_ts is not None:
-                raise RuntimeError("thread_not_found")
+                raise SlackApiError("thread_not_found", response=None)
             return super().chat_postMessage(channel, text)
 
-    monkeypatch.setattr(slack_mod, "SlackApiError", RuntimeError)
     client = _ReplyFails()
     notifier = _notifier(monkeypatch, client=client)
 

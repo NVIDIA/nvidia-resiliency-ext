@@ -35,6 +35,7 @@ still guarded so a stripped install degrades rather than fails.
 
 from __future__ import annotations
 
+import http.client
 import logging
 import os
 from dataclasses import dataclass, field
@@ -51,9 +52,27 @@ from nvidia_resiliency_ext.attribution.orchestration.types import (
 from nvidia_resiliency_ext.attribution.postprocessing.slack import (
     HAS_SLACK,
     SlackApiError,
+    SlackClientError,
     WebClient,
 )
 from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
+
+# Failures that cost one channel its alert and must not cost the others theirs.
+# ``SlackClientError`` is the base of every error the SDK raises itself, but a
+# connection timeout or a dropped socket is not one of them, and the HTTP layer
+# under WebClient raises those: ``OSError`` is the base of ``URLError``,
+# ``SSLError``, ``TimeoutError`` and the ``ConnectionError`` family, and
+# ``http.client`` keeps its own tree outside it.
+#
+# Deliberately not ``Exception``. A bug in this module should surface, not be
+# logged once per channel and swallowed, and a broad catch here would quietly
+# absorb whatever a future signal handler chose to raise.
+_DELIVERY_ERRORS: tuple[type[BaseException], ...] = (
+    SlackClientError,
+    OSError,
+    http.client.HTTPException,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -890,16 +909,17 @@ class SlackNotifier:
         # into a second channel with the first one's ``ts`` would either fail or
         # attach the detail to an unrelated message.
         #
-        # Every failure here is caught, not just ``SlackApiError``. A connection
-        # timeout is not an API error, and letting one escape would cost every
-        # channel after it an alert the others received - the whole point of
-        # fanning out is that the channels do not share a fate.
+        # Delivery failures are caught per channel, not just ``SlackApiError``:
+        # a connection timeout is not an API error, and letting one escape
+        # would cost every channel after it an alert the others received - the
+        # whole point of fanning out is that the channels do not share a fate.
+        # ``_DELIVERY_ERRORS`` says why that is a named set and not ``Exception``.
         self.stats.attempts += 1
         delivered = 0
         for channel in self.config.channels:
             try:
                 posted = self._web_client().chat_postMessage(channel=channel, text=summary)
-            except Exception as e:
+            except _DELIVERY_ERRORS as e:
                 self.stats.channel_failures += 1
                 logger.error(
                     f"[{identity.job_id}] Slack notification to {channel} failed: "
@@ -917,7 +937,7 @@ class SlackNotifier:
                     self._web_client().chat_postMessage(
                         channel=channel, thread_ts=thread_ts, text=details
                     )
-                except Exception as e:
+                except _DELIVERY_ERRORS as e:
                     logger.warning(
                         f"[{identity.job_id}] Slack detail reply to {channel} failed: "
                         f"{type(e).__name__}: {e}"
