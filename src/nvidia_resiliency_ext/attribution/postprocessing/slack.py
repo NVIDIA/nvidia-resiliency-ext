@@ -45,13 +45,16 @@ _slack_stats = SlackStats()
 
 try:
     from slack_sdk import WebClient
-    from slack_sdk.errors import SlackApiError
+    from slack_sdk.errors import SlackApiError, SlackClientError
 
     HAS_SLACK = True
 except ImportError:
     HAS_SLACK = False
     WebClient = None  # type: ignore
     SlackApiError = Exception  # type: ignore
+    # Base of SlackApiError and SlackRequestError, so callers can name every
+    # error the SDK raises without listing them.
+    SlackClientError = Exception  # type: ignore
 
 
 def get_slack_stats() -> SlackStats:
