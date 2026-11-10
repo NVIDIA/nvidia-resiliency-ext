@@ -12,10 +12,17 @@
 # - Changed shutdown logic
 # - security fix for watchdog_file_path
 
+import time
+
+# Stamped around this module's import block. Nothing else may be imported above this
+# line, or its cost is measured as interpreter startup rather than as an import.
+__imports_started__ = time.time()  # isort: split
+
 import asyncio
 
 # fmt: off
 import contextlib
+import dataclasses
 import importlib.metadata as metadata
 import json
 import logging
@@ -29,7 +36,6 @@ import subprocess  # nosec B404
 import sys
 import tempfile
 import threading
-import time
 import uuid
 import warnings
 from argparse import REMAINDER, ArgumentParser
@@ -80,7 +86,6 @@ from nvidia_resiliency_ext.fault_tolerance.attribution_manager import (
 from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_attribution_args,
     add_cycle_info_args,
-    add_ft_config_file_args,
     add_log_funnel_args,
     add_no_restart_args,
     add_rendezvous_args,
@@ -92,27 +97,38 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
     UpdateConfigMsg,
 )
+from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import launcher_error_reporter
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
 from nvidia_resiliency_ext.fault_tolerance.progress_tracker import TrainingProgressTracker
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import rdzv_config_get_as_bool
+from nvidia_resiliency_ext.fault_tolerance.timeout_dump import TimeoutDumpConfig
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+    get_infrastructure_rank,
     get_log_aggregator_shard_index,
     get_processes_by_pgids,
+    is_infra_rank_zero,
     is_slurm_job_array,
     parse_bool_env,
     patched_method,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
 from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.memory import GPUMemoryLogger
-from nvidia_resiliency_ext.shared_utils.profiling import ProfilingEvent, record_profiling_event
+from nvidia_resiliency_ext.shared_utils.profiling import (
+    ProfilingEvent,
+    get_profiling_cycle,
+    record_profiling_event,
+)
+
+__imports_finished__ = time.time()
 
 # Deprecation warning for FT_LAUNCHER_LOGLEVEL
 if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
@@ -125,6 +141,7 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
+CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -138,6 +155,43 @@ _NODE_HEALTH_CHECK_INSTANCE: Optional[NodeHealthCheck] = None
 # [root, leaf0, ..., leaf_{N-1}] when ft_log_aggregator_count > 1.
 _GRPC_SERVER_PROCESSES: List[subprocess.Popen] = []
 _ATTRIBUTION_MANAGER: Optional[AttributionManager] = None
+_DIAGNOSTIC_COLLECTOR = None
+
+
+def _start_diagnostic_collector(cfg, launcher_log_file, *, local_world_size=1):
+    """Start the timeout dump collector, or log why not and run without dumps.
+
+    Dumps are optional: a problem with the node or its files never stops training.
+    """
+    global _DIAGNOSTIC_COLLECTOR
+    from .timeout_dump import DiagnosticCollectorProcess, diagnostics_directory
+
+    if not cfg.timeout_dump.enabled:
+        return
+    if _DIAGNOSTIC_COLLECTOR is not None:
+        raise RuntimeError("Diagnostic collector is already running")
+    try:
+        resolved = cfg.timeout_dump.resolve()
+        _DIAGNOSTIC_COLLECTOR = DiagnosticCollectorProcess(
+            resolved, diagnostics_directory(launcher_log_file), local_world_size=local_world_size
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        if is_infra_rank_zero():
+            logger.error("Timeout dumps disabled: %s", exc)
+        cfg.timeout_dump = dataclasses.replace(cfg.timeout_dump, enabled=False)
+        return
+    cfg.timeout_dump = resolved
+    if logger.isEnabledFor(logging.DEBUG) and is_infra_rank_zero():
+        logger.debug(
+            "Timeout dump tools: %s", ", ".join(tool.describe() for tool in resolved.tools)
+        )
+
+
+def _stop_diagnostic_collector():
+    global _DIAGNOSTIC_COLLECTOR
+    if _DIAGNOSTIC_COLLECTOR is not None:
+        _DIAGNOSTIC_COLLECTOR.shutdown()
+        _DIAGNOSTIC_COLLECTOR = None
 
 
 def _append_attribution_startup_failure(log_file: Optional[str], error: Exception) -> None:
@@ -414,6 +468,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
         self._pcontext: Optional[PContext] = None
+        # c10d is registered to the FT handler; WorkerSpec exposes only the base type.
         self._rdzv_handler = spec.rdzv_handler
         self._log_line_prefix_template = log_line_prefix_template
         self._worker_watchdog: Optional[timer.FileTimerServer] = None
@@ -451,7 +506,24 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._restart_policy = restart_policy
         self._node_id = self._get_fq_hostname()
 
+        self._cycle_phase = telemetry.Phase()
+        self._run_phase = telemetry.Phase()
+
     DEFAULT_ROLE = "default"  # FIXME
+
+    def open_telemetry_cycle(self, attributes: dict[str, Any]) -> None:
+        self._cycle_phase.open(
+            semconv.SPAN_GROUP_FT,
+            "nv.nvrx.ftl.cycle",
+            {
+                **attributes,
+                "nv.nvrx.ftl.node": self._node_id,
+                "nv.nvrx.ftl.membership": "unjoined",
+            },
+        )
+
+    def close_telemetry_cycle(self, attributes: Optional[dict[str, Any]] = None) -> None:
+        self._cycle_phase.close(attributes)
 
     # ============================================================================
     # Global Restart/Cycle Tracking for Job Array Deployments
@@ -539,6 +611,18 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._remaining_restarts = (
             self._worker_group.spec.max_restarts - self._get_global_cycle_number()
         )
+
+        self._tel_handle = telemetry.setup_telemetry(
+            "nvrx.ft_launcher",
+            f"nvrx-agent-{self._node_id}",
+            {"nv.nvrx.ftl.node": self._node_id},
+        )
+        telemetry.record_process_startup(
+            semconv.SPAN_GROUP_STARTUP,
+            __imports_started__,
+            __imports_finished__,
+            {"nv.nvrx.ftl.node": self._node_id},
+        )
         start_time = time.monotonic()
         shutdown_called: bool = False
         try:
@@ -575,10 +659,18 @@ class LocalElasticAgent(SimpleElasticAgent):
             shutdown_called = True
             raise
         finally:
-            if not shutdown_called:
-                self._shutdown()
-            # record the execution time in case there were any exceptions during run.
-            self._total_execution_time = int(time.monotonic() - start_time)
+            try:
+                if not shutdown_called:
+                    self._shutdown()
+            finally:
+                try:
+                    self._run_phase.close()
+                finally:
+                    try:
+                        self._cycle_phase.close()
+                    finally:
+                        self._total_execution_time = int(time.monotonic() - start_time)
+                        telemetry.shutdown(self._tel_handle)
 
     def _open_rendezvous_for_restart(self):
         """Open rendezvous for restart when using barrier-based rendezvous.
@@ -675,6 +767,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                     self._exit_barrier_timeout,
                 )
+                self._run_phase.close()
+                self._cycle_phase.close({CYCLE_OUTCOME: "completed"})
                 self._exit_barrier()
                 return run_result
 
@@ -696,8 +790,10 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
+                self._run_phase.close()
                 rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP)
                 self._stop_workers(self._worker_group)
+                self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                 self._worker_group.state = WorkerState.FAILED
                 raise NoRestartRequested(
                     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
@@ -711,6 +807,34 @@ class LocalElasticAgent(SimpleElasticAgent):
                     node_id=self._rdzv_handler._this_node,
                     rank=self._worker_group.group_rank,
                 )
+
+                # Teardown only starts after the restart decision, so without this
+                # the detect-to-decide gap is unmeasured.
+                failures = len(run_result.failures or {})
+                self._run_phase.close()
+                telemetry.mark(
+                    semconv.SPAN_GROUP_FT,
+                    "nv.nvrx.ftl.fault",
+                    {
+                        "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+                        "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+                        "nv.nvrx.ftl.cycle.failures": failures,
+                        "nv.nvrx.ftl.node": self._node_id,
+                        "nv.nvrx.ftl.group.rank": self._worker_group.group_rank,
+                        "nv.nvrx.ftl.group.world_size": self._worker_group.group_world_size,
+                        "nv.nvrx.ftl.membership": "active",
+                    },
+                )
+                # Set now; the span stays open until the next rendezvous so teardown
+                # lands inside the cycle that failed.
+                self._cycle_phase.set(
+                    {
+                        CYCLE_OUTCOME: "failed",
+                        "nv.nvrx.ftl.cycle.state": state.name,
+                        "nv.nvrx.ftl.cycle.failures": failures,
+                    }
+                )
+                telemetry.flush()  # this node may be killed moments from here
 
                 log_msg = (
                     f"[%s] Worker group {state.name}. "
@@ -726,6 +850,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                 # No more restarts (either exhausted or early termination)
                 self._stop_workers(self._worker_group)
+                self._cycle_phase.close()
                 self._worker_group.state = WorkerState.FAILED
                 return RunResult(state=WorkerState.FAILED, failures=run_result.failures)
             elif state == WorkerState.HEALTHY:
@@ -745,7 +870,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                             role,
                             no_restart,
                         )
+                        self._run_phase.close()
                         self._stop_workers(self._worker_group)
+                        self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
                         self._worker_group.state = WorkerState.FAILED
                         raise NoRestartRequested(no_restart)
 
@@ -757,6 +884,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                         rank=group_rank,
                     )
 
+                    self._run_phase.close()
+                    self._cycle_phase.set({CYCLE_OUTCOME: "peer_restart"})
+
                     log_msg = f"[%s] Joining cluster restart (group_rank={group_rank})"
                     # The node that triggered the failure already opened the rendezvous.
                     should_restart = self._handle_restart_decision(
@@ -765,6 +895,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     if not should_restart:
                         self._stop_workers(self._worker_group)
+                        self._cycle_phase.close()
                         self._worker_group.state = WorkerState.FAILED
                         return RunResult(state=WorkerState.FAILED)
             else:
@@ -993,6 +1124,18 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
+    @telemetry.trace_fn(
+        semconv.SPAN_GROUP_FT,
+        "nv.nvrx.ftl.teardown",
+        attrs=lambda self, worker_group, *args, **kwargs: {
+            "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+            "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            "nv.nvrx.ftl.node": self._node_id,
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+        },
+    )
     def _stop_workers(self, worker_group: WorkerGroup, *args, **kwargs) -> None:
         # Support both old and new SimpleElasticAgent._stop_workers signatures:
         # - Before 2.5.1: _stop_workers(self, worker_group: WorkerGroup) -> None
@@ -1064,18 +1207,42 @@ class LocalElasticAgent(SimpleElasticAgent):
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
+    @telemetry.trace_fn(
+        semconv.SPAN_GROUP_FT,
+        "nv.nvrx.ftl.worker_launch",
+        attrs=lambda self, worker_group: {
+            "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+            "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+            "nv.nvrx.ftl.node": self._node_id,
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+        },
+    )
     def _start_workers(self, worker_group: WorkerGroup) -> Dict[int, Any]:
         spec = worker_group.spec
         store = worker_group.store
         assert store is not None
 
-        # Get the current cycle number from the rendezvous handler
-        # At this point, rendezvous has completed and we're about to start workers.
-        # The cycle number is used for profiling and environment variable setting.
+        # The rendezvous round is operational state. Worker launch must not depend
+        # on telemetry state being available or initialized.
         restart_count = self._get_global_cycle_number()
 
         # Send current cycle number to rank monitors for logging
         self._send_cycle_to_rank_monitors(restart_count)
+
+        worker_resource_attrs = {
+            "nv.nvrx.cycle.index": restart_count,
+            "nv.nvrx.ftl.membership": "active",
+            **self._infra_placement_attrs(),
+            **self._launch_budget_attrs(),
+        }
+        cohort_env = {
+            "OTEL_RESOURCE_ATTRIBUTES": telemetry.extend_otel_resource_attributes(
+                telemetry.get_inherited_resource_attributes(),
+                overrides=worker_resource_attrs,
+            )
+        }
 
         # Record worker start start event
         record_profiling_event(
@@ -1132,6 +1299,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 FT_LAUNCHER_IPC_SOCKET_ENV_VAR: FT_LAUNCHER_IPC_SOCKET,
                 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR: self.get_rank_mon_socket_path(local_rank),
             }
+            worker_env.update(cohort_env)
             if current_cycle_info_path is not None:
                 worker_env["NVRX_CURRENT_CYCLE_INFO"] = current_cycle_info_path
             if "OMP_NUM_THREADS" in os.environ:
@@ -1314,6 +1482,8 @@ class LocalElasticAgent(SimpleElasticAgent):
     #  `torch.distributed.elastic.metrics.prof`.
     @prof
     def _monitor_workers(self, worker_group: WorkerGroup) -> RunResult:
+        if _DIAGNOSTIC_COLLECTOR is not None:
+            _DIAGNOSTIC_COLLECTOR.check_health()
         role = worker_group.spec.role
         worker_pids = {w.id for w in worker_group.workers}
         assert self._pcontext is not None
@@ -1380,6 +1550,60 @@ class LocalElasticAgent(SimpleElasticAgent):
             result = self._pcontext.wait(0)
         return result is not None and result.is_failed()
 
+    def _infra_placement_attrs(self) -> dict[str, Union[str, int]]:
+        """Where this node sits in the fabric. A key is absent when its value is not known."""
+        attrs: dict[str, Union[str, int]] = {}
+        try:
+            attrs["nv.nvrx.ftl.infra.rank"] = get_infrastructure_rank(skip_nodename_logic=True)
+        except (ValueError, RuntimeError):
+            logger.debug("Infrastructure rank unavailable", exc_info=True)
+        settings = self._rdzv_handler.settings
+        if settings.segment is not None:
+            attrs["nv.nvrx.ftl.segment"] = settings.segment
+            domain = self._rdzv_handler.domain_id
+            if domain is not None:
+                attrs["nv.nvrx.ftl.infra.cluster_uuid"] = domain
+        return attrs
+
+    def _launch_budget_attrs(self) -> dict[str, int]:
+        """The node budget the job was launched with, for the worker Resource."""
+        settings = self._rdzv_handler.settings
+        return {
+            "nv.dl.launch.nnodes.active": settings.min_nodes,
+            "nv.dl.launch.nnodes.spare": settings.max_nodes - settings.min_nodes,
+        }
+
+    def _joined_cycle_attrs(
+        self, worker_group: WorkerGroup
+    ) -> dict[str, Union[str, int, None]]:
+        """Describe this node's joined round without duplicating the membership roster."""
+        spec = worker_group.spec
+        attrs: dict[str, Union[str, int, None]] = {
+            "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+            "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+            "nv.nvrx.ftl.membership": "active",
+            "nv.nvrx.ftl.max_restarts": spec.max_restarts,
+            "nv.nvrx.ftl.remaining_restarts": self._remaining_restarts,
+        }
+        attrs["nv.nvrx.ftl.rdzv.run_id"] = spec.rdzv_handler.get_run_id()
+        attrs.update(self._infra_placement_attrs())
+        return attrs
+
+    def _initialize_workers(self, worker_group: WorkerGroup) -> None:
+        """Override to open the run phase once the workers are actually running."""
+        super()._initialize_workers(worker_group)
+        self._run_phase.open(
+            semconv.SPAN_GROUP_FT,
+            "nv.nvrx.ftl.run",
+            {
+                "nv.nvrx.ftl.rdzv.round": self._get_global_cycle_number(),
+                "nv.nvrx.ftl.profiling.cycle": get_profiling_cycle(),
+                "nv.nvrx.ftl.group.rank": worker_group.group_rank,
+                "nv.nvrx.ftl.group.world_size": worker_group.group_world_size,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
+
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         """Override _rendezvous to set worker group reference in the handler."""
         spec = worker_group.spec
@@ -1389,9 +1613,20 @@ class LocalElasticAgent(SimpleElasticAgent):
         # this will always be FtRendezvousBarrierHandler.
         spec.rdzv_handler.set_worker_group(worker_group)
 
-        # Call the parent class _rendezvous method
-        super()._rendezvous(worker_group)
-
+        try:
+            # Call the parent class _rendezvous method
+            super()._rendezvous(worker_group)
+        except UnhealthyNodeException:
+            # The node failed the health check.
+            self._cycle_phase.close({CYCLE_OUTCOME: "excluded"})
+            raise
+        except (RendezvousClosedError, RendezvousGracefulExitError):
+            # job ended while it waited
+            self._cycle_phase.close(
+                {CYCLE_OUTCOME: "standby", "nv.nvrx.ftl.membership": "standby"}
+            )
+            raise
+        self._cycle_phase.set(self._joined_cycle_attrs(worker_group))
 
 # Source
 # https://github.com/pytorch/pytorch/blob/release/2.3/torch/distributed/launcher/api.py
@@ -1760,6 +1995,7 @@ def launch_agent(
             else:
                 agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
+        _stop_diagnostic_collector()
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
         # ends. Wait a short grace period so other nodes can read final state (e.g. permanent close key,
@@ -2375,8 +2611,6 @@ def get_args_parser() -> ArgumentParser:
     # Fault tolerance related items
     #
 
-    add_ft_config_file_args(parser, aliases=("--ft-cfg-path", "--ft-cfg_path"), action=env)
-
     parser.add_argument(
         "--ft-workload-check-interval",
         "--ft-workload_check_interval",
@@ -2655,6 +2889,8 @@ def get_args_parser() -> ArgumentParser:
         "Useful for debugging process cleanup issues. Default: False.",
     )
 
+    TimeoutDumpConfig.add_arguments(parser)
+
     parser.add_argument(
         "--ft-install-exception-hook",
         "--ft-install_exception_hook",
@@ -2669,13 +2905,6 @@ def get_args_parser() -> ArgumentParser:
     add_attribution_args(parser)
     add_no_restart_args(parser)
     add_cycle_info_args(parser)
-
-    parser.add_argument(
-        "--ft-ignore-missing-cfg",
-        action='store_true',
-        dest="ft_ignore_missing_cfg",
-        help="Do not raise an error if there is no Fault Tolerance pkg config provided, just use default settings.",
-    )
 
     #
     # Progress tracking arguments
@@ -2710,7 +2939,8 @@ def get_args_parser() -> ArgumentParser:
         default=None,
         dest="ft_checkpoint_iteration_file",
         help="Path to file containing the latest checkpoint iteration (single integer). "
-        "Used for progress tracking. Example: phase1/latest_checkpointed_iteration.txt",
+        "When progress tracking is enabled, a missing file counts as no progress. "
+        "Example: phase1/latest_checkpointed_iteration.txt",
     )
 
     #
@@ -2894,10 +3124,8 @@ def _validate_args(args: Any) -> None:
         )
 
 
-def _resolve_attribution_endpoint(args: Any, fault_tol_cfg: FaultToleranceConfig) -> Optional[str]:
-    endpoint = getattr(args, "ft_attribution_endpoint", None)
-    if endpoint is None:
-        endpoint = fault_tol_cfg.attribution_endpoint
+def _resolve_attribution_endpoint(fault_tol_cfg: FaultToleranceConfig) -> Optional[str]:
+    endpoint = fault_tol_cfg.attribution_endpoint
     if endpoint is not None:
         endpoint = str(endpoint).strip() or None
     return endpoint
@@ -2906,7 +3134,7 @@ def _resolve_attribution_endpoint(args: Any, fault_tol_cfg: FaultToleranceConfig
 def _validate_attribution_requires_per_cycle_applog(
     args: Any, fault_tol_cfg: FaultToleranceConfig
 ) -> None:
-    if _resolve_attribution_endpoint(args, fault_tol_cfg) and not getattr(
+    if _resolve_attribution_endpoint(fault_tol_cfg) and not getattr(
         args, "ft_per_cycle_applog_prefix", None
     ):
         raise ValueError(
@@ -2916,6 +3144,7 @@ def _validate_attribution_requires_per_cycle_applog(
 
 def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -> Tuple[LaunchConfig, Union[Callable, str], List[str]]:
     # If ``args`` not passed, defaults to ``sys.argv[:1]``
+    fault_tol_cfg = FaultToleranceConfig.from_args(args)
     _validate_args(args)
     if getattr(args, "ft_nvrx_logfile", None):
         if getattr(args, "ft_enable_log_server", None) is None:
@@ -2977,8 +3206,14 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         )
 
 
-    fault_tol_cfg = FaultToleranceConfig.from_args(args)
     _validate_attribution_requires_per_cycle_applog(args, fault_tol_cfg)
+    # Fork before attribution/logging services create background threads. The
+    # child keeps only its ownership lock and the launcher's stdout/stderr.
+    _start_diagnostic_collector(
+        fault_tol_cfg,
+        launcher_log_file or getattr(args, "ft_nvrx_logfile", None),
+        local_world_size=nproc_per_node,
+    )
 
     if fault_tol_cfg.segment_health_check_dir:
         if not os.path.isabs(fault_tol_cfg.segment_health_check_dir):
@@ -3157,6 +3392,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
             grpc_server_address=grpc_server_address,
             node_id=node_id,
         )
+        launcher_error_reporter.logs_specs = logs_specs
         # Note: PipeBasedLogsSpecs handles rank prefixing in parent process
     else:
         # Standard logs_specs creation for other cases
@@ -3734,6 +3970,8 @@ def run(args):
 def main(args=None):
     args = parse_args(args)
     try:
+        if args.ft_nvrx_logfile:
+            launcher_error_reporter.save_stderr()
         run(args)
     except NoRestartRequested as e:
         exit_code = _no_restart_exit_code(args)
@@ -3747,24 +3985,34 @@ def main(args=None):
         )
         exit_code = 1
     except Exception as e:
-        logger.error(f"Agent run ended with exception, {e=}. Agent's exit code = 1")
+        launcher_error_reporter.report_exception(e)
+        logger.error(
+            f"Agent run ended with exception, {e=}. Agent's exit code = 1",
+            exc_info=True,
+        )
         exit_code = 1
     else:
         logger.info("Agent exits with exit code = 0.")
         exit_code = 0
     finally:
-        # Clean up gRPC server AFTER all logging is done
-        # (logging cleanup already happened in run()'s finally block)
-        global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER
-        if _GRPC_SERVER_PROCESSES:
-            grpc_graceful_shutdown_timeout = float(
-                getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
-            )
-            stop_grpc_log_servers(_GRPC_SERVER_PROCESSES, grpc_graceful_shutdown_timeout)
+        try:
+            # Also drain errors raised after log setup but before launch_agent() owns cleanup.
+            if launcher_error_reporter.logs_specs is not None:
+                launcher_error_reporter.logs_specs.cleanup()
+            # Stop gRPC servers after the local reader has drained pending logs.
+            _stop_diagnostic_collector()  # also covers failure during configuration/startup
+            global _GRPC_SERVER_PROCESSES, _ATTRIBUTION_MANAGER
+            if _GRPC_SERVER_PROCESSES:
+                grpc_graceful_shutdown_timeout = float(
+                    getattr(args, 'ft_log_server_graceful_shutdown_timeout', 60.0)
+                )
+                stop_grpc_log_servers(_GRPC_SERVER_PROCESSES, grpc_graceful_shutdown_timeout)
 
-        if _ATTRIBUTION_MANAGER is not None:
-            _ATTRIBUTION_MANAGER.stop()
-            _ATTRIBUTION_MANAGER = None
+            if _ATTRIBUTION_MANAGER is not None:
+                _ATTRIBUTION_MANAGER.stop()
+                _ATTRIBUTION_MANAGER = None
+        finally:
+            launcher_error_reporter.close()
 
     sys.exit(exit_code)
 

@@ -22,6 +22,7 @@ regular logging and distributed logging for large-scale training with thousands
 of GPUs. The design automatically adapts based on environment configuration.
 
 Key Design Principles:
+
 - Environment-driven behavior: NVRX_NODE_LOCAL_TMPDIR controls distributed vs regular logging
 - Per-node aggregation: When distributed logging is enabled, a separate aggregator service does log aggregation
 - Dynamic rank detection: Automatically reads rank info from environment variables
@@ -31,6 +32,7 @@ Key Design Principles:
 - Service-based aggregation: Aggregator can run as a separate service for reliable log collection
 
 Features:
+
 - Dual mode operation: Regular logging (stderr/stdout) or distributed logging (file aggregation)
 - Per-node log files: When distributed logging is enabled (e.g., node_hostname.log)
 - Automatic rank and node identification in log messages
@@ -51,6 +53,9 @@ Note: File rotation is designed to be safe for the aggregator service. When file
 the aggregator will automatically read from both current and backup files to ensure no messages are lost.
 
 Usage:
+
+.. code-block:: python
+
     # In main script (launcher.py)
     from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
     logger = setup_logger()  # Call once at startup
@@ -65,8 +70,11 @@ Usage:
     logger.critical("Critical error")
 
 Forking Support:
-    The logger is designed to work safely with process forking. When using fork():
-    
+
+The logger is designed to work safely with process forking. When using fork():
+
+.. code-block:: python
+
     # In parent process
     from nvidia_resiliency_ext.shared_utils.log_manager import setup_logger
     logger = setup_logger()  # Setup before forking
@@ -83,8 +91,8 @@ Forking Support:
         # Parent continues normally
         logger.info("Parent continues")
     
-    All ranks use file-based message passing, ensuring child processes can log
-    even when they don't inherit the aggregator thread from the parent.
+All ranks use file-based message passing, ensuring child processes can log
+even when they don't inherit the aggregator thread from the parent.
 
 Separate Aggregator Service, see log_aggregator.py for details.
 """

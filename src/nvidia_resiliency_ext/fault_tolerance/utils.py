@@ -16,6 +16,7 @@
 import asyncio
 import contextlib
 import ctypes
+import functools
 import hashlib
 import logging
 import multiprocessing
@@ -57,6 +58,40 @@ RDZV_NO_RESTART_REASONS = frozenset(
 DEFAULT_NO_RESTART_EXIT_CODE = 93
 
 _IPC_PICKLER = multiprocessing.reduction.ForkingPickler(open(os.devnull, mode='wb'))
+
+
+def format_rank_set_verbose(ranks):
+    """
+    Format a set of ranks for logging using range compression (e.g., "1-3, 5, 7-9").
+
+    Args:
+        ranks: Set or list of rank numbers
+
+    Returns:
+        str: Formatted rank set string with ranges
+    """
+    if not ranks:
+        return "{}"
+
+    # Convert to sorted list of unique ranks
+    sorted_ranks = sorted(set(ranks))
+
+    # Compress consecutive ranks into ranges
+    ranges = []
+    if sorted_ranks:
+        start = end = sorted_ranks[0]
+
+        for n in sorted_ranks[1:]:
+            if n == end + 1:
+                end = n
+            else:
+                ranges.append(f"{start}-{end}" if start != end else str(start))
+                start = end = n
+
+        ranges.append(f"{start}-{end}" if start != end else str(start))
+
+    result = ", ".join(ranges)
+    return f"{{{result}}}"
 
 
 def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
@@ -243,6 +278,15 @@ def get_infrastructure_rank(skip_nodename_logic: bool = False) -> int:
         "Neither SLURM_PROCID nor GROUP_RANK is set. Infrastructure rank will be assigned deterministically."
     )
     return -1
+
+
+@functools.cache
+def is_infra_rank_zero() -> bool:
+    """Whether this node is infrastructure rank 0, the one node that logs job-wide messages."""
+    # Hostname/topology ranks need not include zero, so the rank may be unavailable.
+    with contextlib.suppress(ValueError, RuntimeError):
+        return get_infrastructure_rank(skip_nodename_logic=True) == 0
+    return False
 
 
 def is_slurm_job_array() -> bool:

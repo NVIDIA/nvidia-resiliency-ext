@@ -27,14 +27,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
+from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
-from nvidia_resiliency_ext import fault_tolerance
+from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
 )
+from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
 
 WORLD_SIZE = 4
@@ -72,10 +75,11 @@ def _run_launcher(cmd_to_run, timeout):
         assert False, f"ft_launcher was still running after {timeout} seconds\n{output}"
 
 
-def _save_ft_cfg(cfg, dirpath):
-    cfg_path = os.path.join(dirpath, "_tmp_ft_cfg.yaml")
-    cfg.to_yaml_file(cfg_path)
-    return cfg_path
+# These subprocess scenarios use CPU/Gloo and allocate no GPU memory.
+FT_ARGS = (
+    "--ft-initial-rank-heartbeat-timeout=3.0 --ft-rank-heartbeat-timeout=3.0"
+    " --ft-workload-check-interval=1.0 --ft-gpu-memory-reclaim-timeout=0"
+)
 
 
 def _get_util_script_path():
@@ -151,15 +155,9 @@ def test_ft_rdzv_impl_rejects_legacy():
 def test_rank_not_send_initial_hb(tmp_dir):
     # If one rank does not send initial heartbeat,
     # FT should terminate the rank, and launcher should kill all other ranks
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -170,15 +168,9 @@ def test_rank_not_send_initial_hb(tmp_dir):
 def test_rank_failed(tmp_dir):
     # If one rank failed (returns non-zero exit code),
     # launcher should kill other ranks
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --which_rank=1"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -188,15 +180,9 @@ def test_rank_failed(tmp_dir):
 
 def test_ranks_exit_gracefully(tmp_dir):
     # All ranks exit gracefully, there should be no error
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()}"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -208,15 +194,9 @@ def test_launcher_sigterm_graceful_exit(tmp_dir):
     # Simulated preemption:
     # Launcher get SIGTERM, ranks exit gracefully with code 0.
     # No error should be returned by the launcher.
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=return0"
     launcher_cmd = (
-        "ft_launcher --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
+        f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     )
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
@@ -229,16 +209,8 @@ def test_launcher_sigterm_ignored(tmp_dir):
     # Simulated preemption:
     # Launcher get SIGTERM, ranks do not exit
     # FT launcher should forcefuly kill all ranks after `--term-timeout`
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=ignore"
-    launcher_cmd = (
-        "ft_launcher --term-timeout=5 --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
+    launcher_cmd = f"ft_launcher --term-timeout=5 --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
     assert "SIGTERM SENT TO LAUNCHER" in output
@@ -250,16 +222,8 @@ def test_ranks_restart(tmp_dir):
     # Run 0 is `test_rank_not_send_initial_hb`
     # Run 1 is `test_rank_failed`
     # Run 2 is `test_ranks_exit_gracefully`
-    ft_cfg = fault_tolerance.FaultToleranceConfig()
-    ft_cfg.initial_rank_heartbeat_timeout = 3.0
-    ft_cfg.rank_heartbeat_timeout = 3.0
-    ft_cfg.workload_check_interval = 1.0
-    ft_cfg_path = _save_ft_cfg(ft_cfg, tmp_dir)
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --tmp_dir={tmp_dir}"
-    launcher_cmd = (
-        "ft_launcher --max-restarts=2 --monitor-interval=1"
-        f" --ft-cfg-path={ft_cfg_path} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
-    )
+    launcher_cmd = f"ft_launcher --max-restarts=2 --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
     ret_code, output = _run_launcher(launcher_cmd, DEFAULT_TIMEOUT)
     assert "ALL RANKS STARTED" in output
     assert "RESTART #0" in output
@@ -271,40 +235,7 @@ def test_ranks_restart(tmp_dir):
     assert ret_code == 0
 
 
-def test_missing_cfg(tmp_dir):
-    # Empty config file, cant be parsed
-    empty_ft_cfg_path = os.path.join(tmp_dir, "_empty_ft_cfg.yaml")
-    with open(empty_ft_cfg_path, 'a'):
-        pass  # touch file
-    # Empty config file again, But this time there are FT args in CLI, so should be fine
-    config, _, _, setup_rank_monitors = _config_from_launcher_cli(
-        [
-            "--monitor-interval=1",
-            f"--ft-cfg-path={empty_ft_cfg_path}",
-            f"--nproc-per-node={WORLD_SIZE}",
-            "--ft-rank-heartbeat-timeout=1.0",
-            _get_util_script_path(),
-            "--scenario=test_ranks_exit_gracefully",
-        ]
-    )
-    assert config.fault_tol_cfg.rank_heartbeat_timeout == 1.0
-    assert setup_rank_monitors.call_args.kwargs["ft_cfg"] is config.fault_tol_cfg
-
-    # Invalid config file path - should fail despite FT args specified via CLI
-    with pytest.raises(FileNotFoundError):
-        _config_from_launcher_cli(
-            [
-                "--monitor-interval=1",
-                "--ft-cfg-path=/not/there.yaml",
-                "--ft-rank-heartbeat-timeout=1.0",
-                f"--nproc-per-node={WORLD_SIZE}",
-                _get_util_script_path(),
-                "--scenario=test_ranks_exit_gracefully",
-            ]
-        )
-
-
-def test_config_provided_via_cli(tmp_dir):
+def test_config_provided_via_cli():
     # Check if FT args passed via CLI were propagated to the FT monitor process
     config, _, _, setup_rank_monitors = _config_from_launcher_cli(
         [
@@ -315,8 +246,7 @@ def test_config_provided_via_cli(tmp_dir):
             "--ft-log-level=WARNING",
             f"--nproc-per-node={WORLD_SIZE}",
             _get_util_script_path(),
-            "--scenario=dump_cfg",
-            f"--tmp_dir={tmp_dir}",
+            "--scenario=test_ranks_exit_gracefully",
         ]
     )
 
@@ -326,47 +256,6 @@ def test_config_provided_via_cli(tmp_dir):
     assert config.fault_tol_cfg.rank_termination_signal == signal.SIGUSR2
     assert config.fault_tol_cfg.log_level == logging.WARNING
     assert setup_rank_monitors.call_args.kwargs["ft_cfg"] is config.fault_tol_cfg
-
-
-def test_config_provided_via_cli_overwrites_yaml(tmp_dir):
-    # Check if FT args passed via CLI were propagated to the FT monitor process
-    # Args provided via CLI should overwrite the ones from the config file
-    base_cfg = fault_tolerance.FaultToleranceConfig(
-        workload_check_interval=321.0,
-        initial_rank_heartbeat_timeout=111.0,
-        rank_heartbeat_timeout=222.0,
-        rank_termination_signal=signal.SIGTSTP,
-        log_level=logging.INFO,
-    )
-    ft_cfg_path = os.path.join(tmp_dir, "ft_cfg.yaml")
-    base_cfg.to_yaml_file(ft_cfg_path)
-
-    config, _, _, setup_rank_monitors = _config_from_launcher_cli(
-        [
-            "--ft-rank-heartbeat-timeout=123.0",
-            "--ft-safety-factor=7.7",
-            "--ft-rank-termination-signal=SIGUSR1",
-            "--ft-log-level=CRITICAL",
-            f"--ft-cfg-path={ft_cfg_path}",
-            f"--nproc-per-node={WORLD_SIZE}",
-            _get_util_script_path(),
-            "--scenario=dump_cfg",
-            f"--tmp_dir={tmp_dir}",
-        ]
-    )
-
-    assert config.fault_tol_cfg.workload_check_interval == 321.0
-    assert config.fault_tol_cfg.initial_rank_heartbeat_timeout == 111.0
-    assert config.fault_tol_cfg.rank_heartbeat_timeout == 123.0
-    assert config.fault_tol_cfg.safety_factor == 7.7
-    assert config.fault_tol_cfg.rank_termination_signal == signal.SIGUSR1
-    assert config.fault_tol_cfg.log_level == logging.CRITICAL
-    assert setup_rank_monitors.call_args.kwargs["ft_cfg"] is config.fault_tol_cfg
-
-
-# ==============================================================================
-# Unit tests for launcher cycle-info env path interaction
-# ==============================================================================
 
 
 def _make_agent_spec(rdzv_round=1):
@@ -552,6 +441,7 @@ class TestLauncherRunBehavior(unittest.TestCase):
         )
         agent._worker_group.state = WorkerState.HEALTHY
         agent._worker_group.group_rank = 0
+        agent._worker_group.group_world_size = 2
         failure = MagicMock()
         failures = {7: failure}
 
@@ -565,6 +455,8 @@ class TestLauncherRunBehavior(unittest.TestCase):
             patch.object(agent, '_handle_restart_decision', return_value=False),
             patch.object(agent, '_stop_workers'),
             patch.object(launcher, 'record_profiling_event'),
+            patch.object(launcher, 'get_profiling_cycle', return_value=4),
+            patch.object(launcher.telemetry, 'mark') as mark,
             patch.object(launcher, 'put_metric'),
             patch.object(launcher.time, 'sleep'),
         ):
@@ -572,6 +464,19 @@ class TestLauncherRunBehavior(unittest.TestCase):
 
         self.assertEqual(result.state, WorkerState.FAILED)
         self.assertEqual(result.failures, failures)
+        mark.assert_called_once_with(
+            semconv.SPAN_GROUP_FT,
+            "nv.nvrx.ftl.fault",
+            {
+                "nv.nvrx.ftl.rdzv.round": 3,
+                "nv.nvrx.ftl.profiling.cycle": 4,
+                "nv.nvrx.ftl.cycle.failures": 1,
+                "nv.nvrx.ftl.node": agent._node_id,
+                "nv.nvrx.ftl.group.rank": 0,
+                "nv.nvrx.ftl.group.world_size": 2,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
 
 
 class TestHandleRestartDecision(unittest.TestCase):
@@ -627,6 +532,35 @@ class TestHandleRestartDecision(unittest.TestCase):
         mock_open.assert_not_called()
         # The restart budget is untouched: this is a stop, not a consumed retry.
         self.assertEqual(agent._remaining_restarts, 2)
+
+    def test_missing_checkpoint_stops_before_restart_budget_is_exhausted(self):
+        """The real tracker must stop a startup crash loop through the no-restart path."""
+        from nvidia_resiliency_ext.fault_tolerance.launcher import NoRestartRequested
+
+        with tempfile.TemporaryDirectory() as directory:
+            self.fault_tol_cfg.checkpoint_iteration_file = os.path.join(directory, "missing.txt")
+            agent = self._make_agent()
+            agent._remaining_restarts = 100
+
+            with (
+                patch.object(agent, '_restart_workers') as restart,
+                patch.object(agent, '_stop_workers') as stop,
+            ):
+                for _ in range(2):
+                    self.assertTrue(
+                        agent._handle_restart_decision("test", self.spec, "[%s] restarting")
+                    )
+                with self.assertRaises(NoRestartRequested) as ctx:
+                    agent._handle_restart_decision("test", self.spec, "[%s] restarting")
+
+            self.assertEqual(ctx.exception.reason, RDZV_SHUTDOWN_REASON_NO_PROGRESS)
+            agent._rdzv_handler.signal_no_restart.assert_called_once_with(
+                RDZV_SHUTDOWN_REASON_NO_PROGRESS
+            )
+            self.assertEqual(restart.call_count, 2)
+            self.assertEqual(agent._remaining_restarts, 98)
+            self.assertEqual(agent._worker_group.state, WorkerState.FAILED)
+            stop.assert_called_once_with(agent._worker_group)
 
     def test_handle_restart_decision_restarts_remaining(self):
         """Returns True and decrements _remaining_restarts when restarts are available."""
@@ -1016,21 +950,7 @@ def test_cli_attribution_endpoint_requires_per_cycle_applog():
     args = parser.parse_args(['--ft-attribution-endpoint', 'localhost', 'train.py'])
 
     with pytest.raises(ValueError, match='--ft-attribution-endpoint requires'):
-        _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig())
-
-
-def test_yaml_attribution_endpoint_requires_per_cycle_applog():
-    from types import SimpleNamespace
-
-    from nvidia_resiliency_ext.fault_tolerance.launcher import (
-        _validate_attribution_requires_per_cycle_applog,
-    )
-
-    args = SimpleNamespace(ft_attribution_endpoint=None, ft_per_cycle_applog_prefix=None)
-    cfg = FaultToleranceConfig(attribution_endpoint='localhost')
-
-    with pytest.raises(ValueError, match='--ft-attribution-endpoint requires'):
-        _validate_attribution_requires_per_cycle_applog(args, cfg)
+        _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig.from_args(args))
 
 
 def test_per_cycle_applog_without_attribution_is_valid():
@@ -1065,7 +985,7 @@ def test_attribution_endpoint_with_per_cycle_applog_is_valid():
         ]
     )
 
-    _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig())
+    _validate_attribution_requires_per_cycle_applog(args, FaultToleranceConfig.from_args(args))
 
 
 def test_log_funnel_ports_from_launcher_args_auto():
@@ -1935,3 +1855,144 @@ class TestLauncherAllowedRoots:
         from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
 
         assert _resolve_grpc_log_allowed_roots(self._args()) == []
+
+
+class TestCycleTelemetry:
+    @pytest.mark.parametrize("failure", ["shutdown", "phase_close"])
+    def test_cleanup_continues_after_shutdown_or_phase_close_failure(self, failure):
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._worker_group.spec.max_restarts = 5
+        agent._get_global_cycle_number.return_value = 3
+        events = MagicMock()
+        agent._run_phase = events.run
+        agent._cycle_phase = events.cycle
+        failing_call = agent._shutdown if failure == "shutdown" else events.run.close
+        failing_call.side_effect = RuntimeError("cleanup failed")
+        with (
+            patch.object(telemetry, "setup_telemetry") as setup,
+            patch.object(telemetry, "record_process_startup"),
+            patch.object(telemetry, "shutdown", events.shutdown),
+            pytest.raises(RuntimeError, match="cleanup failed"),
+        ):
+            launcher.LocalElasticAgent.run(agent)
+        assert events.mock_calls == [
+            unittest.mock.call.run.close(),
+            unittest.mock.call.cycle.close(),
+            unittest.mock.call.shutdown(setup.return_value),
+        ]
+
+    def test_run_phase_receives_rendezvous_and_profiling_counters(self):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._run_phase = MagicMock()
+        worker_group = MagicMock(group_rank=1, group_world_size=2)
+        with (
+            patch.object(launcher.SimpleElasticAgent, "_initialize_workers"),
+            patch.object(agent, "_get_global_cycle_number", return_value=3),
+            patch.object(launcher, "get_profiling_cycle", return_value=4),
+        ):
+            launcher.LocalElasticAgent._initialize_workers(agent, worker_group)
+
+        agent._run_phase.open.assert_called_once_with(
+            semconv.SPAN_GROUP_FT,
+            "nv.nvrx.ftl.run",
+            {
+                "nv.nvrx.ftl.rdzv.round": 3,
+                "nv.nvrx.ftl.profiling.cycle": 4,
+                "nv.nvrx.ftl.group.rank": 1,
+                "nv.nvrx.ftl.group.world_size": 2,
+                "nv.nvrx.ftl.membership": "active",
+            },
+        )
+
+    @pytest.mark.parametrize(
+        ("error", "outcome"),
+        [
+            pytest.param(
+                UnhealthyNodeException("unhealthy"),
+                {"nv.nvrx.cycle.outcome": "excluded"},
+                id="unhealthy",
+            ),
+            pytest.param(
+                RendezvousGracefulExitError("closed"),
+                {
+                    "nv.nvrx.cycle.outcome": "standby",
+                    "nv.nvrx.ftl.membership": "standby",
+                },
+                id="closed",
+            ),
+        ],
+    )
+    def test_rendezvous_failure_closes_the_cycle_opened_for_the_wait(self, error, outcome):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._cycle_phase = MagicMock()
+        worker_group = MagicMock()
+        with (
+            patch.object(launcher.SimpleElasticAgent, "_rendezvous", side_effect=error),
+            pytest.raises(type(error)),
+        ):
+            launcher.LocalElasticAgent._rendezvous(agent, worker_group)
+        agent._cycle_phase.close.assert_called_once_with(outcome)
+
+    def _make_worker_agent(self):
+        agent = MagicMock()
+        agent._node_id = "node"
+        agent._infra_placement_attrs.return_value = {}
+        agent._launch_budget_attrs.return_value = {}
+        agent._current_cycle_info_path.return_value = None
+        agent._log_line_prefix_template = None
+        group = agent._worker_group
+        group.spec.rdzv_handler.get_run_id.return_value = "rdzv"
+        group.spec.role = "trainer"
+        group.spec.args = ()
+        group.spec.entrypoint = lambda: None
+        group.workers = [MagicMock(local_rank=0)]
+        return agent, group
+
+    @pytest.mark.skipif(not telemetry._AVAILABLE, reason="requires nemo-lens")
+    @pytest.mark.parametrize("round_number", [0, 3], ids=["initial", "restart"])
+    def test_worker_environment_uses_generic_carrier_and_current_round(self, round_number):
+        from nemo.lens.resources.attributes import parse_otel_resource_attributes
+
+        agent, group = self._make_worker_agent()
+        agent._get_global_cycle_number.return_value = round_number
+        with (
+            patch.object(launcher, "start_processes") as start,
+            patch.object(launcher, "record_profiling_event"),
+            patch.object(
+                telemetry,
+                "_INHERITED_RESOURCE_ATTRIBUTES",
+                "example.attribute=imported",
+            ),
+            patch.dict(
+                os.environ,
+                {
+                    "OTEL_RESOURCE_ATTRIBUTES": "example.attribute=live,live.only=true",
+                },
+            ),
+        ):
+            start.return_value.pids.return_value = {}
+            launcher.LocalElasticAgent._start_workers(agent, group)
+            env = start.call_args.kwargs["envs"][0]
+            attrs = parse_otel_resource_attributes(env["OTEL_RESOURCE_ATTRIBUTES"])
+            assert attrs["example.attribute"] == "imported"
+            assert "live.only" not in attrs
+            assert attrs["nv.nvrx.cycle.index"] == str(round_number)
+            assert env["TORCHELASTIC_RESTART_COUNT"] == str(round_number)
+
+    def test_worker_restart_values_do_not_depend_on_telemetry(self):
+        agent, group = self._make_worker_agent()
+        agent._get_global_cycle_number.return_value = 4
+        with (
+            patch.object(launcher, "start_processes") as start,
+            patch.object(launcher, "record_profiling_event"),
+            patch.object(telemetry, "_AVAILABLE", False),
+            patch.object(telemetry, "get_inherited_resource_attributes", return_value=""),
+            patch.object(telemetry, "extend_otel_resource_attributes", return_value=""),
+        ):
+            start.return_value.pids.return_value = {}
+            launcher.LocalElasticAgent._start_workers(agent, group)
+
+        env = start.call_args.kwargs["envs"][0]
+        assert env["TORCHELASTIC_RESTART_COUNT"] == "4"
+        agent._send_cycle_to_rank_monitors.assert_called_once_with(4)

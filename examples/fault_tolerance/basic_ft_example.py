@@ -138,8 +138,11 @@ def main(rank, world_size):
         # FT: calculate and set new timeouts
         ft_client.calculate_and_set_hb_timeouts()
         # FT: save the state (calculated timeouts)
-        with open("ft_state.json", "w") as f:
-            json.dump(ft_client.state_dict(), f)
+        if rank == 0:
+            with open("ft_state.json.tmp", "w") as f:
+                json.dump(ft_client.state_dict(), f)
+            os.replace("ft_state.json.tmp", "ft_state.json")
+        dist.barrier()
         print_on_rank0(f"FT timeouts {ft_client.hb_timeouts} saved to ft_state.json")
 
     # FT: shutdown the client

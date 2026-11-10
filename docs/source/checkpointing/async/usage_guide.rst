@@ -161,7 +161,7 @@ The MSC URL scheme is ``msc://<profile-name>/<path>``. The example below shows h
 Example: Saving and Loading Checkpoints with MSC
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The following code demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integrations. The `FileSystemWriter example`_ also provides an ``enable_msc`` option to use MSC for checkpoint saving and loading.
+The following code demonstrates a complete workflow for saving and loading checkpoints using Multi-Storage Client integrations. The :doc:`FileSystemWriter example <examples/writer_example>` also provides an ``enable_msc`` option to use MSC for checkpoint saving and loading.
 
 .. code-block:: python
 
@@ -195,7 +195,7 @@ The following code demonstrates a complete workflow for saving and loading check
         planner = DefaultSavePlanner()
         
         # Plan the save operation
-        save_state_dict_ret = save_state_dict_async_plan(
+        pending = save_state_dict_async_plan(
             state_dict, writer, None, coordinator_rank, planner=planner
         )
         
@@ -204,7 +204,7 @@ The following code demonstrates a complete workflow for saving and loading check
         
         def finalize_fn():
             """Finalizes async checkpointing and synchronizes processes."""
-            save_state_dict_async_finalize(*save_state_dict_ret)
+            save_state_dict_async_finalize(pending)
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
         
@@ -242,6 +242,51 @@ The following code demonstrates a complete workflow for saving and loading check
 
     # Load checkpoint synchronously
     loaded_state_dict = load_checkpoint(checkpoint_path, state_dict.copy())
+
+
+Writing the .metadata File
+--------------------------
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync`
+writes the checkpoint's ``.metadata`` file with its own pickler instead of ``pickle.dump``
+(about 16 times faster on large checkpoints). The file is an ordinary
+pickle that ``torch.distributed.checkpoint`` loads unchanged. The pickler is used on the PyTorch
+versions it was tested with, 2.4 to 2.14; on other versions the file is written with
+``pickle.dump``, as PyTorch writes it.
+
+The environment variable ``NVRX_FAST_METADATA_PICKLE``, read once per process, changes this:
+
+* ``0``: write the file with ``pickle.dump``.
+* ``python``: use the pure-Python pickler instead of the C++ extension.
+* ``force``: use the pickler on untested PyTorch versions too, except those known not to work with
+  it (2.3), where an error is logged.
+
+
+Reusing Global Metadata
+-----------------------
+Building a checkpoint's global metadata gathers every rank's local save plan on the coordinator.
+With ``enable_cache=True``,
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.save_state_dict_async_plan`
+reuses metadata instead, kept between saves in a
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.CheckpointMetadataCache`
+(``metadata_cache``, or the one created by ``init_checkpoint_metadata_cache``):
+
+* After loading a checkpoint, pass its metadata to ``set_cached_global_metadata`` on every rank.
+  The first save reuses it if all ranks' local plans write exactly the chunks it lists, checked
+  with one ``all_reduce``; otherwise the metadata is built as usual. This needs a planner that
+  plans each rank's writes locally (``can_run_decentralized_global_plan``), and no planner data.
+* Later saves reuse the previous save's plans and metadata without communicating. The checkpoint
+  structure must not change between them: a rank whose local plan changed raises an error.
+
+The cache doesn't modify the metadata passed to ``set_cached_global_metadata``. The caller may
+drop its reference to that metadata afterwards, but must not modify it. ``.metadata`` holds only
+the fields of torch's ``Metadata``: other attributes a planner sets on the global metadata aren't
+written.
+
+``save_state_dict_async_plan`` returns a
+:py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver.PendingSave`, to pass
+to ``save_state_dict_async_finalize`` as it is. Unpacking it into the three arguments
+``save_state_dict_async_finalize`` used to take still works, but is deprecated, and sends every
+rank's write results with their fqns as strings.
 
 
 Best Practices

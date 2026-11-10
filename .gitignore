@@ -4,7 +4,7 @@ dist
 CLAUDE.local.md
 *.egg-info
 __pycache__
-cupti_module.*.so
+*.so
 ft_state.json
 .pytest_cache
 *_pb2.py
@@ -12,3 +12,5 @@ ft_state.json
 *_pb2_grpc.py
 .idea/
 src/nvidia_resiliency_ext/skills/nvrx-attr/scripts/user.env
+.venv/
+.hypothesis

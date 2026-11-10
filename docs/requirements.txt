@@ -1,0 +1,11 @@
+sphinx
+sphinx-rtd-theme
+sphinxcontrib-napoleon
+sphinx-copybutton
+myst-parser
+torch>=2.8.0
+numpy>=1.26
+psutil
+defusedxml
+httpx
+nvidia-ml-py

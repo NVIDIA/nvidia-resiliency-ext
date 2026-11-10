@@ -433,6 +433,11 @@ def _current_evidence(value):
             },
             "related_failures": [],
             "evidence": [],
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
     persistence = existing_assessment.get(
         "current_attempt_persistence_evidence",
@@ -525,6 +530,11 @@ def _current_evidence(value):
         },
         "related_failures": (existing_related if isinstance(existing_related, list) else related),
         "evidence": evidence,
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
 
@@ -1193,7 +1203,9 @@ def test_prompt_exposes_exactly_two_l1_recovery_concepts(tmp_path):
     assert "workload-selected framework or library behavior" in SYSTEM_PROMPT
     assert "Megatron" not in SYSTEM_PROMPT
     assert "CUDA_LAUNCH_BLOCKING" not in SYSTEM_PROMPT
-    assert "NVLink" not in SYSTEM_PROMPT
+    # NVLink appears in the 38-category taxonomy (category id 2: "NVLink / GPU error").
+    # That taxonomy is rendered into the prompt for the categorization step, so this
+    # substring is expected here.
     assert "namespace evidence" not in SYSTEM_PROMPT.lower()
     assert "Do not decide STOP or RESTART" not in SYSTEM_PROMPT
     assert "Do not use attempt history" not in SYSTEM_PROMPT
@@ -1262,7 +1274,10 @@ def test_prompt_exposes_exactly_two_l1_recovery_concepts(tmp_path):
     assert "possible hardware reallocation" not in normalized_system_prompt_lower
     assert "infiniband" not in normalized_system_prompt_lower
     assert " roce " not in f" {normalized_system_prompt_lower} "
-    assert "lustre" not in normalized_system_prompt_lower
+    # "lustre" appears in the 38-category taxonomy (category id 6 mentions
+    # "DataLoader worker I/O failure (Bus error, BrokenPipe, Lustre or NIC)"
+    # and category 13 references "Lustre or node-local FS"). The taxonomy is
+    # rendered into the prompt so the model can classify by category id.
     assert normalized_system_prompt_lower.count("allocation resource envelope is invariant") == 1
     assert set(user_payload) == {
         "attempt_execution_context",
@@ -1959,6 +1974,11 @@ def test_l0_links_timeout_aligned_precursor_to_terminal_episode(tmp_path):
             "related_failures": [],
             "evidence": [{"line": line, "quote": quote, "supports": "primary_failure"}],
             "justification": "The transport event precedes the collective timeout.",
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
 
     precursor_analyzer = RestartAgent(
@@ -2056,6 +2076,11 @@ def test_l2_accepts_abbreviated_quote_without_treating_same_event_fanout_as_pers
             {"line": 3, "quote": lines[2], "supports": "root_cause_assessment"},
         ],
         "justification": "The timeout stopped progress.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     extractor = _FakeEvidenceExtractor(evidence)
     analyzer = RestartAgent(evidence_extractor=extractor)
@@ -2640,6 +2665,11 @@ def test_model_primary_lines_in_same_episode_share_history_and_client_identity(t
             "related_failures": [],
             "evidence": [{"line": line, "quote": quote, "supports": "primary_failure"}],
             "justification": "The OOM is the initiating failure.",
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
 
     summary_analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence(2, summary)))
@@ -2941,6 +2971,11 @@ def test_l1_overlay_rebuilds_related_failures_and_cascades_from_validated_primar
         ],
         "evidence": [{"line": 2, "quote": unicode_line, "supports": "primary_failure"}],
         "justification": "The decode failure precedes NCCL and cleanup symptoms.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -3002,6 +3037,11 @@ def test_l1_only_cascade_is_retained_in_public_result(tmp_path):
         ],
         "evidence": [{"line": 1, "quote": primary_line, "supports": "primary_failure"}],
         "justification": "The configuration error preceded the worker report.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     payload = (
@@ -3085,6 +3125,11 @@ def test_l2_chronology_finding_is_observational_only(tmp_path):
                 ],
             }
         ],
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -3138,6 +3183,11 @@ def test_l2_uses_canonical_evidence_tags_for_recovery_support(tmp_path):
         "related_failures": [],
         "evidence": [{"line": 3, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The decode failure occurred while loading a checkpoint.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -3198,6 +3248,11 @@ def test_l2_resolves_unique_nearby_citation_without_discarding_l1(tmp_path):
             {"line": 4, "quote": lines[3], "supports": "primary failure"},
         ],
         "justification": "Checkpoint metadata deserialization failed during load.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -3254,6 +3309,11 @@ def test_l2_accepts_exact_model_visible_truncated_rendering(tmp_path):
             {"line": 2, "quote": failure_line, "supports": "primary failure"},
         ],
         "justification": "The checkpoint write failed after prior progress.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     extractor = _FakeEvidenceExtractor(
         evidence,
@@ -3427,6 +3487,11 @@ def test_invalid_related_role_is_l1_contract_failure(tmp_path):
             {"line": 2, "quote": terminal_line, "supports": "terminal exception"},
         ],
         "justification": "The terminal exception followed the writer error.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     assert model_evidence_contract_errors(_current_evidence(evidence)) == [
@@ -3543,6 +3608,11 @@ def test_l2_uses_canonical_evidence_tags_instead_of_removed_supporting_line_fiel
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The decode failure is the initiating exception.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -3613,6 +3683,11 @@ def test_l2_preserves_workload_domain_independently_of_unknown_root_cause(tmp_pa
                 "supports": ["primary_failure", "failure_domain"],
             }
         ],
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -4062,6 +4137,11 @@ def test_l1_runs_for_l0_structural_candidate(tmp_path):
             }
         ],
         "justification": "The cited current-log error was selected as user failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -4168,6 +4248,11 @@ def test_l2_defensively_withholds_primary_with_known_non_primary_role(tmp_path):
             }
         ],
         "justification": "This exception occurred during teardown.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     bundle = build_l0_bundle(str(log_path))
@@ -4622,6 +4707,11 @@ def test_l4_maps_established_unrecoverable_workload_failure_to_stop(tmp_path):
             }
         ],
         "justification": "The cited current-log error was selected as user failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -4704,6 +4794,11 @@ def test_deterministic_is_ready_while_l1_is_pending(tmp_path):
             }
         ],
         "justification": "The current-log assertion is likely to repeat.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     extractor = _BlockingEvidenceExtractor(evidence)
     observed = []
@@ -4807,6 +4902,11 @@ def test_enriched_route_does_not_inherit_deterministic_history(tmp_path):
             }
         ],
         "justification": "The assertion is ambiguous in one cycle.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     extractor = _BlockingEvidenceExtractor(evidence)
     observed = []
@@ -4874,6 +4974,11 @@ def test_l4_keeps_retryable_port_with_wait_precondition_ambiguous(tmp_path):
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The socket bind failure is the initiating failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -4922,6 +5027,11 @@ def test_model_recovery_confidence_is_preserved_without_recurrence_score(tmp_pat
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The bind failure ended setup.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     extractor = _FakeEvidenceExtractor(evidence)
 
@@ -4995,6 +5105,11 @@ def test_immediate_stop_requires_affirmative_grounded_persistence_evidence(
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The permission error ended setup.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -5057,6 +5172,11 @@ def test_l2_flags_unverified_path_owner_without_treating_rank_fanout_as_persiste
             {"line": 4, "quote": f"[rank96]: {failure_line}", "supports": "persistence"},
         ],
         "justification": "The denied cache lock ended setup on the ranks.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -5113,6 +5233,11 @@ def test_l4_stops_for_established_unrecoverable_workload_claims(tmp_path):
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The workload OOM is the initiating failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -5170,6 +5295,11 @@ def test_l4_uses_workload_confirmation_when_domain_support_outlives_cause_hypoth
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The worker failure terminated the attempt.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -5217,6 +5347,11 @@ def test_cuda_oom_policy_overrides_action_without_mutating_l1_assessment(tmp_pat
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The workload OOM is the initiating failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -5278,6 +5413,11 @@ def test_l4_keeps_retry_recoverable_workload_failure_restartable(tmp_path):
             }
         ],
         "justification": "The cited current-log error was selected as user failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -5334,6 +5474,11 @@ def test_l4_maps_infrastructure_domain_to_restart(tmp_path):
         "related_failures": [],
         "evidence": [{"line": 1, "quote": failure_line, "supports": "primary_failure"}],
         "justification": "The device-loss exception is the initiating failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     payload = (
@@ -5587,6 +5732,11 @@ def test_l1_recovery_assessment_and_policy_context_precedence(
             }
         ],
         "justification": "The model selected an unmapped L1-only numeric instability.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -5656,6 +5806,11 @@ def test_l1_retries_retryable_provider_failure_then_uses_valid_evidence(tmp_path
             }
         ],
         "justification": "The cited current-log error was selected as user failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_RetryOnceEvidenceExtractor(evidence))
@@ -6102,6 +6257,11 @@ def test_l1_repairs_incomplete_contract_once_without_tools(tmp_path):
         "cascades": [],
         "evidence": [{"line": 1, "quote": log_line, "supports": "primary_failure"}],
         "justification": "The configuration error is the initiating failure.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     extractor = _ContractRepairEvidenceExtractor(evidence)
     bundle = build_l0_bundle(str(log_path))
@@ -6190,6 +6350,11 @@ def test_l1_output_limit_gets_one_distinct_tools_disabled_final_turn(tmp_path):
         {
             "schema_version": "restart_agent_evidence.v1",
             "analysis_status": "insufficient_evidence",
+            "category_selection": {
+                "category_id": 0,
+                "category_confidence": 0,
+                "category_rationale": "not applicable",
+            },
         }
     )
     bundle = build_l0_bundle(str(log_path))
@@ -6489,6 +6654,11 @@ def test_l1_unknown_fields_are_ignored_without_affecting_policy(tmp_path):
             }
         ],
         "justification": "Bad model output.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     current = _current_evidence(evidence)
@@ -6562,6 +6732,11 @@ def test_l1_provider_timeout_is_not_trusted_even_with_evidence(tmp_path):
             }
         ],
         "justification": "Should not be trusted because provider timed out.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(
@@ -6635,6 +6810,11 @@ def test_l1_truncated_output_is_not_trusted_even_with_evidence(tmp_path):
             }
         ],
         "justification": "Should not be trusted because output was truncated.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(
@@ -6701,6 +6881,11 @@ def test_l1_token_limit_hit_is_reported_from_finish_reason_length(tmp_path):
             }
         ],
         "justification": "Token limit hit should be visible in trace.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(
@@ -7805,6 +7990,11 @@ def test_different_checkpoint_success_is_structured_without_overriding_l1(
         "related_failures": [],
         "evidence": [{"line": 12, "quote": lines[11], "supports": "primary_failure"}],
         "justification": "The progress-log assertion terminated checkpoint save.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
     payload = analyzer.analyze({"log_path": str(log_path)}).to_payload()
@@ -8095,6 +8285,75 @@ def test_failure_episode_separates_teardown_process_and_scheduler_lines(tmp_path
     assert prompt_episode["first_process_termination_line"] == 5
     assert prompt_episode["first_scheduler_cancel_line"] == 6
     assert "first_cancellation_line" not in prompt_episode
+
+
+def test_l0_links_nccl_device_oom_confirmation_to_unhandled_cuda_error_episode(tmp_path):
+    """NCCL reports device exhaustion; the collective reports only that it failed.
+
+    "unhandled cuda error" names the operation, not the cause, the same way a
+    bare "Killed" says a process died without saying why. The allocation
+    failure is the evidence that explains it, so it takes the identity rather
+    than being filed as a cascade of an earlier capture error.
+    """
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-10-19 04:00:00] iteration 2000/601014 | lm loss: 1.0 |",
+                "3070: [rank3070]: Traceback (most recent call last):",
+                '3070: [rank3070]:   File "/code/training.py", line 1031, in save_checkpoint',
+                "3070: [rank3070]:     torch.distributed.barrier(group=data_parallel_group)",
+                (
+                    "3070: [rank3070]: torch.distributed.DistBackendError: NCCL error in: "
+                    "NCCLUtils.cpp:117, unhandled cuda error"
+                ),
+                "3070: [rank3070]: ncclUnhandledCudaError: Call to CUDA function failed.",
+                "3070: [rank3070]: Last error:",
+                "3070: [rank3070]: Failed to CUDA calloc async 16384 bytes",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+
+    assert primary is not None
+    assert primary.failure_class == "cuda_oom_confirmation"
+    assert primary.causal_role == "initiating"
+    assert bundle.selection_summary["primary_selection_basis"] == "explicit_cause_confirmation"
+    # The mechanism travels with the identity, so attempts of one wedged job
+    # share a root rather than being fingerprinted on the surfacing exception.
+    assert "allocation_failure" in (primary.root_fingerprint or "")
+
+
+def test_l0_leaves_a_non_oom_nccl_cuda_failure_as_a_cascade(tmp_path):
+    # The catch-all "NCCL WARN Cuda failure" must still own the capture-error
+    # case; only the out-of-memory variant is a cause in its own right.
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-10-19 04:00:00] iteration 2000/601014 | lm loss: 1.0 |",
+                (
+                    "3070: NCCL WARN Cuda failure 700 operation failed due to a "
+                    "previous error during capture"
+                ),
+                "3070: [rank3070]: Traceback (most recent call last):",
+                (
+                    "3070: [rank3070]: torch.distributed.DistBackendError: NCCL error in: "
+                    "NCCLUtils.cpp:117, unhandled cuda error"
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+
+    assert primary is not None
+    assert primary.failure_class != "cuda_oom_confirmation"
 
 
 def test_l0_links_late_explicit_oom_confirmation_to_abrupt_kill_episode(tmp_path):
@@ -8972,6 +9231,11 @@ def test_l2_does_not_treat_current_attempt_fanout_as_cross_attempt_persistence(t
             {"line": 1, "quote": lines[0], "supports": "execution_position"},
         ],
         "justification": "The mechanism is observed, while recurrence remains unproven.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
 
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
@@ -9325,6 +9589,11 @@ def test_distributed_timeout_incident_groups_operations_and_has_order_invariant_
         "related_failures": [],
         "evidence": [{"line": 4, "quote": first_lines[3], "supports": "primary_failure"}],
         "justification": "The later operation belongs to the same timeout wave.",
+        "category_selection": {
+            "category_id": 0,
+            "category_confidence": 0,
+            "category_rationale": "not applicable",
+        },
     }
     analyzer = RestartAgent(evidence_extractor=_FakeEvidenceExtractor(evidence))
     payload = analyzer.analyze(
@@ -10779,3 +11048,44 @@ def test_runtime_closes_each_unique_route_extractor_once():
     runtime.close()
 
     assert extractor.close_count == 1
+
+
+def test_a_confirmed_nccl_device_oom_gets_the_no_retry_policy(tmp_path):
+    """The deterministic path must stop on a confirmed OOM, not budget a retry.
+
+    cuda_oom_no_retry is configured to STOP on first occurrence. It keys on the
+    cuda_oom classifier, which a confirmation identity does not supply by name,
+    so this is the seam where an explicitly typed OOM could still be retried.
+    """
+    log_path = tmp_path / "job.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "0: [2026-10-19 04:00:00] iteration 2000/601014 | lm loss: 1.0 |",
+                "3070: [rank3070]: Traceback (most recent call last):",
+                '3070: [rank3070]:   File "/code/training.py", line 1031, in save_checkpoint',
+                (
+                    "3070: [rank3070]: torch.distributed.DistBackendError: NCCL error in: "
+                    "NCCLUtils.cpp:117, unhandled cuda error"
+                ),
+                "3070: [rank3070]: Last error:",
+                "3070: [rank3070]: Failed to CUDA calloc async 16384 bytes",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    from nvidia_resiliency_ext.attribution.restart_agent.l0.decision import build_decision_evidence
+
+    bundle = build_l0_bundle(str(log_path))
+    primary = bundle.deterministic_primary_candidate
+    evidence = build_decision_evidence(bundle)
+
+    assert primary is not None
+    assert primary.failure_class == "cuda_oom_confirmation"
+    # What cuda_oom_no_retry actually tests for. The identity is named
+    # "cuda_oom_confirmation", which that policy would not recognise, so the
+    # classifier is the only thing carrying the OOM through to the decision.
+    assert FailureClassifier.CUDA_OOM.value in (
+        evidence.canonical_observed_identity.get("classifiers") or ()
+    )

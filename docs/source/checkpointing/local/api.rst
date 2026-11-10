@@ -5,7 +5,6 @@ API documentation
    :maxdepth: 2
    :caption: API documentation
 
-   api/callback
    api/base_ckpt_manager
    api/local_ckpt_manager
    api/replication

@@ -564,6 +564,10 @@ def test_rejected_iteration_policy_context_is_configurable():
             "enabled": True,
             "allowed_retries": 4,
         },
+        "l1_category_confirmed_restart": {
+            "enabled": False,
+            "allowed_retries": 1,
+        },
     }
 
 

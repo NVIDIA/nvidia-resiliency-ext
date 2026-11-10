@@ -14,14 +14,13 @@
 # limitations under the License.
 
 import argparse
-import contextlib
 import dataclasses
 import logging
 import signal
 from dataclasses import dataclass, fields
 from typing import Mapping, Optional
 
-import yaml
+from .timeout_dump.config import TimeoutDumpConfig
 
 
 @dataclass
@@ -68,6 +67,7 @@ class FaultToleranceConfig:
       high-frequency operations. Server logs errors instead of sending them back.
       Default: True (recommended for production). Set to False during development to catch errors immediately.
     * `segment` - Controls hot spare node behavior and rank assignment strategy:
+
       - None (default): Simple hot spare mode suitable for H100 and systems without NVLink domain segmentation.
         First min_nodes become active, extras become hot spares. No ClusterUUID parsing required.
       - N (integer): Segment-aware mode for NVSwitch-based systems (DGX H200, HGX B200).
@@ -75,8 +75,10 @@ class FaultToleranceConfig:
         Domains with fewer nodes are excluded. From each valid domain, as many complete segments
         as possible are selected (e.g., 12 nodes with segment=4 → use 12 nodes = 3 segments).
         min_nodes must be divisible by segment. When set, ClusterUUID is automatically queried.
+
       Note: segment=None and segment=1 have similar behavior in rank assignment, but segment=1
       requires ClusterUUID while segment=None does not.
+
     * `numa_bind_strict` - If True (default), use strict NUMA binding with both CPU and memory bound to the
       same NUMA node (--cpunodebind=N --membind=N). If False, only bind CPU to NUMA node
       and allow local memory allocation (--cpunodebind=N --localalloc). Default: True.
@@ -96,6 +98,7 @@ class FaultToleranceConfig:
       timeout monitoring as they can be significantly slower than steady-state iterations.
       Default: 5. Can be overridden by workload (e.g., Megatron-LM via init_workload_monitoring).
     * Attribution service (optional, disabled unless `attribution_endpoint` is set):
+
       - `attribution_endpoint` [str] endpoint of the attribution service
       - `attribution_stop_action` [str] what to do with a STOP verdict: `log` (default,
         record it without terminating) or `no-restart` (end the job, no requeue).
@@ -110,6 +113,10 @@ class FaultToleranceConfig:
     * `segment_health_check_dir` [str|None] Shared directory containing per-task
       segment health decision artifacts. Allocation-unit process 0 checks its artifact
       before joining a rendezvous. Default: None (disabled).
+    * `timeout_dump` [TimeoutDumpConfig] Optional stack captures on selected section
+      timeouts, uploaded as per-node, per-cycle text files (disabled by default). Set by
+      the ``--ft-timeout-dump-*`` options; the shared destination is derived from
+      ``--ft-nvrx-logfile``. See the timeout dumps guide.
 
     If any timeout is None, it has no effect (as if it was +INF).
     All timeouts can be deduced and set during runtime.
@@ -162,6 +169,9 @@ class FaultToleranceConfig:
     # Segment health check: shared directory containing per-task decision artifacts
     segment_health_check_dir: Optional[str] = None
 
+    # Optional timeout dumps; shared destination is derived from --ft-nvrx-logfile.
+    timeout_dump: TimeoutDumpConfig = dataclasses.field(default_factory=TimeoutDumpConfig)
+
     @property
     def is_progress_tracking_enabled(self) -> bool:
         """Check if progress tracking is enabled (controlled by max_no_progress_cycles > 0)."""
@@ -188,35 +198,6 @@ class FaultToleranceConfig:
         if extra_args and not ignore_not_recognized:
             raise ValueError(f"Not recognized args: {extra_args}")
         return FaultToleranceConfig(**matching_args)
-
-    @staticmethod
-    def from_yaml_file(cfg_path: str, ignore_not_recognized: bool = True) -> 'FaultToleranceConfig':
-        """
-        Load the fault tolerance configuration from a YAML file.
-
-        YAML file should contain `fault_tolerance` section.
-        `fault_tolerance` section can be at the top level or nested in any other section.
-
-        Args:
-            cfg_path (str): The path to the YAML configuration file.
-            ignore_not_recognized (bool, optional): Whether to ignore unrecognized configuration options.
-                Defaults to True.
-
-        Returns:
-            FaultToleranceConfig: The fault tolerance configuration object.
-
-        Raises:
-            ValueError: If the 'fault_tolerance' section is not found in the config file.
-        """
-        with open(cfg_path, 'r') as file:
-            yaml_data = yaml.safe_load(file)
-            ft_cfg = FaultToleranceConfig._find_fault_tol_section(yaml_data)
-            if ft_cfg:
-                return FaultToleranceConfig.from_kwargs(
-                    **ft_cfg, ignore_not_recognized=ignore_not_recognized
-                )
-            else:
-                raise ValueError(f"'fault_tolerance' section not found in config file {cfg_path}")
 
     @staticmethod
     def _parse_timeout_arg(timeout_arg: str) -> Optional[float]:
@@ -266,24 +247,12 @@ class FaultToleranceConfig:
         """
         Init FT config object from parsed CLI args.
 
-        Implements the following logic:
-        - Use default FT config as a base.
-        - If there is a config file argument defined, first try to read the FT config from the file.
-        - Update the FT config with FT args provided via CLI.
-        - If can't read from file and there are no related args in CLI, raise an exception.
+        Starts from the default FT config and applies the FT args given on the command line.
 
         Args:
             args (argparse.Namespace): Parsed arguments
         """
-        # Start with default config
         ft_cfg = FaultToleranceConfig()
-        is_read_from_file = False
-
-        # Try to read from config file if specified
-        if args.ft_cfg_path is not None:
-            with contextlib.suppress(ValueError):
-                ft_cfg = FaultToleranceConfig.from_yaml_file(args.ft_cfg_path)
-                is_read_from_file = True
 
         # Extract FT args from CLI
         cli_ft_args = {}
@@ -312,50 +281,13 @@ class FaultToleranceConfig:
         # Update config with CLI args
         for arg_name, arg_val in cli_ft_args.items():
             setattr(ft_cfg, arg_name, arg_val)
+        ft_cfg.timeout_dump = TimeoutDumpConfig.from_args(args)
 
         # Fix any type issues
         ft_cfg._fix_log_level_type()
         ft_cfg._fix_rank_termination_signal_type()
 
         return ft_cfg
-
-    def to_yaml_file(self, cfg_path: str) -> None:
-        """
-        Convert the configuration object to a YAML file and save it to the specified path.
-
-        Args:
-            cfg_path (str): The path to save the YAML file.
-
-        Returns:
-            None
-        """
-        # first, ensure that `rank_termination_signal` and `log_level` have their native types
-        # this might not be the case, if the object was modified after creation
-        self._fix_rank_termination_signal_type()
-        self._fix_log_level_type()
-        with open(cfg_path, 'w') as file:
-            ft_cfg_dict = dataclasses.asdict(self)
-            ft_cfg_dict['rank_termination_signal'] = self.rank_termination_signal.name
-            ft_cfg_dict['log_level'] = self.log_level
-            ft_cfg_dict = {'fault_tolerance': ft_cfg_dict}
-            yaml.dump(ft_cfg_dict, file)
-
-    @staticmethod
-    def _find_fault_tol_section(yaml_data):
-        if isinstance(yaml_data, dict):
-            if "fault_tolerance" in yaml_data:
-                return yaml_data["fault_tolerance"]
-            else:
-                for key, value in yaml_data.items():
-                    sub_config = FaultToleranceConfig._find_fault_tol_section(value)
-                    if sub_config:
-                        return sub_config
-        elif isinstance(yaml_data, list):
-            for item in yaml_data:
-                sub_config = FaultToleranceConfig._find_fault_tol_section(item)
-                if sub_config:
-                    return sub_config
-        return None
 
     def _fix_rank_termination_signal_type(self):
         if isinstance(self.rank_termination_signal, int):

@@ -15,6 +15,8 @@
 
 #!/bin/bash
 
+set -euo pipefail
+
 NUM_TESTS=4
 RES_DIR="./ddp_test_heartbeats_results"
 WORLD_SIZE=8
@@ -79,7 +81,7 @@ do
    echo "### Starting TEST ${i}/${NUM_TESTS} ###"
    mkdir ${RES_DIR}/output_$i
 
-   echo "TEST ${i}, run ${training_parts_num}"
+   echo "TEST ${i}"
 
    # launch the training
    TRAIN_CMD="examples/fault_tolerance/train_ddp_heartbeats_api.py "
@@ -108,7 +110,8 @@ do
 
    ft_launcher --nproc-per-node=${WORLD_SIZE} --max-restarts=${MAX_RESTARTS} \
       --rdzv-backend=c10d --rdzv-endpoint=localhost:0 --ft-restart-check-interval=0.5 \
-      --ft-cfg-path="examples/fault_tolerance/fault_tol_cfg_heartbeats.yaml" --term-timeout=15 \
+      --ft-initial-rank-heartbeat-timeout=None --ft-rank-heartbeat-timeout=None \
+      --ft-log-level=DEBUG --term-timeout=15 \
       ${TRAIN_CMD} 2>&1 | tee -a ${RES_DIR}/output_$i/log.log
 
    if [ $? -ne 0 ]
