@@ -40,7 +40,7 @@ requires = [
 build-backend = "poetry_dynamic_versioning.backend"
 
 [tool.poetry.dependencies]
-torch = ">=2.3.0"
+torch = ">=2.9.0"
 packaging = "*"
 python = ">=3.10,<4.0"
 psutil = ">=6.0.0"

@@ -41,7 +41,7 @@ For detailed documentation and usage information about each component, please re
 | Architecture         | x86_64, arm64                                                              |
 | Operating System     | Ubuntu 22.04, 24.04                                                        |
 | Python Version       | Release wheels/CI: 3.12, 3.14                                             |
-| PyTorch Version      | >= 2.8.0                                                                   |
+| PyTorch Version      | >= 2.9.0                                                                   |
 | CUDA & CUDA Toolkit  | >= 12.8                                                                    |
 | NVML Driver          | >= 535 (570 required for GPU health check)                                 |
 | TE Version           | >= 2.5                                                                     |
