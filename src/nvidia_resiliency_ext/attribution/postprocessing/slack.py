@@ -10,7 +10,12 @@ Usage:
     config.slack_bot_token = token; config.slack_channel = channel  # at startup
     # One-off: send_slack_notification(data, token, channel) when should_notify_slack(action)
 
-Requires slack-sdk (optional). When not installed, HAS_SLACK is False and send no-ops.
+Requires slack-sdk, which pyproject declares as a required dependency. The
+import is still guarded so that embedders installing with --no-deps get a
+service that starts rather than one that fails to import; when the SDK is
+absent HAS_SLACK is False and sending no-ops. That degradation is silent by
+construction, so a deployment that must alert has to check HAS_SLACK or the
+slack.enabled field of /healthz rather than assume delivery.
 """
 
 import logging
