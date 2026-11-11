@@ -94,6 +94,12 @@ class LocalCycleOutcome:
     detected_at: float
     ranks: tuple[RankOutcome, ...]
 
+    @property
+    def launcher(self) -> tuple[str, tuple[int, ...]]:
+        """Identifies the reporting launcher: its node and its workers' global ranks, as
+        hostnames can repeat when launchers share a host."""
+        return self.node, tuple(rank.global_rank for rank in self.ranks)
+
 
 # Bound each record when converting it to a wire format, so a workload with many or long
 # section names, or long exit details, cannot grow it.
@@ -109,8 +115,9 @@ class JobEndReason(str, Enum):
     """How the cycle ended for the job, as concluded from all launchers' outcomes."""
 
     COMPLETED = "completed"
-    RANK_FAILURE = "rank_failure"  # a worker failed on its own
-    TIMEOUT_FAILURE = "timeout_failure"  # a rank monitor stopped a hung worker
+    # A worker failed on its own or was stopped by its rank monitor on a timeout; the
+    # rank's record (RankOutcome) tells which, with the timeout's kind and sections.
+    RANK_FAILURE = "rank_failure"
     TERMINATED = "terminated"  # a no-restart decision
     UNKNOWN = "unknown"
 
@@ -120,7 +127,8 @@ class CycleSummary:
     # aggregated outcomes for the whole job
     cycle: int
     outcomes: tuple[LocalCycleOutcome, ...]  # one per reporting launcher, de-duplicated
-    start: Optional[CycleStartInfo] = None  # None when the start was not received
+    # Active launchers of the cycle start; None when the start was not received.
+    launchers_expected: Optional[int] = None
     # TODO: group ranks instead of node names for missing and first_detected, once outcomes
     # carry their launcher's group rank; node names repeat when launchers share a host.
     missing: tuple[str, ...] = ()  # nodes of active launchers that did not report

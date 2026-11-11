@@ -741,9 +741,35 @@ class TestServeRequiresAllowedRoots:
 
 
 class TestCycleInfoServicer:
-    """The root server accepts the cycle records; handing them on is not implemented yet."""
+    """The root forwards the cycle records to the CycleAnalyzer, if there is one."""
 
-    def test_publish_calls_are_acknowledged(self):
+    @pytest.mark.parametrize("rpc", ["PublishCycleStart", "PublishCycleOutcome"])
+    def test_record_is_forwarded_to_the_analyzer_and_acknowledged(self, rpc):
+        from nvidia_resiliency_ext.shared_utils.grpc_log_server import CycleInfoServicer
+        from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2
+
+        analyzer, sender, context = MagicMock(), MagicMock(), MagicMock()
+        sender.send.return_value = True
+        request = cycle_info_pb2.CycleOutcome(cycle=3, node="node0")
+
+        reply = getattr(CycleInfoServicer(analyzer, sender), rpc)(request, context)
+
+        assert reply == cycle_info_pb2.PublishReply()
+        assert sender.send.call_args.args[:2] == (getattr(analyzer, rpc), request)
+        context.abort.assert_not_called()
+
+    def test_dropped_record_is_answered_unavailable(self):
+        from nvidia_resiliency_ext.shared_utils.grpc_log_server import CycleInfoServicer
+        from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2
+
+        sender, context = MagicMock(), MagicMock()
+        sender.send.return_value = False
+        CycleInfoServicer(MagicMock(), sender).PublishCycleOutcome(
+            cycle_info_pb2.CycleOutcome(cycle=3), context
+        )
+        assert context.abort.call_args.args[0] == grpc.StatusCode.UNAVAILABLE
+
+    def test_without_an_analyzer_records_are_accepted_and_dropped(self):
         from nvidia_resiliency_ext.shared_utils.grpc_log_server import CycleInfoServicer
         from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2
 

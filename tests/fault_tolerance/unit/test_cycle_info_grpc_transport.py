@@ -11,7 +11,10 @@ import pytest
 from nvidia_resiliency_ext.fault_tolerance.cycle_info import grpc_transport
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import (
     GrpcCycleInfoPublisher,
+    GrpcCycleInfoReader,
+    cycle_start_from_proto,
     cycle_start_to_proto,
+    outcome_from_proto,
     outcome_to_proto,
 )
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
@@ -196,3 +199,55 @@ def test_record_failing_to_encode_is_logged_without_raising():
             publisher.publish_outcome(OUTCOME)
     logger.warning.assert_called_once()
     stub.PublishCycleOutcome.future.assert_not_called()
+
+
+def test_records_round_trip_through_proto():
+    assert cycle_start_from_proto(cycle_start_to_proto(START)) == START
+    assert outcome_from_proto(outcome_to_proto(OUTCOME)) == OUTCOME
+
+
+@pytest.mark.parametrize("field", ["node_end", "rank_end"])
+def test_outcome_with_unspecified_reason_is_rejected(field):
+    message = outcome_to_proto(OUTCOME)
+    if field == "node_end":
+        message.node_end = pb.CYCLE_END_REASON_UNSPECIFIED
+    else:
+        message.ranks[0].end = pb.RANK_END_REASON_UNSPECIFIED
+    with pytest.raises(ValueError):
+        outcome_from_proto(message)
+
+
+@pytest.mark.parametrize("transport", ["unix", "tcp"])
+def test_reader_receives_what_the_publisher_sends(tmp_path, transport):
+    address = f"unix:{tmp_path}/analyzer.sock" if transport == "unix" else "127.0.0.1:0"
+    reader = GrpcCycleInfoReader(address)
+    target = address if transport == "unix" else f"127.0.0.1:{reader.port}"
+    channel = grpc.insecure_channel(target)
+    publisher = GrpcCycleInfoPublisher(pb_grpc.CycleInfoServiceStub(channel), close_timeout=5)
+    try:
+        publisher.publish_cycle_start(START)
+        publisher.publish_outcome(OUTCOME)
+        publisher.close()  # waits until both calls completed
+
+        assert reader.read_cycle_starts() == [START]
+        assert reader.read_outcomes() == [OUTCOME]
+        assert reader.read_cycle_starts() == []  # each record is read once
+        assert reader.read_outcomes() == []
+    finally:
+        channel.close()
+        reader.close()
+
+
+def test_reader_rejects_an_undecodable_record():
+    reader = GrpcCycleInfoReader("127.0.0.1:0")
+    channel = grpc.insecure_channel(f"127.0.0.1:{reader.port}")
+    try:
+        message = outcome_to_proto(OUTCOME)
+        message.node_end = pb.CYCLE_END_REASON_UNSPECIFIED
+        with pytest.raises(grpc.RpcError) as error:
+            pb_grpc.CycleInfoServiceStub(channel).PublishCycleOutcome(message, timeout=5)
+        assert error.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+        assert reader.read_outcomes() == []
+    finally:
+        channel.close()
+        reader.close()

@@ -391,12 +391,6 @@ class CycleInfoReporter:
         writer: Optional[CycleInfoWriter] = None,
         end_previous_on_start: bool = True,
     ) -> None:
-        """
-        Args:
-            end_previous_on_start: Starting a cycle ends the previous one at that time if
-                it is still open. Disable when the ends are reported explicitly, e.g. from
-                the launchers' outcomes (report_cycle_end, report_cycle_summary).
-        """
         if cycle_info_job_id is not None and not cycle_info_job_id.strip():
             raise ValueError("cycle_info_job_id must be non-empty when set")
         self._writer = writer or CycleInfoWriter(cycle_info_dir)
@@ -504,7 +498,7 @@ class CycleInfoReporter:
                 "first_detected_nodes": list(summary.first_detected),
                 "missing_nodes": list(summary.missing),
                 "launcher_outcomes": [self._format_outcome(o) for o in listed],
-                "launchers_expected": len(summary.start.active_nodes) if summary.start else 0,
+                "launchers_expected": summary.launchers_expected or 0,
                 "launchers_reported": len(summary.outcomes),
             }
             update: Dict[str, Any] = {"outcome": outcome}

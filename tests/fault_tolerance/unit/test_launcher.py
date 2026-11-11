@@ -1105,6 +1105,42 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
         cmd = proc.args[0]
         roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--allowed-root"]
         assert roots == [os.path.realpath(str(applog_dir))], cmd
+    # No analyzer address given: no server forwards cycle records.
+    assert all("--cycle-analyzer-address" not in proc.args[0] for proc in procs)
+
+
+@pytest.mark.parametrize("first_level_count", [0, 2], ids=["root_only", "root_and_leaves"])
+def test_start_grpc_log_servers_gives_the_analyzer_address_to_the_root_only(
+    tmp_path, first_level_count
+):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    applog_dir = tmp_path / "applogs"
+    applog_dir.mkdir()
+    args = SimpleNamespace(
+        nnodes="2",
+        ft_log_server_graceful_shutdown_timeout=60.0,
+        ft_log_leaf_max_queue_chunks=-1,
+        ft_per_cycle_applog_prefix=str(applog_dir / "train.log"),
+        ft_nvrx_logfile=None,
+        ft_log_server_log_prefix=None,
+    )
+    ports = launcher.LogFunnelPorts(base_port=50051, first_level_count=first_level_count)
+
+    with patch.object(launcher.subprocess, "Popen") as popen:
+        launcher._start_grpc_log_servers(
+            args, str(tmp_path / "grpc_diag"), ports, cycle_analyzer_address="unix:/tmp/a.sock"
+        )
+
+    commands = [c.args[0] for c in popen.call_args_list]
+    with_address = [cmd for cmd in commands if "--cycle-analyzer-address" in cmd]
+    assert len(with_address) == 1  # the root
+    assert "grpc_log_server" in " ".join(with_address[0])
+    assert "grpc_log_leaf_server" not in " ".join(with_address[0])
+    index = with_address[0].index("--cycle-analyzer-address")
+    assert with_address[0][index + 1] == "unix:/tmp/a.sock"
 
 
 def test_start_grpc_log_servers_requires_resolvable_allowed_roots(tmp_path):

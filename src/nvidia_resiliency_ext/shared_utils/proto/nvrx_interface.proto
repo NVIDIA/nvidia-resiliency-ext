@@ -69,8 +69,8 @@ message NVRxCycleInfo {
 // CycleAnalyzer writes this once every active launcher reported, or after a grace period
 // without waiting for absent launchers.
 message NVRxCycleOutcome {
-  // "completed", "rank_failure" (a worker failed on its own), "timeout_failure" (a rank
-  // monitor stopped a hung worker), "terminated" (a no-restart decision), or "unknown"
+  // "completed", "rank_failure" (a worker failed or was stopped by its rank monitor; the
+  // launcher outcomes tell which), "terminated" (a no-restart decision), or "unknown"
   string end_reason = 1;
 
   // When the cycle ended, ISO 8601 UTC: when its end was first observed, or when the

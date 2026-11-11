@@ -9,14 +9,7 @@ aggregate and where the result goes.
 from collections import Counter
 from typing import Optional, Sequence
 
-from .records import (
-    CycleEndReason,
-    CycleStartInfo,
-    CycleSummary,
-    JobEndReason,
-    LocalCycleOutcome,
-    RankEndReason,
-)
+from .records import CycleEndReason, CycleStartInfo, CycleSummary, JobEndReason, LocalCycleOutcome
 
 # Launchers that saw the cycle end themselves, rather than following a peer's restart.
 _OBSERVED_ENDS = (CycleEndReason.FAILED, CycleEndReason.TERMINATED)
@@ -39,7 +32,7 @@ class CycleOutcomeAggregator:
         return CycleSummary(
             cycle=cycle,
             outcomes=outcomes,
-            start=start,
+            launchers_expected=len(start.active_nodes) if start is not None else None,
             missing=self.missing_nodes(start, outcomes),
             end_reason=self.end_reason(outcomes, first),
             first_detected=tuple(outcome.node for outcome in first),
@@ -48,14 +41,10 @@ class CycleOutcomeAggregator:
 
     @staticmethod
     def deduplicate(outcomes: Sequence[LocalCycleOutcome]) -> tuple[LocalCycleOutcome, ...]:
-        """One outcome per launcher, the first received.
-
-        A launcher is identified by its node and global ranks, as hostnames can repeat.
-        """
+        """One outcome per launcher (LocalCycleOutcome.launcher), the first received."""
         unique = {}
         for outcome in outcomes:
-            launcher = (outcome.node, tuple(rank.global_rank for rank in outcome.ranks))
-            unique.setdefault(launcher, outcome)
+            unique.setdefault(outcome.launcher, outcome)
         return tuple(unique.values())
 
     @staticmethod
@@ -89,14 +78,13 @@ class CycleOutcomeAggregator:
     def end_reason(
         outcomes: Sequence[LocalCycleOutcome], first: Sequence[LocalCycleOutcome]
     ) -> JobEndReason:
-        """Why the cycle ended for the job, from the launchers that observed it first."""
+        """Why the cycle ended for the job, from how it ended for the launchers that observed
+        it first. How each rank ended, e.g. stopped by its rank monitor on a timeout, is in
+        the launchers' outcomes."""
         if outcomes and all(o.node_end is CycleEndReason.COMPLETED for o in outcomes):
             return JobEndReason.COMPLETED
-        rank_ends = {rank.end for outcome in first for rank in outcome.ranks}
-        if RankEndReason.FAILED in rank_ends:
+        if any(outcome.node_end is CycleEndReason.FAILED for outcome in first):
             return JobEndReason.RANK_FAILURE
-        if RankEndReason.STOPPED_BY_RMON in rank_ends:
-            return JobEndReason.TIMEOUT_FAILURE
         if any(outcome.node_end is CycleEndReason.TERMINATED for outcome in first):
             return JobEndReason.TERMINATED
         return JobEndReason.UNKNOWN

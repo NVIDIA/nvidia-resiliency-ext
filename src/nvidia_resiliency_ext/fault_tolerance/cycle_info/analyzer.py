@@ -15,7 +15,7 @@ import signal
 import tempfile
 import time
 from collections import defaultdict
-from typing import Callable, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
@@ -50,7 +50,6 @@ class CycleAnalyzer:
         poll_interval: Seconds between reads of the reader.
         next_start_grace: Seconds to wait for a cycle's outcomes after a later start.
         outcome_quiet_period: Seconds without a new outcome after which a cycle is written.
-        clock: Source of the times above (monotonic seconds).
     """
 
     def __init__(
@@ -61,7 +60,6 @@ class CycleAnalyzer:
         poll_interval: float = 0.5,
         next_start_grace: float = 10.0,
         outcome_quiet_period: float = 60.0,
-        clock: Callable[[], float] = time.monotonic,
     ):
         self._reader = reader
         self.cycle_info_reporter = cycle_info_reporter
@@ -69,11 +67,12 @@ class CycleAnalyzer:
         self._poll_interval = poll_interval
         self._next_start_grace = next_start_grace
         self._outcome_quiet_period = outcome_quiet_period
-        self._clock = clock
         # Starts and outcomes received so far, by cycle; dropped once the cycle's end is
         # written (update_cycle_end_outcomes).
         self._starts: Dict[int, CycleStartInfo] = {}
         self._outcomes: Dict[int, List[LocalCycleOutcome]] = defaultdict(list)
+        # Launchers that reported an outcome, by cycle, to detect duplicates in O(1).
+        self._reported: Dict[int, Set[Tuple[str, Tuple[int, ...]]]] = defaultdict(set)
         # Latest cycle opened at the reporter, from the store host's CycleStartInfo.
         self._started_cycle: Optional[int] = None
         # Cycle the launchers are currently reporting outcomes for: the latest cycle any
@@ -98,14 +97,11 @@ class CycleAnalyzer:
             logger.warning(f"Failed to write the open cycles: {e}", exc_info=True)
 
     def process_received(self) -> None:
-        """Handle the records received since the previous call, then write the cycles due.
-
-        NOT TESTED YET end to end.
-        """
-        now = self._clock()
+        """Handle the records received since the previous call, then write the cycles due."""
+        now = time.monotonic()
         for info in self._reader.read_cycle_starts():
-            self.report_cycle_start(info)
-            self._schedule_earlier_cycles(info.cycle, now)
+            if self.report_cycle_start(info):
+                self._schedule_earlier_cycles(info.cycle, now)
         updated = set()
         for outcome in self._reader.read_outcomes():
             if self.add_outcome(outcome):
@@ -119,15 +115,30 @@ class CycleAnalyzer:
         for cycle in sorted(self._open_cycles()):
             self.update_cycle_end_outcomes(cycle)
 
-    def report_cycle_start(self, info: CycleStartInfo) -> None:
+    def report_cycle_start(self, info: CycleStartInfo) -> bool:
         """Open the cycle `info.cycle` at the reporter.
 
-        NOT TESTED YET. TODO: add checks for
-        - duplicates: a start received twice (the reporter ignores a cycle it already
-          started, but this should be detected and logged here);
-        - incorrect cycle info: a cycle older than the latest started one, empty node
-          lists, active ranks not aligned with the active nodes.
+        A start is ignored, with a warning, if its cycle was already started (still open,
+        or already written) or is older than the latest started cycle: the store host
+        starts each cycle once, in order. A start without active nodes is logged but still
+        opens the cycle: it is the only start the cycle gets, and the workload reads its
+        cycle info.
+
+        Returns:
+            True if the cycle was opened.
         """
+        if info.cycle in self._starts or info.cycle in self._written:
+            logger.warning("Ignoring a duplicate start of cycle %s", info.cycle)
+            return False
+        if self._started_cycle is not None and info.cycle < self._started_cycle:
+            logger.warning(
+                "Ignoring the start of cycle %s: older than the latest started cycle %s",
+                info.cycle,
+                self._started_cycle,
+            )
+            return False
+        if not info.active_nodes:
+            logger.warning("The start of cycle %s has no active nodes", info.cycle)
         self._starts[info.cycle] = info
         started = self.cycle_info_reporter.report_cycle_start(
             CycleInfoRoundSnapshot(
@@ -142,19 +153,21 @@ class CycleAnalyzer:
         if started:
             self._started_cycle = info.cycle
             logger.debug("Opened the cycle info of cycle %s", info.cycle)
+        return started
 
     def add_outcome(self, outcome: LocalCycleOutcome) -> bool:
         """Keep `outcome` with the outcomes received for its cycle.
 
-        Returns:
-            False if the outcome was ignored: its cycle is already written.
+        An outcome is ignored, with a warning, if:
+        - its cycle is already written (a late outcome).
+        - its cycle was never started: it is older than the latest started cycle and was
+          not started itself, and starts arrive in order. An outcome of a later cycle is
+          kept, as its start may still be on its way;
+        - its launcher (LocalCycleOutcome.launcher) already reported for the cycle (a
+          duplicate); the first outcome is kept.
 
-        NOT TESTED YET. TODO: add checks for
-        - duplicates: one launcher's outcome received twice (identify the launcher by its
-          node and global ranks, as hostnames can repeat); the aggregator drops them;
-        - incorrect cycle info: an outcome for a cycle that was never started;
-        - late outcomes: they are ignored for now; rewriting the cycle with them is an
-          option, at the cost of rewriting its file.
+        Returns:
+            False if the outcome was ignored.
         """
         if outcome.cycle in self._written:
             logger.warning(
@@ -163,6 +176,23 @@ class CycleAnalyzer:
                 outcome.node,
             )
             return False
+        if (
+            self._started_cycle is not None
+            and outcome.cycle < self._started_cycle
+            and outcome.cycle not in self._starts
+        ):
+            logger.warning(
+                "Ignoring the outcome of cycle %s from %s: the cycle was never started",
+                outcome.cycle,
+                outcome.node,
+            )
+            return False
+        if outcome.launcher in self._reported[outcome.cycle]:
+            logger.warning(
+                "Ignoring a duplicate outcome of cycle %s from %s", outcome.cycle, outcome.node
+            )
+            return False
+        self._reported[outcome.cycle].add(outcome.launcher)
         self._outcomes[outcome.cycle].append(outcome)
         if self._outcome_cycle is None or outcome.cycle > self._outcome_cycle:
             self._outcome_cycle = outcome.cycle
@@ -197,6 +227,7 @@ class CycleAnalyzer:
         )
         self._starts.pop(cycle, None)
         self._outcomes.pop(cycle, None)
+        self._reported.pop(cycle, None)
         self._write_deadlines.pop(cycle, None)
         self._last_outcome_at.pop(cycle, None)
         self._written.add(cycle)
@@ -223,6 +254,7 @@ class CycleAnalyzer:
                 start, self._aggregator.deduplicate(self._outcomes[cycle])
             ):
                 due.add(cycle)
+        # check older cycles for which deadline has passed
         due.update(cycle for cycle, at in self._write_deadlines.items() if now >= at)
         due.update(
             cycle
@@ -321,7 +353,7 @@ class CycleAnalyzerProcess:
             process (``unix:<tmpdir>/nvrx_cycle_analyzer_<pid>.sock``).
     """
 
-    START_TIMEOUT = 120.0  # spawning re-imports torch through the package imports
+    START_TIMEOUT = 120.0
     STOP_TIMEOUT = 10.0
 
     def __init__(

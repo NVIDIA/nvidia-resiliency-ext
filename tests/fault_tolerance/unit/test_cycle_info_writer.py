@@ -26,6 +26,8 @@ import pytest
 
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
     CycleEndReason,
+    CycleSummary,
+    JobEndReason,
     LocalCycleOutcome,
     RankEndReason,
     RankOutcome,
@@ -358,9 +360,12 @@ def test_cycle_info_writer_update_cycle_outcomes(tmp_dir):
 
     def update(outcomes, reported):
         return lambda: {
-            "launcher_outcomes": outcomes,
-            "outcome_launchers_expected": 2,
-            "outcome_launchers_reported": reported,
+            "outcome": {
+                "end_reason": "rank_failure",
+                "launcher_outcomes": outcomes,
+                "launchers_expected": 2,
+                "launchers_reported": reported,
+            }
         }
 
     writer.update_cycle_later("job1", 0, 3, update(first, 2))
@@ -371,7 +376,7 @@ def test_cycle_info_writer_update_cycle_outcomes(tmp_dir):
     with open(os.path.join(tmp_dir, "cycle_info.job1.0.3")) as f:
         data = json.load(f)
     assert data["cycle_end_time"] == "2024-01-01T00:01:00Z"
-    assert data["launcher_outcomes"] == [
+    assert data["outcome"]["launcher_outcomes"] == [
         {
             "node": "node002",
             "end": "failed",
@@ -390,14 +395,15 @@ def test_cycle_info_writer_update_cycle_outcomes(tmp_dir):
             ],
         }
     ]
-    assert (data["outcome_launchers_expected"], data["outcome_launchers_reported"]) == (2, 1)
+    assert (data["outcome"]["launchers_expected"], data["outcome"]["launchers_reported"]) == (2, 1)
     assert data["generation"] == "3"  # create, end, and two outcome updates
 
 
-def test_cycle_info_reporter_reports_cycle_outcomes(tmp_dir):
-    """Launchers that observed the end are listed by detection time; peers are counted."""
+def _reporter_with_cycle(tmp_dir, **kwargs):
     writer = MagicMock()
-    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    reporter = CycleInfoReporter(
+        tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer, **kwargs
+    )
     reporter.report_cycle_start(
         CycleInfoRoundSnapshot(
             cycle_number=3,
@@ -405,6 +411,25 @@ def test_cycle_info_reporter_reports_cycle_outcomes(tmp_dir):
             active_ranks=[0, 1, 2],
         )
     )
+    return reporter, writer
+
+
+def _summary(outcomes, launchers_expected=3):
+    return CycleSummary(
+        cycle=3,
+        outcomes=tuple(outcomes),
+        launchers_expected=launchers_expected,
+        missing=("node004",),
+        end_reason=JobEndReason.RANK_FAILURE,
+        first_detected=("node001",),
+        ended_at=10.25,
+    )
+
+
+def test_cycle_info_reporter_reports_cycle_summary(tmp_dir):
+    """One update: the end time and the outcome; launchers that observed the end are
+    listed by detection time, peers only counted."""
+    reporter, writer = _reporter_with_cycle(tmp_dir)
     stopped = RankOutcome(8, 0, 300, RankEndReason.STOPPED_BY_LAUNCHER)
     timed_out = RankOutcome(
         9,
@@ -421,18 +446,22 @@ def test_cycle_info_reporter_reports_cycle_outcomes(tmp_dir):
     )
     peer = _launcher_outcome("node002", CycleEndReason.PEER_RESTART, 11.0, [stopped])
 
-    collect = MagicMock(return_value=[late, peer, early])
-    assert reporter.report_cycle_outcomes(3, collect)
+    assert reporter.report_cycle_summary(_summary([late, peer, early]))
 
-    # Only enqueued: collecting and formatting happen when the writer builds the update.
-    collect.assert_not_called()
     job_id, attempt_index, cycle_number, build_update = writer.update_cycle_later.call_args.args
     assert (job_id, attempt_index, cycle_number) == ("job1", 0, 3)
     payload = build_update()
-    assert (payload["outcome_launchers_expected"], payload["outcome_launchers_reported"]) == (3, 3)
-    assert [o["node"] for o in payload["launcher_outcomes"]] == ["node001", "node003"]
-    assert payload["launcher_outcomes"][0]["detected_at"] == "1970-01-01T00:00:10.250000Z"
-    assert payload["launcher_outcomes"][1]["ranks"] == [
+    assert payload["cycle_end_time"] == "1970-01-01T00:00:10.250000Z"
+    outcome = payload["outcome"]
+    assert outcome["end_reason"] == "rank_failure"
+    assert outcome["ended_at"] == "1970-01-01T00:00:10.250000Z"
+    assert (outcome["first_detected_nodes"], outcome["missing_nodes"]) == (
+        ["node001"],
+        ["node004"],
+    )
+    assert (outcome["launchers_expected"], outcome["launchers_reported"]) == (3, 3)
+    assert [o["node"] for o in outcome["launcher_outcomes"]] == ["node001", "node003"]
+    assert outcome["launcher_outcomes"][1]["ranks"] == [
         {
             "global_rank": 8,
             "local_rank": 0,
@@ -450,25 +479,56 @@ def test_cycle_info_reporter_reports_cycle_outcomes(tmp_dir):
             "timeout_kind": "section",
         },
     ]
+    # Ended by the summary, so shutdown does not stamp the cycle again.
+    reporter.shutdown()
+    writer.update_cycle_end.assert_not_called()
 
 
-def test_cycle_info_reporter_expected_launchers_unknown_for_unseen_cycle(tmp_dir):
-    writer = MagicMock()
-    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+def test_cycle_info_reporter_summary_without_start_expects_no_launchers(tmp_dir):
+    reporter, writer = _reporter_with_cycle(tmp_dir)
     peer = _launcher_outcome("node002", CycleEndReason.PEER_RESTART, 11.0, [])
 
-    reporter.report_cycle_outcomes(3, lambda: [peer])
+    reporter.report_cycle_summary(_summary([peer], launchers_expected=None))
 
-    payload = writer.update_cycle_later.call_args.args[3]()
-    assert (payload["outcome_launchers_expected"], payload["outcome_launchers_reported"]) == (0, 1)
-    assert payload["launcher_outcomes"] == []
+    outcome = writer.update_cycle_later.call_args.args[3]()["outcome"]
+    assert (outcome["launchers_expected"], outcome["launchers_reported"]) == (0, 1)
+    assert outcome["launcher_outcomes"] == []
 
 
-def test_cycle_info_reporter_no_update_without_outcomes(tmp_dir):
+def test_cycle_info_reporter_ignores_summary_of_unstarted_cycle(tmp_dir):
     writer = MagicMock()
     reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
-    reporter.report_cycle_outcomes(3, lambda: [])
-    assert writer.update_cycle_later.call_args.args[3]() is None
+    assert not reporter.report_cycle_summary(_summary([]))
+    writer.update_cycle_later.assert_not_called()
+
+
+def test_cycle_info_reporter_uses_the_snapshot_start_time(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=3, started_at=10.25))
+    assert (
+        writer.write_cycle_start.call_args.kwargs["cycle_start_time"]
+        == "1970-01-01T00:00:10.250000Z"
+    )
+
+
+def test_cycle_info_reporter_ends_a_given_cycle_at_a_given_time(tmp_dir):
+    reporter, writer = _reporter_with_cycle(tmp_dir, end_previous_on_start=False)
+    reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=4))
+    writer.update_cycle_end.assert_not_called()  # starting 4 did not end 3
+
+    assert reporter.report_cycle_end(3, ended_at=10.25)
+    assert not reporter.report_cycle_end(7)  # never started
+
+    writer.update_cycle_end.assert_called_once_with(
+        job_id="job1",
+        attempt_index=0,
+        cycle_number=3,
+        cycle_end_time="1970-01-01T00:00:10.250000Z",
+    )
+    # Cycle 4 is still open: shutdown ends it.
+    reporter.shutdown()
+    assert writer.update_cycle_end.call_args.kwargs["cycle_number"] == 4
 
 
 def test_utc_iso_now_format():
