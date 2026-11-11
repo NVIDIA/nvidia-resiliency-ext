@@ -404,6 +404,21 @@ def test_terminal_service_logs_lifecycle_and_completed_stage_events(tmp_path, ca
             for record in caplog.records
         )
         assert "credential_ref" not in messages
+
+        # The completion event carries the same per-attempt timing record that
+        # /stats and the Slack summary read, so the three cannot drift apart
+        # and timing is available to an operator with Slack switched off.
+        completed = next(
+            record.getMessage()
+            for record in caplog.records
+            if "event=restart_agent.analysis.completed" in record.getMessage()
+        )
+        for field in (
+            "analysis_to_l0_answer_s",
+            "analysis_to_l4_answer_s",
+            "llm_api_wall_clock_s",
+        ):
+            assert field in completed, f"{field} missing from the completion event"
     finally:
         backend.shutdown()
 

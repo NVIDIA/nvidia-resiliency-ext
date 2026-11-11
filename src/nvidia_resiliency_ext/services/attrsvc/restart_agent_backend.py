@@ -1108,11 +1108,13 @@ class RestartAgentServiceBackend:
                     completed_source = current.best_source
                     completed_total_s = current.analysis_completed_wall_clock_s
                     completed_route_count = current.route_complete_count
+                    completed_timing = _entry_timing(current)
                     self._trim_completed_results()
                 else:
                     completed_source = "unknown"
                     completed_total_s = None
                     completed_route_count = 0
+                    completed_timing = {}
             self._emit_operational(
                 self._operational_log.info,
                 "restart_agent.analysis.completed",
@@ -1123,6 +1125,13 @@ class RestartAgentServiceBackend:
                 source=completed_source,
                 terminal_total_s=completed_total_s,
                 route_count=completed_route_count,
+                # The same per-attempt record /stats and the Slack summary
+                # read, so one definition of how long a verdict took serves
+                # all three rather than each deriving its own.
+                cycle_to_analysis_s=completed_timing.get("cycle_to_analysis_s"),
+                analysis_to_l0_answer_s=completed_timing.get("analysis_to_l0_answer_s"),
+                analysis_to_l4_answer_s=completed_timing.get("analysis_to_l4_answer_s"),
+                llm_api_wall_clock_s=completed_timing.get("llm_api_wall_clock_s"),
             )
             # Persist before alerting: durability must not depend on whether a
             # notification could be scheduled.
