@@ -41,7 +41,6 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Union
 
 import grpc
 
-from nvidia_resiliency_ext.shared_utils.grpc_async_sender import AsyncUnarySender
 from nvidia_resiliency_ext.shared_utils.os_utils import (
     normalize_allowed_roots,
     resolve_under_allowed_roots,
@@ -424,16 +423,13 @@ class LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceServicer):
     """Forwards the cycle records of the launchers sharded to this leaf to the root.
 
     Launchers publish to the server they send logs to: their outcomes and, from the store
-    host's launcher, the cycle starts. A record is acknowledged once its forward has
-    started, without waiting for the root; a record the leaf drops (shutting down, or too
-    many forwards in flight) is answered UNAVAILABLE.
+    host's launcher, the cycle starts. Each record is forwarded with a blocking call on the
+    handler's thread and acknowledged once the root acknowledged it; a failed forward is
+    answered with the root's status.
     """
 
-    def __init__(
-        self, upstream_stub: cycle_info_pb2_grpc.CycleInfoServiceStub, sender: AsyncUnarySender
-    ):
+    def __init__(self, upstream_stub: cycle_info_pb2_grpc.CycleInfoServiceStub):
         self._upstream = upstream_stub
-        self._sender = sender
 
     def PublishCycleStart(self, request, context):
         what = f"start of cycle {request.cycle}"
@@ -444,8 +440,11 @@ class LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceServicer):
         return self._forward(self._upstream.PublishCycleOutcome, request, what, context)
 
     def _forward(self, rpc, request, what: str, context):
-        if not self._sender.send(rpc, request, what):
-            context.abort(grpc.StatusCode.UNAVAILABLE, f"leaf dropped the {what}")
+        try:
+            rpc(request)
+        except grpc.RpcError as e:
+            logger.warning(f"Failed to forward the {what}: {e.code().name}: {e.details()}")
+            context.abort(e.code(), f"leaf failed to forward the {what}: {e.details()}")
         return cycle_info_pb2.PublishReply()
 
 
@@ -517,13 +516,10 @@ def serve(
     log_aggregation_pb2_grpc.add_LogAggregationServiceServicer_to_server(servicer, server)
     # Same port: launchers publish their cycle records to the server they send logs to.
     # The leaf forwards them on a channel of their own, which gRPC reconnects as needed.
-    # max_workers is sized to this leaf's launchers, each sending one outcome per cycle.
+    # an optimization is for the leaf nodes to directly forward to the cycle analyzer
     cycle_info_channel = grpc.insecure_channel(upstream, options=_GRPC_OPTS)
-    cycle_info_sender = AsyncUnarySender(logger, max_pending=max_workers)
     cycle_info_pb2_grpc.add_CycleInfoServiceServicer_to_server(
-        LeafCycleInfoServicer(
-            cycle_info_pb2_grpc.CycleInfoServiceStub(cycle_info_channel), cycle_info_sender
-        ),
+        LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceStub(cycle_info_channel)),
         server,
     )
     server.add_insecure_port(addr)
@@ -612,8 +608,7 @@ def serve(
                 "Timed out waiting for leaf gRPC server to finish termination after stop() "
                 f"(>{termination_wait_timeout_seconds}s)"
             )
-        # No new cycle records can arrive now; give the pending forwards a moment.
-        cycle_info_sender.close()
+        # The server has terminated, so no forward is using the channel anymore.
         cycle_info_channel.close()
         logger.info("Leaf server exit")
 

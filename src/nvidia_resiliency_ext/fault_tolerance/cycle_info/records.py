@@ -89,8 +89,7 @@ class LocalCycleOutcome:
     node: str
     node_end: CycleEndReason
     # When the launcher observed the end: time.time(), seconds since the Unix epoch in UTC.
-    # Comparable across nodes only up to their clock skew (NTP/chrony, typically
-    # milliseconds); NVRx does not synchronize or correct node clocks.
+    # Comparable across nodes only up to their clock skew (NTP/chrony, typically milliseconds);
     detected_at: float
     ranks: tuple[RankOutcome, ...]
 

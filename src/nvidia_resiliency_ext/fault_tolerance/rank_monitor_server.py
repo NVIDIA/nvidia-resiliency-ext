@@ -41,17 +41,19 @@ from .data import (
     ErrorMsg,
     HeartbeatMsg,
     InitMsg,
+    LauncherChannelMsg,
     OkMsg,
     SectionAction,
     SectionMsg,
     TimeoutQueryMsg,
     TimeoutReplyMsg,
+    TimeoutStopMsg,
     UpdateConfigMsg,
 )
 from .launcher_error_reporting import launcher_error_reporter
 from .rank_monitor_state_machine import RankMonitorStateMachine
 from .timeout_dump import TimeoutDumpManager
-from .utils import read_obj_from_ipc_stream, write_obj_to_ipc_stream
+from .utils import encode_ipc_frame, read_obj_from_ipc_stream, write_obj_to_ipc_stream
 
 
 class RankMonitorLogger(logging.Logger):
@@ -183,7 +185,9 @@ class RankMonitorServer:
             f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}_to_rmon.socket"
         )
         self.launcher_server = None
-        self.launcher_writer = None  # Keep connection to launcher for bidirectional IPC
+        # The connection the launcher keeps open for the monitor's messages (LauncherChannelMsg);
+        # its other connections are short-lived requests.
+        self._launcher_channel: Optional[asyncio.StreamWriter] = None
         # Track periodic tasks for cleanup on shutdown
         self._periodic_tasks = []
         self._initial_iteration = None  # Track starting iteration of current cycle (for warmup)
@@ -227,6 +231,15 @@ class RankMonitorServer:
         try:
             # Process.send_signal checks PID reuse against its saved creation time.
             rank_process.send_signal(signal.SIGCONT)
+            if timeout_stop is not None:
+                # Sent before the termination signal, so it is in the launcher's socket buffer
+                # by the time the worker exits from it. The message does not prove that the
+                # signal ended the worker: in the meantime the worker may have exited on its
+                # own or been killed by something else, or the signal below may fail.
+                try:
+                    self._notify_timeout_stop(timeout_stop, rank_process.pid)
+                except Exception as e:  # never let the notification prevent the kill
+                    self.logger.warning(f"Failed to notify the launcher of the timeout stop: {e!r}")
             rank_process.send_signal(sig)
             self.logger.debug(
                 f"Rank monitor sent SIGCONT then {sig.name} to the rank (PID={rank_process.pid})"
@@ -237,10 +250,6 @@ class RankMonitorServer:
             )
             # do nothing, most probably rank process is terminated anyway
             return
-        if timeout_stop is not None:
-            # No await since the signal: the launcher's query, served by this event loop,
-            # cannot run before the record is set.
-            self._record_timeout_stop(timeout_stop)
 
     def _shutdown_rank_if_alive(self, rank_process=None, timeout_stop=None):
         """Terminate `rank_process`, or by default the currently connected rank.
@@ -468,13 +477,13 @@ class RankMonitorServer:
     async def _handle_launcher_ipc_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """Handle IPC connection from the launcher. Keeps connection open for bidirectional communication."""
-        self.launcher_writer = writer
-
+        """Handle an IPC connection from the launcher, until the launcher closes it."""
         try:
             while True:
                 msg = await read_obj_from_ipc_stream(reader)
-                if msg == "close_worker_ipc_connection":
+                if isinstance(msg, LauncherChannelMsg):
+                    self._launcher_channel = writer
+                elif msg == "close_worker_ipc_connection":
                     # Normal shutdown request - close worker connection
                     await self.close_current_connection()
                 elif msg == "shutdown":
@@ -493,7 +502,8 @@ class RankMonitorServer:
         except Exception as e:
             self.logger.error(f"Error handling launcher IPC connection: {e}")
         finally:
-            self.launcher_writer = None
+            if self._launcher_channel is writer:
+                self._launcher_channel = None
             writer.close()
             await writer.wait_closed()
 
@@ -647,6 +657,31 @@ class RankMonitorServer:
         if recorded is not None and recorded[0] >= timeout_stop[0]:
             return
         self._timeout_stop = timeout_stop
+
+    def _notify_timeout_stop(self, timeout_stop: Tuple[int, RankTimeout], pid: int) -> None:
+        """Record the timeout stop of worker `pid` and send it on the launcher channel.
+
+        Sent once per cycle: the shutdown paths of one timeout share its draft. The message is
+        written with a single transport write and no await, so `_shutdown_rank` stays
+        synchronous. If the transport's buffer is empty afterwards, the whole message has
+        reached the launcher's socket buffer before the caller sends the termination signal.
+        """
+        previous = self._timeout_stop
+        self._record_timeout_stop(timeout_stop)
+        if self._timeout_stop is previous:
+            return  # already sent for this cycle, or a newer one was
+        channel = self._launcher_channel
+        if channel is None or channel.is_closing():
+            self.logger.warning("No launcher channel: the launcher is not told of the timeout stop")
+            return
+        cycle, timeout = timeout_stop
+        channel.write(encode_ipc_frame(TimeoutStopMsg(cycle, pid, timeout)))
+        if channel.transport.get_write_buffer_size() > 0:
+            # The launcher has not read for long enough to fill its socket buffer.
+            self.logger.warning(
+                "The timeout stop notification is still buffered: the launcher may read it "
+                "after the worker exits"
+            )
 
     async def _handle_timeout_query_msg(self, msg: TimeoutQueryMsg, writer):
         timeout = None

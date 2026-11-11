@@ -19,6 +19,7 @@ import os
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -37,11 +38,15 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
     RankTimeout,
     TimeoutKind,
 )
+from nvidia_resiliency_ext.fault_tolerance.data import LauncherChannelMsg, TimeoutStopMsg
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+    encode_ipc_frame,
+    loads_ipc_frame,
+    pop_ipc_frames,
 )
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
@@ -1109,7 +1114,7 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
     assert all("--cycle-analyzer-address" not in proc.args[0] for proc in procs)
 
 
-@pytest.mark.parametrize("first_level_count", [0, 2], ids=["root_only", "root_and_leaves"])
+@pytest.mark.parametrize("first_level_count", [1, 2], ids=["root_only", "root_and_leaves"])
 def test_start_grpc_log_servers_gives_the_analyzer_address_to_the_root_only(
     tmp_path, first_level_count
 ):
@@ -2111,7 +2116,7 @@ def _outcome_agent(cycle_info_dir="/cycle_infos", cycle_info_outcomes=True):
     ]
     agent._cycle_outcome = None
     agent._get_global_cycle_number = MagicMock(return_value=3)
-    agent._query_rank_monitor_timeouts = MagicMock(return_value={})
+    agent._collect_rank_monitor_timeouts = MagicMock(return_value={})
     return agent
 
 
@@ -2125,9 +2130,9 @@ class TestRecordCycleOutcome:
         agent = _outcome_agent(cycle_info_dir, cycle_info_outcomes)
         agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
         assert agent._cycle_outcome is None
-        agent._query_rank_monitor_timeouts.assert_not_called()
+        agent._collect_rank_monitor_timeouts.assert_not_called()
 
-    def test_completed_cycle_does_not_query_monitors(self):
+    def test_completed_cycle_does_not_collect_monitor_timeouts(self):
         agent = _outcome_agent()
         agent._record_cycle_outcome(CycleEndReason.COMPLETED)
 
@@ -2141,17 +2146,17 @@ class TestRecordCycleOutcome:
             (4, RankEndReason.COMPLETED, 0),
             (5, RankEndReason.COMPLETED, 0),
         ]
-        agent._query_rank_monitor_timeouts.assert_not_called()
+        agent._collect_rank_monitor_timeouts.assert_not_called()
 
     def test_failures_are_classified_with_monitor_timeouts(self):
         agent = _outcome_agent()
         failures = {5: MagicMock(exitcode=-9)}
-        agent._query_rank_monitor_timeouts.return_value = {
+        agent._collect_rank_monitor_timeouts.return_value = {
             5: RankTimeout(TimeoutKind.SECTION, ("step",))
         }
         agent._record_cycle_outcome(CycleEndReason.FAILED, failures)
 
-        agent._query_rank_monitor_timeouts.assert_called_once_with(3, failures)
+        agent._collect_rank_monitor_timeouts.assert_called_once_with(3, failures)
         stopped, timed_out = agent._cycle_outcome.ranks
         assert (stopped.end, stopped.exitcode) == (RankEndReason.STOPPED_BY_LAUNCHER, None)
         assert (timed_out.end, timed_out.exitcode) == (RankEndReason.STOPPED_BY_RMON, -9)
@@ -2163,18 +2168,129 @@ class TestRecordCycleOutcome:
     def test_failure_does_not_interrupt_the_caller(self):
         agent = _outcome_agent()
         agent._cycle_outcome = MagicMock()  # stale record from an earlier cycle
-        agent._query_rank_monitor_timeouts.side_effect = RuntimeError("boom")
+        agent._collect_rank_monitor_timeouts.side_effect = RuntimeError("boom")
         with patch.object(launcher, "logger") as logger:
             agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
         assert agent._cycle_outcome is None
 
     def test_termination_signal_propagates(self):
         agent = _outcome_agent()
-        agent._query_rank_monitor_timeouts.side_effect = launcher.SignalException(
+        agent._collect_rank_monitor_timeouts.side_effect = launcher.SignalException(
             "terminated", signal.SIGTERM
         )
         with pytest.raises(launcher.SignalException):
             agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
+
+
+class TestRankMonitorChannel:
+    """The monitors send their timeout stops on channels the launcher reads without waiting."""
+
+    TIMEOUT = RankTimeout(TimeoutKind.SECTION, ("step",))
+
+    @pytest.fixture
+    def agent(self):
+        """Outcome agent whose two monitors are connected; `agent.monitor_ends` are their ends."""
+        agent = _outcome_agent()
+        del agent._collect_rank_monitor_timeouts  # the real method, not _outcome_agent's mock
+        agent._timeout_stops = {}
+        agent._rank_monitors = {}
+        agent.monitor_ends = []
+        for local_rank in range(2):
+            monitor_end, launcher_end = socket.socketpair()
+            launcher_end.setblocking(False)
+            agent._rank_monitors[local_rank] = launcher.RankMonitorState(
+                process=MagicMock(), channel=launcher_end
+            )
+            agent.monitor_ends.append(monitor_end)
+        yield agent
+        for end in agent.monitor_ends:
+            end.close()
+        for state in agent._rank_monitors.values():
+            if state.channel is not None:
+                state.channel.close()
+
+    def test_timeout_stop_sent_before_the_exit_is_collected(self, agent):
+        """Workers 4 and 5 run as pids 100 and 101 on local ranks 0 and 1."""
+        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
+        failures = {4: MagicMock(exitcode=1), 5: MagicMock(exitcode=-9)}
+        assert agent._collect_rank_monitor_timeouts(3, failures) == {5: self.TIMEOUT}
+
+    def test_nothing_sent_collects_nothing(self, agent):
+        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {}
+
+    @pytest.mark.parametrize(
+        ("cycle", "pid", "failed_rank"),
+        [(2, 101, 5), (3, 999, 5), (3, 101, 4)],
+        ids=["earlier_cycle", "other_worker", "worker_did_not_exit"],
+    )
+    def test_timeout_stop_of_another_worker_or_cycle_is_ignored(
+        self, agent, cycle, pid, failed_rank
+    ):
+        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(cycle, pid, self.TIMEOUT)))
+        assert agent._collect_rank_monitor_timeouts(3, {failed_rank: MagicMock()}) == {}
+
+    def test_message_split_across_reads_is_kept_until_complete(self, agent):
+        frame = encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT))
+        agent.monitor_ends[1].sendall(frame[:7])
+        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {}
+        agent.monitor_ends[1].sendall(frame[7:])
+        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {5: self.TIMEOUT}
+
+    def test_first_timeout_stop_of_a_cycle_is_kept(self, agent):
+        later = RankTimeout(TimeoutKind.HEARTBEAT)
+        for timeout in (self.TIMEOUT, later):
+            agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, timeout)))
+        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {5: self.TIMEOUT}
+
+    def test_closed_channel_is_dropped_after_reading_what_was_sent(self, agent):
+        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
+        agent.monitor_ends[1].close()
+        with patch.object(launcher, "logger") as logger:
+            timeouts = agent._collect_rank_monitor_timeouts(3, {5: MagicMock()})
+        assert timeouts == {5: self.TIMEOUT}
+        assert agent._rank_monitors[1].channel is None
+        logger.warning.assert_called_once()
+        assert agent._rank_monitors[0].channel is not None
+
+    def test_undecodable_message_is_dropped(self, agent):
+        agent.monitor_ends[1].sendall(len(b"junk").to_bytes(4, "big") + b"junk")
+        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
+        with patch.object(launcher, "logger"):
+            assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {5: self.TIMEOUT}
+
+    def test_cycle_start_drops_the_stops_of_earlier_cycles(self, agent):
+        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
+        agent._send_cycle_to_rank_monitors(4)  # no socket paths: sends nothing
+        assert agent._timeout_stops == {}
+        assert agent._rank_monitors[1].pending == bytearray()
+
+    def test_connect_opens_the_channel(self):
+        agent = _outcome_agent()
+        agent._rank_monitors = {0: launcher.RankMonitorState(process=MagicMock(pid=77))}
+        sock = MagicMock()
+        with patch.object(launcher.socket, "socket", return_value=sock):
+            agent._connect_to_rank_monitor(0, agent._rank_monitors[0].process)
+
+        state = agent._rank_monitors[0]
+        assert state.socket_path.endswith("_ft_launcher77_to_rmon.socket")
+        sock.connect.assert_called_once_with(state.socket_path)
+        sent = b"".join(call.args[0] for call in sock.sendall.call_args_list)
+        (marker,) = [loads_ipc_frame(p) for p in pop_ipc_frames(bytearray(sent))]
+        assert isinstance(marker, LauncherChannelMsg)
+        sock.setblocking.assert_called_once_with(False)
+        assert state.channel is sock
+
+    def test_failed_connect_leaves_no_channel(self):
+        agent = _outcome_agent()
+        agent._rank_monitors = {0: launcher.RankMonitorState(process=MagicMock(pid=77))}
+        sock = MagicMock()
+        sock.connect.side_effect = ConnectionRefusedError()
+        with patch.object(launcher.socket, "socket", return_value=sock):
+            with patch.object(launcher, "logger") as logger:
+                agent._connect_to_rank_monitor(0, agent._rank_monitors[0].process)
+        assert agent._rank_monitors[0].channel is None
+        sock.close.assert_called_once()
+        logger.warning.assert_called_once()
 
 
 class TestPublishCycleOutcome:

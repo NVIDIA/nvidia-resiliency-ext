@@ -748,23 +748,29 @@ class TestCycleInfoServicer:
         from nvidia_resiliency_ext.shared_utils.grpc_log_server import CycleInfoServicer
         from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2
 
-        analyzer, sender, context = MagicMock(), MagicMock(), MagicMock()
-        sender.send.return_value = True
+        analyzer, context = MagicMock(), MagicMock()
         request = cycle_info_pb2.CycleOutcome(cycle=3, node="node0")
 
-        reply = getattr(CycleInfoServicer(analyzer, sender), rpc)(request, context)
+        reply = getattr(CycleInfoServicer(analyzer), rpc)(request, context)
 
         assert reply == cycle_info_pb2.PublishReply()
-        assert sender.send.call_args.args[:2] == (getattr(analyzer, rpc), request)
+        getattr(analyzer, rpc).assert_called_once_with(request)
         context.abort.assert_not_called()
 
-    def test_dropped_record_is_answered_unavailable(self):
+    def test_failed_forward_is_answered_with_the_analyzer_status(self):
         from nvidia_resiliency_ext.shared_utils.grpc_log_server import CycleInfoServicer
         from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2
 
-        sender, context = MagicMock(), MagicMock()
-        sender.send.return_value = False
-        CycleInfoServicer(MagicMock(), sender).PublishCycleOutcome(
+        class _AnalyzerDown(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.UNAVAILABLE
+
+            def details(self):
+                return "analyzer down"
+
+        analyzer, context = MagicMock(), MagicMock()
+        analyzer.PublishCycleOutcome.side_effect = _AnalyzerDown()
+        CycleInfoServicer(analyzer).PublishCycleOutcome(
             cycle_info_pb2.CycleOutcome(cycle=3), context
         )
         assert context.abort.call_args.args[0] == grpc.StatusCode.UNAVAILABLE

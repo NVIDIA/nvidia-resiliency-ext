@@ -104,7 +104,9 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoRep
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
+    LauncherChannelMsg,
     TimeoutQueryMsg,
+    TimeoutStopMsg,
     UpdateConfigMsg,
 )
 from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import launcher_error_reporter
@@ -122,11 +124,14 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
     is_infra_rank_zero,
     is_slurm_job_array,
+    loads_ipc_frame,
     parse_bool_env,
     patched_method,
+    pop_ipc_frames,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
+    write_object_to_ipc_socket,
 )
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
@@ -156,6 +161,8 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
 # Bound on asking a rank monitor whether it stopped its worker; on the failure path only.
 RANK_MONITOR_QUERY_TIMEOUT = 1.0
+# Bound on opening the channel from a rank monitor; once, at launcher start.
+RANK_MONITOR_CHANNEL_CONNECT_TIMEOUT = 5.0
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -359,8 +366,11 @@ class RankMonitorState:
     """State for a single rank monitor process and its IPC connections."""
     process: Any  # multiprocessing.Process
     socket_path: str = ""
-    listener_thread: Optional[threading.Thread] = None
-    stop_event: Optional[threading.Event] = None
+    # Non-blocking connection the launcher keeps open for the monitor's messages; read
+    # without waiting by _read_rank_monitor_messages. None until connected, or once lost.
+    channel: Optional[socket.socket] = None
+    # Received bytes that do not form a complete message yet.
+    pending: bytearray = dataclasses.field(default_factory=bytearray)
 
 
 class LocalElasticAgent(SimpleElasticAgent):
@@ -491,9 +501,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
-        # Rank monitor state (process, IPC connections, listener tasks) per local rank
+        # Rank monitor state (process, socket path, message channel) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
+        # Latest timeout stop each monitor reported, by local rank (TimeoutStopMsg).
+        self._timeout_stops: Dict[int, TimeoutStopMsg] = {}
         self._ft_cfg = fault_tol_cfg
 
         # Setup IPC connections to pre-created rank monitors
@@ -771,7 +783,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         try:
             detected_at = time.time()
             cycle = self._get_global_cycle_number()
-            timeouts = self._query_rank_monitor_timeouts(cycle, failures) if failures else None
+            timeouts = self._collect_rank_monitor_timeouts(cycle, failures) if failures else None
             self._cycle_outcome = build_local_cycle_outcome(
                 cycle=cycle,
                 node=self._node_id,
@@ -1036,8 +1048,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             rank_monitors[local_rank] = RankMonitorState(
                 process=rmon_proc,
                 socket_path="",  # Will be set later in _connect_to_rank_monitor
-                listener_thread=None,
-                stop_event=None,
             )
             new_monitors.append((local_rank, rmon_proc))
 
@@ -1045,24 +1055,10 @@ class LocalElasticAgent(SimpleElasticAgent):
 
 
     def _setup_rank_monitor_connections(self):
-        """
-        Setup IPC connections to pre-created rank monitors.
-
-        This establishes bidirectional communication channels between the launcher
-        and each rank monitor subprocess for progress tracking and control.
-        """
-        new_monitors = [
-            (local_rank, state.process)
-            for local_rank, state in self._rank_monitors.items()
-        ]
-
-        if new_monitors:
-            async def connect_all():
-                await asyncio.gather(
-                    *[self._connect_to_rank_monitor(lr, rmon) for lr, rmon in new_monitors]
-                )
-            asyncio.run(connect_all())
-            logger.debug(f"Established IPC connections to {len(new_monitors)} rank monitors")
+        """Connect to the pre-created rank monitors, which are ready to accept connections."""
+        for local_rank, state in self._rank_monitors.items():
+            self._connect_to_rank_monitor(local_rank, state.process)
+        logger.debug(f"Connected to {len(self._rank_monitors)} rank monitors")
 
     def shutdown_rank_monitors(self):
         # Skip if rank monitors were disabled
@@ -1071,6 +1067,10 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         # Terminate rank monitor processes
         for local_rank, state in self._rank_monitors.items():
+            if state.channel is not None:
+                with contextlib.suppress(Exception):
+                    state.channel.close()
+                state.channel = None
             with contextlib.suppress(Exception):
                 state.process.terminate()
 
@@ -1085,15 +1085,95 @@ class LocalElasticAgent(SimpleElasticAgent):
             with contextlib.suppress(Exception):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
 
-    async def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
-        """Record rank monitor socket path for cycle updates.
+    def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
+        """Record the monitor's socket path and open the channel for its messages.
 
-        The launcher sends cycle updates to rank monitors via short-lived connections.
-        Progress is tracked via the checkpoint iteration file (when set), not from rank monitor.
+        The launcher sends its requests (e.g. cycle updates) on short-lived connections to
+        that socket. It also keeps one connection open, marked with LauncherChannelMsg, on
+        which the monitor sends its messages (e.g. TimeoutStopMsg). Without the channel the
+        monitor works as before, but the launcher does not learn of its timeout stops.
         """
         launcher_to_rmon_socket = f"{tempfile.gettempdir()}/_ft_launcher{rmon_proc.pid}_to_rmon.socket"
         state = self._rank_monitors[local_rank]
         state.socket_path = launcher_to_rmon_socket
+        channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            channel.settimeout(RANK_MONITOR_CHANNEL_CONNECT_TIMEOUT)
+            channel.connect(launcher_to_rmon_socket)
+            write_object_to_ipc_socket(LauncherChannelMsg(), channel)
+            channel.setblocking(False)
+        except Exception as e:
+            channel.close()
+            logger.warning(f"Failed to open the channel from rank monitor {local_rank}: {e}")
+            return
+        state.channel = channel
+
+    def _read_rank_monitor_messages(self) -> None:
+        """Read the messages the monitors sent on their channels so far, without waiting.
+
+        A monitor sends a message before acting on it (e.g. TimeoutStopMsg before signalling
+        its worker), so the message is here once the launcher observes the consequence.
+        """
+        for local_rank, state in self._rank_monitors.items():
+            if state.channel is None:
+                continue
+            lost = None
+            try:
+                while chunk := state.channel.recv(65536):
+                    state.pending += chunk
+                lost = "closed by the rank monitor"
+            except BlockingIOError:
+                pass  # nothing more to read now
+            except OSError as e:
+                lost = repr(e)
+            for obj_pickled in pop_ipc_frames(state.pending):
+                try:
+                    self._handle_rank_monitor_msg(local_rank, loads_ipc_frame(obj_pickled))
+                except Exception as e:
+                    logger.warning(f"Dropped a message from rank monitor {local_rank}: {e!r}")
+            if lost is not None:
+                logger.warning(f"Lost the channel from rank monitor {local_rank}: {lost}")
+                with contextlib.suppress(Exception):
+                    state.channel.close()
+                state.channel = None
+
+    def _handle_rank_monitor_msg(self, local_rank: int, msg: Any) -> None:
+        if isinstance(msg, TimeoutStopMsg):
+            # The first timeout stop of a cycle wins, as in the monitor.
+            previous = self._timeout_stops.get(local_rank)
+            if previous is None or previous.cycle < msg.cycle:
+                self._timeout_stops[local_rank] = msg
+        else:
+            logger.debug(f"Ignored a message from rank monitor {local_rank}: {msg!r}")
+
+    def _collect_rank_monitor_timeouts(
+        self, cycle: int, failures: Dict[int, Any]
+    ) -> Dict[int, RankTimeout]:
+        """Return the timeouts on which the monitors stopped exited workers in `cycle`.
+
+        Reads the monitors' channels without waiting: a monitor sends its TimeoutStopMsg
+        before it signals the worker, so the message is in the channel by the time the
+        launcher sees the worker exit.
+
+        Args:
+            cycle: The cycle in which the workers exited.
+            failures: Exited workers, keyed by global rank.
+
+        Returns:
+            Timeouts keyed by global rank, only for workers stopped by their monitor.
+        """
+        self._read_rank_monitor_messages()
+        timeouts = {}
+        for worker in self._worker_group.workers:
+            msg = self._timeout_stops.get(worker.local_rank)
+            if (
+                worker.global_rank in failures
+                and msg is not None
+                and msg.cycle == cycle
+                and msg.pid == worker.id
+            ):
+                timeouts[worker.global_rank] = msg.timeout
+        return timeouts
 
     def _send_cycle_to_rank_monitors(self, current_cycle: int) -> None:
         """Send current cycle number to all rank monitors.
@@ -1101,12 +1181,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         This updates the cycle number in rank monitors so they can include it in timeout logs.
         Should be called at the start of each cycle (in _start_workers).
 
-        Note: Creates short-lived connections for sending. The persistent listener connections
-        are read-only and run in separate thread event loops, so we can't reuse them for writing.
+        Note: Creates short-lived connections for sending. Messages the monitors sent during
+        earlier cycles are read and dropped first, so the channels' buffers stay small.
 
         Args:
             current_cycle: The current training cycle number (0 = initial, 1 = first restart, etc.)
         """
+        self._read_rank_monitor_messages()
+        self._timeout_stops.clear()
+
         async def send_cycle_to_monitor(local_rank: int, socket_path: str):
             try:
                 reader, writer = await asyncio.open_unix_connection(socket_path)

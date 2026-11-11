@@ -28,7 +28,7 @@ import struct
 import sys
 import time
 import traceback
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import psutil
 import torch
@@ -447,15 +447,41 @@ async def read_obj_from_ipc_stream(stream: asyncio.StreamReader):
         raise
 
 
+def encode_ipc_frame(obj) -> bytes:
+    """Encode `obj` as one IPC frame: its pickled size (4 bytes, big endian), then the pickle.
+
+    The readers above and below decode this format.
+    """
+    obj_pickled = _IPC_PICKLER.dumps(obj)
+    return len(obj_pickled).to_bytes(length=4, byteorder="big") + obj_pickled
+
+
+def pop_ipc_frames(buffer: bytearray) -> List[bytes]:
+    """Remove the complete IPC frames from the start of `buffer` and return their pickles.
+
+    An incomplete frame at the end stays in `buffer` until more bytes arrive. Unpickle each
+    returned pickle with `loads_ipc_frame`.
+    """
+    pickles = []
+    while len(buffer) >= 4:
+        size = int.from_bytes(buffer[:4], byteorder="big")
+        if len(buffer) < 4 + size:
+            break
+        pickles.append(bytes(buffer[4 : 4 + size]))
+        del buffer[: 4 + size]
+    return pickles
+
+
+def loads_ipc_frame(obj_pickled: bytes):
+    return _IPC_PICKLER.loads(obj_pickled)
+
+
 async def write_obj_to_ipc_stream(obj, stream: asyncio.StreamWriter):
     """
     Helper for writing pickled objects to stream
     """
     try:
-        obj_pickled = _IPC_PICKLER.dumps(obj)
-        obj_size_as_bytes = len(obj_pickled).to_bytes(length=4, byteorder="big")
-        stream.write(obj_size_as_bytes)
-        stream.write(obj_pickled)
+        stream.write(encode_ipc_frame(obj))
         await stream.drain()
     except Exception:
         # print(f"Error in _write_obj_to_stream: {e}", file=sys.stderr)

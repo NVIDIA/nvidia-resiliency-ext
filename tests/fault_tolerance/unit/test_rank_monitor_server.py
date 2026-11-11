@@ -17,13 +17,16 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     AuthkeyMsg,
     HeartbeatMsg,
     InitMsg,
+    LauncherChannelMsg,
     OkMsg,
     RankInfo,
     SectionAction,
     SectionMsg,
+    TimeoutStopMsg,
 )
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
 from nvidia_resiliency_ext.fault_tolerance.utils import (
+    encode_ipc_frame,
     read_obj_from_ipc_stream,
     write_obj_to_ipc_stream,
 )
@@ -698,6 +701,22 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
                 server._shutdown_rank_if_alive(process, (3, RankTimeout(TimeoutKind.HEARTBEAT)))
                 self.assertIsNone(server._timeout_stop)
 
+    def test_draft_is_recorded_before_the_termination_signal(self):
+        """The record stays even if the worker is gone by the time the signal is sent."""
+        server = self._create_server()
+        draft = (3, RankTimeout(TimeoutKind.HEARTBEAT))
+        process = self._process()
+        process.send_signal.side_effect = [None, NoSuchProcess(12345)]  # SIGCONT, then gone
+        server._shutdown_rank_if_alive(process, draft)
+        self.assertEqual(server._timeout_stop, draft)
+
+    def test_failing_record_does_not_prevent_the_kill(self):
+        server = self._create_server()
+        server._record_timeout_stop = MagicMock(side_effect=RuntimeError("boom"))
+        process = self._process()
+        server._shutdown_rank_if_alive(process, (3, RankTimeout(TimeoutKind.HEARTBEAT)))
+        process.send_signal.assert_called_with(server.cfg.rank_termination_signal)
+
     def test_shutdown_without_a_draft_records_nothing(self):
         """Health-check shutdowns are not timeouts."""
         server = self._create_server()
@@ -725,6 +744,127 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
         server._timeout_stop = newer
         server._record_timeout_stop((2, RankTimeout(TimeoutKind.SECTION, ("step",))))
         self.assertEqual(server._timeout_stop, newer)
+
+
+def _decode_frames(data: bytes) -> list:
+    """Decode the IPC frames in `data` as the launcher would."""
+
+    async def read():
+        reader = asyncio.StreamReader()
+        reader.feed_data(data)
+        reader.feed_eof()
+        objs = []
+        while not reader.at_eof():
+            objs.append(await read_obj_from_ipc_stream(reader))
+        return objs
+
+    return asyncio.run(read())
+
+
+class TestRankMonitorServerLauncherChannel(unittest.TestCase):
+    """The monitor tells the launcher of a timeout stop on the channel the launcher keeps open."""
+
+    _create_server = TestRankMonitorServerTimeoutRecord._create_server
+
+    @staticmethod
+    def _channel(buffered=0):
+        channel = MagicMock()
+        channel.is_closing.return_value = False
+        channel.transport.get_write_buffer_size.return_value = buffered
+        return channel
+
+    @staticmethod
+    def _process(is_running=True, status=STATUS_SLEEPING):
+        process = TestRankMonitorServerTimeoutRecord._process(is_running, status)
+        process.pid = 12345
+        return process
+
+    def test_timeout_stop_is_sent_before_the_termination_signal(self):
+        server = self._create_server()
+        server._launcher_channel = channel = self._channel()
+        process = self._process()
+        calls = MagicMock()
+        calls.attach_mock(process.send_signal, "signal")
+        calls.attach_mock(channel.write, "write")
+        timeout = RankTimeout(TimeoutKind.SECTION, ("step",))
+
+        server._shutdown_rank_if_alive(process, (3, timeout))
+
+        self.assertEqual([name for name, _, _ in calls.mock_calls], ["signal", "write", "signal"])
+        (msg,) = _decode_frames(channel.write.call_args.args[0])
+        self.assertIsInstance(msg, TimeoutStopMsg)
+        self.assertEqual((msg.cycle, msg.pid, msg.timeout), (3, 12345, timeout))
+        process.send_signal.assert_called_with(server.cfg.rank_termination_signal)
+
+    def test_timeout_stop_is_sent_once_per_cycle(self):
+        """The shutdown paths of one timeout share its draft; a later timeout of the cycle too."""
+        server = self._create_server()
+        server._launcher_channel = channel = self._channel()
+        draft = (3, RankTimeout(TimeoutKind.HEARTBEAT))
+        server._shutdown_rank_if_alive(self._process(), draft)
+        server._shutdown_rank_if_alive(self._process(), draft)
+        server._shutdown_rank_if_alive(
+            self._process(), (3, RankTimeout(TimeoutKind.OUT_OF_SECTION))
+        )
+        channel.write.assert_called_once()
+        server._shutdown_rank_if_alive(self._process(), (4, RankTimeout(TimeoutKind.HEARTBEAT)))
+        self.assertEqual(channel.write.call_count, 2)
+
+    def test_worker_is_killed_without_a_launcher_channel(self):
+        for channel in (None, MagicMock(**{"is_closing.return_value": True})):
+            with self.subTest(channel=channel):
+                server = self._create_server()
+                server._launcher_channel = channel
+                process = self._process()
+                server._shutdown_rank_if_alive(process, (3, RankTimeout(TimeoutKind.HEARTBEAT)))
+                process.send_signal.assert_called_with(server.cfg.rank_termination_signal)
+                if channel is not None:
+                    channel.write.assert_not_called()
+
+    def test_still_buffered_notification_is_logged_and_the_worker_killed(self):
+        server = self._create_server()
+        server._launcher_channel = self._channel(buffered=100)
+        process = self._process()
+        server._shutdown_rank_if_alive(process, (3, RankTimeout(TimeoutKind.HEARTBEAT)))
+        server.logger.warning.assert_called_once()
+        process.send_signal.assert_called_with(server.cfg.rank_termination_signal)
+
+    def test_failing_write_does_not_prevent_the_kill(self):
+        server = self._create_server()
+        server._launcher_channel = channel = self._channel()
+        channel.write.side_effect = BrokenPipeError()
+        process = self._process()
+        server._shutdown_rank_if_alive(process, (3, RankTimeout(TimeoutKind.HEARTBEAT)))
+        process.send_signal.assert_called_with(server.cfg.rank_termination_signal)
+
+    def test_channel_is_kept_until_its_own_connection_closes(self):
+        """Short-lived launcher connections (e.g. cycle updates) do not clear the channel."""
+        server = self._create_server()
+
+        def connection():
+            writer = MagicMock()
+            writer.wait_closed = AsyncMock()
+            return asyncio.StreamReader(), writer
+
+        async def run():
+            channel_reader, channel_writer = connection()
+            channel_reader.feed_data(encode_ipc_frame(LauncherChannelMsg()))
+            channel_task = asyncio.create_task(
+                server._handle_launcher_ipc_connection(channel_reader, channel_writer)
+            )
+            await asyncio.sleep(0)
+            self.assertIs(server._launcher_channel, channel_writer)
+
+            request_reader, request_writer = connection()
+            request_reader.feed_eof()  # a request connection that closes
+            await server._handle_launcher_ipc_connection(request_reader, request_writer)
+            self.assertIs(server._launcher_channel, channel_writer)
+
+            channel_reader.feed_eof()  # the launcher closes its channel
+            await channel_task
+            self.assertIsNone(server._launcher_channel)
+
+        asyncio.run(run())
 
 
 if __name__ == '__main__':

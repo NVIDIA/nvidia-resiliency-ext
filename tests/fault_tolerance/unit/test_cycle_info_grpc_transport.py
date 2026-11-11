@@ -162,33 +162,38 @@ def test_records_reach_the_receiver(receiver, kind):
         publisher.publish_cycle_start(START)
     else:
         publisher.publish_outcome(OUTCOME)
-    publisher.close()
 
-    assert servicer.received.wait(timeout=5)
+    # The publish returned once the receiver acknowledged the record.
+    assert servicer.received.is_set()
     if kind == "start":
         assert servicer.starts == [cycle_start_to_proto(START)]
     else:
         assert servicer.outcomes == [outcome_to_proto(OUTCOME)]
 
 
-def test_publish_does_not_wait_for_the_call():
+def test_publish_is_a_blocking_call_with_the_timeout():
     stub = MagicMock()
     publisher = GrpcCycleInfoPublisher(stub, rpc_timeout=2.0)
 
     publisher.publish_outcome(OUTCOME)
 
-    stub.PublishCycleOutcome.future.assert_called_once_with(outcome_to_proto(OUTCOME), timeout=2.0)
-    stub.PublishCycleOutcome.assert_not_called()  # no blocking call
+    stub.PublishCycleOutcome.assert_called_once_with(outcome_to_proto(OUTCOME), timeout=2.0)
 
 
-def test_nothing_is_published_after_close():
+def test_failed_call_is_logged_without_raising():
+    class _Unavailable(grpc.RpcError):
+        def code(self):
+            return grpc.StatusCode.UNAVAILABLE
+
+        def details(self):
+            return "down"
+
     stub = MagicMock()
+    stub.PublishCycleStart.side_effect = _Unavailable()
     publisher = GrpcCycleInfoPublisher(stub)
-    publisher.close()
-    publisher.publish_cycle_start(START)
-    publisher.publish_outcome(OUTCOME)
-    stub.PublishCycleStart.future.assert_not_called()
-    stub.PublishCycleOutcome.future.assert_not_called()
+    with patch.object(grpc_transport, "logger") as logger:
+        publisher.publish_cycle_start(START)
+    logger.warning.assert_called_once()
 
 
 def test_record_failing_to_encode_is_logged_without_raising():
@@ -198,7 +203,7 @@ def test_record_failing_to_encode_is_logged_without_raising():
         with patch.object(grpc_transport, "logger") as logger:
             publisher.publish_outcome(OUTCOME)
     logger.warning.assert_called_once()
-    stub.PublishCycleOutcome.future.assert_not_called()
+    stub.PublishCycleOutcome.assert_not_called()
 
 
 def test_records_round_trip_through_proto():
@@ -223,11 +228,10 @@ def test_reader_receives_what_the_publisher_sends(tmp_path, transport):
     reader = GrpcCycleInfoReader(address)
     target = address if transport == "unix" else f"127.0.0.1:{reader.port}"
     channel = grpc.insecure_channel(target)
-    publisher = GrpcCycleInfoPublisher(pb_grpc.CycleInfoServiceStub(channel), close_timeout=5)
+    publisher = GrpcCycleInfoPublisher(pb_grpc.CycleInfoServiceStub(channel))
     try:
         publisher.publish_cycle_start(START)
         publisher.publish_outcome(OUTCOME)
-        publisher.close()  # waits until both calls completed
 
         assert reader.read_cycle_starts() == [START]
         assert reader.read_outcomes() == [OUTCOME]

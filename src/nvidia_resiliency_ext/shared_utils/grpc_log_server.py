@@ -82,7 +82,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import grpc
 
-from nvidia_resiliency_ext.shared_utils.grpc_async_sender import AsyncUnarySender
 from nvidia_resiliency_ext.shared_utils.os_utils import (
     normalize_allowed_roots,
     resolve_under_allowed_roots,
@@ -734,18 +733,15 @@ class CycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceServicer):
     The store host publishes the cycle starts and every launcher its outcomes, each to the
     server it sends logs to: this root directly, or a leaf that forwards them.
 
-    The root forwards each record to the CycleAnalyzer without waiting for it, and answers
-    UNAVAILABLE for a record it drops. Without an analyzer (e.g. when the store host is a
-    launcher rather than nvrx-control), records are accepted and dropped.
+    The root forwards each record to the CycleAnalyzer with a blocking call on the
+    handler's thread, and acknowledges it once the analyzer acknowledged it; a failed
+    forward is answered with the analyzer's status. Without an analyzer (e.g. when the
+    store host is a launcher rather than nvrx-control), records are accepted and dropped.
     """
 
-    def __init__(
-        self,
-        analyzer_stub: Optional[cycle_info_pb2_grpc.CycleInfoServiceStub] = None,
-        sender: Optional[AsyncUnarySender] = None,
-    ):
+    def __init__(self, analyzer_stub: Optional[cycle_info_pb2_grpc.CycleInfoServiceStub] = None):
         self._analyzer = analyzer_stub
-        self._sender = sender
+        self._logger = logging.getLogger("LogAggregationServer")
 
     def PublishCycleStart(self, request, context):
         what = f"start of cycle {request.cycle}"
@@ -756,10 +752,13 @@ class CycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceServicer):
         return self._forward("PublishCycleOutcome", request, what, context)
 
     def _forward(self, rpc_name: str, request, what: str, context):
-        if self._analyzer is None or self._sender is None:
+        if self._analyzer is None:
             return cycle_info_pb2.PublishReply()
-        if not self._sender.send(getattr(self._analyzer, rpc_name), request, what):
-            context.abort(grpc.StatusCode.UNAVAILABLE, f"root dropped the {what}")
+        try:
+            getattr(self._analyzer, rpc_name)(request)
+        except grpc.RpcError as e:
+            self._logger.warning(f"Failed to forward the {what}: {e.code().name}: {e.details()}")
+            context.abort(e.code(), f"root failed to forward the {what}: {e.details()}")
         return cycle_info_pb2.PublishReply()
 
 
@@ -832,25 +831,19 @@ def serve(
     log_aggregation_pb2_grpc.add_LogAggregationServiceServicer_to_server(servicer, server)
     # Same port: launchers publish their cycle records to the server they send logs to.
     # The root forwards them to the CycleAnalyzer on a channel of their own (a Unix domain
-    # socket for a ``unix:`` address). max_workers is sized to the job's launchers, each
-    # sending one outcome per cycle.
+    # socket for a ``unix:`` address).
     cycle_analyzer_channel = None
-    cycle_analyzer_sender = None
     cycle_info_servicer = CycleInfoServicer()
     if cycle_analyzer_address:
         cycle_analyzer_channel = grpc.insecure_channel(cycle_analyzer_address)
-        cycle_analyzer_sender = AsyncUnarySender(logger, max_pending=max_workers)
         cycle_info_servicer = CycleInfoServicer(
-            cycle_info_pb2_grpc.CycleInfoServiceStub(cycle_analyzer_channel),
-            cycle_analyzer_sender,
+            cycle_info_pb2_grpc.CycleInfoServiceStub(cycle_analyzer_channel)
         )
         logger.info(f"Forwarding cycle records to the CycleAnalyzer at {cycle_analyzer_address}")
     cycle_info_pb2_grpc.add_CycleInfoServiceServicer_to_server(cycle_info_servicer, server)
 
     def close_cycle_analyzer_forwarding():
-        # After the server stopped, so no new records arrive; give pending forwards a moment.
-        if cycle_analyzer_sender is not None:
-            cycle_analyzer_sender.close()
+        # After the server stopped, so no forward is using the channel anymore.
         if cycle_analyzer_channel is not None:
             cycle_analyzer_channel.close()
 

@@ -9,7 +9,6 @@ from typing import List
 
 import grpc
 
-from nvidia_resiliency_ext.shared_utils.grpc_async_sender import AsyncUnarySender
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2 as pb
 from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2_grpc as pb_grpc
@@ -138,49 +137,40 @@ def outcome_from_proto(message: pb.CycleOutcome) -> LocalCycleOutcome:
 
 
 class GrpcCycleInfoPublisher(CycleInfoPublisher):
-    """Publishes each record with an asynchronous unary call on a CycleInfoService stub.
+    """Publishes each record with a blocking unary call on a CycleInfoService stub.
 
-    A publish converts the record and starts the call without waiting for it (see
-    `AsyncUnarySender`): failures are logged and the record dropped, and at most
-    `max_pending` calls are in flight. The caller owns the stub's channel.
+    A publish returns once the record has been forwarded all the way to the receiver, or
+    after `rpc_timeout`; failures are logged and the record dropped, never raised. The
+    caller owns the stub's channel.
     """
 
-    def __init__(
-        self,
-        stub: pb_grpc.CycleInfoServiceStub,
-        rpc_timeout: float = 5.0,
-        max_pending: int = 64,
-        close_timeout: float = 1.0,
-    ):
+    def __init__(self, stub: pb_grpc.CycleInfoServiceStub, rpc_timeout: float = 5.0):
         self._stub = stub
-        self._sender = AsyncUnarySender(
-            logger,
-            rpc_timeout=rpc_timeout,
-            max_pending=max_pending,
-            close_timeout=close_timeout,
-        )
+        self._rpc_timeout = rpc_timeout
 
     def publish_cycle_start(self, info: CycleStartInfo) -> None:
         what = f"start of cycle {info.cycle}"
-        try:
-            request = cycle_start_to_proto(info)
-        except Exception as e:
-            logger.warning(f"Failed to encode the {what}: {e!r}")
-            return
-        self._sender.send(self._stub.PublishCycleStart, request, what)
+        self._publish(self._stub.PublishCycleStart, cycle_start_to_proto, info, what)
 
     def publish_outcome(self, outcome: LocalCycleOutcome) -> None:
         what = f"outcome of cycle {outcome.cycle}"
+        self._publish(self._stub.PublishCycleOutcome, outcome_to_proto, outcome, what)
+
+    def close(self) -> None:
+        """Nothing to release: calls complete before a publish returns."""
+
+    def _publish(self, rpc, encode, record, what: str) -> None:
         try:
-            request = outcome_to_proto(outcome)
+            request = encode(record)
         except Exception as e:
             logger.warning(f"Failed to encode the {what}: {e!r}")
             return
-        self._sender.send(self._stub.PublishCycleOutcome, request, what)
-
-    def close(self) -> None:
-        """Wait up to `close_timeout` for pending calls, then cancel the rest."""
-        self._sender.close()
+        try:
+            rpc(request, timeout=self._rpc_timeout)
+        except grpc.RpcError as e:
+            logger.warning(f"Failed to publish the {what}: {e.code().name}: {e.details()}")
+        except Exception as e:  # e.g. the caller closed the channel
+            logger.warning(f"Failed to publish the {what}: {e!r}")
 
 
 def _drain(records: queue.SimpleQueue) -> List:

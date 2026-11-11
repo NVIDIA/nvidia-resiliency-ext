@@ -256,6 +256,30 @@ class TimeoutReplyMsg:
         self.timeout = timeout
 
 
+class LauncherChannelMsg:
+    """
+    Sent from launcher -> rank monitor once, on the connection the launcher keeps open.
+    The monitor sends its messages to the launcher (e.g. TimeoutStopMsg) on that connection.
+    """
+
+
+class TimeoutStopMsg:
+    """
+    Sent from rank monitor -> launcher on the launcher channel, before the monitor sends the
+    termination signal to its worker on a timeout. The message is in the launcher's socket
+    buffer by the time the worker exits from that signal, so the launcher reads it without
+    waiting once it sees the exit. It does not prove that the signal ended the worker.
+
+    Each monitor has its own channel, so the launcher knows the local rank; `pid` tells
+    which worker of that rank, `cycle` in which cycle.
+    """
+
+    def __init__(self, cycle: int, pid: int, timeout: RankTimeout):
+        self.cycle = cycle
+        self.pid = pid
+        self.timeout = timeout
+
+
 class OkMsg:
     """
     Heartbeat confirmation (rank monitor -> rank)

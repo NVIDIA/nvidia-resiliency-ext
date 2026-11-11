@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 import grpc
 import pytest
 
-from nvidia_resiliency_ext.shared_utils.grpc_async_sender import AsyncUnarySender
 from nvidia_resiliency_ext.shared_utils.grpc_log_leaf_server import (
     _STOP,
     LeafCycleInfoServicer,
@@ -571,8 +570,16 @@ class TestLeafCliRequiresAllowedRoots:
         assert "--allowed-root" in proc.stderr
 
 
+class _UpstreamDown(grpc.RpcError):
+    def code(self):
+        return grpc.StatusCode.UNAVAILABLE
+
+    def details(self):
+        return "upstream down"
+
+
 class TestLeafCycleInfoServicer:
-    """The leaf forwards the cycle records to the root without waiting for it."""
+    """The leaf forwards the cycle records to the root and acknowledges them once it did."""
 
     @pytest.mark.parametrize(
         ("rpc", "request_"),
@@ -582,20 +589,19 @@ class TestLeafCycleInfoServicer:
         ],
     )
     def test_record_is_forwarded_and_acknowledged(self, rpc, request_):
-        upstream, sender, context = MagicMock(), MagicMock(), MagicMock()
-        sender.send.return_value = True
-        servicer = LeafCycleInfoServicer(upstream, sender)
+        upstream, context = MagicMock(), MagicMock()
+        servicer = LeafCycleInfoServicer(upstream)
 
         reply = getattr(servicer, rpc)(request_, context)
 
         assert reply == cycle_info_pb2.PublishReply()
-        assert sender.send.call_args.args[:2] == (getattr(upstream, rpc), request_)
+        getattr(upstream, rpc).assert_called_once_with(request_)
         context.abort.assert_not_called()
 
-    def test_dropped_record_is_answered_unavailable(self):
-        sender, context = MagicMock(), MagicMock()
-        sender.send.return_value = False
-        servicer = LeafCycleInfoServicer(MagicMock(), sender)
+    def test_failed_forward_is_answered_with_the_root_status(self):
+        upstream, context = MagicMock(), MagicMock()
+        upstream.PublishCycleOutcome.side_effect = _UpstreamDown()
+        servicer = LeafCycleInfoServicer(upstream)
 
         servicer.PublishCycleOutcome(cycle_info_pb2.CycleOutcome(cycle=3), context)
 
@@ -629,9 +635,8 @@ class TestLeafCycleInfoServicer:
         root = _Root()
         root_server, root_addr = start_server(root)
         root_channel = grpc.insecure_channel(root_addr)
-        sender = AsyncUnarySender(MagicMock())
         leaf_server, leaf_addr = start_server(
-            LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceStub(root_channel), sender)
+            LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceStub(root_channel))
         )
         launcher_channel = grpc.insecure_channel(leaf_addr)
         start = cycle_info_pb2.CycleStart(cycle=3, active_nodes=["node0"])
@@ -641,12 +646,10 @@ class TestLeafCycleInfoServicer:
             launcher.PublishCycleStart(start, timeout=5)
             launcher.PublishCycleOutcome(outcome, timeout=5)
 
-            assert root.received.wait(timeout=5)
-            # The forwards are independent calls: they can reach the root in either order.
-            by_type = {type(record): record for record in root.records}
-            assert by_type == {type(start): start, type(outcome): outcome}
+            # Each publish returned once the root acknowledged it, so they arrived in order.
+            assert root.received.is_set()
+            assert root.records == [start, outcome]
         finally:
-            sender.close()
             for channel in (launcher_channel, root_channel):
                 channel.close()
             for server in (leaf_server, root_server):
