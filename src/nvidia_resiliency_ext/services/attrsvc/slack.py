@@ -740,7 +740,77 @@ def format_summary(
     return "\n".join(lines)
 
 
-def format_details(identity: AnalysisIdentity, result: AttrSvcResult) -> str:
+def _clock(iso: Any) -> str:
+    """The wall-clock time out of an ISO-8601 stamp, for a one-glance read.
+
+    The date is dropped: an alert is read beside the job it is about, where the
+    day is never in question and a full stamp only crowds the line.
+    """
+    text = str(iso or "")
+    return text[11:19] if len(text) >= 19 else ""
+
+
+def _compact_duration(seconds: Any) -> str:
+    """Size up a span: ``42.1s``, ``3m20s``, ``3h0m``."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return ""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m{int(seconds % 60)}s"
+    return f"{int(seconds // 3600)}h{int((seconds % 3600) // 60)}m"
+
+
+def format_timing(timing: Optional[Mapping[str, Any]]) -> str:
+    """How long the verdict took, as the thread reply's closing block.
+
+    Kept out of the channel line, which is deliberately one scannable line per
+    alert. The cycle start and the analysis start are separate bullets because
+    only the second one begins any analysis: collapsing them would present the
+    training cycle's own length as though it were how long a verdict took.
+    """
+    if not isinstance(timing, Mapping):
+        return ""
+    l4_s = timing.get("analysis_to_l4_answer_s")
+    bullets: list[str] = []
+
+    cycle_at = _clock(timing.get("cycle_started_at"))
+    if cycle_at:
+        bullets.append(f"  • cycle started     `{cycle_at}`")
+    started_at = _clock(timing.get("analysis_started_at"))
+    if started_at:
+        into = _compact_duration(timing.get("cycle_to_analysis_s"))
+        suffix = f"  _({into} into the cycle)_" if into else ""
+        bullets.append(f"  • analysis started  `{started_at}`{suffix}")
+    for label, at_key, delta_key in (
+        ("L0 answer       ", "l0_answer_at", "analysis_to_l0_answer_s"),
+        ("L4 answer       ", "l4_answer_at", "analysis_to_l4_answer_s"),
+    ):
+        at = _clock(timing.get(at_key))
+        if not at:
+            continue
+        delta = _compact_duration(timing.get(delta_key))
+        suffix = f"  _(+{delta})_" if delta else ""
+        bullets.append(f"  • {label}  `{at}`{suffix}")
+
+    llm_s = timing.get("llm_api_wall_clock_s")
+    llm = _compact_duration(llm_s)
+    if llm:
+        line = f"  • LLM API           `{llm}`"
+        if isinstance(l4_s, (int, float)) and not isinstance(l4_s, bool) and l4_s > 0:
+            line += f" of `{_compact_duration(l4_s)}`  _({llm_s / l4_s * 100:.0f}%)_"
+        bullets.append(line)
+
+    if not bullets:
+        return ""
+    return "*Analysis timing:*\n" + "\n".join(bullets)
+
+
+def format_details(
+    identity: AnalysisIdentity,
+    result: AttrSvcResult,
+    timing: Optional[Mapping[str, Any]] = None,
+) -> str:
     """The thread reply: why this decision, and the evidence behind it."""
     fields = attribution_fields(result) or AttributionFields()
 
@@ -775,6 +845,10 @@ def format_details(identity: AnalysisIdentity, result: AttrSvcResult) -> str:
         if fields.missing_evidence:
             missing = "\n".join(f"  • {m}" for m in fields.missing_evidence)
             sections.append(f"*Missing evidence:*\n{missing}")
+    # Last: how long it took is context for the verdict, never ahead of it.
+    elapsed = format_timing(timing)
+    if elapsed:
+        sections.append(elapsed)
     return "\n".join(sections)
 
 
@@ -829,7 +903,12 @@ class SlackNotifier:
         """Whether a recommendation action is in the configured notify set."""
         return normalize_recommendation_action(action) in self.config.notify_actions
 
-    def notify(self, identity: AnalysisIdentity, result: AttrSvcResult) -> bool:
+    def notify(
+        self,
+        identity: AnalysisIdentity,
+        result: AttrSvcResult,
+        timing: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
         """Send a notification for ``result`` if it is configured to page.
 
         Returns ``True`` only when a message was delivered.
@@ -856,7 +935,7 @@ class SlackNotifier:
         self.stats.sent += 1
         logger.info(f"[{identity.job_id}] Slack notification sent to {self.config.channel}")
 
-        details = format_details(identity, result)
+        details = format_details(identity, result, timing)
         thread_ts = posted.get("ts") if hasattr(posted, "get") else None
         if details and thread_ts:
             # The alert is already delivered; a failed thread reply costs detail,
