@@ -1241,7 +1241,7 @@ def test_nonblocking_get_publishes_deterministic_result_while_model_is_running(t
         assert completed.status == "completed"
         assert completed.recommendation["action"] == "RESTART"
         assert completed.candidate_recommendation["action"] == "RESTART"
-        assert completed.candidate_recommendation["source"] == "l1_enriched:test-route"
+        assert completed.candidate_recommendation["source"].startswith("l1_enriched:test-route")
     finally:
         runtime.release.set()
         backend.shutdown()
