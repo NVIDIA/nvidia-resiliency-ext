@@ -235,8 +235,10 @@ class AsyncRequest(NamedTuple):
                     "nv.nvrx.ckpt.save.validate_call_idx_all_reduce",
                 ):
                     torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
-                assert ten.item() == self.call_idx, "Unmatched async calls. "
-                "That probably means not all ranks are participating in async finalization"
+                assert ten.item() == self.call_idx, (
+                    "Unmatched async calls. "
+                    "That probably means not all ranks are participating in async finalization"
+                )
         return self.call_idx
 
 
