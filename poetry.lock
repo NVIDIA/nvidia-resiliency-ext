@@ -3362,4 +3362,4 @@ otel = ["nemo-lens", "opentelemetry-api"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<4.0"
-content-hash = "f160c02288c0bd0807f7bbf42aa42913109599364feeb45b7ce3b8482bcbaa08"
+content-hash = "1cc31f84c04b3871539f663322e9e3c57e7c6bcefc0d99716e5468e80fd9141e"
