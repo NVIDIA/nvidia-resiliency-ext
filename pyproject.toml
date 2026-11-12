@@ -49,7 +49,8 @@ typing-extensions = ">=4.5"
 nvidia-ml-py = ">=12.570.86"
 defusedxml = "*"
 httpx = ">=0.24.0"
-nemo-lens = { version = ">=0.3.0", extras = ["sdk"], optional = true }
+# Lens v0.3.0 reports package version 0.2.0; pin its source until PyPI publication.
+nemo-lens = { git = "https://github.com/NVIDIA-NeMo/Lens.git", rev = "7bcc03ce3565d2be6858b819b049bcc4c3ec05b4", extras = ["sdk"], optional = true }
 opentelemetry-api = { version = ">=1.20.0", optional = true }
 fastapi = ">=0.100.0"
 uvicorn = { version = ">=0.20.0", extras = ["standard"] }
