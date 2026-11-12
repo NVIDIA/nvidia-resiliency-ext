@@ -12,7 +12,7 @@ license = "Apache 2.0"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Operating System :: OS Independent",
 ]
 packages = [
@@ -40,9 +40,9 @@ requires = [
 build-backend = "poetry_dynamic_versioning.backend"
 
 [tool.poetry.dependencies]
-torch = ">=2.3.0"
+torch = ">=2.9.0"
 packaging = "*"
-python = ">=3.10,<4.0"
+python = ">=3.11,<4.0"
 psutil = ">=6.0.0"
 numpy = ">=1.26"
 typing-extensions = ">=4.5"
@@ -98,7 +98,7 @@ format-jinja = """
 [tool.isort]
 profile = "black"  # black-compatible
 line_length = 100  # should match black parameters
-py_version = 310   # python 3.10 as a target version
+py_version = 311   # python 3.11 as a target version
 # filter_files and extend_skip_glob are needed for pre-commit to filter out the files
 filter_files = true
 extend_skip_glob = [
@@ -117,7 +117,7 @@ skip_string_normalization = true
 # https://black.readthedocs.io/en/stable/the_black_code_style/index.html
 # `required_version` is necessary for consistency (other `black` versions will fail to reformat files)
 required_version = "24"
-target-version = ['py310', 'py311', 'py312']
+target-version = ['py311', 'py312']
 force-exclude = '''
 # Force exclude, as this config is also used by pre-commit
 # https://stackoverflow.com/questions/73247204/black-not-respecting-extend-exclude-in-pyproject-toml
