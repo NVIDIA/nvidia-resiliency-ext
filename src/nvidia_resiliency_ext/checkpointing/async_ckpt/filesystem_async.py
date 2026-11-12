@@ -21,6 +21,7 @@ import logging
 import os
 import queue
 import threading
+import warnings
 from functools import partial
 from heapq import heappop, heappush
 from io import UnsupportedOperation
@@ -198,8 +199,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     1. Call `write_data`
     2. Externally start an async process with `get_save_function_and_args` and its arguments.
-    3. The async function calls `write_preloaded_data_multithread` (threads) or
-       `write_preloaded_data_multiproc` (processes) across multiple workers.
+    3. The async function calls `write_preloaded_data_multithread`, which writes the buckets
+       on worker threads.
     4. Once saving is finalized on all ranks, call `super().finish` with the results stored in `self.writer_result`.
 
     **Note:** Step (3) can also be executed synchronously.
@@ -256,12 +257,13 @@ class FileSystemWriterAsync(FileSystemWriter):
         self.separation_hint = separation_hint
         self.use_cached_data_structure = use_cached_data_structure
         self.consistent_data_identifier: Optional[ConsistentDataIdentifier] = None
-        # When this flag is True, the FileWriter can create multiple child processes
-        # to parallelize File IO in the background async checkpoint process.
-        # Setting this flag to False (default) uses multi-threading to parallelize File IO.
-        # Note: multi-proc IO requires is_daemon=False on PersistentAsyncCaller (AsyncCallsQueue),
-        # whereas the default multithreaded IO is compatible with is_daemon=True (the default).
-        self.is_multi_proc_io = is_multiproc_io
+        if is_multiproc_io:
+            warnings.warn(
+                "is_multiproc_io is deprecated and ignored: FileSystemWriterAsync always writes"
+                " with threads. The argument will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Use CPU shared-memory tensors instead of GPU IPC fabric handles.
         # Avoids cuMemImportFromShareableHandle on MNNVL systems where NVLink fabric
         # resources are exhausted by the training ranks.
@@ -594,15 +596,9 @@ class FileSystemWriterAsync(FileSystemWriter):
             ),
         )
 
-        # Select write function based on IO mode
-        if self.is_multi_proc_io:
-            write_func = partial(
-                self.write_preloaded_data_multiproc, transform_list, self.use_msc, open_file
-            )
-        else:
-            write_func = partial(
-                self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
-            )
+        write_func = partial(
+            self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
+        )
 
         preload_fn = partial(self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True)
 
@@ -744,50 +740,6 @@ class FileSystemWriterAsync(FileSystemWriter):
         return result
 
     @staticmethod
-    def _initialize_write_execution(rank: int) -> Tuple[logging.Logger, float, dict]:
-        """
-        Common initialization for write execution.
-
-        Args:
-            rank (int): training rank
-
-        Returns:
-            Tuple[logging.Logger, float, dict]: logger, start time, and initialized results dict
-        """
-        logger = logging.getLogger(__name__)
-        w_start = time()
-        write_results_or_exc: Union[dict, Exception] = dict()
-        return logger, w_start, write_results_or_exc
-
-    @staticmethod
-    def _build_worker_kwargs(
-        worker_idx: int, write_bucket: WriteBucket, use_msc: bool, worker_type: str, **extra_kwargs
-    ) -> dict:
-        """
-        Build kwargs for worker (thread or process).
-
-        Args:
-            worker_idx (int): index of the worker
-            write_bucket (WriteBucket): data to write
-            use_msc (bool): flag to indicate use of multi storage client
-            worker_type (str): 'thread' or 'proc'
-            **extra_kwargs: additional worker-specific kwargs
-
-        Returns:
-            dict: kwargs for the worker
-        """
-        idx_key = f'local_{worker_type}_idx'
-        kwargs = {
-            idx_key: worker_idx,
-            'write_bucket': write_bucket,
-            'use_fsync': True,
-        }
-        if use_msc:
-            kwargs['use_msc'] = use_msc
-        kwargs.update(extra_kwargs)
-        return kwargs
-
-    @staticmethod
     def _finalize_write_execution(
         global_results_queue: mp.Queue,
         write_results_or_exc: Union[dict, Exception],
@@ -811,123 +763,6 @@ class FileSystemWriterAsync(FileSystemWriter):
         w_end = time()
         logger.debug(
             f"{worker_type} Background Async worker time to persist: {w_end - w_start} s for rank={rank}"
-        )
-
-    @staticmethod
-    @_disable_gc()
-    def write_preloaded_data_multiproc(
-        transform_list: List[_StorageWriterTransforms],
-        use_msc: bool,
-        open_file: Callable,
-        rank: int,
-        write_buckets: List[WriteBucket],
-        global_results_queue: mp.Queue,
-    ) -> None:
-        """
-        Performs saving data to storage with multiple processes.
-
-        Starts predefined number of processes and uses 2 queues to make sure the results
-        are complete:
-        - local_results_queue - to send the actual results
-        - count_queue - small queue to mark worker as completed
-
-        Using just one queue disallowed proper exception handling.
-
-        This method is meant to be run in a forked subprocess.
-        Triggering GC during execution leads to CUDA errors
-        (cleaning up tensors owned by the parent process).
-        To prevent this, we disable the GC explicitly for this function with _disable_gc.
-
-        Note: requires is_daemon=False on the PersistentAsyncCaller, because daemon
-        processes cannot spawn child processes.
-
-        Args:
-            transform_list (List[_StorageWriterTransforms]): streaming transforms list
-            use_msc (bool): flag to indicate use of multi storage client
-            open_file (Callable): file open callable
-            rank (int): training rank
-            write_buckets (List[WriteBucket]): write plan
-            global_results_queue (mp.Queue): mp.Queue to collect Dict[List[WriteResults]]
-                (or an Exception) from parallel write processes to the main training process
-        Returns: None
-        """
-        logger, w_start, write_results_or_exc = FileSystemWriterAsync._initialize_write_execution(
-            rank
-        )
-
-        ctx = mp.get_context('fork')
-        local_results_queue = ctx.Queue()
-        count_queue = ctx.JoinableQueue()
-        p_list = []
-        for i, write_bucket in enumerate(write_buckets):
-            try:
-                current_process = mp.current_process()
-                if current_process.daemon:
-                    err_msg = "Invalid Setup! User cannot establish a daemon Async worker and then use Multi-Proc File IO."
-                    logger.error(err_msg)
-                    raise RuntimeError(err_msg)
-
-                count_queue.put(i)
-                kwargs = FileSystemWriterAsync._build_worker_kwargs(
-                    worker_idx=i,
-                    write_bucket=write_bucket,
-                    use_msc=use_msc,
-                    worker_type='proc',
-                    results_queue=local_results_queue,
-                    count_queue=count_queue,
-                )
-
-                p_list.append(
-                    ctx.Process(
-                        target=partial(
-                            FileSystemWriterAsync.write_preloaded_data_proc,
-                            transform_list,
-                            open_file,
-                        ),
-                        kwargs=kwargs,
-                    )
-                )
-            except Exception as e:
-                err_msg = f'An error is caught while a proc {i} is created, error: {e}'
-                logger.error(err_msg)
-                write_results_or_exc = RuntimeError(err_msg)
-
-        if not isinstance(write_results_or_exc, Exception):
-            for p in p_list:
-                p.start()
-
-            logger.debug('FileSystemWriterAsync: collecting worker results...')
-
-            # To make sure all nodes are completed
-            count_queue.join()
-            # At this point, all workers completed, so the queue should have exactly
-            # `len(write_buckets)` items
-            for proc_idx in range(len(write_buckets)):
-                try:
-                    local_proc_idx, local_results_or_exc = local_results_queue.get()
-                except queue.Empty:
-                    write_results_or_exc = RuntimeError(
-                        'Unexpected empty `local_results_queue`'
-                        f' (got only {proc_idx}/{len(write_buckets)} items)'
-                    )
-                    break
-                else:
-                    if isinstance(local_results_or_exc, Exception):
-                        err_msg = (
-                            f"Local process {local_proc_idx} encountered"
-                            f" an error: {local_results_or_exc}"
-                        )
-                        logger.error(err_msg)
-                        write_results_or_exc = local_results_or_exc
-                        break
-                    assert isinstance(local_results_or_exc, list), type(local_results_or_exc)
-                    write_results_or_exc[local_proc_idx] = local_results_or_exc
-                    p_list[local_proc_idx].join()
-
-            logger.debug('FileSystemWriterAsync: collected worker results successfully')
-
-        FileSystemWriterAsync._finalize_write_execution(
-            global_results_queue, write_results_or_exc, rank, w_start, "MultiProc", logger
         )
 
     @staticmethod
@@ -983,56 +818,6 @@ class FileSystemWriterAsync(FileSystemWriter):
                     os.fsync(stream.fileno())
 
         return local_results
-
-    @staticmethod
-    @_disable_gc()
-    def write_preloaded_data_proc(
-        transform_list: List[_StorageWriterTransforms],
-        open_file: Callable,
-        local_proc_idx: int,
-        write_bucket: WriteBucket,
-        results_queue: mp.SimpleQueue,
-        count_queue: mp.JoinableQueue,
-        use_fsync: bool,
-        **kwargs,
-    ) -> None:
-        """
-        Performs actual data saving to storage (used by worker processes in multiproc mode).
-
-        Args:
-            local_proc_idx (int): index of a local process that performs writing
-            write_bucket (WriteBucket): data to write to storage
-            results_queue (mp.Queue): queue to return the write results
-                to the proxy checkpoint process.
-            count_queue (mp.JoinableQueue): queue to marks worker task as completed
-            use_fsync (bool): if True, calls os.fsync at the end of saving
-
-        Returns: None, the write results are put into the `results_queue`
-        """
-        logger = logging.getLogger(__name__)
-        logger.debug(f'{local_proc_idx} started')
-        mem_before = _process_memory()
-        use_msc = kwargs.get('use_msc', False)
-
-        try:
-            local_results = FileSystemWriterAsync._write_bucket_to_storage(
-                transform_list, open_file, write_bucket, use_fsync, use_msc
-            )
-            local_output = (local_proc_idx, local_results)
-        except Exception as e:
-            logger.debug(f'{local_proc_idx} failed')
-            local_output = (local_proc_idx, e)
-
-        results_queue.put(local_output)
-        # Signal this process is done.
-        count_queue.get()
-        count_queue.task_done()
-
-        mem_after = _process_memory()
-        logger.debug(
-            f"{local_proc_idx} consumed: {mem_after - mem_before},"
-            f" before: {mem_before}, after: {mem_after}"
-        )
 
     @staticmethod
     @_disable_gc()

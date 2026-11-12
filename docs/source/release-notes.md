@@ -26,6 +26,13 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   The `--ft-ignore-missing-cfg` flag, which has had no effect since v0.4, is
   removed as well; drop it from launch scripts.
 
+### Deprecations
+
+- **`FileSystemWriterAsync(is_multiproc_io=True)` is deprecated and ignored.**
+  Checkpoint files are always written by threads in the async worker, and the
+  writer no longer forks child processes. Passing `True` emits a
+  `DeprecationWarning`; the argument will be removed in a future release.
+
 ## NVIDIA Resiliency Extension v0.7.0
 
 ### Highlights
