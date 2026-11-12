@@ -17,12 +17,13 @@
 
 import dataclasses
 import functools
-import gc
 import os
 import warnings
 from typing import Any, Union
 
 from torch.distributed.checkpoint import FileSystemReader, Metadata
+
+from ..utils import _disable_gc
 
 
 class CachedMetadataFileSystemReader(FileSystemReader):
@@ -49,16 +50,11 @@ class CachedMetadataFileSystemReader(FileSystemReader):
 
     @staticmethod
     @functools.cache
+    @_disable_gc()
     def _read_cached_metadata(path: str, *args: Any, **kwargs: Any) -> Metadata:
         # Unpickling allocates millions of objects, which triggers thousands of collections over
-        # a growing heap: about half the read time. Restore the caller's collector state after.
-        gc_was_enabled = gc.isenabled()
-        gc.disable()
-        try:
-            return FileSystemReader(path).read_metadata(*args, **kwargs)
-        finally:
-            if gc_was_enabled:
-                gc.enable()
+        # a growing heap: about half the read time.
+        return FileSystemReader(path).read_metadata(*args, **kwargs)
 
     def read_metadata(self, *args: Any, **kwargs: Any) -> Metadata:
         """
