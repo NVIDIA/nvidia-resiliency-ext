@@ -2,17 +2,52 @@
 
 NVIDIA Resiliency Extension is a Python package for framework developers and users to implement fault-tolerant features. It improves effective training time by minimizing downtime due to failures and interruptions.
 
-## Unreleased
+## NVIDIA Resiliency Extension v0.7.1 (Unreleased)
 
-### Removals
+These notes describe the changes selected for the 0.7.1 release candidate relative
+to 0.7.0. Final release validation is ongoing.
 
-- **In-process restart has been removed**, including the `nvidia_resiliency_ext.inprocess` package, its documentation, examples, and tests. Use InJob restart through `ft_launcher`; see the [InJob restart usage guide](fault_tolerance/usage_guide.rst).
+### Highlights
+
+- **Checkpoint metadata and async-save finalization**
+    - Adds faster PyTorch distributed-checkpoint `.metadata` serialization, including an optional native C++ writer with a Python fallback. Cached global metadata is represented as compact tables, and finalization gathers compact write-result tables instead of large Python object lists ([#438](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438), [#446](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/446), [#454](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/454)).
+    - Reuses compatible metadata from a loaded checkpoint on the first save and reuses plans and metadata on subsequent saves when caching is enabled. Cached metadata no longer retains per-save `storage_data` ([#438](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438), [#445](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/445)).
+    - Adds checkpoint-stage and finalization profiling spans to help distinguish snapshot, persistence, synchronization, and metadata costs ([#435](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/435), [#440](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/440)).
+
+- **Timeout diagnostics**
+    - Adds opt-in Python, native CPU, and CUDA diagnostics through `py-spy`, GDB, and CUDA-GDB when a selected workload section times out. Captures are staged locally and uploaded to the job's diagnostic directory; tools and capture budgets are configurable ([#451](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/451), [#463](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/463), [#464](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/464), [#465](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/465)).
+    - Supports CUDA-GDB command delivery through stdin as well as batch mode, and fixes diagnostics configuration and integration regressions ([#459](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/459), [#474](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/474)). See the [timeout dumps guide](fault_tolerance/timeout_dump.rst) for prerequisites and limitations.
+
+- **InJob restart and health checks**
+    - Node-health decisions use actionable `failed_checks`, rather than the raw `fail_count`, so checks ignored by site policy do not exclude nodes ([#432](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/432)).
+    - The segment-health watcher supports a persistent serve loop and SIGUSR1-triggered immediate polling ([#424](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/424)).
+    - Missing checkpoint progress markers now count as no progress instead of disabling the no-progress guard ([#468](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/468)).
+    - Launcher errors remain visible when log forwarding is unavailable; TCPStore server startup errors are preserved instead of silently falling back to client mode; and shutdown signals propagate through optional health-check and attribution calls ([#470](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/470), [#471](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/471), [#472](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/472)).
+
+- **Attribution and observability (experimental)**
+    - Adds category-driven STOP context and corrects CPU-OOM policy, unknown-progress accounting, cancellation classification, checkpoint-OOM classification, and transient JIT-cache attribution ([#411](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/411), [#430](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/430), [#431](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/431), [#439](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/439), [#456](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/456), [#477](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/477)).
+    - Improves external Attribution Service lifecycle handling, provides an attrsvc container build without workload dependencies, and adds Slack alerts and persisted attribution results ([#441](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/441), [#452](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/452), [#449](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/449)).
+    - Adds optional NeMo Lens/OpenTelemetry instrumentation for launcher and async-checkpoint operations. NVRx-owned processes read `NVRX_OTEL_` settings with fallback to `NEMO_LENS_`; core training remains usable without telemetry dependencies ([#406](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/406), [#437](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/437)).
+
+- **Documentation and integration**
+    - Reorganizes the InJob configuration, deployment, operations, and integration guides and adds a Megatron GPT walkthrough ([#455](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/455)). Release notes and API documentation are included in the official documentation, with strict Sphinx validation ([#425](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/425), [#426](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/426)).
+
+### Requirements & Integration Changes
+
+- **Python >=3.11 and PyTorch >=2.9.0 are required.** Python 3.10 is no longer supported. The PyTorch floor reflects the distributed-checkpoint storage interfaces used by the metadata writer and cached reader ([#492](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/492)).
+- **The async-save planning API returns `PendingSave`.** Pass the value returned by `save_state_dict_async_plan(...)` directly to `save_state_dict_async_finalize(pending)`. Tuple unpacking and the legacy three-argument finalize form remain supported but are deprecated. `CheckpointMetadataCache.set_cache_metadata`, `prepare_save_state_dict_ret`, and `get_cache_metadata`, along with the old public cache fields, have been removed; integrations using them must migrate. `set_cached_global_metadata(...)` remains the entry point for metadata from a loaded checkpoint ([#438](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438), [#454](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/454)).
+- **Metadata caching requires a stable checkpoint structure.** With `enable_cache=True`, later saves check local plans and raise if the structure changes; the coordinator must stay the same while reusing its cached metadata. Disable caching when those assumptions do not hold.
+- **The 0.7.1 telemetry extra requires the internal Lens build `0.2.0+7bcc03c`.** This is the package version produced by Lens's `v0.3.0` source tag, pinned to commit `7bcc03ce3565d2be6858b819b049bcc4c3ec05b4`. Published NVRx metadata uses a version-only requirement; Poetry locks the exact Git source. Configure the internal package index containing that Lens wheel before installing `[otel]`. Core installation does not require Lens ([#499](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/499)).
+
+### Deprecations & Removals
+
+- **In-process restart has been removed**, including the `nvidia_resiliency_ext.inprocess` package, its documentation, examples, and tests ([#453](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/453)). Use InJob restart through `ft_launcher`; see the [InJob restart usage guide](fault_tolerance/usage_guide.rst).
 
 - Removed the remaining deprecated `nvidia_resiliency_ext.ptl_resiliency` source
   package, Lightning callback documentation, and its unit/NeMo functional tests
   and Dockerfile. Integrate the underlying fault-tolerance, checkpointing, and
   straggler APIs directly; use the Megatron GPT walkthrough for InJob training.
-  Documentation builds no longer require Lightning.
+  Documentation builds no longer require Lightning ([#455](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/455)).
 
 - **YAML configuration for fault tolerance has been removed.** `ft_launcher` and
   `nvrx-control` no longer accept `--ft-cfg-path`, and
@@ -24,7 +59,36 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   `FaultToleranceConfig.from_kwargs(...)`. Workloads set warmup iterations
   through `RankMonitorClient.init_workload_monitoring(num_warmup_iters=...)`.
   The `--ft-ignore-missing-cfg` flag, which has had no effect since v0.4, is
-  removed as well; drop it from launch scripts.
+  removed as well; drop it from launch scripts ([#462](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/462)).
+
+### Installation
+
+After the final 0.7.1 release is published:
+
+```bash
+# Core resiliency and attribution service
+pip install 'nvidia-resiliency-ext==0.7.1'
+
+# Optional MCP and Slack attribution integrations
+pip install 'nvidia-resiliency-ext[attribution]==0.7.1'
+
+# Optional telemetry: configure the internal Lens package index first
+pip install 'nvidia-resiliency-ext[otel]==0.7.1'
+```
+
+Installing the release's `[otel]` extra requires the internal Lens wheel; a
+public-PyPI-only environment cannot resolve that extra. Source-checkout users
+using Poetry resolve Lens from the pinned Git commit instead. These installation
+requirements are specific to the 0.7.1 release branch.
+
+### Known Issues & Limitations
+
+- **CUDA-GDB may need more than the default 30-second capture budget.** QA measurements on aarch64 GB300 with Megatron-LM 26.10 and Transformer Engine 2.21 showed approximately 41 seconds for library symbol loading alone. Start with `--ft-timeout-dump-capture-timeout=60` and validate the workload, or omit CUDA-GDB. A larger budget can delay recovery and does not prevent interruption by launcher teardown; see the configuration guidance in the [timeout dumps guide](fault_tolerance/timeout_dump.rst).
+- **Timeout capture and worker teardown are not coordinated.** A launcher can terminate a worker while its rank monitor is collecting diagnostics, resulting in incomplete or incorrect captures. Debugger attachment and worker teardown can also stall until the capture deadline. GDB and CUDA-GDB are affected most often ([#461](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/461)); see the Known Issues section of the [timeout dumps guide](fault_tolerance/timeout_dump.rst).
+- Timeout captures target the training worker, not its separate DataLoader or async-checkpoint worker processes. Tools, ptrace permissions, and debugger command files must be configured inside the deployed training environment.
+- Attribution and Restart Agent features remain experimental. Enabling diagnostics or telemetry does not establish the root cause of a failure or replace workload-specific recovery validation.
+- The optional native metadata writer requires a C++20 compiler when building from source; checkpointing retains a Python fallback if that extension cannot be built.
+- Per-cycle log aggregation remains best-effort. Retain launcher and rank-monitor evidence when investigating failure-adjacent gaps.
 
 ## NVIDIA Resiliency Extension v0.7.0
 
