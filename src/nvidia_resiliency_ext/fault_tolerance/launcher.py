@@ -747,7 +747,8 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Same scheduler-facing meaning as an attribution STOP: NVRx decided, do not
             # requeue. Reported through the shared no-restart path so both causes are
             # indistinguishable to downstream tooling, rather than this one looking like
-            # an ordinary crash.
+            # an ordinary crash. Publish first: the shutdown reason ends the CycleAnalyzer.
+            self._publish_cycle_outcome()
             self._rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_NO_PROGRESS)
             self._stop_workers(self._worker_group)
             self._worker_group.state = WorkerState.FAILED
@@ -804,8 +805,9 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _publish_cycle_outcome(self) -> None:
         """Publish the outcome of the cycle that just ended towards the CycleAnalyzer.
 
-        Best effort: publishers only enqueue, and a failure is logged without
-        interrupting the restart path.
+        Call before anything that ends the job (the shutdown key ends the CycleAnalyzer):
+        the publish returns once the analyzer has the outcome, or after its timeout.
+        Best effort: a failure is logged without interrupting the caller.
         """
         outcome = self._cycle_outcome
         # Nothing recorded for this cycle: outcomes are disabled or recording failed.
@@ -856,6 +858,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 self._run_phase.close()
                 self._cycle_phase.close({CYCLE_OUTCOME: "completed"})
+                self._publish_cycle_outcome()
                 self._exit_barrier()
                 return run_result
 
@@ -877,6 +880,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     "and signalling the rest of the job.",
                     role,
                 )
+                # Before the shutdown reason is written, which ends the CycleAnalyzer.
+                self._publish_cycle_outcome()
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
                 self._run_phase.close()
@@ -938,7 +943,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 if should_restart:
                     continue  # Continue monitoring after restart
 
-                # No more restarts (either exhausted or early termination)
+                # No more restarts (either exhausted or early termination).
+                self._publish_cycle_outcome()
                 self._stop_workers(self._worker_group)
                 self._cycle_phase.close()
                 self._worker_group.state = WorkerState.FAILED
@@ -961,6 +967,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                             role,
                             no_restart,
                         )
+                        self._publish_cycle_outcome()
                         self._run_phase.close()
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
@@ -986,6 +993,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     )
 
                     if not should_restart:
+                        # Publish before launch_agent writes the shutdown key.
+                        self._publish_cycle_outcome()
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close()
                         self._worker_group.state = WorkerState.FAILED

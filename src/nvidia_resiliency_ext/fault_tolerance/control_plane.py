@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Optional
 
+import grpc
 from torch.distributed import TCPStore
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
@@ -43,6 +44,7 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer import CycleAnalyzerProcess
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _NodeDescGenerator,
     _RendezvousBarrierState,
@@ -61,6 +63,7 @@ from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import (
 )
 from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.proto.cycle_info_pb2_grpc import CycleInfoServiceStub
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -281,23 +284,36 @@ def _run_control_rendezvous_loop(
         args.rdzv_endpoint,
     )
     state._attribution_service = services.attribution_service
+    # This host closes the rounds, so it publishes the cycle starts. The analyzer runs on
+    # this node: publish to it directly, without the gRPC log servers.
+    cycle_info_channel = None
+    if services.cycle_analyzer is not None:
+        cycle_info_channel = grpc.insecure_channel(services.cycle_analyzer.address)
+        state._cycle_info_publisher = GrpcCycleInfoPublisher(
+            CycleInfoServiceStub(cycle_info_channel)
+        )
 
-    while not stop_event.is_set():
-        try:
-            closed_round = state.close_current_round_as_host(
-                node,
-                min_nodes,
-                max_nodes,
-                segment_check_interval=segment_check_interval,
-                stop_event=stop_event,
-            )
-        except (RendezvousGracefulExitError, RendezvousClosedError) as exc:
-            logger.info("nvrx-control rendezvous loop exiting: %s", exc)
-            break
+    try:
+        while not stop_event.is_set():
+            try:
+                closed_round = state.close_current_round_as_host(
+                    node,
+                    min_nodes,
+                    max_nodes,
+                    segment_check_interval=segment_check_interval,
+                    stop_event=stop_event,
+                )
+            except (RendezvousGracefulExitError, RendezvousClosedError) as exc:
+                logger.info("nvrx-control rendezvous loop exiting: %s", exc)
+                break
 
-        logger.info("nvrx-control closed rendezvous round %s", closed_round)
+            logger.info("nvrx-control closed rendezvous round %s", closed_round)
 
-    state._request_terminal_attribution_for_submitted_cycle()
+        state._request_terminal_attribution_for_submitted_cycle()
+    finally:
+        state._cycle_info_publisher = None
+        if cycle_info_channel is not None:
+            cycle_info_channel.close()
 
 
 # Peers read the recorded shutdown reason from the TCPStore to decide their exit code,

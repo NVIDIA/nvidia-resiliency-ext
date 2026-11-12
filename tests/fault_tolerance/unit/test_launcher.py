@@ -701,6 +701,85 @@ def _healthy_agent(fault_tol_cfg, logs_specs, **rdzv_overrides):
     return agent
 
 
+class TestCycleOutcomePublishedBeforeTheJobEnds(unittest.TestCase):
+    """When the job ends, each launcher publishes its outcome before the shutdown key.
+
+    The shutdown key ends nvrx-control and its CycleAnalyzer, so an outcome published
+    after it can be lost.
+    """
+
+    def setUp(self):
+        self.fault_tol_cfg = FaultToleranceConfig()
+        self.logs_specs = MagicMock()
+        self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
+
+    def _run(self, agent, monitor_state, **agent_patches):
+        """Run the monitor loop once; return the order of the calls that end the job."""
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        calls = MagicMock()
+        agent._publish_cycle_outcome = calls.publish
+        calls.attach_mock(agent._worker_group.spec.rdzv_handler.signal_no_restart, "signal")
+        with contextlib.ExitStack() as stack:
+            for name in ("_stop_workers", "_exit_barrier"):
+                stack.enter_context(patch.object(agent, name, getattr(calls, name)))
+            for name, value in agent_patches.items():
+                stack.enter_context(patch.object(agent, name, value))
+            stack.enter_context(patch.object(agent, '_initialize_workers'))
+            stack.enter_context(
+                patch.object(agent, '_monitor_workers', return_value=RunResult(state=monitor_state))
+            )
+            for name in ("record_profiling_event", "put_metric"):
+                stack.enter_context(patch.object(launcher, name))
+            stack.enter_context(patch.object(launcher.telemetry, 'mark'))
+            stack.enter_context(patch.object(launcher.time, 'sleep'))
+            with contextlib.suppress(launcher.NoRestartRequested):
+                agent._invoke_run_with_any_failed_policy()
+        return [name for name, _, _ in calls.mock_calls]
+
+    def test_completed_publishes_before_the_exit_barrier(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        order = self._run(agent, WorkerState.SUCCEEDED)
+        self.assertEqual(order, ["publish", "_exit_barrier"])
+
+    def test_attribution_stop_publishes_before_signalling_no_restart(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs, attribution_stop_requested=True)
+        order = self._run(agent, WorkerState.HEALTHY)
+        self.assertEqual(order, ["publish", "signal", "_stop_workers"])
+
+    def test_no_progress_stop_publishes_before_signalling_no_restart(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = True
+        order = self._run(agent, WorkerState.FAILED)
+        self.assertEqual(order, ["publish", "signal", "_stop_workers"])
+
+    def test_exhausted_restarts_publish_before_stopping_the_workers(self):
+        """launch_agent writes the shutdown key after this returns."""
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        order = self._run(
+            agent, WorkerState.FAILED, _handle_restart_decision=MagicMock(return_value=False)
+        )
+        self.assertEqual(order, ["publish", "_stop_workers"])
+
+    def test_peer_restart_without_restarts_left_publishes_before_stopping_the_workers(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs, is_next_round_open=True)
+        order = self._run(
+            agent, WorkerState.HEALTHY, _handle_restart_decision=MagicMock(return_value=False)
+        )
+        self.assertEqual(order, ["publish", "_stop_workers"])
+
+    def test_peer_no_restart_publishes_before_stopping_the_workers(self):
+        agent = _healthy_agent(
+            self.fault_tol_cfg,
+            self.logs_specs,
+            is_next_round_open=True,
+            no_restart_reason=RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+        )
+        order = self._run(agent, WorkerState.HEALTHY)
+        self.assertEqual(order, ["publish", "_stop_workers"])
+
+
 class TestNoRestartTermination(unittest.TestCase):
     """The monitor loop consumes a latched STOP verdict and ends the job."""
 

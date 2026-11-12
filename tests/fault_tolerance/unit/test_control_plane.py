@@ -449,6 +449,54 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
     attribution_service._submit_log.assert_not_called()
 
 
+@pytest.mark.parametrize("with_analyzer", [True, False], ids=["analyzer", "no_analyzer"])
+def test_control_rendezvous_loop_publishes_cycle_starts_to_the_analyzer(with_analyzer):
+    """nvrx-control closes the rounds, so its barrier state publishes the cycle starts."""
+    args = SimpleNamespace(
+        nnodes="1",
+        rdzv_conf="",
+        rdzv_id="job-a",
+        rdzv_endpoint="127.0.0.1:29500",
+        local_addr=None,
+        ft_per_cycle_applog_prefix=None,
+    )
+    analyzer = MagicMock(address="unix:/tmp/analyzer.sock") if with_analyzer else None
+    services = control_plane.ControlServices(cycle_analyzer=analyzer)
+    publishers_while_closing = []
+
+    class FakeState:
+        def __init__(self, *args, **kwargs):
+            self._cycle_info_publisher = None
+
+        def close_current_round_as_host(self, *args, **kwargs):
+            if publishers_while_closing:
+                raise control_plane.RendezvousClosedError("done")
+            publishers_while_closing.append(self._cycle_info_publisher)
+            return 0
+
+        def _request_terminal_attribution_for_submitted_cycle(self):
+            pass
+
+    channel = MagicMock()
+    with (
+        patch.object(control_plane, "_RendezvousBarrierState", FakeState),
+        patch.object(control_plane, "_NodeDescGenerator", return_value=MagicMock()),
+        patch.object(control_plane.grpc, "insecure_channel", return_value=channel) as open_channel,
+    ):
+        control_plane._run_control_rendezvous_loop(
+            args, SimpleNamespace(segment=None), object(), services, threading.Event()
+        )
+
+    (publisher,) = publishers_while_closing
+    if with_analyzer:
+        open_channel.assert_called_once_with("unix:/tmp/analyzer.sock")
+        assert isinstance(publisher, control_plane.GrpcCycleInfoPublisher)
+        channel.close.assert_called_once()
+    else:
+        open_channel.assert_not_called()
+        assert publisher is None
+
+
 def test_cycle_analyzer_start_failure_is_logged_and_control_continues(tmp_path):
     args = SimpleNamespace(ft_cycle_info_job_id="job-a", ft_per_cycle_applog_prefix=None)
     ft_cfg = SimpleNamespace(cycle_info_dir=str(tmp_path / "nvrx"))

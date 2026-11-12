@@ -1681,8 +1681,8 @@ class _RendezvousBarrierState:
     def _publish_cycle_start_as_host(self, round_id: int) -> None:
         """Publish how the just-closed round starts its cycle, from this host's rank assignment.
 
-        Best effort: publishers only enqueue, and a failure is logged without delaying
-        the rendezvous.
+        Best effort: called after the round is released, so the publish (one RPC, bounded
+        by its timeout) never holds the participants, and a failure is only logged.
         """
         if self._cycle_info_publisher is None:
             return
