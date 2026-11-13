@@ -591,16 +591,6 @@
     <span class="k">return</span> <span class="n">pickle</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">write_results</span><span class="p">)</span>
 
 
-<span class="k">def</span><span class="w"> </span><span class="nf">_global_coordinator_rank</span><span class="p">(</span><span class="n">dist_wrapper</span><span class="p">:</span> <span class="n">_DistWrapper</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">"""Return the coordinator's global rank, which collectives over a group take as src or dst.</span>
-
-<span class="sd">    _DistWrapper.global_coordinator_rank only exists from torch 2.7 on.</span>
-<span class="sd">    """</span>
-    <span class="k">if</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">coordinator_rank</span>
-    <span class="k">return</span> <span class="n">dist</span><span class="o">.</span><span class="n">get_global_rank</span><span class="p">(</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span><span class="p">,</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">coordinator_rank</span><span class="p">)</span>
-
-
 <span class="k">def</span><span class="w"> </span><span class="nf">_gather_payloads</span><span class="p">(</span>
     <span class="n">payload</span><span class="p">:</span> <span class="nb">bytes</span><span class="p">,</span> <span class="n">dist_wrapper</span><span class="p">:</span> <span class="n">_DistWrapper</span><span class="p">,</span> <span class="n">delivered_length</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
@@ -630,7 +620,7 @@
     <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">from_numpy</span><span class="p">(</span><span class="n">row</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">),</span>
         <span class="nb">list</span><span class="p">(</span><span class="n">rows</span><span class="p">)</span> <span class="k">if</span> <span class="n">rows</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span><span class="p">,</span>
-        <span class="n">dst</span><span class="o">=</span><span class="n">_global_coordinator_rank</span><span class="p">(</span><span class="n">dist_wrapper</span><span class="p">),</span>
+        <span class="n">dst</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">global_coordinator_rank</span><span class="p">,</span>
         <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="p">(</span><span class="n">rows</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="k">if</span> <span class="n">rows</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span><span class="p">),</span> <span class="n">delivered_length</span>
@@ -773,7 +763,7 @@
             <span class="n">broadcast</span><span class="p">[</span><span class="mi">8</span><span class="p">:]</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">frombuffer</span><span class="p">(</span><span class="nb">bytearray</span><span class="p">(</span><span class="n">delivered</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
     <span class="k">with</span> <span class="n">telemetry</span><span class="o">.</span><span class="n">span</span><span class="p">(</span><span class="n">semconv</span><span class="o">.</span><span class="n">SPAN_GROUP_CKPT_PROFILING</span><span class="p">,</span> <span class="s2">"nv.nvrx.ckpt.save.broadcast_failures"</span><span class="p">):</span>
         <span class="n">torch</span><span class="o">.</span><span class="n">distributed</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span>
-            <span class="n">broadcast</span><span class="p">,</span> <span class="n">src</span><span class="o">=</span><span class="n">_global_coordinator_rank</span><span class="p">(</span><span class="n">dist_wrapper</span><span class="p">),</span> <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span>
+            <span class="n">broadcast</span><span class="p">,</span> <span class="n">src</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">global_coordinator_rank</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="n">dist_wrapper</span><span class="o">.</span><span class="n">group</span>
         <span class="p">)</span>
     <span class="n">broadcast</span> <span class="o">=</span> <span class="n">broadcast</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
     <span class="k">if</span> <span class="n">delivered_length</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">dist_wrapper</span><span class="o">.</span><span class="n">is_coordinator</span><span class="p">:</span>

@@ -325,14 +325,13 @@ pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<s
 writes the checkpoint’s <code class="docutils literal notranslate"><span class="pre">.metadata</span></code> file with its own pickler instead of <code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>
 (about 16 times faster on large checkpoints). The file is an ordinary
 pickle that <code class="docutils literal notranslate"><span class="pre">torch.distributed.checkpoint</span></code> loads unchanged. The pickler is used on the PyTorch
-versions it was tested with, 2.4 to 2.14; on other versions the file is written with
+versions it was tested with, 2.9 to 2.14; on other versions the file is written with
 <code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>, as PyTorch writes it.</p>
 <p>The environment variable <code class="docutils literal notranslate"><span class="pre">NVRX_FAST_METADATA_PICKLE</span></code>, read once per process, changes this:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">0</span></code>: write the file with <code class="docutils literal notranslate"><span class="pre">pickle.dump</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">python</span></code>: use the pure-Python pickler instead of the C++ extension.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">force</span></code>: use the pickler on untested PyTorch versions too, except those known not to work with
-it (2.3), where an error is logged.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">force</span></code>: use the pickler on untested PyTorch versions too.</p></li>
 </ul>
 </section>
 <section id="reusing-global-metadata">
