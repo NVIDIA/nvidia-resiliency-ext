@@ -35,8 +35,7 @@ The environment variable ``NVRX_FAST_METADATA_PICKLE`` selects how ``.metadata``
 - unset or ``1`` (default): the C++ writer if it is built, else the Python writer, subject to the
   checks above;
 - ``python``: the Python writer, subject to the same checks;
-- ``force``: as the default, but also on torch versions not in ``TESTED_TORCH_VERSIONS``, except
-  those in ``INCOMPATIBLE_TORCH_VERSIONS`` (logged as an error);
+- ``force``: as the default, but also on torch versions not in ``TESTED_TORCH_VERSIONS``;
 - ``0``, ``false``, ``off`` or ``no``: torch's own ``FileSystemWriter.finish`` and ``pickle.dump``.
 
 Other values act as the default. The variable is read once per process, at the first save that
@@ -82,13 +81,7 @@ logger = logging.getLogger(__name__)
 
 # The torch (major, minor) versions the writers and FileSystemWriterAsync.finish were checked
 # against. Add a version after checking it.
-TESTED_TORCH_VERSIONS = frozenset(
-    {(2, 4), (2, 5), (2, 6), (2, 7), (2, 8), (2, 9), (2, 10), (2, 11), (2, 12), (2, 13), (2, 14)}
-)
-# Torch (major, minor) versions known not to work with them, even with
-# NVRX_FAST_METADATA_PICKLE=force; this wins over TESTED_TORCH_VERSIONS. Torch 2.3's
-# FileSystemWriter lacks metadata_path and storage_meta, which FileSystemWriterAsync.finish uses.
-INCOMPATIBLE_TORCH_VERSIONS = frozenset({(2, 3)})
+TESTED_TORCH_VERSIONS = frozenset({(2, 9), (2, 10), (2, 11), (2, 12), (2, 13), (2, 14)})
 
 
 def _mode() -> str:
@@ -105,32 +98,21 @@ def _torch_release() -> Optional[tuple]:
 
 
 def _tested_torch() -> bool:
-    """Whether torch is one of TESTED_TORCH_VERSIONS and not one of INCOMPATIBLE_TORCH_VERSIONS
-    (an unparseable version is untested)."""
-    release = _torch_release()
-    return release not in INCOMPATIBLE_TORCH_VERSIONS and release in TESTED_TORCH_VERSIONS
+    """Whether torch is one of TESTED_TORCH_VERSIONS (an unparseable version is untested)."""
+    return _torch_release() in TESTED_TORCH_VERSIONS
 
 
 @functools.cache
 def fast_metadata_enabled() -> bool:
     """Whether nvrx may write ``.metadata`` with its own code instead of torch's.
 
-    False if disabled by ``NVRX_FAST_METADATA_PICKLE=0``, if torch is in
-    ``INCOMPATIBLE_TORCH_VERSIONS``, or if it is not in ``TESTED_TORCH_VERSIONS`` (unless
-    ``NVRX_FAST_METADATA_PICKLE=force``). Gates both the fast writers and
-    ``FileSystemWriterAsync.finish``. Evaluated once per process; see the module docstring for the
-    values of ``NVRX_FAST_METADATA_PICKLE``.
+    False if disabled by ``NVRX_FAST_METADATA_PICKLE=0``, or if torch is not in
+    ``TESTED_TORCH_VERSIONS`` (unless ``NVRX_FAST_METADATA_PICKLE=force``). Gates both the fast
+    writers and ``FileSystemWriterAsync.finish``. Evaluated once per process; see the module
+    docstring for the values of ``NVRX_FAST_METADATA_PICKLE``.
     """
     mode = _mode()
     if mode in ("0", "false", "off", "no"):
-        return False
-    release = _torch_release()
-    if release in INCOMPATIBLE_TORCH_VERSIONS:
-        if mode == "force":
-            logger.error(
-                f"NVRX_FAST_METADATA_PICKLE=force ignored: torch {torch.__version__} is known not "
-                "to work with nvrx's .metadata writer; using torch's own writer"
-            )
         return False
     if mode == "force":
         return True

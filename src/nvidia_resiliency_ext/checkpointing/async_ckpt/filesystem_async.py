@@ -34,23 +34,19 @@ import torch
 from torch import multiprocessing as mp
 from torch.distributed.checkpoint import FileSystemWriter
 from torch.distributed.checkpoint.api import WRAPPED_EXCEPTION, _wrap_exception
-from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX, _StoragePrefix, _write_item
+from torch.distributed.checkpoint.filesystem import (
+    CURRENT_DCP_VERSION,
+    DEFAULT_SUFFIX,
+    _metadata_fn,
+    _StoragePrefix,
+    _write_item,
+)
 from torch.distributed.checkpoint.metadata import Metadata
-
-try:
-    from torch.distributed.checkpoint.filesystem import _metadata_fn  # PyTorch 2.4+
-except ImportError:  # finish() uses FileSystemWriter.finish there
-    _metadata_fn = None
 
 try:
     from torch.distributed.checkpoint.filesystem import _StorageWriterTransforms
 except ImportError:
     _StorageWriterTransforms = Any
-
-try:
-    from torch.distributed.checkpoint.filesystem import CURRENT_DCP_VERSION  # PyTorch 2.9+
-except ImportError:
-    CURRENT_DCP_VERSION = None
 
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner, WriteItem, WriteItemType
 from torch.distributed.checkpoint.storage import WriteResult
@@ -1320,11 +1316,9 @@ class FileSystemWriterAsync(FileSystemWriter):
             return
 
         fields = {}
-        if fast and CURRENT_DCP_VERSION is not None:
+        if fast:
             fields["version"] = CURRENT_DCP_VERSION
-        # storage_meta was introduced since PyTorch 2.4
-        if "storage_meta" in inspect.signature(Metadata).parameters:
-            fields["storage_meta"] = self.storage_meta()
+        fields["storage_meta"] = self.storage_meta()
         storage_md = None
         if storage_rows is None:
             storage_md = {}
@@ -1343,8 +1337,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 metadata.version = fields["version"]
             if storage_md is not None:
                 metadata.storage_data = storage_md
-            if "storage_meta" in fields:
-                metadata.storage_meta = fields["storage_meta"]
+            metadata.storage_meta = fields["storage_meta"]
 
             def dump(stream) -> None:
                 _metadata_pickler.dump_metadata(metadata, stream, storage_rows)
@@ -1357,17 +1350,13 @@ class FileSystemWriterAsync(FileSystemWriter):
                 dump(metadata_file)
             return
 
-        # PyTorch 2.9+ writes one metadata file per rank when collectives are disabled.
-        rank = getattr(self, "rank", None)
-        if not getattr(self, "use_collectives", True) and rank is not None:
-            tmp_filename = f"__{rank}{_metadata_fn}.tmp"
-            metadata_path = self._get_metadata_path(rank)
+        # Without collectives, each rank writes its own metadata file.
+        if not self.use_collectives and self.rank is not None:
+            tmp_filename = f"__{self.rank}{_metadata_fn}.tmp"
+            metadata_path = self._get_metadata_path(self.rank)
         else:
             tmp_filename = f"{_metadata_fn}.tmp"
-            if hasattr(self, "_get_metadata_path"):  # PyTorch 2.9+
-                metadata_path = self._get_metadata_path()
-            else:
-                metadata_path = self.metadata_path
+            metadata_path = self._get_metadata_path()
         tmp_path = cast(Path, self.fs.concat_path(self.path, tmp_filename))
         with self.fs.create_stream(tmp_path, "wb") as metadata_file:
             dump(metadata_file)
