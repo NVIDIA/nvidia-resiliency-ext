@@ -443,12 +443,24 @@ def _add_cycle_info_arg(parser: argparse.ArgumentParser) -> None:
 
 def add_cycle_info_args(parser: argparse.ArgumentParser) -> None:
     _add_cycle_info_arg(parser)
+    parser.add_argument(
+        "--ft-cycle-info-outcomes",
+        "--ft_cycle_info_outcomes",
+        type=str_to_bool,
+        default=None,
+        dest="ft_cycle_info_outcomes",
+        help="Record how each cycle ended on each launcher: the end reason and, per local "
+        "rank, whether it completed, failed, or was stopped by the launcher or by its rank "
+        "monitor (with the timeout kind and sections). Requires --ft-cycle-info-dir. "
+        "Default: False.",
+    )
 
 
 def add_control_services_args(parser: argparse.ArgumentParser) -> None:
     add_attribution_args(parser)
     add_no_restart_args(parser)
-    add_cycle_info_args(parser)
+    # The control process runs no workers, so it has no cycle outcomes to record.
+    _add_cycle_info_arg(parser)
     parser.add_argument(
         "--ft-cycle-info-job-id",
         "--ft_cycle_info_job_id",

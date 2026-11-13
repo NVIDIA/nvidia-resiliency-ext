@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance import control_plane
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoRoundSnapshot
 
 
 @pytest.fixture(autouse=True)
@@ -55,14 +54,12 @@ def test_nvrx_control_starts_owned_services_without_worker_agent(tmp_path):
         endpoint="http://localhost:50050", enforce_stop=False
     )
     grpc_proc = MagicMock()
-    cycle_reporter = MagicMock()
+    analyzer = MagicMock()
 
     with (
         patch.object(control_plane, "_create_tcp_store", return_value=object()) as create_store,
         patch.object(control_plane, "AttributionManager", return_value=manager) as manager_cls,
-        patch.object(
-            control_plane, "CycleInfoReporter", return_value=cycle_reporter
-        ) as reporter_cls,
+        patch.object(control_plane, "CycleAnalyzerProcess", return_value=analyzer) as analyzer_cls,
         patch.object(
             control_plane, "_start_grpc_log_servers", return_value=[grpc_proc]
         ) as start_grpc,
@@ -80,16 +77,16 @@ def test_nvrx_control_starts_owned_services_without_worker_agent(tmp_path):
     manager.start_if_needed.assert_called_once()
     start_grpc.assert_called_once()
     assert start_grpc.call_args.args[1] == str(tmp_path / "train_grpc")
-    reporter_cls.assert_called_once_with(
+    analyzer_cls.assert_called_once_with(
         str(tmp_path / "nvrx"),
-        cycle_log_prefix=str(tmp_path / "train.log"),
         cycle_info_job_id="job-a",
-        attempt_index=0,
+        cycle_log_prefix=str(tmp_path / "train.log"),
     )
+    analyzer.start.assert_called_once_with()
     run_loop.assert_called_once()
     stop_grpc.assert_called_once_with([grpc_proc], 60.0)
     manager.stop.assert_called_once()
-    cycle_reporter.shutdown.assert_called_once()
+    analyzer.stop.assert_called_once_with()
     assert not hasattr(control_plane, "LocalElasticAgent")
 
 
@@ -404,10 +401,7 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
     )
     ft_cfg = SimpleNamespace(segment=None)
     attribution_service = MagicMock()
-    services = control_plane.ControlServices(
-        attribution_service=attribution_service,
-        cycle_info_reporter=MagicMock(),
-    )
+    services = control_plane.ControlServices(attribution_service=attribution_service)
     stop_event = threading.Event()
     states = []
 
@@ -415,12 +409,9 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
         def __init__(self, *args, **kwargs):
             states.append(self)
             self._rounds = iter([0, 1])
-            self._cycle_info_reporter = None
+            self.closed_rounds = []
             self._attribution_service = None
             self._cycle_log_prefix = kwargs.get("cycle_log_prefix")
-            self._active_node_addrs = ["node-a", "node-b"]
-            self._standby_node_addrs = ["node-c"]
-            self._active_ranks = [0, 1]
             self.final_terminal_requested = False
 
         def close_current_round_as_host(self, *args, **kwargs):
@@ -428,19 +419,14 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
                 round_id = next(self._rounds)
             except StopIteration as exc:
                 raise control_plane.RendezvousClosedError("done") from exc
-
-            self._cycle_info_reporter.report_cycle_start(
-                CycleInfoRoundSnapshot(
-                    cycle_number=round_id,
-                    active_node_addrs=self._active_node_addrs,
-                    standby_node_addrs=self._standby_node_addrs,
-                    active_ranks=self._active_ranks,
-                )
-            )
+            self.closed_rounds.append(round_id)
             return round_id
 
         def _request_terminal_attribution_for_submitted_cycle(self):
             self.final_terminal_requested = True
+
+        def publish_cycle_end_as_host(self):
+            pass
 
     node_generator = MagicMock()
     node_generator.generate.return_value = object()
@@ -457,13 +443,76 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
             stop_event=stop_event,
         )
 
-    reported_rounds = [
-        call.args[0].cycle_number
-        for call in services.cycle_info_reporter.report_cycle_start.call_args_list
-    ]
-    assert reported_rounds == [0, 1]
-    assert states[0]._cycle_info_reporter is services.cycle_info_reporter
+    assert states[0].closed_rounds == [0, 1]
     assert states[0]._attribution_service is attribution_service
     assert states[0]._cycle_log_prefix == str(tmp_path / "train.log")
     assert states[0].final_terminal_requested
     attribution_service._submit_log.assert_not_called()
+
+
+@pytest.mark.parametrize("with_analyzer", [True, False], ids=["analyzer", "no_analyzer"])
+def test_control_rendezvous_loop_publishes_cycle_starts_to_the_analyzer(with_analyzer):
+    """nvrx-control closes the rounds, so its barrier state publishes the cycle infos: the
+    starts, and at shutdown the end of the last cycle, before the channel is closed."""
+    args = SimpleNamespace(
+        nnodes="1",
+        rdzv_conf="",
+        rdzv_id="job-a",
+        rdzv_endpoint="127.0.0.1:29500",
+        local_addr=None,
+        ft_per_cycle_applog_prefix=None,
+    )
+    analyzer = MagicMock(address="unix:/tmp/analyzer.sock") if with_analyzer else None
+    services = control_plane.ControlServices(cycle_analyzer=analyzer)
+    publishers_while_closing = []
+    publishers_at_end = []
+    channel = MagicMock()
+
+    class FakeState:
+        def __init__(self, *args, **kwargs):
+            self._cycle_info_publisher = None
+
+        def close_current_round_as_host(self, *args, **kwargs):
+            if publishers_while_closing:
+                raise control_plane.RendezvousClosedError("done")
+            publishers_while_closing.append(self._cycle_info_publisher)
+            return 0
+
+        def _request_terminal_attribution_for_submitted_cycle(self):
+            pass
+
+        def publish_cycle_end_as_host(self):
+            channel.close.assert_not_called()  # still open for the publish
+            publishers_at_end.append(self._cycle_info_publisher)
+
+    with (
+        patch.object(control_plane, "_RendezvousBarrierState", FakeState),
+        patch.object(control_plane, "_NodeDescGenerator", return_value=MagicMock()),
+        patch.object(control_plane.grpc, "insecure_channel", return_value=channel) as open_channel,
+    ):
+        control_plane._run_control_rendezvous_loop(
+            args, SimpleNamespace(segment=None), object(), services, threading.Event()
+        )
+
+    (publisher,) = publishers_while_closing
+    assert publishers_at_end == [publisher]
+    if with_analyzer:
+        open_channel.assert_called_once_with("unix:/tmp/analyzer.sock")
+        assert isinstance(publisher, control_plane.GrpcCycleInfoPublisher)
+        channel.close.assert_called_once()
+    else:
+        open_channel.assert_not_called()
+        assert publisher is None
+
+
+def test_cycle_analyzer_start_failure_is_logged_and_control_continues(tmp_path):
+    args = SimpleNamespace(ft_cycle_info_job_id="job-a", ft_per_cycle_applog_prefix=None)
+    ft_cfg = SimpleNamespace(cycle_info_dir=str(tmp_path / "nvrx"))
+    analyzer = MagicMock()
+    analyzer.start.side_effect = RuntimeError("exited during startup")
+    with (
+        patch.object(control_plane, "CycleAnalyzerProcess", return_value=analyzer),
+        patch.object(control_plane, "logger") as logger,
+    ):
+        assert control_plane._start_cycle_analyzer(args, ft_cfg) is None
+    logger.error.assert_called_once()

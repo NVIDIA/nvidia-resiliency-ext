@@ -14,6 +14,13 @@ import pytest
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import GrpcWriterThread
 
 
+def _log_chunks(records):
+    """The log chunks of the DataRecord stream the writer sends; it sends nothing else."""
+    for record in records:
+        assert record.WhichOneof("record") == "log_chunk"
+        yield record.log_chunk
+
+
 class TestGrpcWriterThread:
     """Tests for GrpcWriterThread client."""
 
@@ -77,7 +84,7 @@ class TestGrpcWriterThread:
 
             def capture_chunks(chunk_iterator):
                 """Capture chunks for verification."""
-                for chunk in chunk_iterator:
+                for chunk in _log_chunks(chunk_iterator):
                     chunks_sent.append(chunk)
                     # After receiving one chunk, signal writer to shutdown
                     writer.shutdown_requested = True
@@ -86,11 +93,11 @@ class TestGrpcWriterThread:
                 response.bytes_received = len(test_data)
                 return response
 
-            mock_stub.StreamLogs.side_effect = capture_chunks
+            mock_stub.StreamDataRecords.side_effect = capture_chunks
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -127,16 +134,16 @@ class TestGrpcWriterThread:
             chunks_sent = []
 
             def capture_chunks(chunk_iterator):
-                for chunk in chunk_iterator:
+                for chunk in _log_chunks(chunk_iterator):
                     chunks_sent.append(chunk)
                     writer.shutdown_requested = True
                 return MagicMock(status="ok", bytes_received=len(test_data))
 
-            mock_stub.StreamLogs.side_effect = capture_chunks
+            mock_stub.StreamDataRecords.side_effect = capture_chunks
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -183,7 +190,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.side_effect = health_check_side_effect
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -214,7 +221,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.side_effect = grpc.RpcError("Server unavailable")
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -261,17 +268,17 @@ class TestGrpcWriterThread:
             chunks_sent = []
 
             def capture_chunks(chunk_iterator):
-                for chunk in chunk_iterator:
+                for chunk in _log_chunks(chunk_iterator):
                     chunks_sent.append(chunk)
                     if len(chunks_sent) == 3:  # After 3 chunks, shutdown
                         writer.shutdown_requested = True
                 return MagicMock(status="ok", bytes_received=100)
 
-            mock_stub.StreamLogs.side_effect = capture_chunks
+            mock_stub.StreamDataRecords.side_effect = capture_chunks
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -306,17 +313,17 @@ class TestGrpcWriterThread:
             chunks_sent = [0]
 
             def capture_chunks(chunk_iterator):
-                for chunk in chunk_iterator:
+                for chunk in _log_chunks(chunk_iterator):
                     chunks_sent[0] += 1
                     if chunks_sent[0] == 2:
                         writer.shutdown_requested = True
                 return MagicMock(status="ok", bytes_received=202)
 
-            mock_stub.StreamLogs.side_effect = capture_chunks
+            mock_stub.StreamDataRecords.side_effect = capture_chunks
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -364,14 +371,14 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             def capture_chunks(chunk_iterator):
-                for chunk in chunk_iterator:
+                for chunk in _log_chunks(chunk_iterator):
                     writer.shutdown_requested = True
                 return MagicMock(status="ok", bytes_received=5)
 
-            mock_stub.StreamLogs.side_effect = capture_chunks
+            mock_stub.StreamDataRecords.side_effect = capture_chunks
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -410,14 +417,14 @@ class TestGrpcWriterThread:
                 if attempts[0] == 1:
                     raise grpc.RpcError("Connection lost")
                 # Second attempt succeeds
-                for chunk in chunk_iterator:
+                for chunk in _log_chunks(chunk_iterator):
                     writer.shutdown_requested = True
                 return MagicMock(status="ok", bytes_received=5)
 
-            mock_stub.StreamLogs.side_effect = stream_logs_effect
+            mock_stub.StreamDataRecords.side_effect = stream_logs_effect
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -443,7 +450,7 @@ class TestGrpcWriterThread:
         """After shutdown_requested, log_generator drains the queue until stably empty.
 
         This yields any chunks already queued so tail logs can reach the leaf before
-        the StreamLogs RPC ends (several consecutive empty get() timeouts + empty queue).
+        the StreamDataRecords RPC ends (several consecutive empty get() timeouts + empty queue).
         """
 
         # Add items that will be in queue during shutdown
@@ -464,7 +471,7 @@ class TestGrpcWriterThread:
                 """Request shutdown before consuming; generator still drains queued items."""
                 writer.shutdown_requested = True
 
-                for chunk in chunk_iterator:
+                for chunk in _log_chunks(chunk_iterator):
                     chunks_received.append(chunk)
 
                 return MagicMock(
@@ -474,10 +481,10 @@ class TestGrpcWriterThread:
                     ),
                 )
 
-            mock_stub.StreamLogs.side_effect = capture_chunks
+            mock_stub.StreamDataRecords.side_effect = capture_chunks
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -543,10 +550,12 @@ def test_shutdown_during_health_check_still_drains_queued_logs(monkeypatch):
         return channel
 
     stub = MagicMock()
-    stub.StreamLogs.side_effect = lambda chunks: captured.extend(chunks) or MagicMock()
+    stub.StreamDataRecords.side_effect = (
+        lambda records: captured.extend(_log_chunks(records)) or MagicMock()
+    )
     monkeypatch.setattr(writer, "_wait_for_server_ready", wait_for_server)
     monkeypatch.setattr(
-        "nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.LogAggregationServiceStub",
+        "nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub",
         lambda channel: stub,
     )
     monkeypatch.setattr(

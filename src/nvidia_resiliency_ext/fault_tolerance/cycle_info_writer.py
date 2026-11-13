@@ -14,9 +14,9 @@
 # limitations under the License.
 
 """
-NVRx cycle info writer: writes NVRxCycleInfo as JSON to Lustre (or local).
+NVRx cycle info writer: writes CycleInfo as JSON to Lustre (or local).
 
-Uses the NVRxCycleInfo protobuf and protobuf JSON serialization. A dedicated background
+Uses the CycleInfo protobuf and protobuf JSON serialization. A dedicated background
 thread performs file I/O so the main launcher thread is not blocked. Writes are
 atomic (temp file + os.replace) for updates.
 """
@@ -25,9 +25,10 @@ import logging
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Sequence, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from google.protobuf import json_format
 
@@ -35,7 +36,18 @@ from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2
 
+from .cycle_info.records import CycleSummary, EndReason, JobEndReason, NodeCycleEndReport
 from .utils import hostnames_to_slurm_nodelist, ranks_to_range_str, slurm_sort_addrs
+
+# EndReason values as named in nvrx_interface.proto, for the JSON of the cycle info file.
+_END_REASON_PROTO_NAMES = {
+    EndReason.UNSPECIFIED: "CycleEndReasonUnspecified",
+    EndReason.COMPLETED: "CycleEndReasonWorkerCompleted",
+    EndReason.FAILED: "CycleEndReasonWorkerFailed",
+    EndReason.TERMINATED_DUE_TO_PEER: "CycleEndReasonWorkerTerminatedDueToPeer",
+    EndReason.TERMINATED_BY_RANK_MONITOR: "CycleEndReasonWorkerTerminatedByRankMonitor",
+    EndReason.TERMINATED_BY_ATTRIBUTION: "CycleEndReasonWorkerTerminatedByAttribution",
+}
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -76,6 +88,8 @@ class CycleInfoRoundSnapshot:
     standby_node_addrs: Optional[Sequence[str]] = None
     active_ranks: Optional[Sequence[int]] = None
     cycle_log_file: str = ""
+    # When the cycle started, in seconds since the epoch; None stamps the time of reporting.
+    started_at: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +109,7 @@ class _CycleInfoTask:
     def __init__(self, op: str, **kwargs: Any):
         self.op = op
         self.kwargs = kwargs
+        self.enqueued_at = time.monotonic()
 
 
 class CycleInfoWriter:
@@ -173,6 +188,31 @@ class CycleInfoWriter:
             )
         )
 
+    def update_cycle_later(
+        self,
+        job_id: str,
+        attempt_index: int,
+        cycle_number: int,
+        build_update: Callable[[], Optional[Dict[str, Any]]],
+    ) -> None:
+        """Enqueue an atomic update of the cycle file whose payload is built on the writer thread.
+
+        For updates that are expensive to prepare: the caller only enqueues `build_update`.
+        If it returns no payload, the file is left unchanged.
+        """
+        if self._shutdown_requested:
+            logger.warning("CycleInfoWriter already shutdown, ignoring update_cycle_later")
+            return
+        self._queue.put(
+            _CycleInfoTask(
+                op=_CycleInfoTask.UPDATE,
+                job_id=job_id,
+                attempt_index=attempt_index,
+                cycle_number=cycle_number,
+                build_update=build_update,
+            )
+        )
+
     def shutdown(self) -> None:
         """Signal the worker to exit and wait for it (drains queue).
         If a cycle was started (write_cycle_start) but cycle end was never recorded
@@ -215,18 +255,32 @@ class CycleInfoWriter:
                 if task.op == _CycleInfoTask.CREATE:
                     self._do_create(task.kwargs["payload"])
                 elif task.op == _CycleInfoTask.UPDATE:
+                    enqueued_at = task.enqueued_at
+                    prepare_seconds = 0.0
+                    update_payload = task.kwargs.get("update_payload")
+                    build_update = task.kwargs.get("build_update")
+                    if build_update is not None:
+                        start = time.monotonic()
+                        update_payload = build_update()
+                        prepare_seconds = time.monotonic() - start
+                        # Report queueing and preparation separately.
+                        enqueued_at += prepare_seconds
+                    if not update_payload:
+                        continue
                     self._do_update(
                         task.kwargs["job_id"],
                         task.kwargs["attempt_index"],
                         task.kwargs["cycle_number"],
-                        task.kwargs["update_payload"],
+                        update_payload,
+                        enqueued_at=enqueued_at,
+                        prepare_ms=prepare_seconds * 1000,
                     )
             except Exception as e:
                 logger.exception("CycleInfoWriter task failed: %s", e)
 
     def _do_create(self, payload: Dict[str, Any]) -> None:
-        """Write a new cycle info file from a payload dict (keys match NVRxCycleInfo fields)."""
-        msg = nvrx_interface_pb2.NVRxCycleInfo()
+        """Write a new cycle info file from a payload dict (keys match CycleInfo fields)."""
+        msg = nvrx_interface_pb2.CycleInfo()
         for key, value in payload.items():
             if hasattr(msg, key):
                 setattr(msg, key, value)
@@ -275,8 +329,11 @@ class CycleInfoWriter:
         attempt_index: int,
         cycle_number: int,
         update_payload: Dict[str, Any],
+        enqueued_at: Optional[float] = None,
+        prepare_ms: float = 0.0,
     ) -> None:
         """Update the cycle info file by applying update_payload; increment generation by one."""
+        start = time.monotonic()
         filename = _cycle_info_filename(job_id, attempt_index, cycle_number)
         path = os.path.join(self._nvrx_dir, filename)
         if not os.path.isfile(path):
@@ -286,22 +343,36 @@ class CycleInfoWriter:
         tmp_path = path + ".tmp"
         try:
             with open(path) as f:
-                msg = json_format.Parse(f.read(), nvrx_interface_pb2.NVRxCycleInfo())
+                msg = json_format.Parse(f.read(), nvrx_interface_pb2.CycleInfo())
             for key, value in update_payload.items():
-                if hasattr(msg, key):
+                if not hasattr(msg, key):
+                    continue
+                if isinstance(value, (list, dict)):
+                    # Repeated and message fields cannot be assigned; replace their contents.
+                    msg.ClearField(key)
+                    json_format.ParseDict({key: value}, msg)
+                else:
                     setattr(msg, key, value)
             msg.generation = msg.generation + 1
+            text = json_format.MessageToJson(
+                msg,
+                indent=2,
+                preserving_proto_field_name=True,
+                always_print_fields_with_no_presence=True,
+            )
             with open(tmp_path, "w") as f:
-                f.write(
-                    json_format.MessageToJson(
-                        msg,
-                        indent=2,
-                        preserving_proto_field_name=True,
-                        always_print_fields_with_no_presence=True,
-                    )
-                )
+                f.write(text)
                 f.flush()
             os.replace(tmp_path, path)
+            logger.debug(
+                "Updated %s (%s, %d bytes) in %.1fms after %.1fms queued, %.1fms preparing",
+                filename,
+                ", ".join(update_payload),
+                len(text),
+                (time.monotonic() - start) * 1000,
+                (start - enqueued_at) * 1000 if enqueued_at is not None else 0.0,
+                prepare_ms,
+            )
         except (OSError, json_format.ParseError) as e:
             logger.warning("Failed to update cycle info in %s: %s", path, e)
             try:
@@ -328,6 +399,7 @@ class CycleInfoReporter:
         cycle_info_job_id: Optional[str] = None,
         attempt_index: Optional[int] = None,
         writer: Optional[CycleInfoWriter] = None,
+        end_previous_on_start: bool = True,
     ) -> None:
         if cycle_info_job_id is not None and not cycle_info_job_id.strip():
             raise ValueError("cycle_info_job_id must be non-empty when set")
@@ -335,6 +407,7 @@ class CycleInfoReporter:
         self._cycle_log_prefix = cycle_log_prefix
         self._cycle_info_job_id = cycle_info_job_id
         self._attempt_index = attempt_index
+        self._end_previous_on_start = end_previous_on_start
         self._current_cycle: Optional[_ReportedCycle] = None
         self._started_cycles: set[int] = set()
         self._shutdown = False
@@ -357,14 +430,16 @@ class CycleInfoReporter:
             return False
 
         job_id, attempt_index = self._resolve_file_namespace()
-        if self._current_cycle is not None:
+        if self._current_cycle is not None and self._end_previous_on_start:
             self.report_cycle_end()
 
         self._writer.write_cycle_start(
             job_id=job_id,
             attempt_index=attempt_index,
             cycle_number=snapshot.cycle_number,
-            cycle_start_time=utc_iso_now(),
+            cycle_start_time=(
+                utc_iso(snapshot.started_at) if snapshot.started_at is not None else utc_iso_now()
+            ),
             cycle_log_file=self._resolve_cycle_log_file(snapshot),
             active_nodes=self._format_nodes(snapshot.active_node_addrs),
             standby_nodes=self._format_nodes(snapshot.standby_node_addrs),
@@ -374,17 +449,75 @@ class CycleInfoReporter:
         self._started_cycles.add(snapshot.cycle_number)
         return True
 
-    def report_cycle_end(self) -> bool:
-        if self._shutdown or self._current_cycle is None:
+    def report_cycle_end(
+        self, cycle_number: Optional[int] = None, ended_at: Optional[float] = None
+    ) -> bool:
+        """Write the end time of `cycle_number`, by default the open cycle.
+
+        Args:
+            cycle_number: The cycle to end; any started cycle, not only the open one.
+            ended_at: When it ended, in seconds since the epoch; None stamps the time of
+                reporting.
+        """
+        if self._shutdown:
             return False
-        current_cycle = self._current_cycle
-        self._current_cycle = None
+        if cycle_number is None:
+            if self._current_cycle is None:
+                return False
+            cycle_number = self._current_cycle.cycle_number
+        if cycle_number not in self._started_cycles:
+            return False
+        if self._current_cycle is not None and self._current_cycle.cycle_number == cycle_number:
+            reported = self._current_cycle
+            self._current_cycle = None
+            job_id, attempt_index = reported.job_id, reported.attempt_index
+        else:
+            job_id, attempt_index = self._resolve_file_namespace()
         self._writer.update_cycle_end(
-            job_id=current_cycle.job_id,
-            attempt_index=current_cycle.attempt_index,
-            cycle_number=current_cycle.cycle_number,
-            cycle_end_time=utc_iso_now(),
+            job_id=job_id,
+            attempt_index=attempt_index,
+            cycle_number=cycle_number,
+            cycle_end_time=utc_iso(ended_at) if ended_at is not None else utc_iso_now(),
         )
+        return True
+
+    def report_cycle_summary(self, summary: CycleSummary) -> bool:
+        """Write how `summary.cycle` ended for the job, in one update of its file.
+
+        Sets the end report (JobCycleEndReport) and, when known, cycle_end_time. Formatting
+        happens on the writer thread, so the caller only enqueues. Launchers that only
+        followed a peer's restart are not listed; the listed ones are sorted by when they
+        observed the end. Its end reason is the first detector's (see _job_end_reason).
+        """
+        if self._shutdown or summary.cycle not in self._started_cycles:
+            return False
+        job_id, attempt_index = self._resolve_file_namespace()
+        if self._current_cycle is not None and self._current_cycle.cycle_number == summary.cycle:
+            # Ended here, so the writer's shutdown does not stamp it again.
+            self._current_cycle = None
+
+        def build_update() -> Dict[str, Any]:
+            listed = sorted(
+                (
+                    o
+                    for o in summary.outcomes
+                    if o.end_reason is not EndReason.TERMINATED_DUE_TO_PEER
+                ),
+                key=lambda outcome: (outcome.detected_timestamp, outcome.node_name),
+            )
+            ended_at = utc_iso_ms(summary.ended_at) if summary.ended_at is not None else ""
+            end_report: Dict[str, Any] = {
+                "end_reason": _END_REASON_PROTO_NAMES[self._job_end_reason(summary)],
+                "ended_timestamp": ended_at,
+                "first_detected_nodes": list(summary.first_detected),
+                "launcher_end_reports": [self._format_end_report(o) for o in listed],
+            }
+            update: Dict[str, Any] = {"end_report": end_report}
+            if ended_at:
+                update["cycle_end_time"] = ended_at
+            return update
+
+        self._writer.update_cycle_later(job_id, attempt_index, summary.cycle, build_update)
         return True
 
     def shutdown(self) -> None:
@@ -420,6 +553,42 @@ class CycleInfoReporter:
             addr_to_rank = dict(zip(active_addrs, active_ranks))
             active_ranks = [addr_to_rank[addr] for addr in slurm_sort_addrs(active_addrs)]
         return ranks_to_range_str(active_ranks)
+
+    @staticmethod
+    def _job_end_reason(summary: CycleSummary) -> EndReason:
+        """The job's end reason, as JobCycleEndReport carries it: the per-launcher EndReason
+        of the first detector, COMPLETED for a completed cycle, UNSPECIFIED otherwise."""
+        if summary.end_reason is JobEndReason.COMPLETED:
+            return EndReason.COMPLETED
+        first = [o for o in summary.outcomes if o.node_name in summary.first_detected]
+        if first:
+            return min(first, key=lambda outcome: outcome.detected_timestamp).end_reason
+        return EndReason.UNSPECIFIED
+
+    @staticmethod
+    def _format_end_report(report: NodeCycleEndReport) -> Dict[str, Any]:
+        """NodeCycleEndReport fields of `report`, as a JSON-style dict."""
+        return {
+            "job_id": report.job_id,
+            "attempt_index": report.attempt_index,
+            "cycle_number": report.cycle_number,
+            "node_name": report.node_name,
+            "end_reason": _END_REASON_PROTO_NAMES[report.end_reason],
+            "detected_timestamp": report.detected_timestamp,
+            "exit_details": report.exit_details,
+        }
+
+
+def utc_iso(timestamp: float) -> str:
+    """Return `timestamp` (seconds since the epoch) in ISO 8601 UTC, like utc_iso_now()."""
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def utc_iso_ms(timestamp_ms: int) -> str:
+    """Return `timestamp_ms` (milliseconds since the epoch) in ISO 8601 UTC, exactly (e.g.
+    "2025-02-05T14:30:00.123Z")."""
+    moment = datetime.fromtimestamp(0, timezone.utc) + timedelta(milliseconds=timestamp_ms)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def utc_iso_now() -> str:

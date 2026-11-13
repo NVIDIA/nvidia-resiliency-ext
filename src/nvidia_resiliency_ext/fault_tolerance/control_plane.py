@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Optional
 
+import grpc
 from torch.distributed import TCPStore
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
@@ -42,7 +43,8 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_rendezvous_args,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer import CycleAnalyzerProcess
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _NodeDescGenerator,
     _RendezvousBarrierState,
@@ -61,6 +63,7 @@ from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import (
 )
 from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2_grpc import CycleInfoServiceStub
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -70,7 +73,7 @@ class ControlServices:
     grpc_processes: list[Any] = field(default_factory=list)
     attribution_manager: Optional[AttributionManager] = None
     attribution_service: Optional[AttributionService] = None
-    cycle_info_reporter: Optional[CycleInfoReporter] = None
+    cycle_analyzer: Optional[CycleAnalyzerProcess] = None
 
 
 def get_args_parser() -> argparse.ArgumentParser:
@@ -139,6 +142,27 @@ def _create_tcp_store(args: argparse.Namespace, read_timeout: float) -> TCPStore
     )
 
 
+def _start_cycle_analyzer(
+    args: argparse.Namespace, ft_cfg: FaultToleranceConfig
+) -> Optional[CycleAnalyzerProcess]:
+    """Start the CycleAnalyzer, the only writer of the cycle info files.
+
+    Best effort: cycle info is diagnostics, so a failure is logged and control continues
+    without it.
+    """
+    analyzer = CycleAnalyzerProcess(
+        ft_cfg.cycle_info_dir,
+        cycle_info_job_id=args.ft_cycle_info_job_id,
+        cycle_log_prefix=args.ft_per_cycle_applog_prefix,
+    )
+    try:
+        analyzer.start()
+    except Exception as e:
+        logger.error("Cycle info will not be written: failed to start the CycleAnalyzer: %s", e)
+        return None
+    return analyzer
+
+
 def _start_control_services(
     args: argparse.Namespace,
     ft_cfg: FaultToleranceConfig,
@@ -146,12 +170,7 @@ def _start_control_services(
     services = ControlServices()
     try:
         if ft_cfg.cycle_info_dir:
-            services.cycle_info_reporter = CycleInfoReporter(
-                ft_cfg.cycle_info_dir,
-                cycle_log_prefix=args.ft_per_cycle_applog_prefix,
-                cycle_info_job_id=args.ft_cycle_info_job_id,
-                attempt_index=0,
-            )
+            services.cycle_analyzer = _start_cycle_analyzer(args, ft_cfg)
 
         applog_prefix = args.ft_per_cycle_applog_prefix
         log_funnel_ports = None
@@ -198,7 +217,12 @@ def _start_control_services(
             assert log_funnel_ports is not None
             assert grpc_log_prefix is not None
             services.grpc_processes = _start_grpc_log_servers(
-                args, grpc_log_prefix, log_funnel_ports
+                args,
+                grpc_log_prefix,
+                log_funnel_ports,
+                cycle_analyzer_address=(
+                    services.cycle_analyzer.address if services.cycle_analyzer else None
+                ),
             )
             if not services.grpc_processes:
                 raise RuntimeError("failed to start gRPC log funnel process(es)")
@@ -218,8 +242,8 @@ def _start_control_services(
             if services.attribution_manager is not None:
                 services.attribution_manager.stop()
         with contextlib.suppress(Exception):
-            if services.cycle_info_reporter is not None:
-                services.cycle_info_reporter.shutdown()
+            if services.cycle_analyzer is not None:
+                services.cycle_analyzer.stop()
         raise
 
 
@@ -258,26 +282,40 @@ def _run_control_rendezvous_loop(
         args.nnodes,
         args.rdzv_endpoint,
     )
-    if services.cycle_info_reporter is not None:
-        state._cycle_info_reporter = services.cycle_info_reporter
     state._attribution_service = services.attribution_service
+    # This host closes the rounds, so it publishes the cycle infos: at each start, and at
+    # each end. The analyzer runs on this node: publish to it directly, without the gRPC
+    # log servers.
+    cycle_info_channel = None
+    if services.cycle_analyzer is not None:
+        cycle_info_channel = grpc.insecure_channel(services.cycle_analyzer.address)
+        state._cycle_info_publisher = GrpcCycleInfoPublisher(
+            cycle_info_stub=CycleInfoServiceStub(cycle_info_channel)
+        )
 
-    while not stop_event.is_set():
-        try:
-            closed_round = state.close_current_round_as_host(
-                node,
-                min_nodes,
-                max_nodes,
-                segment_check_interval=segment_check_interval,
-                stop_event=stop_event,
-            )
-        except (RendezvousGracefulExitError, RendezvousClosedError) as exc:
-            logger.info("nvrx-control rendezvous loop exiting: %s", exc)
-            break
+    try:
+        while not stop_event.is_set():
+            try:
+                closed_round = state.close_current_round_as_host(
+                    node,
+                    min_nodes,
+                    max_nodes,
+                    segment_check_interval=segment_check_interval,
+                    stop_event=stop_event,
+                )
+            except (RendezvousGracefulExitError, RendezvousClosedError) as exc:
+                logger.info("nvrx-control rendezvous loop exiting: %s", exc)
+                break
 
-        logger.info("nvrx-control closed rendezvous round %s", closed_round)
+            logger.info("nvrx-control closed rendezvous round %s", closed_round)
 
-    state._request_terminal_attribution_for_submitted_cycle()
+        state._request_terminal_attribution_for_submitted_cycle()
+    finally:
+        # The rendezvous shut down: the last cycle ended, as no next round will open.
+        state.publish_cycle_end_as_host()
+        state._cycle_info_publisher = None
+        if cycle_info_channel is not None:
+            cycle_info_channel.close()
 
 
 # Peers read the recorded shutdown reason from the TCPStore to decide their exit code,
@@ -328,14 +366,15 @@ def run(args: argparse.Namespace) -> None:
     finally:
         rendezvous_loop_ended = time.monotonic()
         with contextlib.suppress(Exception):
-            if services.cycle_info_reporter is not None:
-                services.cycle_info_reporter.shutdown()
-        with contextlib.suppress(Exception):
             if services.grpc_processes:
                 stop_grpc_log_servers(
                     services.grpc_processes,
                     float(args.ft_log_server_graceful_shutdown_timeout),
                 )
+        with contextlib.suppress(Exception):
+            # After the log servers, which forward the last cycle records to it.
+            if services.cycle_analyzer is not None:
+                services.cycle_analyzer.stop()
         with contextlib.suppress(Exception):
             # Stop polling before the service being polled goes away, otherwise the
             # daemon keeps issuing requests at attrsvc through its shutdown and logs

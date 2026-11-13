@@ -23,7 +23,7 @@ import subprocess  # nosec B404
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import Enum
 from types import FrameType
@@ -68,7 +68,13 @@ from ..shared_utils.profiling import (
     set_profiling_cycle,
 )
 from ..shared_utils.telemetry import span
-from .cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, cycle_log_file
+from .cycle_info.records import CycleInfo, now_ms
+from .cycle_info.transport import CycleInfoPublisher
+from .cycle_info_writer import (
+    _cycle_info_attempt_index_from_env,
+    _cycle_info_job_id_from_env,
+    cycle_log_file,
+)
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
@@ -635,7 +641,11 @@ class _RendezvousBarrierState:
         self._standby_node_addrs: Optional[List[str]] = None
         # Group ranks of active nodes, parallel to _active_node_addrs (same slot order)
         self._active_ranks: Optional[List[int]] = None
-        self._cycle_info_reporter: Optional[CycleInfoReporter] = None
+        # Sends the cycle info towards the CycleAnalyzer: when this host closes a round, and
+        # again when that cycle ends.
+        self._cycle_info_publisher: Optional[CycleInfoPublisher] = None
+        # The cycle info last published as started and not yet as ended; None once ended.
+        self._open_cycle_info: Optional[CycleInfo] = None
         self._cycle_log_prefix = cycle_log_prefix
 
         # Reference to agent (set via set_agent() method in handler)
@@ -1117,9 +1127,8 @@ class _RendezvousBarrierState:
         next_key = f"{self.prefix}:round_done_{self._round + 1}"
         if not self.store.check([next_key]):
             return False
-        # The next round may be opened by a non-store-host. The store host closes the
-        # active cycle when it creates or observes round N+1.
-        self._report_cycle_end_as_host(self._round + 1)
+        # The current cycle ended (published by the store host only).
+        self.publish_cycle_end_as_host()
         return True
 
     def _sync_from_per_round_state(self) -> bool:
@@ -1138,7 +1147,6 @@ class _RendezvousBarrierState:
             True if _round was advanced (was behind), False if already current
         """
         N = self._round
-        observed_open_round = None
         while True:
             key = f"{self.prefix}:round_done_{N}"
             if not self.store.check([key]):
@@ -1147,8 +1155,12 @@ class _RendezvousBarrierState:
             if val == 1:
                 N += 1  # Round N completed, check N+1
             else:
-                observed_open_round = N
-                break  # Round N is open or in progress (val==0)
+                # Round N is open or in progress (val==0): an earlier cycle ended. This is
+                # how the store host of nvrx-control sees it (published by it only).
+                open_info = self._open_cycle_info
+                if open_info is not None and open_info.cycle_number < N:
+                    self.publish_cycle_end_as_host()
+                break
 
         if N > self._round:
             old_round = self._round
@@ -1158,8 +1170,6 @@ class _RendezvousBarrierState:
             if self._agent is not None:
                 self._agent._progress_tracker.sync_cycle_number(N)
             log.debug(f"Synced round {old_round} -> {N} (per-round scan)")
-            if observed_open_round is not None:
-                self._report_cycle_end_as_host(observed_open_round)
             return True
 
         return False
@@ -1673,12 +1683,69 @@ class _RendezvousBarrierState:
                 standby_only_participants=incomplete_replacement_group_participants,
             )
             closed_round = self._round
-            self._report_cycle_start_as_host(closed_round)
             self.store.set(self.round_done_key, "1".encode('utf-8'))
+            # After the release, so it never holds the participants, and before the
+            # attribution POST, so the start time is not delayed by it.
+            self._publish_cycle_start_as_host(closed_round)
             # Do not hold the rendezvous release on attribution I/O. The submit helper
             # records the cycle before issuing the bounded attrsvc POST.
             self._submit_attribution_log_for_round(closed_round)
             return
+
+    def _publish_cycle_start_as_host(self, round_id: int) -> None:
+        """Publish how the just-closed round starts its cycle, from this host's rank assignment.
+
+        Best effort: called after the round is released, so the publish (one RPC, bounded
+        by its timeout) never holds the participants, and a failure is only logged.
+        """
+        if self._cycle_info_publisher is None:
+            return
+        try:
+            now = now_ms()
+            info = CycleInfo(
+                job_id=_cycle_info_job_id_from_env(),
+                attempt_index=_cycle_info_attempt_index_from_env(),
+                cycle_number=round_id,
+                started_at=now / 1000,
+                cycle_log_file=(
+                    cycle_log_file(self._cycle_log_prefix, round_id)
+                    if self._cycle_log_prefix
+                    else ""
+                ),
+                active_nodes=tuple(self._active_node_addrs or ()),
+                active_ranks=tuple(self._active_ranks or ()),
+                standby_nodes=tuple(self._standby_node_addrs or ()),
+                timestamp=now,
+            )
+            self._open_cycle_info = info
+            self._cycle_info_publisher.publish_cycle_info(info)
+        except SignalException:
+            raise
+        except Exception as e:
+            log.warning("Failed to publish the start of cycle %s: %s", round_id, e, exc_info=True)
+
+    def publish_cycle_end_as_host(self) -> None:
+        """Publish that the cycle this host last published as started has ended, now.
+
+        Called when this host sees the next round open, and when the rendezvous shuts down.
+        Sent once per cycle: later calls do nothing until the next cycle starts. Best
+        effort: a failure is only logged.
+        """
+        info = self._open_cycle_info
+        if info is None or self._cycle_info_publisher is None:
+            return
+        self._open_cycle_info = None
+        try:
+            now = now_ms()
+            self._cycle_info_publisher.update_cycle_info(
+                replace(info, ended_at=now / 1000, timestamp=now)
+            )
+        except SignalException:
+            raise
+        except Exception as e:
+            log.warning(
+                "Failed to publish the end of cycle %s: %s", info.cycle_number, e, exc_info=True
+            )
 
     def _submit_attribution_log_for_round(self, round_id: int) -> None:
         """Submit the just-started cycle log from the rendezvous control host."""
@@ -1719,41 +1786,6 @@ class _RendezvousBarrierState:
 
         self._attribution_service.request_terminal_analysis()
         self._attribution_terminal_requested_cycle = round_id
-
-    def _report_cycle_start_as_host(self, round_id: int) -> None:
-        """Report cycle start from the rendezvous-host rank assignment snapshot."""
-        if self._cycle_info_reporter is None:
-            return
-        try:
-            self._cycle_info_reporter.report_cycle_start(
-                CycleInfoRoundSnapshot(
-                    cycle_number=round_id,
-                    active_node_addrs=self._active_node_addrs,
-                    standby_node_addrs=self._standby_node_addrs,
-                    active_ranks=self._active_ranks,
-                )
-            )
-        except Exception as e:
-            log.warning(
-                "Failed to report cycle info after closing rendezvous round %s: %s",
-                round_id,
-                e,
-                exc_info=True,
-            )
-
-    def _report_cycle_end_as_host(self, opened_round_id: int) -> None:
-        """Report cycle end from the rendezvous host when a later round is observed."""
-        if self._cycle_info_reporter is None:
-            return
-        try:
-            self._cycle_info_reporter.report_cycle_end()
-        except Exception as e:
-            log.warning(
-                "Failed to report cycle info end after opening rendezvous round %s: %s",
-                opened_round_id,
-                e,
-                exc_info=True,
-            )
 
     def _wait_for_round_done(self, node_desc: _NodeDesc, rank_key: str) -> Tuple[int, int]:
         """Step 3 (all participants): Wait for round_done_key=1 then read the assigned rank.
@@ -2352,12 +2384,12 @@ class _RendezvousBarrierState:
         next_round_done_key = f"{self.prefix}:round_done_{self._round + 1}"
         if self.store.check([next_round_done_key]):
             log.debug(f"open_rendezvous() deferred - round_done_{self._round + 1} already exists.")
-            self._report_cycle_end_as_host(self._round + 1)
+            self.publish_cycle_end_as_host()  # the current cycle ended (store host only)
             return
 
         self.store.set(next_round_done_key, "0".encode('utf-8'))
         log.debug(f"Opened round {self._round + 1} for joining")
-        self._report_cycle_end_as_host(self._round + 1)
+        self.publish_cycle_end_as_host()  # the current cycle ended (store host only)
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):
@@ -2393,7 +2425,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
         attribution_enforce_stop: bool = False,
-        cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
         segment_health_check_dir: Optional[str] = None,
     ):
@@ -2461,7 +2492,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
             attribution_enforce_stop=attribution_enforce_stop,
-            cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
         )
 
@@ -2478,7 +2508,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         storage_healthcheck_paths: Optional[list] = None,
         attribution_endpoint: Optional[str] = None,
         attribution_enforce_stop: bool = False,
-        cycle_info_dir: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
     ) -> None:
         if not settings.run_id:
@@ -2522,13 +2551,6 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
             stale_check_interval=10.0,  # Check for stale rounds every 10 seconds
             cycle_log_prefix=cycle_log_prefix,
         )
-        self._cycle_info_reporter: Optional[CycleInfoReporter] = None
-        if is_store_host and cycle_info_dir:
-            self._cycle_info_reporter = CycleInfoReporter(
-                cycle_info_dir,
-                cycle_log_prefix=cycle_log_prefix,
-            )
-            self._barrier_state._cycle_info_reporter = self._cycle_info_reporter
         self._assigned_rank = None
         self._world_size = None
         self._agent = None  # Reference to the agent (set via set_agent())
@@ -2596,6 +2618,10 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         self._barrier_state._agent = agent
         # Complete initialization now that agent is set
         self._complete_initialization()
+
+    def set_cycle_info_publisher(self, publisher: Optional[CycleInfoPublisher]) -> None:
+        """Set the publisher of the cycle start infos; used only when this host closes rounds."""
+        self._barrier_state._cycle_info_publisher = publisher
 
     def _complete_initialization(self) -> None:
         """Complete initialization tasks that require agent reference.
@@ -3026,14 +3052,9 @@ class FtRendezvousBarrierHandler(RendezvousHandler):
         """Broadcast to the whole job that it must not be restarted."""
         self._barrier_state.signal_no_restart(reason)
 
-    def shutdown_cycle_info_reporter(self) -> None:
-        if self._cycle_info_reporter is not None:
-            self._cycle_info_reporter.shutdown()
-
     def _close(self, reason: str = RDZV_SHUTDOWN_REASON_GRACEFUL) -> None:
         """Permanently shut down the rendezvous (no further rounds)."""
         self._barrier_state.set_shutdown(reason)
-        self.shutdown_cycle_info_reporter()
         if self._attribution_service is not None:
             # No one will consume a verdict once the job is ending. The final cycle's
             # terminal POST is still issued afterwards for post-mortem analysis.
@@ -3157,7 +3178,6 @@ def create_handler(
         attribution_enforce_stop = (
             str(params.config.get('attribution_enforce_stop', '')).lower() == 'true'
         )
-        cycle_info_dir = params.config.get('cycle_info_dir', None)
         cycle_log_prefix = params.config.get('cycle_log_prefix', None)
         segment_health_check_dir = params.config.get('segment_health_check_dir', None)
 
@@ -3179,7 +3199,6 @@ def create_handler(
             storage_healthcheck_paths=storage_healthcheck_paths,
             attribution_endpoint=attribution_endpoint,
             attribution_enforce_stop=attribution_enforce_stop,
-            cycle_info_dir=cycle_info_dir,
             cycle_log_prefix=cycle_log_prefix,
             segment_health_check_dir=segment_health_check_dir,
         )

@@ -13,15 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import contextlib
+import json
 import logging
 import os
+import pickle
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -31,11 +37,18 @@ from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
+    EndReason,
+    RankTimeout,
+    TimeoutKind,
+)
+from nvidia_resiliency_ext.fault_tolerance.data import LauncherChannelMsg, TimeoutStopMsg
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
+    encode_ipc_frame,
 )
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
@@ -690,6 +703,85 @@ def _healthy_agent(fault_tol_cfg, logs_specs, **rdzv_overrides):
     return agent
 
 
+class TestCycleOutcomePublishedBeforeTheJobEnds(unittest.TestCase):
+    """When the job ends, each launcher publishes its outcome before the shutdown key.
+
+    The shutdown key ends nvrx-control and its CycleAnalyzer, so an outcome published
+    after it can be lost.
+    """
+
+    def setUp(self):
+        self.fault_tol_cfg = FaultToleranceConfig()
+        self.logs_specs = MagicMock()
+        self.logs_specs.get_cycle_log_file.return_value = "/path/to/cycle_0.log"
+
+    def _run(self, agent, monitor_state, **agent_patches):
+        """Run the monitor loop once; return the order of the calls that end the job."""
+        from nvidia_resiliency_ext.fault_tolerance import launcher
+
+        calls = MagicMock()
+        agent._publish_cycle_outcome = calls.publish
+        calls.attach_mock(agent._worker_group.spec.rdzv_handler.signal_no_restart, "signal")
+        with contextlib.ExitStack() as stack:
+            for name in ("_stop_workers", "_exit_barrier"):
+                stack.enter_context(patch.object(agent, name, getattr(calls, name)))
+            for name, value in agent_patches.items():
+                stack.enter_context(patch.object(agent, name, value))
+            stack.enter_context(patch.object(agent, '_initialize_workers'))
+            stack.enter_context(
+                patch.object(agent, '_monitor_workers', return_value=RunResult(state=monitor_state))
+            )
+            for name in ("record_profiling_event", "put_metric"):
+                stack.enter_context(patch.object(launcher, name))
+            stack.enter_context(patch.object(launcher.telemetry, 'mark'))
+            stack.enter_context(patch.object(launcher.time, 'sleep'))
+            with contextlib.suppress(launcher.NoRestartRequested):
+                agent._invoke_run_with_any_failed_policy()
+        return [name for name, _, _ in calls.mock_calls]
+
+    def test_completed_publishes_before_the_exit_barrier(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        order = self._run(agent, WorkerState.SUCCEEDED)
+        self.assertEqual(order, ["publish", "_exit_barrier"])
+
+    def test_attribution_stop_publishes_before_signalling_no_restart(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs, attribution_stop_requested=True)
+        order = self._run(agent, WorkerState.HEALTHY)
+        self.assertEqual(order, ["publish", "signal", "_stop_workers"])
+
+    def test_no_progress_stop_publishes_before_signalling_no_restart(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = True
+        order = self._run(agent, WorkerState.FAILED)
+        self.assertEqual(order, ["publish", "signal", "_stop_workers"])
+
+    def test_exhausted_restarts_publish_before_stopping_the_workers(self):
+        """launch_agent writes the shutdown key after this returns."""
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        order = self._run(
+            agent, WorkerState.FAILED, _handle_restart_decision=MagicMock(return_value=False)
+        )
+        self.assertEqual(order, ["publish", "_stop_workers"])
+
+    def test_peer_restart_without_restarts_left_publishes_before_stopping_the_workers(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs, is_next_round_open=True)
+        order = self._run(
+            agent, WorkerState.HEALTHY, _handle_restart_decision=MagicMock(return_value=False)
+        )
+        self.assertEqual(order, ["publish", "_stop_workers"])
+
+    def test_peer_no_restart_publishes_before_stopping_the_workers(self):
+        agent = _healthy_agent(
+            self.fault_tol_cfg,
+            self.logs_specs,
+            is_next_round_open=True,
+            no_restart_reason=RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
+        )
+        order = self._run(agent, WorkerState.HEALTHY)
+        self.assertEqual(order, ["publish", "_stop_workers"])
+
+
 class TestNoRestartTermination(unittest.TestCase):
     """The monitor loop consumes a latched STOP verdict and ends the job."""
 
@@ -1099,6 +1191,42 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
         cmd = proc.args[0]
         roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--allowed-root"]
         assert roots == [os.path.realpath(str(applog_dir))], cmd
+    # No analyzer address given: no server forwards cycle records.
+    assert all("--cycle-analyzer-address" not in proc.args[0] for proc in procs)
+
+
+@pytest.mark.parametrize("first_level_count", [1, 2], ids=["root_only", "root_and_leaves"])
+def test_start_grpc_log_servers_gives_the_analyzer_address_to_the_root_only(
+    tmp_path, first_level_count
+):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    applog_dir = tmp_path / "applogs"
+    applog_dir.mkdir()
+    args = SimpleNamespace(
+        nnodes="2",
+        ft_log_server_graceful_shutdown_timeout=60.0,
+        ft_log_leaf_max_queue_chunks=-1,
+        ft_per_cycle_applog_prefix=str(applog_dir / "train.log"),
+        ft_nvrx_logfile=None,
+        ft_log_server_log_prefix=None,
+    )
+    ports = launcher.LogFunnelPorts(base_port=50051, first_level_count=first_level_count)
+
+    with patch.object(launcher.subprocess, "Popen") as popen:
+        launcher._start_grpc_log_servers(
+            args, str(tmp_path / "grpc_diag"), ports, cycle_analyzer_address="unix:/tmp/a.sock"
+        )
+
+    commands = [c.args[0] for c in popen.call_args_list]
+    with_address = [cmd for cmd in commands if "--cycle-analyzer-address" in cmd]
+    assert len(with_address) == 1  # the root
+    assert "grpc_log_server" in " ".join(with_address[0])
+    assert "grpc_log_leaf_server" not in " ".join(with_address[0])
+    index = with_address[0].index("--cycle-analyzer-address")
+    assert with_address[0][index + 1] == "unix:/tmp/a.sock"
 
 
 def test_start_grpc_log_servers_requires_resolvable_allowed_roots(tmp_path):
@@ -1402,9 +1530,67 @@ def _make_launch_agent_config(**overrides):
         workers_stop_timeout=1,
         restart_policy="any-failed",
         rank_monitors={},
+        log_server_address=None,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+@pytest.mark.parametrize(
+    ("cycle_info_dir", "log_server_address"),
+    [(None, "localhost:50051"), ("/nvrx", None)],
+    ids=["no_cycle_info_dir", "no_log_server"],
+)
+def test_no_cycle_info_publisher_without_cycle_info_and_log_server(
+    cycle_info_dir, log_server_address
+):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    config = _make_launch_agent_config(
+        fault_tol_cfg=FaultToleranceConfig(cycle_info_dir=cycle_info_dir),
+        log_server_address=log_server_address,
+    )
+    assert launcher._create_cycle_info_publisher(config) == (None, None)
+
+
+def test_cycle_info_publisher_uses_its_own_channel_to_the_log_server():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    config = _make_launch_agent_config(log_server_address="head:50051")
+    with patch.object(launcher.grpc, "insecure_channel") as insecure_channel:
+        publisher, channel = launcher._create_cycle_info_publisher(config)
+
+    insecure_channel.assert_called_once_with("head:50051")
+    assert channel is insecure_channel.return_value
+    assert isinstance(publisher, launcher.GrpcCycleInfoPublisher)
+
+    publisher.close = MagicMock()
+    launcher._close_cycle_info_publisher(publisher, channel)
+    publisher.close.assert_called_once_with()
+    channel.close.assert_called_once_with()
+
+
+def test_cycle_info_publisher_creation_failure_is_logged():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    config = _make_launch_agent_config(log_server_address="head:50051")
+    with (
+        patch.object(launcher.grpc, "insecure_channel", side_effect=ValueError("bad address")),
+        patch.object(launcher, "logger") as logger,
+    ):
+        assert launcher._create_cycle_info_publisher(config) == (None, None)
+    logger.warning.assert_called_once()
+
+
+def test_closing_the_cycle_info_publisher_does_not_raise():
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    publisher = MagicMock()
+    publisher.close.side_effect = RuntimeError("boom")
+    with patch.object(launcher, "logger") as logger:
+        launcher._close_cycle_info_publisher(publisher, MagicMock())
+        launcher._close_cycle_info_publisher(None, None)
+    logger.warning.assert_called_once()
 
 
 def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
@@ -1996,3 +2182,355 @@ class TestCycleTelemetry:
         env = start.call_args.kwargs["envs"][0]
         assert env["TORCHELASTIC_RESTART_COUNT"] == "4"
         agent._send_cycle_to_rank_monitors.assert_called_once_with(4)
+
+
+def _outcome_agent(cycle_info_dir="/cycle_infos", cycle_info_outcomes=True):
+    """Agent with just the state _record_cycle_end_report reads; two workers, global ranks 4
+    and 5."""
+    agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+    agent._ft_cfg = FaultToleranceConfig(
+        cycle_info_dir=cycle_info_dir, cycle_info_outcomes=cycle_info_outcomes
+    )
+    agent._node_id = "node0"
+    agent._worker_group = MagicMock()
+    agent._worker_group.workers = [
+        MagicMock(global_rank=4 + i, local_rank=i, id=100 + i) for i in range(2)
+    ]
+    agent._cycle_end_report = None
+    agent._timeout_stops_lock = threading.Lock()
+    agent._get_global_cycle_number = MagicMock(return_value=3)
+    agent._collect_rank_monitor_timeouts = MagicMock(return_value={})
+    return agent
+
+
+class TestRecordCycleEndReport:
+    @pytest.fixture(autouse=True)
+    def _job_env(self, monkeypatch):
+        monkeypatch.setenv("SLURM_JOB_ID", "1234")
+        monkeypatch.setenv("SLURM_RESTART_COUNT", "2")
+
+    @pytest.mark.parametrize(
+        ("cycle_info_dir", "cycle_info_outcomes"),
+        [(None, True), ("/cycle_infos", False)],
+        ids=["no_cycle_info_dir", "outcomes_off"],
+    )
+    def test_disabled_records_nothing(self, cycle_info_dir, cycle_info_outcomes):
+        agent = _outcome_agent(cycle_info_dir, cycle_info_outcomes)
+        agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+        assert agent._cycle_end_report is None
+        agent._collect_rank_monitor_timeouts.assert_not_called()
+
+    def test_completed_cycle_does_not_collect_monitor_timeouts(self):
+        agent = _outcome_agent()
+        with patch.object(launcher, "now_ms", return_value=1_700_000_000_123):
+            agent._record_cycle_end_report(EndReason.COMPLETED)
+
+        report = agent._cycle_end_report
+        # From the Slurm environment, like the cycle info file names.
+        assert (report.job_id, report.attempt_index) == (
+            launcher._cycle_info_job_id_from_env(),
+            2,
+        )
+        assert (report.cycle_number, report.node_name, report.end_reason) == (
+            3,
+            "node0",
+            EndReason.COMPLETED,
+        )
+        assert (report.detected_timestamp, report.exit_details) == (1_700_000_000_123, "")
+        agent._collect_rank_monitor_timeouts.assert_not_called()
+
+    def test_failures_are_described_with_monitor_timeouts(self):
+        agent = _outcome_agent()
+        failures = {5: MagicMock(exitcode=-9)}
+        agent._collect_rank_monitor_timeouts.return_value = {
+            5: RankTimeout(TimeoutKind.SECTION, ("step",))
+        }
+        agent._record_cycle_end_report(EndReason.FAILED, failures)
+
+        agent._collect_rank_monitor_timeouts.assert_called_once_with(3, failures)
+        report = agent._cycle_end_report
+        assert report.end_reason is EndReason.TERMINATED_BY_RANK_MONITOR
+        assert json.loads(report.exit_details) == [
+            {
+                "rank": 5,
+                "local_rank": 1,
+                "pid": 101,
+                "end": "stopped_by_rank_monitor",
+                "exitcode": -9,
+                "timeout": "section",
+                "sections": ["step"],
+            }
+        ]
+
+    def test_failure_does_not_interrupt_the_caller(self):
+        agent = _outcome_agent()
+        agent._cycle_end_report = MagicMock()  # stale record from an earlier cycle
+        agent._collect_rank_monitor_timeouts.side_effect = RuntimeError("boom")
+        with patch.object(launcher, "logger"):
+            agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+        assert agent._cycle_end_report is None
+
+    def test_termination_signal_propagates(self):
+        agent = _outcome_agent()
+        agent._collect_rank_monitor_timeouts.side_effect = launcher.SignalException(
+            "terminated", signal.SIGTERM
+        )
+        with pytest.raises(launcher.SignalException):
+            agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+
+
+class TestCollectRankMonitorTimeouts:
+    """The main thread reads the timeout stops the listener thread received."""
+
+    TIMEOUT = RankTimeout(TimeoutKind.SECTION, ("step",))
+
+    @pytest.fixture
+    def agent(self):
+        """Outcome agent; workers 4 and 5 run as pids 100 and 101 on local ranks 0 and 1."""
+        agent = _outcome_agent()
+        del agent._collect_rank_monitor_timeouts  # the real method, not _outcome_agent's mock
+        agent._timeout_stops = {}
+        return agent
+
+    def test_timeout_stop_of_an_exited_worker_is_collected(self, agent):
+        agent._handle_rank_monitor_msg(1, TimeoutStopMsg(3, 101, self.TIMEOUT))
+        failures = {4: MagicMock(exitcode=1), 5: MagicMock(exitcode=-9)}
+        assert agent._collect_rank_monitor_timeouts(3, failures) == {5: self.TIMEOUT}
+
+    def test_nothing_received_collects_nothing(self, agent):
+        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {}
+
+    @pytest.mark.parametrize(
+        ("cycle", "pid", "failed_rank"),
+        [(2, 101, 5), (3, 999, 5), (3, 101, 4)],
+        ids=["earlier_cycle", "other_worker", "worker_did_not_exit"],
+    )
+    def test_timeout_stop_of_another_worker_or_cycle_is_ignored(
+        self, agent, cycle, pid, failed_rank
+    ):
+        agent._handle_rank_monitor_msg(1, TimeoutStopMsg(cycle, pid, self.TIMEOUT))
+        assert agent._collect_rank_monitor_timeouts(3, {failed_rank: MagicMock()}) == {}
+
+    def test_first_timeout_stop_of_a_cycle_is_kept(self, agent):
+        for timeout in (self.TIMEOUT, RankTimeout(TimeoutKind.HEARTBEAT)):
+            agent._handle_rank_monitor_msg(1, TimeoutStopMsg(3, 101, timeout))
+        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {5: self.TIMEOUT}
+
+    def test_cycle_start_drops_the_stops_of_earlier_cycles(self, agent):
+        agent._rank_monitors = {}
+        agent._handle_rank_monitor_msg(1, TimeoutStopMsg(3, 101, self.TIMEOUT))
+        agent._send_cycle_to_rank_monitors(4)  # no monitors: sends nothing
+        assert agent._timeout_stops == {}
+
+    def test_connect_records_the_socket_path(self):
+        agent = _outcome_agent()
+        agent._rank_monitors = {0: launcher.RankMonitorState(process=MagicMock(pid=77))}
+        agent._connect_to_rank_monitor(0, agent._rank_monitors[0].process)
+        assert agent._rank_monitors[0].socket_path.endswith("_ft_launcher77_to_rmon.socket")
+
+
+class TestRankMonitorListener:
+    """A background thread listens to the monitors' channels and records their timeout stops."""
+
+    TIMEOUT = RankTimeout(TimeoutKind.SECTION, ("step",))
+
+    @pytest.fixture
+    def agent(self):
+        """Agent with two monitors; connecting to monitor N connects to `agent.monitor_ends[N]`.
+
+        The listener opens the monitors' sockets by path; here each path names one end of a
+        socket pair, whose other end stands for the monitor.
+        """
+        agent = _outcome_agent()
+        agent._timeout_stops = {}
+        agent._rank_monitor_listener = None
+        agent._rank_monitor_loop = None
+        agent._rank_monitor_listen_task = None
+        agent._rank_monitors = {}
+        agent.monitor_ends = []
+        launcher_ends = {}
+        for local_rank in range(2):
+            monitor_end, launcher_end = socket.socketpair()
+            path = f"/monitor{local_rank}.socket"
+            launcher_ends[path] = launcher_end
+            agent._rank_monitors[local_rank] = launcher.RankMonitorState(
+                process=MagicMock(), socket_path=path
+            )
+            agent.monitor_ends.append(monitor_end)
+        real_open = asyncio.open_unix_connection
+
+        async def open_by_path(path):
+            return await real_open(sock=launcher_ends[path])
+
+        with (
+            patch.object(launcher.asyncio, "open_unix_connection", open_by_path),
+            patch.object(agent, "_connect_to_rank_monitor"),  # keep the test paths
+        ):
+            yield agent
+        if agent._rank_monitor_listener is not None:
+            agent._stop_rank_monitor_listener()
+        for end in agent.monitor_ends:
+            end.close()
+
+    @staticmethod
+    def _wait_for(condition, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while not condition():
+            assert time.monotonic() < deadline, "timed out"
+            time.sleep(0.01)
+
+    @staticmethod
+    def _received(monitor_end):
+        """The first message the launcher sent on this channel (the LauncherChannelMsg marker)."""
+        data = monitor_end.recv(65536)
+        size = int.from_bytes(data[:4], "big")
+        return pickle.loads(data[4 : 4 + size])
+
+    def test_listener_marks_the_channel_and_records_timeout_stops(self, agent):
+        agent._setup_rank_monitor_connections()
+        for monitor_end in agent.monitor_ends:
+            assert isinstance(self._received(monitor_end), LauncherChannelMsg)
+
+        frame = encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT))
+        agent.monitor_ends[1].sendall(frame[:7])  # split across reads
+        agent.monitor_ends[1].sendall(frame[7:])
+        self._wait_for(lambda: 1 in agent._timeout_stops)
+        assert (agent._timeout_stops[1].cycle, agent._timeout_stops[1].timeout) == (3, self.TIMEOUT)
+
+    def test_closed_channel_is_logged_and_the_others_keep_listening(self, agent):
+        with patch.object(launcher, "logger") as logger:
+            agent._setup_rank_monitor_connections()
+            agent.monitor_ends[1].close()
+            self._wait_for(lambda: logger.warning.called)
+            agent.monitor_ends[0].sendall(encode_ipc_frame(TimeoutStopMsg(3, 100, self.TIMEOUT)))
+            self._wait_for(lambda: 0 in agent._timeout_stops)
+        assert "Lost the channel from rank monitor 1" in logger.warning.call_args.args[0]
+
+    def test_undecodable_message_stops_listening_to_that_monitor_and_is_logged(self, agent):
+        with patch.object(launcher, "logger") as logger:
+            agent._setup_rank_monitor_connections()
+            agent.monitor_ends[1].sendall(len(b"junk").to_bytes(4, "big") + b"junk")
+            self._wait_for(lambda: logger.error.called)
+        assert "Stopped listening to rank monitor 1" in logger.error.call_args.args[0]
+
+    def test_failed_connect_is_logged(self, agent):
+        async def refuse(path):
+            raise ConnectionRefusedError(path)
+
+        with patch.object(launcher.asyncio, "open_unix_connection", refuse):
+            with patch.object(launcher, "logger") as logger:
+                agent._setup_rank_monitor_connections()
+                agent._rank_monitor_listener.join(timeout=5)
+        assert logger.warning.call_count == 2  # one per monitor
+        assert not agent._rank_monitor_listener.is_alive()
+
+    def test_stop_ends_the_listener_thread(self, agent):
+        agent._setup_rank_monitor_connections()
+        thread = agent._rank_monitor_listener
+        assert thread.is_alive()
+        agent._stop_rank_monitor_listener()
+        assert not thread.is_alive()
+        assert agent._rank_monitor_loop.is_closed()
+
+
+class TestPublishCycleOutcome:
+    """The main thread queues the end report; the publisher thread publishes it."""
+
+    @pytest.fixture
+    def agent(self):
+        agent = _outcome_agent()
+        agent._cycle_info_publisher = MagicMock()
+        agent._start_outcome_publisher()
+        agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+        yield agent
+        agent.stop_outcome_publisher()
+
+    def test_end_report_is_published_on_the_publisher_thread(self, agent):
+        publish = agent._cycle_info_publisher.publish_end_report
+        threads = []
+        publish.side_effect = lambda report: threads.append(threading.current_thread())
+        agent._publish_cycle_outcome(wait=True)
+        publish.assert_called_once_with(agent._cycle_end_report)
+        assert threads == [agent._outcome_publisher_thread]
+
+    def test_publish_does_not_wait_unless_asked(self, agent):
+        release = threading.Event()
+        agent._cycle_info_publisher.publish_end_report.side_effect = lambda _: release.wait(5)
+        start = time.monotonic()
+        agent._publish_cycle_outcome()  # the restart path
+        assert time.monotonic() - start < 1.0
+        release.set()
+        assert agent._wait_for_outcomes_published(5)
+
+    def test_wait_is_bounded(self, agent):
+        release = threading.Event()
+        agent._cycle_info_publisher.publish_end_report.side_effect = lambda _: release.wait(5)
+        with (
+            patch.object(launcher, "CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT", 0.05),
+            patch.object(launcher, "logger") as logger,
+        ):
+            agent._publish_cycle_outcome(wait=True)
+        logger.warning.assert_called_once()
+        release.set()
+
+    def test_nothing_is_published_without_an_end_report_of_this_cycle(self, agent):
+        agent._get_global_cycle_number.return_value = 4  # recorded report is of cycle 3
+        agent._publish_cycle_outcome(wait=True)
+        agent._cycle_end_report = None  # outcomes disabled, or recording failed
+        agent._publish_cycle_outcome(wait=True)
+        agent._cycle_info_publisher.publish_end_report.assert_not_called()
+
+    def test_nothing_is_published_without_a_publisher(self):
+        agent = _outcome_agent()
+        agent._cycle_info_publisher = None
+        agent._start_outcome_publisher()
+        agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+        agent._publish_cycle_outcome(wait=True)  # must not raise
+        assert agent._outcome_publisher_thread is None
+        agent.stop_outcome_publisher()  # nothing to stop
+
+    def test_publisher_failure_is_logged_and_the_thread_keeps_publishing(self, agent):
+        publish = agent._cycle_info_publisher.publish_end_report
+        publish.side_effect = [RuntimeError("unavailable"), None]
+        with patch.object(launcher, "logger") as logger:
+            agent._publish_cycle_outcome(wait=True)
+            agent._publish_cycle_outcome(wait=True)
+        logger.warning.assert_called_once()
+        assert publish.call_count == 2
+
+    def test_stop_ends_the_publisher_thread(self, agent):
+        thread = agent._outcome_publisher_thread
+        agent.stop_outcome_publisher()
+        assert not thread.is_alive()
+        assert agent._outcome_publisher_thread is None
+
+    @pytest.mark.parametrize("open_rendezvous", [True, False], ids=["failed", "peer_restart"])
+    def test_restart_publishes_after_opening_the_round_and_before_rejoining(self, open_rendezvous):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 1
+        agent._worker_group = MagicMock()
+        calls = MagicMock()
+        agent._open_rendezvous_for_restart = calls.open_rendezvous
+        agent._publish_cycle_outcome = calls.publish
+        agent._restart_workers = calls.restart
+
+        assert agent._handle_restart_decision(
+            "trainer", MagicMock(), "[%s] restarting", open_rendezvous=open_rendezvous
+        )
+
+        expected = [unittest.mock.call.publish(), unittest.mock.call.restart(agent._worker_group)]
+        if open_rendezvous:
+            expected.insert(0, unittest.mock.call.open_rendezvous())
+        assert calls.mock_calls == expected
+
+    def test_no_publish_when_there_is_no_restart(self):
+        agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = False
+        agent._remaining_restarts = 0
+        agent._publish_cycle_outcome = MagicMock()
+
+        assert not agent._handle_restart_decision("trainer", MagicMock(), "[%s] restarting")
+        agent._publish_cycle_outcome.assert_not_called()

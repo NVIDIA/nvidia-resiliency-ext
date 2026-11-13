@@ -24,10 +24,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
+    CycleSummary,
+    EndReason,
+    JobEndReason,
+    NodeCycleEndReport,
+)
 from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
     CycleInfoReporter,
     CycleInfoRoundSnapshot,
     CycleInfoWriter,
+    utc_iso_ms,
     utc_iso_now,
 )
 
@@ -326,6 +333,214 @@ def test_cycle_info_reporter_closes_previous_cycle_on_next_start(tmp_dir):
     )
     assert writer.write_cycle_start.call_count == 2
     assert writer.write_cycle_start.call_args_list[1].kwargs["cycle_number"] == 1
+
+
+def _report(node, end_reason, detected_timestamp, exit_details=""):
+    return NodeCycleEndReport("job1", 0, 3, node, end_reason, detected_timestamp, exit_details)
+
+
+def _end_report_dict(node, detected_timestamp):
+    return {
+        "job_id": "job1",
+        "attempt_index": 0,
+        "cycle_number": 3,
+        "node_name": node,
+        "end_reason": "CycleEndReasonWorkerFailed",
+        "detected_timestamp": detected_timestamp,
+        "exit_details": "",
+    }
+
+
+def test_cycle_info_writer_update_cycle_end_report(tmp_dir):
+    """The end report is added to the existing file; a second update replaces it."""
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start("job1", 0, 3, "2024-01-01T00:00:00Z", "/log", "node[001-002]")
+    writer.update_cycle_end("job1", 0, 3, "2024-01-01T00:01:00Z")
+
+    def update(reports):
+        return lambda: {
+            "end_report": {
+                "end_reason": "CycleEndReasonWorkerFailed",
+                "ended_timestamp": "2024-01-01T00:00:59.000Z",
+                "first_detected_nodes": [reports[0]["node_name"]],
+                "launcher_end_reports": reports,
+            },
+            "not_a_field": "ignored",
+        }
+
+    writer.update_cycle_later("job1", 0, 3, update([_end_report_dict("node001", 1)]))
+    writer.update_cycle_later("job1", 0, 3, update([_end_report_dict("node002", 1704067199000)]))
+    writer.update_cycle_later("job1", 0, 3, lambda: None)  # nothing to add: file unchanged
+    writer.shutdown()
+
+    with open(os.path.join(tmp_dir, "cycle_info.job1.0.3")) as f:
+        data = json.load(f)
+    assert data["cycle_end_time"] == "2024-01-01T00:01:00Z"
+    assert "not_a_field" not in data
+    end_report = data["end_report"]
+    assert end_report["end_reason"] == "CycleEndReasonWorkerFailed"
+    assert end_report["first_detected_nodes"] == ["node002"]
+    # 64-bit integers are strings in proto3 JSON.
+    expected = dict(_end_report_dict("node002", "1704067199000"))
+    assert end_report["launcher_end_reports"] == [expected]
+    assert data["generation"] == "3"  # create, end, and two end report updates
+
+
+def _reporter_with_cycle(tmp_dir, **kwargs):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(
+        tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer, **kwargs
+    )
+    reporter.report_cycle_start(
+        CycleInfoRoundSnapshot(
+            cycle_number=3,
+            active_node_addrs=["node001", "node002", "node003"],
+            active_ranks=[0, 1, 2],
+        )
+    )
+    return reporter, writer
+
+
+def _summary(
+    outcomes,
+    end_reason=JobEndReason.RANK_FAILURE,
+    first_detected=("node001",),
+    ended_at=10_250,
+):
+    return CycleSummary(
+        cycle=3,
+        outcomes=tuple(outcomes),
+        launchers_expected=3,
+        missing=("node004",),
+        end_reason=end_reason,
+        first_detected=first_detected,
+        ended_at=ended_at,
+    )
+
+
+def test_cycle_info_reporter_reports_cycle_summary(tmp_dir):
+    """One update: the end time and the end report; launchers that observed the end are
+    listed by detection time, peers left out."""
+    reporter, writer = _reporter_with_cycle(tmp_dir)
+    late = _report("node003", EndReason.TERMINATED_BY_RANK_MONITOR, 20_500, '[{"rank":9}]')
+    early = _report("node001", EndReason.FAILED, 10_250, '[{"rank":0}]')
+    peer = _report("node002", EndReason.TERMINATED_DUE_TO_PEER, 11_000)
+
+    assert reporter.report_cycle_summary(_summary([late, peer, early]))
+
+    job_id, attempt_index, cycle_number, build_update = writer.update_cycle_later.call_args.args
+    assert (job_id, attempt_index, cycle_number) == ("job1", 0, 3)
+    payload = build_update()
+    assert payload["cycle_end_time"] == "1970-01-01T00:00:10.250Z"
+    assert payload["end_report"] == {
+        # The first detector's reason.
+        "end_reason": "CycleEndReasonWorkerFailed",
+        "ended_timestamp": "1970-01-01T00:00:10.250Z",
+        "first_detected_nodes": ["node001"],
+        "launcher_end_reports": [
+            {
+                "job_id": "job1",
+                "attempt_index": 0,
+                "cycle_number": 3,
+                "node_name": "node001",
+                "end_reason": "CycleEndReasonWorkerFailed",
+                "detected_timestamp": 10_250,
+                "exit_details": '[{"rank":0}]',
+            },
+            {
+                "job_id": "job1",
+                "attempt_index": 0,
+                "cycle_number": 3,
+                "node_name": "node003",
+                "end_reason": "CycleEndReasonWorkerTerminatedByRankMonitor",
+                "detected_timestamp": 20_500,
+                "exit_details": '[{"rank":9}]',
+            },
+        ],
+    }
+    # Ended by the summary, so shutdown does not stamp the cycle again.
+    reporter.shutdown()
+    writer.update_cycle_end.assert_not_called()
+
+
+def test_cycle_info_reporter_completed_summary(tmp_dir):
+    reporter, writer = _reporter_with_cycle(tmp_dir)
+    reports = [_report(f"node00{i}", EndReason.COMPLETED, 10_000 + i) for i in (1, 2, 3)]
+
+    reporter.report_cycle_summary(
+        _summary(reports, JobEndReason.COMPLETED, first_detected=(), ended_at=10_003)
+    )
+
+    end_report = writer.update_cycle_later.call_args.args[3]()["end_report"]
+    assert end_report["end_reason"] == "CycleEndReasonWorkerCompleted"
+    assert [r["node_name"] for r in end_report["launcher_end_reports"]] == [
+        "node001",
+        "node002",
+        "node003",
+    ]
+
+
+def test_cycle_info_reporter_summary_without_first_detector(tmp_dir):
+    """Only peer restarts: the reason is unspecified and no launcher is listed."""
+    reporter, writer = _reporter_with_cycle(tmp_dir)
+    peer = _report("node002", EndReason.TERMINATED_DUE_TO_PEER, 11_000)
+
+    reporter.report_cycle_summary(_summary([peer], JobEndReason.UNKNOWN, first_detected=()))
+
+    end_report = writer.update_cycle_later.call_args.args[3]()["end_report"]
+    assert end_report["end_reason"] == "CycleEndReasonUnspecified"
+    assert end_report["launcher_end_reports"] == []
+
+
+def test_cycle_info_reporter_summary_without_end_time_keeps_the_cycle_end(tmp_dir):
+    reporter, writer = _reporter_with_cycle(tmp_dir)
+
+    reporter.report_cycle_summary(_summary([], JobEndReason.UNKNOWN, (), ended_at=None))
+
+    payload = writer.update_cycle_later.call_args.args[3]()
+    assert "cycle_end_time" not in payload
+    assert payload["end_report"]["ended_timestamp"] == ""
+
+
+def test_utc_iso_ms_is_exact():
+    assert utc_iso_ms(0) == "1970-01-01T00:00:00.000Z"
+    assert utc_iso_ms(1_700_000_000_123) == "2023-11-14T22:13:20.123Z"
+
+
+def test_cycle_info_reporter_ignores_summary_of_unstarted_cycle(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    assert not reporter.report_cycle_summary(_summary([]))
+    writer.update_cycle_later.assert_not_called()
+
+
+def test_cycle_info_reporter_uses_the_snapshot_start_time(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=3, started_at=10.25))
+    assert (
+        writer.write_cycle_start.call_args.kwargs["cycle_start_time"]
+        == "1970-01-01T00:00:10.250000Z"
+    )
+
+
+def test_cycle_info_reporter_ends_a_given_cycle_at_a_given_time(tmp_dir):
+    reporter, writer = _reporter_with_cycle(tmp_dir, end_previous_on_start=False)
+    reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=4))
+    writer.update_cycle_end.assert_not_called()  # starting 4 did not end 3
+
+    assert reporter.report_cycle_end(3, ended_at=10.25)
+    assert not reporter.report_cycle_end(7)  # never started
+
+    writer.update_cycle_end.assert_called_once_with(
+        job_id="job1",
+        attempt_index=0,
+        cycle_number=3,
+        cycle_end_time="1970-01-01T00:00:10.250000Z",
+    )
+    # Cycle 4 is still open: shutdown ends it.
+    reporter.shutdown()
+    assert writer.update_cycle_end.call_args.kwargs["cycle_number"] == 4
 
 
 def test_utc_iso_now_format():

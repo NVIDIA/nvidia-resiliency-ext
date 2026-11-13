@@ -32,8 +32,9 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import timedelta
-from unittest import TestCase
+from unittest import TestCase, skip
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -67,6 +68,7 @@ from nvidia_resiliency_ext.fault_tolerance.segment_health_check import SegmentHe
 # Test timeout configuration - use short timeouts to make tests run faster
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
 TEST_JOIN_TIMEOUT_SECS = 2.0  # seconds - for join timeout (reduced from 5.0)
+CYCLE_INFO_MOVED = "Cycle info is moving from the rendezvous to the CycleAnalyzer"
 TEST_THREAD_JOIN_TIMEOUT_SECS = 5.0  # seconds - for thread.join() timeout (reduced from 10.0)
 # Barrier wait timeout - avoids deadlock if a participant fails before reaching the barrier
 BARRIER_WAIT_TIMEOUT_SECS = 10.0
@@ -1552,6 +1554,7 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual((total_0, total_1), (2, 2))
         self.assertEqual((round_0, round_1), (0, 0))
 
+    @skip(CYCLE_INFO_MOVED)
     def test_control_host_reports_cycle_start_when_round_closes(self):
         """A colocated store host reports cycle start after rank assignment."""
         state = _RendezvousBarrierState(
@@ -1592,6 +1595,104 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual(snapshot.active_node_addrs, ["node_a", "node_b"])
         self.assertEqual(snapshot.standby_node_addrs, [])
         self.assertEqual(snapshot.active_ranks, [0, 1])
+
+    def _close_round_with_publisher(self, publisher, cycle_log_prefix=None):
+        """Close round 0 as the control host with two joined nodes; returns the state."""
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            cycle_log_prefix=cycle_log_prefix,
+        )
+        state._cycle_info_publisher = publisher
+        for slot, node in enumerate(("node_a", "node_b"), start=1):
+            self.store.add(state.join_count_key, 1)
+            self.store.set(
+                f"{state.prefix}:slot_{slot}",
+                state._pack_participant_value(_NodeDesc(node, 99 + slot, 0), slot - 1, "none", 0),
+            )
+        state.close_current_round_as_host(
+            _NodeDesc("control", 10, 0),
+            min_nodes=2,
+            max_nodes=2,
+            segment_check_interval=_test_segment_check_interval(),
+        )
+        return state
+
+    def test_control_host_publishes_cycle_start_when_round_closes(self):
+        """The store host publishes the rank assignment of the round it closed."""
+        publisher = MagicMock()
+        before = time.time()
+        self._close_round_with_publisher(publisher, cycle_log_prefix="/tmp/train.log")
+
+        publisher.publish_cycle_info.assert_called_once()
+        info = publisher.publish_cycle_info.call_args.args[0]
+        self.assertEqual(
+            (info.cycle_number, info.active_nodes, info.standby_nodes, info.active_ranks),
+            (0, ("node_a", "node_b"), (), (0, 1)),
+        )
+        self.assertEqual(info.cycle_log_file, "/tmp/train_cycle0.log")
+        self.assertIsNone(info.ended_at)
+        self.assertGreaterEqual(info.started_at, before - 0.001)
+        # One clock reading: the start time in seconds, the record's timestamp in ms.
+        self.assertIsInstance(info.timestamp, int)
+        self.assertEqual(info.started_at, info.timestamp / 1000)
+
+    def test_cycle_start_has_no_log_file_without_a_prefix(self):
+        publisher = MagicMock()
+        self._close_round_with_publisher(publisher)
+        self.assertEqual(publisher.publish_cycle_info.call_args.args[0].cycle_log_file, "")
+
+    def test_publish_failure_does_not_block_the_round(self):
+        """A publisher failure is logged; the round is still released."""
+        publisher = MagicMock()
+        publisher.publish_cycle_info.side_effect = RuntimeError("queue full")
+        with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
+            state = self._close_round_with_publisher(publisher)
+        self.assertEqual(self.store.get(state.round_done_key), b"1")
+        mock_warning.assert_called_once()
+
+    def test_cycle_end_is_published_once_with_the_start(self):
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher, cycle_log_prefix="/tmp/train.log")
+        start = publisher.publish_cycle_info.call_args.args[0]
+
+        state.publish_cycle_end_as_host()
+        state.publish_cycle_end_as_host()  # already published: nothing more
+
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertEqual(replace(end, ended_at=None, timestamp=start.timestamp), start)
+        self.assertGreaterEqual(end.timestamp, start.timestamp)
+        self.assertEqual(end.ended_at, end.timestamp / 1000)
+
+    def test_no_cycle_end_without_a_published_start(self):
+        publisher = MagicMock()
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._cycle_info_publisher = publisher
+        state.publish_cycle_end_as_host()
+        publisher.update_cycle_info.assert_not_called()
+
+    def test_cycle_end_publish_failure_is_logged(self):
+        publisher = MagicMock()
+        publisher.update_cycle_info.side_effect = RuntimeError("unavailable")
+        state = self._close_round_with_publisher(publisher)
+        with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
+            state.publish_cycle_end_as_host()
+        mock_warning.assert_called_once()
+
+    def test_handler_sets_the_cycle_info_publisher(self):
+        handler = FtRendezvousBarrierHandler.__new__(FtRendezvousBarrierHandler)
+        handler._barrier_state = MagicMock()
+        publisher = MagicMock()
+        handler.set_cycle_info_publisher(publisher)
+        self.assertIs(handler._barrier_state._cycle_info_publisher, publisher)
 
     def test_control_host_submits_attribution_log_when_round_closes(self):
         """The control host submits the just-started cycle log at round close."""
@@ -1649,6 +1750,7 @@ class GroupRankAssignmentTest(TestCase):
         state._attribution_service.request_terminal_analysis.assert_called_once_with()
         self.assertEqual(state._attribution_terminal_requested_cycle, 2)
 
+    @skip(CYCLE_INFO_MOVED)
     def test_open_rendezvous_reports_cycle_end_when_round_created(self):
         """Opening the next round closes the store-host's current cycle."""
         state = _RendezvousBarrierState(
@@ -1664,6 +1766,7 @@ class GroupRankAssignmentTest(TestCase):
 
         reporter.report_cycle_end.assert_called_once_with()
 
+    @skip(CYCLE_INFO_MOVED)
     def test_open_rendezvous_reports_cycle_end_when_round_already_exists(self):
         """Store host closes the current cycle even if another node opened the next round."""
         state = _RendezvousBarrierState(
@@ -1693,6 +1796,7 @@ class GroupRankAssignmentTest(TestCase):
 
         self.assertTrue(self.store.check([f"{state.prefix}:round_done_1"]))
 
+    @skip(CYCLE_INFO_MOVED)
     def test_is_next_round_open_reports_cycle_end(self):
         """Healthy store host closes the current cycle when it observes peer restart."""
         state = _RendezvousBarrierState(
@@ -1709,6 +1813,7 @@ class GroupRankAssignmentTest(TestCase):
 
         reporter.report_cycle_end.assert_called_once_with()
 
+    @skip(CYCLE_INFO_MOVED)
     def test_sync_from_per_round_state_reports_cycle_end_for_open_round(self):
         """Store host closes the current cycle after syncing to an opened later round."""
         state = _RendezvousBarrierState(
@@ -1727,6 +1832,7 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual(state._round, 1)
         reporter.report_cycle_end.assert_called_once_with()
 
+    @skip(CYCLE_INFO_MOVED)
     def test_sync_from_per_round_state_does_not_close_without_open_round(self):
         """Advancing past a closed round alone does not mean the cycle has ended."""
         state = _RendezvousBarrierState(
@@ -1744,6 +1850,7 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual(state._round, 1)
         reporter.report_cycle_end.assert_not_called()
 
+    @skip(CYCLE_INFO_MOVED)
     def test_cycle_end_reporter_exception_does_not_block_open_rendezvous(self):
         """Cycle info failures are logged without interrupting rendezvous progress."""
         state = _RendezvousBarrierState(
