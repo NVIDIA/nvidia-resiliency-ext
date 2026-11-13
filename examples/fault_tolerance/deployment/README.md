@@ -53,8 +53,11 @@ An array throttle is a concurrency ceiling, not atomic initial admission.
 
 Task 0's EXIT trap writes a closed-generation marker and cancels **all remaining
 tasks of that array**, including running peers. Pending-only cancellation cannot
-collect a spare that has already left PENDING. On a no-restart verdict the trap
-also cancels queued successors. Use a unique job name for independent chains.
+collect a spare that has already left PENDING. The intended singleton handoff
+cancels only the current generation and leaves queued successors eligible to run.
+The example currently also cancels queued successors on a no-restart verdict;
+correcting that existing script policy is outside the control-host refactor.
+Use a unique job name for independent chains.
 
 A hard node loss or SIGKILL may prevent the trap from running. The
 [watcher](watch/README.md) defaults to observe-only and reports stranded spares.
@@ -74,10 +77,10 @@ The launcher API is scheduler-independent. These scripts implement Slurm
 allocation, endpoint publication, and cleanup. They do not implement a Kubernetes
 operator; DNS stability alone would not preserve TCPStore state after host loss.
 
-The experimental external `nvrx-control` deployment moves store-host
-responsibilities outside compute workers. It changes the colocated failure
-boundary but needs its own lifecycle and qualification; see the
-[deployment guide](../../../docs/source/fault_tolerance/deployment.rst).
+External CPU control can use `ft_launcher --ft-control-only`, which starts the
+control supervisor and its services without a local node agent. The caller
+still owns scheduler launch and cleanup; see the
+[external-control deployment guide](../../../docs/source/fault_tolerance/deployment.rst).
 
 The scheduler segment-health producer is optional. It publishes decisions that
 are consumed at the next rendezvous boundary; it does not evict running Slurm

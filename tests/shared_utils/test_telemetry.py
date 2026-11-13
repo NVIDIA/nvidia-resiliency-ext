@@ -23,6 +23,7 @@ telemetry setup failures. They run with or without nemo-lens installed.
 import threading
 import time
 import unittest
+from functools import partial
 from unittest.mock import ANY, MagicMock, Mock, patch
 
 import pytest
@@ -55,6 +56,15 @@ class TestLifecycleSnapshots(unittest.TestCase):
         self.addCleanup(self.provider.shutdown)
         self.enterContext(patch.object(telemetry, "_get_tracer", self.provider.get_tracer))
         self.enterContext(patch("opentelemetry.trace.get_tracer", self.provider.get_tracer))
+        # Lens may cache its global tracer. Give managed spans this fixture's
+        # explicit tracer, just as the Phase helpers use the patched getter.
+        self.enterContext(
+            patch.object(
+                telemetry,
+                "_managed_span",
+                partial(telemetry._managed_span, tracer=self.provider.get_tracer("nemo.lens")),
+            )
+        )
 
     def _record_group(self, cycle_attributes, rendezvous_attributes):
         phase = telemetry.Phase()

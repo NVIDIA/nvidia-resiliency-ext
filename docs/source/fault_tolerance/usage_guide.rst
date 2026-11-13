@@ -126,8 +126,8 @@ the active world size; they do not implement elastic Megatron parallelism.
 Loss of the colocated rendezvous host ends that generation. The
 :doc:`examples/singleton_deployment` guide explains scheduler continuation and
 cleanup, including external intervention when a hard node loss prevents
-the batch script's exit trap from running. The experimental external control
-process is described in :doc:`deployment`.
+the batch script's exit trap from running. Control-host process ownership
+is described in :doc:`deployment`.
 
 Where to go next
 ----------------

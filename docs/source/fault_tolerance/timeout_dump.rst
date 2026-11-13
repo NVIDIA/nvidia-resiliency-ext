@@ -60,7 +60,8 @@ an absolute ``--ft-nvrx-logfile=<nvrx-root>/logs/<filename>`` and always use
 Deployment scripts choose ``<work-dir>/nvrx/<job-id>`` for ordinary jobs and
 ``<work-dir>/nvrx/<array-parent-id>`` for job arrays. Diagnostics reuse that
 namespace without reconstructing Slurm IDs. A root must distinguish launch
-attempts whose cycle numbers restart at zero.
+attempts whose cycle numbers restart at zero. The derived ``*_agent.log`` uses
+the same log directory, so its suffix does not change the diagnostics destination.
 
 Successful startup validation logs one summary of the resolved tools (executable,
 CUDA-GDB mode, and command files) only from node0 at DEBUG (``NVRX_LOG_DEBUG=1``).

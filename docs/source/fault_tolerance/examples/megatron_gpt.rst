@@ -103,7 +103,8 @@ Check all of the following, not just a launcher exit status:
 5. The run finishes successfully without repeated injection or a no-progress stop.
 
 Application logs are ``logs/train_cycle<N>.log``; launcher/monitor logs are
-routed through ``logs/launcher.log``. Aggregation is best effort, so use cycle
+routed through ``logs/launcher_agent.log``; ``logs/launcher.log`` contains the
+control-process logs. Aggregation is best effort, so use cycle
 records and checkpoint state together. Measure failure-to-first-committed-step
 latency separately from failure detection and process startup.
 

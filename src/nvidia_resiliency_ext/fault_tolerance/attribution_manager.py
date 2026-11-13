@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from nvidia_resiliency_ext.fault_tolerance.child_process import wait_or_kill_child
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
@@ -35,7 +36,8 @@ _ATTRIBUTION_EXPORT_URL_CONFIG = "--ft-attribution-export-url"
 _EXPORT_URL_SCHEMES = {"http", "https"}
 # Acting on an attribution STOP is opt-in. "log" observes and records verdicts without
 # terminating anything, so a site can measure its own false-positive rate before enabling
-# "no-restart", which ends the job with the no-restart exit code.
+# "no-restart", which ends the current generation with the no-restart exit code.
+# Queued singleton successors are outside attribution's process ownership.
 ATTRIBUTION_STOP_ACTION_LOG = "log"
 ATTRIBUTION_STOP_ACTION_NO_RESTART = "no-restart"
 ATTRIBUTION_STOP_ACTIONS = (ATTRIBUTION_STOP_ACTION_LOG, ATTRIBUTION_STOP_ACTION_NO_RESTART)
@@ -189,8 +191,12 @@ class AttributionManager:
         self.cfg = cfg
         self.is_store_host = is_store_host
         self.process: Optional[subprocess.Popen] = None
+        self._log_destination = cfg.log_file
 
-    def start_if_needed(self) -> Optional[AttributionEndpoint]:
+    def start_if_needed(
+        self, *, capture=None, raise_if_shutdown_requested=None
+    ) -> Optional[AttributionEndpoint]:
+        self._log_destination = capture.path if capture is not None else self.cfg.log_file
         if not self.cfg.is_enabled:
             return None
 
@@ -215,24 +221,27 @@ class AttributionManager:
             "(applog_dir=%s, log_file=%s, startup_timeout=%.1fs)",
             DEFAULT_ATTRIBUTION_PORT,
             self.cfg.applog_dir,
-            self.cfg.log_file,
+            self._log_destination,
             self.cfg.startup_timeout,
         )
 
-        log_fd = open(self.cfg.log_file, "w")
+        log_fd = None if capture is not None else open(self.cfg.log_file, "w")
         try:
             self.process = subprocess.Popen(  # nosec B603
                 cmd,
-                stdout=log_fd,
+                stdout=subprocess.PIPE if capture is not None else log_fd,
                 stderr=subprocess.STDOUT,
                 env=env,
                 shell=False,
             )
         finally:
-            log_fd.close()
+            if log_fd is not None:
+                log_fd.close()
+        if capture is not None:
+            capture.attach(self.process.stdout)
 
         try:
-            self._wait_until_ready()
+            self._wait_until_ready(raise_if_shutdown_requested=raise_if_shutdown_requested)
         except Exception:
             self.stop()
             raise
@@ -260,18 +269,7 @@ class AttributionManager:
         logger.info("Sending SIGTERM to managed attribution service PID=%s", proc.pid)
         with contextlib.suppress(Exception):
             proc.terminate()
-        try:
-            proc.wait(timeout=_ATTRIBUTION_STOP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            logger.warning(
-                "Managed attribution service PID=%s did not exit within %.0fs; killing",
-                proc.pid,
-                _ATTRIBUTION_STOP_TIMEOUT,
-            )
-            with contextlib.suppress(Exception):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                proc.wait()
+        wait_or_kill_child(proc, _ATTRIBUTION_STOP_TIMEOUT)
         logger.info(
             "Managed attribution service PID=%s finished with returncode=%s",
             proc.pid,
@@ -311,18 +309,20 @@ class AttributionManager:
         _set_if_not_none(env, _ATTRSVC_EXPORT_URL_ENV, self.cfg.export_url)
         return env
 
-    def _wait_until_ready(self) -> None:
+    def _wait_until_ready(self, *, raise_if_shutdown_requested=None) -> None:
         assert self.process is not None
         deadline = time.monotonic() + self.cfg.startup_timeout
         url = f"http://127.0.0.1:{DEFAULT_ATTRIBUTION_PORT}/healthz"
         last_error = "not probed"
 
         while time.monotonic() < deadline:
+            if raise_if_shutdown_requested is not None:
+                raise_if_shutdown_requested()
             rc = self.process.poll()
             if rc is not None:
                 raise RuntimeError(
                     f"managed attribution service exited before becoming ready "
-                    f"(returncode={rc}, log_file={self.cfg.log_file})"
+                    f"(returncode={rc}, log_file={self._log_destination})"
                 )
             try:
                 with urllib.request.urlopen(url, timeout=1.0) as resp:  # nosec B310
@@ -338,7 +338,7 @@ class AttributionManager:
         raise TimeoutError(
             f"managed attribution service did not become ready within "
             f"{self.cfg.startup_timeout:.1f}s "
-            f"at {url} (last_error={last_error}, log_file={self.cfg.log_file})"
+            f"at {url} (last_error={last_error}, log_file={self._log_destination})"
         )
 
 

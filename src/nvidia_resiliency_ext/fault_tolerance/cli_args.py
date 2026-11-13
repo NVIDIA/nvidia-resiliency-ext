@@ -134,7 +134,7 @@ def _add_ft_segment_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_no_restart_args(parser: argparse.ArgumentParser) -> None:
-    """Register the exit code used when NVRx decides the job must not be restarted."""
+    """Register the exit code for stopping InJob recovery in the current generation."""
     parser.add_argument(
         "--ft-no-restart-exit-code",
         "--ft_no_restart_exit_code",
@@ -142,10 +142,10 @@ def add_no_restart_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="ft_no_restart_exit_code",
         help=(
-            "Process exit code reported by every launcher when NVRx decides the job must "
-            "not be restarted, either because attribution recommended stopping or because "
-            "the progress tracker saw no progress across restarts. Lets downstream tooling "
-            "tell 'do not requeue' apart from an ordinary failure. "
+            "Process exit code for stopping InJob recovery in the current generation, "
+            "either because attribution recommended stopping or because the progress "
+            "tracker saw no progress across restarts. This does not cancel queued "
+            "singleton successors; the caller handles current-generation cleanup. "
             f"Default: {DEFAULT_NO_RESTART_EXIT_CODE}."
         ),
     )
@@ -225,13 +225,14 @@ def add_log_funnel_args(
         type=str,
         default=None,
         dest="ft_nvrx_logfile",
-        help="Optional: Path for NVRx process logs (must be absolute path if specified). "
-        "ft_launcher routes these logs through the same infrastructure as worker logs. "
-        "Before that infrastructure is ready, only the TCPStore host may append a managed-attribution "
-        "startup error directly. The caller is responsible for keeping this path available and "
-        "writable; no stderr fallback is provided if the path itself fails. "
-        "nvrx-control also uses this path as a fallback source for gRPC server diagnostic logs. "
-        "Example: --ft-nvrx-logfile /lustre/logs/launcher.log",
+        help="Optional: Combined control-process log path (must be absolute if specified). "
+        "The supervisor writes its own, job-controller, managed attribution, and gRPC server "
+        "logs here. Node-agents and rank monitors on all nodes use a derived '_agent.log' "
+        "path through the existing worker-log aggregation infrastructure: a trailing '.log' "
+        "is replaced with '_agent.log'; otherwise '_agent.log' is appended. "
+        "Without this option, process logs go to stdout/stderr. In --standalone development "
+        "mode, the agent log is written locally without gRPC aggregation. "
+        "Example: --ft-nvrx-logfile /lustre/logs/nvrx.log produces nvrx.log and nvrx_agent.log.",
     )
     _add_argument(
         parser,
@@ -292,19 +293,6 @@ def add_log_funnel_args(
         dest="ft_log_leaf_max_queue_chunks",
         help="Max queued log chunks per leaf (only when N>1). "
         "Default -1: auto scale with fan-in, max(16384, min(1000000, per_leaf*256)).",
-    )
-    _add_argument(
-        parser,
-        "--ft-log-server-log-prefix",
-        "--ft_log_server_log_prefix",
-        action=action,
-        type=str,
-        default=None,
-        dest="ft_log_server_log_prefix",
-        help="Prefix for gRPC log server process logs (only used if --ft-enable-log-server is enabled). "
-        "Root and leaf process logs are written to '<prefix>_root.log' and "
-        "'<prefix>_leaf_<N>.log'. If not specified, derives from --ft-nvrx-logfile first, "
-        "then --ft-per-cycle-applog-prefix by stripping a trailing '.log' and appending '_grpc'.",
     )
     _add_argument(
         parser,
@@ -400,7 +388,8 @@ def _add_attribution_args(parser: argparse.ArgumentParser) -> None:
             "What to do when attribution recommends stopping the job. "
             "'log' records the verdict without terminating anything, so a deployment can "
             "measure how often attribution is right before trusting it. 'no-restart' ends "
-            "the job with the no-restart exit code and no requeue. "
+            "the current generation with the no-restart exit code; it does not cancel "
+            "queued singleton successors. "
             f"Default: {DEFAULT_ATTRIBUTION_STOP_ACTION}."
         ),
     )
@@ -443,19 +432,42 @@ def _add_cycle_info_arg(parser: argparse.ArgumentParser) -> None:
 
 def add_cycle_info_args(parser: argparse.ArgumentParser) -> None:
     _add_cycle_info_arg(parser)
-
-
-def add_control_services_args(parser: argparse.ArgumentParser) -> None:
-    add_attribution_args(parser)
-    add_no_restart_args(parser)
-    add_cycle_info_args(parser)
     parser.add_argument(
         "--ft-cycle-info-job-id",
         "--ft_cycle_info_job_id",
         type=str,
         default=None,
         dest="ft_cycle_info_job_id",
-        help="Job id used by nvrx-control when writing cycle_info files. Use the same "
-        "effective job id compute launchers use for NVRX_CURRENT_CYCLE_INFO "
-        "(SLURM_ARRAY_JOB_ID when present, otherwise SLURM_JOB_ID).",
+        help="Training job ID for cycle-info files when using --ft-control-only. Use the compute "
+        "launchers' effective job ID (SLURM_ARRAY_JOB_ID when present, otherwise SLURM_JOB_ID), "
+        "rather than the external control allocation's ID. External control uses attempt index 0.",
     )
+
+
+def default_rendezvous_timeouts(configs, *, legacy_timeout=-1):
+    """Use identical effective rendezvous timeouts in control and compute roles."""
+    if legacy_timeout != -1:
+        configs["timeout"] = legacy_timeout
+    for key, value in {
+        "timeout": 900,
+        "join_timeout": 300,
+        "last_call_timeout": 1,
+        "close_timeout": 30,
+        "read_timeout": 60,
+        "store_connect_wait_seconds": 120,
+    }.items():
+        configs.setdefault(key, value)
+
+
+def parse_min_max_nnodes(nnodes: str):
+    arr = nnodes.split(":")
+
+    if len(arr) == 1:
+        min_nodes = max_nodes = int(arr[0])
+    elif len(arr) == 2:
+        min_nodes = int(arr[0])
+        max_nodes = int(arr[1])
+    else:
+        raise RuntimeError(f'nnodes={nnodes} is not in "MIN:MAX" format')  # noqa: E231
+
+    return min_nodes, max_nodes
