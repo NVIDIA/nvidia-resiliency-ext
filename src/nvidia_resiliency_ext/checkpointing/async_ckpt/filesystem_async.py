@@ -1066,21 +1066,21 @@ class FileSystemWriterAsync(FileSystemWriter):
         """
         logger = logging.getLogger(__name__)
         w_start = time()
-        with ThreadPoolExecutor(max_workers=max(1, len(write_buckets))) as executor:
-            futures = [
-                executor.submit(
-                    FileSystemWriterAsync.write_preloaded_data,
-                    transform_list,
-                    open_file,
-                    i,
-                    write_bucket,
-                    use_fsync=True,
-                    use_msc=use_msc,
-                )
-                for i, write_bucket in enumerate(write_buckets)
-            ]
         write_results_or_exc: Union[dict, Exception]
-        try:
+        try:  # also catches a failure to start a thread, which must not kill the worker
+            with ThreadPoolExecutor(max_workers=max(1, len(write_buckets))) as executor:
+                futures = [
+                    executor.submit(
+                        FileSystemWriterAsync.write_preloaded_data,
+                        transform_list,
+                        open_file,
+                        i,
+                        write_bucket,
+                        use_fsync=True,
+                        use_msc=use_msc,
+                    )
+                    for i, write_bucket in enumerate(write_buckets)
+                ]
             write_results_or_exc = {i: future.result() for i, future in enumerate(futures)}
         except Exception as e:
             write_results_or_exc = e
