@@ -27,6 +27,7 @@ import importlib.metadata as metadata
 import json
 import logging
 import os
+import queue
 import re
 import signal
 import socket
@@ -124,14 +125,11 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_processes_by_pgids,
     is_infra_rank_zero,
     is_slurm_job_array,
-    loads_ipc_frame,
     parse_bool_env,
     patched_method,
-    pop_ipc_frames,
     read_obj_from_ipc_stream,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
-    write_object_to_ipc_socket,
 )
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.health_check import NodeHealthCheck
@@ -161,8 +159,11 @@ TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
 # Bound on asking a rank monitor whether it stopped its worker; on the failure path only.
 RANK_MONITOR_QUERY_TIMEOUT = 1.0
-# Bound on opening the channel from a rank monitor; once, at launcher start.
-RANK_MONITOR_CHANNEL_CONNECT_TIMEOUT = 5.0
+# Bound on joining the rank monitor listener thread at shutdown.
+RANK_MONITOR_LISTENER_JOIN_TIMEOUT = 2.0
+# Bound on waiting for the queued cycle outcomes to be published before the job ends; above
+# the publish RPC's own 5 s timeout, so a slow RPC still completes.
+CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT = 6.0
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -366,11 +367,6 @@ class RankMonitorState:
     """State for a single rank monitor process and its IPC connections."""
     process: Any  # multiprocessing.Process
     socket_path: str = ""
-    # Non-blocking connection the launcher keeps open for the monitor's messages; read
-    # without waiting by _read_rank_monitor_messages. None until connected, or once lost.
-    channel: Optional[socket.socket] = None
-    # Received bytes that do not form a complete message yet.
-    pending: bytearray = dataclasses.field(default_factory=bytearray)
 
 
 class LocalElasticAgent(SimpleElasticAgent):
@@ -504,8 +500,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         # Rank monitor state (process, socket path, message channel) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
-        # Latest timeout stop each monitor reported, by local rank (TimeoutStopMsg).
+        # Latest timeout stop each monitor reported, by local rank (TimeoutStopMsg). Set by
+        # the rank monitor listener thread, read and cleared by the main thread, both under
+        # _timeout_stops_lock.
         self._timeout_stops: Dict[int, TimeoutStopMsg] = {}
+        self._timeout_stops_lock = threading.Lock()
+        # Background thread with its own event loop, listening to the monitors' messages.
+        self._rank_monitor_listener: Optional[threading.Thread] = None
+        self._rank_monitor_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._rank_monitor_listen_task: Optional[asyncio.Task] = None
         self._ft_cfg = fault_tol_cfg
 
         # Setup IPC connections to pre-created rank monitors
@@ -539,8 +542,62 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._cycle_outcome: Optional[LocalCycleOutcome] = None
         # Sends the outcomes towards the CycleAnalyzer; None publishes nothing.
         self._cycle_info_publisher = cycle_info_publisher
+        self._start_outcome_publisher()
 
     DEFAULT_ROLE = "default"  # FIXME
+
+    def _start_outcome_publisher(self) -> None:
+        """Start the background thread that publishes the outcomes the main thread queues.
+
+        Publishing is a blocking RPC; on this thread it stays off the restart path.
+        """
+        self._outcome_queue: "queue.Queue[Optional[LocalCycleOutcome]]" = queue.Queue()
+        # Outcomes queued and not yet published, guarded by _outcome_published.
+        self._outcomes_unpublished = 0
+        self._outcome_published = threading.Condition()
+        self._outcome_publisher_thread: Optional[threading.Thread] = None
+        if self._cycle_info_publisher is None:
+            return
+        self._outcome_publisher_thread = threading.Thread(
+            target=self._run_outcome_publisher, name="CycleOutcomePublisher", daemon=True
+        )
+        self._outcome_publisher_thread.start()
+
+    def _run_outcome_publisher(self) -> None:
+        """Body of the publisher thread: publish the queued outcomes until None is queued."""
+        while True:
+            outcome = self._outcome_queue.get()
+            if outcome is None:
+                return
+            try:
+                self._cycle_info_publisher.publish_outcome(outcome)
+            except Exception as e:
+                logger.warning(f"Failed to publish the outcome of cycle {outcome.cycle}: {e}")
+            finally:
+                with self._outcome_published:
+                    self._outcomes_unpublished -= 1
+                    self._outcome_published.notify_all()
+
+    def _wait_for_outcomes_published(self, timeout: float) -> bool:
+        """Wait up to `timeout` until every queued outcome was published (or failed)."""
+        with self._outcome_published:
+            return self._outcome_published.wait_for(
+                lambda: self._outcomes_unpublished == 0, timeout
+            )
+
+    def stop_outcome_publisher(self) -> None:
+        """Give the queued outcomes a bounded time to be published, then stop the thread.
+
+        Call before closing the publisher's channel.
+        """
+        thread = self._outcome_publisher_thread
+        if thread is None:
+            return
+        if not self._wait_for_outcomes_published(CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT):
+            logger.warning("Stopping the outcome publisher with outcomes not yet published")
+        self._outcome_queue.put(None)
+        thread.join(timeout=CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT)
+        self._outcome_publisher_thread = None
 
     def open_telemetry_cycle(self, attributes: dict[str, Any]) -> None:
         self._cycle_phase.open(
@@ -748,7 +805,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             # requeue. Reported through the shared no-restart path so both causes are
             # indistinguishable to downstream tooling, rather than this one looking like
             # an ordinary crash. Publish first: the shutdown reason ends the CycleAnalyzer.
-            self._publish_cycle_outcome()
+            self._publish_cycle_outcome(wait=True)
             self._rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_NO_PROGRESS)
             self._stop_workers(self._worker_group)
             self._worker_group.state = WorkerState.FAILED
@@ -761,7 +818,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._remaining_restarts -= 1
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
-            # After opening the round, so peers are not delayed by the publish.
+            # Queued for the publisher thread; the restart does not wait for it.
             self._publish_cycle_outcome()
             self._restart_workers(self._worker_group)
             return True
@@ -802,26 +859,25 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._cycle_outcome = None
             logger.warning(f"Failed to record the cycle outcome: {e}")
 
-    def _publish_cycle_outcome(self) -> None:
-        """Publish the outcome of the cycle that just ended towards the CycleAnalyzer.
+    def _publish_cycle_outcome(self, wait: bool = False) -> None:
+        """Queue the outcome of the cycle that just ended for the publisher thread.
 
-        Call before anything that ends the job (the shutdown key ends the CycleAnalyzer):
-        the publish returns once the analyzer has the outcome, or after its timeout.
-        Best effort: a failure is logged without interrupting the caller.
+        Returns without waiting for the publish, unless `wait`: then it waits, for a bounded
+        time, until the outcome was published. Wait before anything that ends the job, as
+        the shutdown key ends the CycleAnalyzer. Best effort: a failure is logged.
         """
         outcome = self._cycle_outcome
-        # Nothing recorded for this cycle: outcomes are disabled or recording failed.
+        # Nothing recorded for this cycle: outcomes are disabled or recording failed. Checked
+        # here, as the cycle number moves on once the next rendezvous completes.
         if outcome is None or outcome.cycle != self._get_global_cycle_number():
             return
-        if self._cycle_info_publisher is None:
+        if self._outcome_publisher_thread is None:
             return
-        try:
-            self._cycle_info_publisher.publish_outcome(outcome)
-        except SignalException:
-            # Termination signals must reach run(), which shuts the workers down.
-            raise
-        except Exception as e:
-            logger.warning(f"Failed to publish the outcome of cycle {outcome.cycle}: {e}")
+        with self._outcome_published:
+            self._outcomes_unpublished += 1
+        self._outcome_queue.put(outcome)
+        if wait and not self._wait_for_outcomes_published(CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT):
+            logger.warning(f"The outcome of cycle {outcome.cycle} was not published in time")
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         return self._invoke_run_with_any_failed_policy(role)
@@ -858,7 +914,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 self._run_phase.close()
                 self._cycle_phase.close({CYCLE_OUTCOME: "completed"})
-                self._publish_cycle_outcome()
+                self._publish_cycle_outcome(wait=True)
                 self._exit_barrier()
                 return run_result
 
@@ -881,7 +937,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                 )
                 # Before the shutdown reason is written, which ends the CycleAnalyzer.
-                self._publish_cycle_outcome()
+                self._publish_cycle_outcome(wait=True)
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
                 self._run_phase.close()
@@ -944,7 +1000,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     continue  # Continue monitoring after restart
 
                 # No more restarts (either exhausted or early termination).
-                self._publish_cycle_outcome()
+                self._publish_cycle_outcome(wait=True)
                 self._stop_workers(self._worker_group)
                 self._cycle_phase.close()
                 self._worker_group.state = WorkerState.FAILED
@@ -967,7 +1023,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                             role,
                             no_restart,
                         )
-                        self._publish_cycle_outcome()
+                        self._publish_cycle_outcome(wait=True)
                         self._run_phase.close()
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
@@ -994,7 +1050,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     if not should_restart:
                         # Publish before launch_agent writes the shutdown key.
-                        self._publish_cycle_outcome()
+                        self._publish_cycle_outcome(wait=True)
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close()
                         self._worker_group.state = WorkerState.FAILED
@@ -1064,22 +1120,93 @@ class LocalElasticAgent(SimpleElasticAgent):
 
 
     def _setup_rank_monitor_connections(self):
-        """Connect to the pre-created rank monitors, which are ready to accept connections."""
+        """Record the pre-created monitors' socket paths and start listening to them.
+
+        One background thread runs an event loop with one listening task per monitor
+        (_listen_to_rank_monitor). The loop and its task are created here, so shutdown can
+        cancel them as soon as this returns.
+        """
         for local_rank, state in self._rank_monitors.items():
             self._connect_to_rank_monitor(local_rank, state.process)
-        logger.debug(f"Connected to {len(self._rank_monitors)} rank monitors")
+        loop = asyncio.new_event_loop()
+        self._rank_monitor_loop = loop
+        self._rank_monitor_listen_task = loop.create_task(self._listen_to_rank_monitors())
+        self._rank_monitor_listener = threading.Thread(
+            target=self._run_rank_monitor_listener,
+            daemon=True,
+            name="RankMonitorListener",
+        )
+        self._rank_monitor_listener.start()
+        logger.debug(f"Listening to {len(self._rank_monitors)} rank monitors")
+
+    def _run_rank_monitor_listener(self) -> None:
+        """Body of the listener thread: run the listening tasks until they end or are cancelled."""
+        loop = self._rank_monitor_loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._rank_monitor_listen_task)
+        except asyncio.CancelledError:
+            pass  # stopped by _stop_rank_monitor_listener
+        except Exception as e:
+            logger.error(f"Rank monitor listener failed: {e!r}")
+        finally:
+            loop.close()
+
+    async def _listen_to_rank_monitors(self) -> None:
+        await asyncio.gather(
+            *(
+                self._listen_to_rank_monitor(local_rank, state.socket_path)
+                for local_rank, state in self._rank_monitors.items()
+            ),
+            return_exceptions=True,  # one monitor's failure does not end the others
+        )
+
+    async def _listen_to_rank_monitor(self, local_rank: int, socket_path: str) -> None:
+        """Open the channel to one monitor and handle its messages until it closes.
+
+        The connection is marked with LauncherChannelMsg, so the monitor sends its messages
+        (e.g. TimeoutStopMsg) on it. Without the channel the monitor works as before, but
+        the launcher does not learn of its timeout stops.
+        """
+        try:
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+        except OSError as e:
+            logger.warning(f"Failed to open the channel from rank monitor {local_rank}: {e}")
+            return
+        try:
+            await write_obj_to_ipc_stream(LauncherChannelMsg(), writer)
+            while True:
+                msg = await read_obj_from_ipc_stream(reader)
+                self._handle_rank_monitor_msg(local_rank, msg)
+        except asyncio.IncompleteReadError:
+            logger.warning(f"Lost the channel from rank monitor {local_rank}: closed by it")
+        except (ConnectionError, OSError) as e:
+            logger.warning(f"Lost the channel from rank monitor {local_rank}: {e!r}")
+        except Exception as e:  # e.g. a message that cannot be unpickled
+            logger.error(f"Stopped listening to rank monitor {local_rank}: {e!r}")
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    def _stop_rank_monitor_listener(self) -> None:
+        """Cancel the listening tasks from the main thread and wait for the thread to end."""
+        loop, task = self._rank_monitor_loop, self._rank_monitor_listen_task
+        if loop is not None and task is not None:
+            with contextlib.suppress(RuntimeError):  # the loop already closed
+                loop.call_soon_threadsafe(task.cancel)
+        if self._rank_monitor_listener is not None:
+            self._rank_monitor_listener.join(timeout=RANK_MONITOR_LISTENER_JOIN_TIMEOUT)
 
     def shutdown_rank_monitors(self):
         # Skip if rank monitors were disabled
         if os.getenv('NVRX_DISABLE_RANK_MONITORS'):
             return
 
+        self._stop_rank_monitor_listener()
+
         # Terminate rank monitor processes
         for local_rank, state in self._rank_monitors.items():
-            if state.channel is not None:
-                with contextlib.suppress(Exception):
-                    state.channel.close()
-                state.channel = None
             with contextlib.suppress(Exception):
                 state.process.terminate()
 
@@ -1095,63 +1222,23 @@ class LocalElasticAgent(SimpleElasticAgent):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
 
     def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
-        """Record the monitor's socket path and open the channel for its messages.
+        """Record the monitor's socket path.
 
         The launcher sends its requests (e.g. cycle updates) on short-lived connections to
-        that socket. It also keeps one connection open, marked with LauncherChannelMsg, on
-        which the monitor sends its messages (e.g. TimeoutStopMsg). Without the channel the
-        monitor works as before, but the launcher does not learn of its timeout stops.
+        that socket; the listener thread keeps one more open for the monitor's messages.
         """
         launcher_to_rmon_socket = f"{tempfile.gettempdir()}/_ft_launcher{rmon_proc.pid}_to_rmon.socket"
         state = self._rank_monitors[local_rank]
         state.socket_path = launcher_to_rmon_socket
-        channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            channel.settimeout(RANK_MONITOR_CHANNEL_CONNECT_TIMEOUT)
-            channel.connect(launcher_to_rmon_socket)
-            write_object_to_ipc_socket(LauncherChannelMsg(), channel)
-            channel.setblocking(False)
-        except Exception as e:
-            channel.close()
-            logger.warning(f"Failed to open the channel from rank monitor {local_rank}: {e}")
-            return
-        state.channel = channel
-
-    def _read_rank_monitor_messages(self) -> None:
-        """Read the messages the monitors sent on their channels so far, without waiting.
-
-        A monitor sends a message before acting on it (e.g. TimeoutStopMsg before signalling
-        its worker), so the message is here once the launcher observes the consequence.
-        """
-        for local_rank, state in self._rank_monitors.items():
-            if state.channel is None:
-                continue
-            lost = None
-            try:
-                while chunk := state.channel.recv(65536):
-                    state.pending += chunk
-                lost = "closed by the rank monitor"
-            except BlockingIOError:
-                pass  # nothing more to read now
-            except OSError as e:
-                lost = repr(e)
-            for obj_pickled in pop_ipc_frames(state.pending):
-                try:
-                    self._handle_rank_monitor_msg(local_rank, loads_ipc_frame(obj_pickled))
-                except Exception as e:
-                    logger.warning(f"Dropped a message from rank monitor {local_rank}: {e!r}")
-            if lost is not None:
-                logger.warning(f"Lost the channel from rank monitor {local_rank}: {lost}")
-                with contextlib.suppress(Exception):
-                    state.channel.close()
-                state.channel = None
 
     def _handle_rank_monitor_msg(self, local_rank: int, msg: Any) -> None:
+        """Handle one message from a monitor; runs on the listener thread."""
         if isinstance(msg, TimeoutStopMsg):
-            # The first timeout stop of a cycle wins, as in the monitor.
-            previous = self._timeout_stops.get(local_rank)
-            if previous is None or previous.cycle < msg.cycle:
-                self._timeout_stops[local_rank] = msg
+            with self._timeout_stops_lock:
+                # The first timeout stop of a cycle wins, as in the monitor.
+                previous = self._timeout_stops.get(local_rank)
+                if previous is None or previous.cycle < msg.cycle:
+                    self._timeout_stops[local_rank] = msg
         else:
             logger.debug(f"Ignored a message from rank monitor {local_rank}: {msg!r}")
 
@@ -1160,9 +1247,11 @@ class LocalElasticAgent(SimpleElasticAgent):
     ) -> Dict[int, RankTimeout]:
         """Return the timeouts on which the monitors stopped exited workers in `cycle`.
 
-        Reads the monitors' channels without waiting: a monitor sends its TimeoutStopMsg
-        before it signals the worker, so the message is in the channel by the time the
-        launcher sees the worker exit.
+        Reads the timeout stops the listener thread received. A monitor sends its
+        TimeoutStopMsg before it signals the worker, so the message is in the launcher's
+        socket buffer by the time the worker exits; the listener may however not have
+        handled it yet when this runs - it needs some acknowledgement from the listener
+        to the rank monitor.
 
         Args:
             cycle: The cycle in which the workers exited.
@@ -1171,10 +1260,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         Returns:
             Timeouts keyed by global rank, only for workers stopped by their monitor.
         """
-        self._read_rank_monitor_messages()
+        with self._timeout_stops_lock:
+            stops = dict(self._timeout_stops)
         timeouts = {}
         for worker in self._worker_group.workers:
-            msg = self._timeout_stops.get(worker.local_rank)
+            msg = stops.get(worker.local_rank)
             if (
                 worker.global_rank in failures
                 and msg is not None
@@ -1190,14 +1280,14 @@ class LocalElasticAgent(SimpleElasticAgent):
         This updates the cycle number in rank monitors so they can include it in timeout logs.
         Should be called at the start of each cycle (in _start_workers).
 
-        Note: Creates short-lived connections for sending. Messages the monitors sent during
-        earlier cycles are read and dropped first, so the channels' buffers stay small.
+        Note: Creates short-lived connections for sending. The timeout stops of earlier
+        cycles are dropped first.
 
         Args:
             current_cycle: The current training cycle number (0 = initial, 1 = first restart, etc.)
         """
-        self._read_rank_monitor_messages()
-        self._timeout_stops.clear()
+        with self._timeout_stops_lock:
+            self._timeout_stops.clear()
 
         async def send_cycle_to_monitor(local_rank: int, socket_path: str):
             try:
@@ -2283,6 +2373,8 @@ def launch_agent(
                 agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
         _stop_diagnostic_collector()
+        # Before the publisher's channel closes under it.
+        agent.stop_outcome_publisher()
         _close_cycle_info_publisher(cycle_info_publisher, cycle_info_channel)
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous

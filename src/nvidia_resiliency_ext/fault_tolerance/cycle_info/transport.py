@@ -22,17 +22,25 @@ from .records import CycleStartInfo, LocalCycleOutcome
 class CycleInfoPublisher(ABC):
     """Sends cycle records towards the CycleAnalyzer.
 
-    The publish methods must return without waiting for delivery, and must not raise on
-    transport failures: a record that cannot be delivered is dropped.
+    The publish methods may wait for delivery, but only for a bounded time, and must not
+    raise on transport failures: a record that cannot be delivered is dropped.
     """
 
     @abstractmethod
-    def publish_cycle_start(self, info: CycleStartInfo) -> None:
-        """Publish how the rendezvous started a cycle; called by the store host only."""
+    def publish_cycle_start(self, info: CycleStartInfo) -> bool:
+        """Publish how the rendezvous started a cycle; called by the store host only.
+
+        Returns:
+            True if the record was delivered.
+        """
 
     @abstractmethod
-    def publish_outcome(self, outcome: LocalCycleOutcome) -> None:
-        """Publish how a cycle ended on this launcher."""
+    def publish_outcome(self, outcome: LocalCycleOutcome) -> bool:
+        """Publish how a cycle ended on this launcher.
+
+        Returns:
+            True if the record was delivered.
+        """
 
     def close(self) -> None:
         """Stop publishing; records not yet delivered may be dropped."""

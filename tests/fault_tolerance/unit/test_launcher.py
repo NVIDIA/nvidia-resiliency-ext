@@ -13,9 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import contextlib
 import logging
 import os
+import pickle
 import shlex
 import shutil
 import signal
@@ -23,6 +25,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -45,8 +49,6 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP,
     RDZV_SHUTDOWN_REASON_NO_PROGRESS,
     encode_ipc_frame,
-    loads_ipc_frame,
-    pop_ipc_frames,
 )
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
@@ -2194,6 +2196,7 @@ def _outcome_agent(cycle_info_dir="/cycle_infos", cycle_info_outcomes=True):
         MagicMock(global_rank=4 + i, local_rank=i, id=100 + i) for i in range(2)
     ]
     agent._cycle_outcome = None
+    agent._timeout_stops_lock = threading.Lock()
     agent._get_global_cycle_number = MagicMock(return_value=3)
     agent._collect_rank_monitor_timeouts = MagicMock(return_value={})
     return agent
@@ -2261,40 +2264,25 @@ class TestRecordCycleOutcome:
             agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
 
 
-class TestRankMonitorChannel:
-    """The monitors send their timeout stops on channels the launcher reads without waiting."""
+class TestCollectRankMonitorTimeouts:
+    """The main thread reads the timeout stops the listener thread received."""
 
     TIMEOUT = RankTimeout(TimeoutKind.SECTION, ("step",))
 
     @pytest.fixture
     def agent(self):
-        """Outcome agent whose two monitors are connected; `agent.monitor_ends` are their ends."""
+        """Outcome agent; workers 4 and 5 run as pids 100 and 101 on local ranks 0 and 1."""
         agent = _outcome_agent()
         del agent._collect_rank_monitor_timeouts  # the real method, not _outcome_agent's mock
         agent._timeout_stops = {}
-        agent._rank_monitors = {}
-        agent.monitor_ends = []
-        for local_rank in range(2):
-            monitor_end, launcher_end = socket.socketpair()
-            launcher_end.setblocking(False)
-            agent._rank_monitors[local_rank] = launcher.RankMonitorState(
-                process=MagicMock(), channel=launcher_end
-            )
-            agent.monitor_ends.append(monitor_end)
-        yield agent
-        for end in agent.monitor_ends:
-            end.close()
-        for state in agent._rank_monitors.values():
-            if state.channel is not None:
-                state.channel.close()
+        return agent
 
-    def test_timeout_stop_sent_before_the_exit_is_collected(self, agent):
-        """Workers 4 and 5 run as pids 100 and 101 on local ranks 0 and 1."""
-        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
+    def test_timeout_stop_of_an_exited_worker_is_collected(self, agent):
+        agent._handle_rank_monitor_msg(1, TimeoutStopMsg(3, 101, self.TIMEOUT))
         failures = {4: MagicMock(exitcode=1), 5: MagicMock(exitcode=-9)}
         assert agent._collect_rank_monitor_timeouts(3, failures) == {5: self.TIMEOUT}
 
-    def test_nothing_sent_collects_nothing(self, agent):
+    def test_nothing_received_collects_nothing(self, agent):
         assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {}
 
     @pytest.mark.parametrize(
@@ -2305,110 +2293,201 @@ class TestRankMonitorChannel:
     def test_timeout_stop_of_another_worker_or_cycle_is_ignored(
         self, agent, cycle, pid, failed_rank
     ):
-        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(cycle, pid, self.TIMEOUT)))
+        agent._handle_rank_monitor_msg(1, TimeoutStopMsg(cycle, pid, self.TIMEOUT))
         assert agent._collect_rank_monitor_timeouts(3, {failed_rank: MagicMock()}) == {}
 
-    def test_message_split_across_reads_is_kept_until_complete(self, agent):
-        frame = encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT))
-        agent.monitor_ends[1].sendall(frame[:7])
-        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {}
-        agent.monitor_ends[1].sendall(frame[7:])
-        assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {5: self.TIMEOUT}
-
     def test_first_timeout_stop_of_a_cycle_is_kept(self, agent):
-        later = RankTimeout(TimeoutKind.HEARTBEAT)
-        for timeout in (self.TIMEOUT, later):
-            agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, timeout)))
+        for timeout in (self.TIMEOUT, RankTimeout(TimeoutKind.HEARTBEAT)):
+            agent._handle_rank_monitor_msg(1, TimeoutStopMsg(3, 101, timeout))
         assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {5: self.TIMEOUT}
-
-    def test_closed_channel_is_dropped_after_reading_what_was_sent(self, agent):
-        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
-        agent.monitor_ends[1].close()
-        with patch.object(launcher, "logger") as logger:
-            timeouts = agent._collect_rank_monitor_timeouts(3, {5: MagicMock()})
-        assert timeouts == {5: self.TIMEOUT}
-        assert agent._rank_monitors[1].channel is None
-        logger.warning.assert_called_once()
-        assert agent._rank_monitors[0].channel is not None
-
-    def test_undecodable_message_is_dropped(self, agent):
-        agent.monitor_ends[1].sendall(len(b"junk").to_bytes(4, "big") + b"junk")
-        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
-        with patch.object(launcher, "logger"):
-            assert agent._collect_rank_monitor_timeouts(3, {5: MagicMock()}) == {5: self.TIMEOUT}
 
     def test_cycle_start_drops_the_stops_of_earlier_cycles(self, agent):
-        agent.monitor_ends[1].sendall(encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT)))
-        agent._send_cycle_to_rank_monitors(4)  # no socket paths: sends nothing
+        agent._rank_monitors = {}
+        agent._handle_rank_monitor_msg(1, TimeoutStopMsg(3, 101, self.TIMEOUT))
+        agent._send_cycle_to_rank_monitors(4)  # no monitors: sends nothing
         assert agent._timeout_stops == {}
-        assert agent._rank_monitors[1].pending == bytearray()
 
-    def test_connect_opens_the_channel(self):
+    def test_connect_records_the_socket_path(self):
         agent = _outcome_agent()
         agent._rank_monitors = {0: launcher.RankMonitorState(process=MagicMock(pid=77))}
-        sock = MagicMock()
-        with patch.object(launcher.socket, "socket", return_value=sock):
-            agent._connect_to_rank_monitor(0, agent._rank_monitors[0].process)
+        agent._connect_to_rank_monitor(0, agent._rank_monitors[0].process)
+        assert agent._rank_monitors[0].socket_path.endswith("_ft_launcher77_to_rmon.socket")
 
-        state = agent._rank_monitors[0]
-        assert state.socket_path.endswith("_ft_launcher77_to_rmon.socket")
-        sock.connect.assert_called_once_with(state.socket_path)
-        sent = b"".join(call.args[0] for call in sock.sendall.call_args_list)
-        (marker,) = [loads_ipc_frame(p) for p in pop_ipc_frames(bytearray(sent))]
-        assert isinstance(marker, LauncherChannelMsg)
-        sock.setblocking.assert_called_once_with(False)
-        assert state.channel is sock
 
-    def test_failed_connect_leaves_no_channel(self):
+class TestRankMonitorListener:
+    """A background thread listens to the monitors' channels and records their timeout stops."""
+
+    TIMEOUT = RankTimeout(TimeoutKind.SECTION, ("step",))
+
+    @pytest.fixture
+    def agent(self):
+        """Agent with two monitors; connecting to monitor N connects to `agent.monitor_ends[N]`.
+
+        The listener opens the monitors' sockets by path; here each path names one end of a
+        socket pair, whose other end stands for the monitor.
+        """
         agent = _outcome_agent()
-        agent._rank_monitors = {0: launcher.RankMonitorState(process=MagicMock(pid=77))}
-        sock = MagicMock()
-        sock.connect.side_effect = ConnectionRefusedError()
-        with patch.object(launcher.socket, "socket", return_value=sock):
+        agent._timeout_stops = {}
+        agent._rank_monitor_listener = None
+        agent._rank_monitor_loop = None
+        agent._rank_monitor_listen_task = None
+        agent._rank_monitors = {}
+        agent.monitor_ends = []
+        launcher_ends = {}
+        for local_rank in range(2):
+            monitor_end, launcher_end = socket.socketpair()
+            path = f"/monitor{local_rank}.socket"
+            launcher_ends[path] = launcher_end
+            agent._rank_monitors[local_rank] = launcher.RankMonitorState(
+                process=MagicMock(), socket_path=path
+            )
+            agent.monitor_ends.append(monitor_end)
+        real_open = asyncio.open_unix_connection
+
+        async def open_by_path(path):
+            return await real_open(sock=launcher_ends[path])
+
+        with (
+            patch.object(launcher.asyncio, "open_unix_connection", open_by_path),
+            patch.object(agent, "_connect_to_rank_monitor"),  # keep the test paths
+        ):
+            yield agent
+        if agent._rank_monitor_listener is not None:
+            agent._stop_rank_monitor_listener()
+        for end in agent.monitor_ends:
+            end.close()
+
+    @staticmethod
+    def _wait_for(condition, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while not condition():
+            assert time.monotonic() < deadline, "timed out"
+            time.sleep(0.01)
+
+    @staticmethod
+    def _received(monitor_end):
+        """The first message the launcher sent on this channel (the LauncherChannelMsg marker)."""
+        data = monitor_end.recv(65536)
+        size = int.from_bytes(data[:4], "big")
+        return pickle.loads(data[4 : 4 + size])
+
+    def test_listener_marks_the_channel_and_records_timeout_stops(self, agent):
+        agent._setup_rank_monitor_connections()
+        for monitor_end in agent.monitor_ends:
+            assert isinstance(self._received(monitor_end), LauncherChannelMsg)
+
+        frame = encode_ipc_frame(TimeoutStopMsg(3, 101, self.TIMEOUT))
+        agent.monitor_ends[1].sendall(frame[:7])  # split across reads
+        agent.monitor_ends[1].sendall(frame[7:])
+        self._wait_for(lambda: 1 in agent._timeout_stops)
+        assert (agent._timeout_stops[1].cycle, agent._timeout_stops[1].timeout) == (3, self.TIMEOUT)
+
+    def test_closed_channel_is_logged_and_the_others_keep_listening(self, agent):
+        with patch.object(launcher, "logger") as logger:
+            agent._setup_rank_monitor_connections()
+            agent.monitor_ends[1].close()
+            self._wait_for(lambda: logger.warning.called)
+            agent.monitor_ends[0].sendall(encode_ipc_frame(TimeoutStopMsg(3, 100, self.TIMEOUT)))
+            self._wait_for(lambda: 0 in agent._timeout_stops)
+        assert "Lost the channel from rank monitor 1" in logger.warning.call_args.args[0]
+
+    def test_undecodable_message_stops_listening_to_that_monitor_and_is_logged(self, agent):
+        with patch.object(launcher, "logger") as logger:
+            agent._setup_rank_monitor_connections()
+            agent.monitor_ends[1].sendall(len(b"junk").to_bytes(4, "big") + b"junk")
+            self._wait_for(lambda: logger.error.called)
+        assert "Stopped listening to rank monitor 1" in logger.error.call_args.args[0]
+
+    def test_failed_connect_is_logged(self, agent):
+        async def refuse(path):
+            raise ConnectionRefusedError(path)
+
+        with patch.object(launcher.asyncio, "open_unix_connection", refuse):
             with patch.object(launcher, "logger") as logger:
-                agent._connect_to_rank_monitor(0, agent._rank_monitors[0].process)
-        assert agent._rank_monitors[0].channel is None
-        sock.close.assert_called_once()
-        logger.warning.assert_called_once()
+                agent._setup_rank_monitor_connections()
+                agent._rank_monitor_listener.join(timeout=5)
+        assert logger.warning.call_count == 2  # one per monitor
+        assert not agent._rank_monitor_listener.is_alive()
+
+    def test_stop_ends_the_listener_thread(self, agent):
+        agent._setup_rank_monitor_connections()
+        thread = agent._rank_monitor_listener
+        assert thread.is_alive()
+        agent._stop_rank_monitor_listener()
+        assert not thread.is_alive()
+        assert agent._rank_monitor_loop.is_closed()
 
 
 class TestPublishCycleOutcome:
-    def _agent_with_outcome(self):
+    """The main thread queues the outcome; the publisher thread publishes it."""
+
+    @pytest.fixture
+    def agent(self):
         agent = _outcome_agent()
         agent._cycle_info_publisher = MagicMock()
+        agent._start_outcome_publisher()
         agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
-        return agent, agent._cycle_info_publisher.publish_outcome
+        yield agent
+        agent.stop_outcome_publisher()
 
-    def test_outcome_is_published(self):
-        agent, publish = self._agent_with_outcome()
-        agent._publish_cycle_outcome()
+    def test_outcome_is_published_on_the_publisher_thread(self, agent):
+        publish = agent._cycle_info_publisher.publish_outcome
+        threads = []
+        publish.side_effect = lambda outcome: threads.append(threading.current_thread())
+        agent._publish_cycle_outcome(wait=True)
         publish.assert_called_once_with(agent._cycle_outcome)
+        assert threads == [agent._outcome_publisher_thread]
 
-    def test_nothing_is_published_without_an_outcome_of_this_cycle(self):
-        agent, publish = self._agent_with_outcome()
+    def test_publish_does_not_wait_unless_asked(self, agent):
+        release = threading.Event()
+        agent._cycle_info_publisher.publish_outcome.side_effect = lambda _: release.wait(5)
+        start = time.monotonic()
+        agent._publish_cycle_outcome()  # the restart path
+        assert time.monotonic() - start < 1.0
+        release.set()
+        assert agent._wait_for_outcomes_published(5)
+
+    def test_wait_is_bounded(self, agent):
+        release = threading.Event()
+        agent._cycle_info_publisher.publish_outcome.side_effect = lambda _: release.wait(5)
+        with (
+            patch.object(launcher, "CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT", 0.05),
+            patch.object(launcher, "logger") as logger,
+        ):
+            agent._publish_cycle_outcome(wait=True)
+        logger.warning.assert_called_once()
+        release.set()
+
+    def test_nothing_is_published_without_an_outcome_of_this_cycle(self, agent):
         agent._get_global_cycle_number.return_value = 4  # recorded outcome is of cycle 3
-        agent._publish_cycle_outcome()
+        agent._publish_cycle_outcome(wait=True)
         agent._cycle_outcome = None  # outcomes disabled, or recording failed
-        agent._publish_cycle_outcome()
-        publish.assert_not_called()
+        agent._publish_cycle_outcome(wait=True)
+        agent._cycle_info_publisher.publish_outcome.assert_not_called()
 
     def test_nothing_is_published_without_a_publisher(self):
-        agent, _ = self._agent_with_outcome()
+        agent = _outcome_agent()
         agent._cycle_info_publisher = None
-        agent._publish_cycle_outcome()  # must not raise
+        agent._start_outcome_publisher()
+        agent._record_cycle_outcome(CycleEndReason.FAILED, {5: MagicMock(exitcode=1)})
+        agent._publish_cycle_outcome(wait=True)  # must not raise
+        assert agent._outcome_publisher_thread is None
+        agent.stop_outcome_publisher()  # nothing to stop
 
-    def test_publisher_failure_is_logged_and_does_not_interrupt_the_caller(self):
-        agent, publish = self._agent_with_outcome()
-        publish.side_effect = RuntimeError("queue full")
+    def test_publisher_failure_is_logged_and_the_thread_keeps_publishing(self, agent):
+        publish = agent._cycle_info_publisher.publish_outcome
+        publish.side_effect = [RuntimeError("unavailable"), None]
         with patch.object(launcher, "logger") as logger:
-            agent._publish_cycle_outcome()
+            agent._publish_cycle_outcome(wait=True)
+            agent._publish_cycle_outcome(wait=True)
         logger.warning.assert_called_once()
+        assert publish.call_count == 2
 
-    def test_termination_signal_propagates(self):
-        agent, publish = self._agent_with_outcome()
-        publish.side_effect = launcher.SignalException("terminated", signal.SIGTERM)
-        with pytest.raises(launcher.SignalException):
-            agent._publish_cycle_outcome()
+    def test_stop_ends_the_publisher_thread(self, agent):
+        thread = agent._outcome_publisher_thread
+        agent.stop_outcome_publisher()
+        assert not thread.is_alive()
+        assert agent._outcome_publisher_thread is None
 
     @pytest.mark.parametrize("open_rendezvous", [True, False], ids=["failed", "peer_restart"])
     def test_restart_publishes_after_opening_the_round_and_before_rejoining(self, open_rendezvous):

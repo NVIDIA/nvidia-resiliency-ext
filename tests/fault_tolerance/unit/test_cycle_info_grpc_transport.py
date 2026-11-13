@@ -175,7 +175,7 @@ def test_publish_is_a_blocking_call_with_the_timeout():
     stub = MagicMock()
     publisher = GrpcCycleInfoPublisher(stub, rpc_timeout=2.0)
 
-    publisher.publish_outcome(OUTCOME)
+    assert publisher.publish_outcome(OUTCOME) is True
 
     stub.PublishCycleOutcome.assert_called_once_with(outcome_to_proto(OUTCOME), timeout=2.0)
 
@@ -192,8 +192,26 @@ def test_failed_call_is_logged_without_raising():
     stub.PublishCycleStart.side_effect = _Unavailable()
     publisher = GrpcCycleInfoPublisher(stub)
     with patch.object(grpc_transport, "logger") as logger:
-        publisher.publish_cycle_start(START)
+        assert publisher.publish_cycle_start(START) is False
     logger.warning.assert_called_once()
+
+
+def test_failed_call_logs_the_grpc_core_debug_string():
+    class _Cancelled(grpc.RpcError):
+        def code(self):
+            return grpc.StatusCode.CANCELLED
+
+        def details(self):
+            return "CANCELLED"
+
+        def debug_error_string(self):
+            return "Received RST_STREAM with error code 8"
+
+    stub = MagicMock()
+    stub.PublishCycleOutcome.side_effect = _Cancelled()
+    with patch.object(grpc_transport, "logger") as logger:
+        assert GrpcCycleInfoPublisher(stub).publish_outcome(OUTCOME) is False
+    assert "Received RST_STREAM with error code 8" in logger.warning.call_args.args[0]
 
 
 def test_record_failing_to_encode_is_logged_without_raising():
@@ -201,7 +219,7 @@ def test_record_failing_to_encode_is_logged_without_raising():
     publisher = GrpcCycleInfoPublisher(stub)
     with patch.dict(grpc_transport._CYCLE_END_TO_PROTO, clear=True):
         with patch.object(grpc_transport, "logger") as logger:
-            publisher.publish_outcome(OUTCOME)
+            assert publisher.publish_outcome(OUTCOME) is False
     logger.warning.assert_called_once()
     stub.PublishCycleOutcome.assert_not_called()
 

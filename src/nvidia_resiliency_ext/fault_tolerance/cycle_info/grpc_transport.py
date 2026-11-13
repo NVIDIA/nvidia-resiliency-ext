@@ -148,29 +148,36 @@ class GrpcCycleInfoPublisher(CycleInfoPublisher):
         self._stub = stub
         self._rpc_timeout = rpc_timeout
 
-    def publish_cycle_start(self, info: CycleStartInfo) -> None:
+    def publish_cycle_start(self, info: CycleStartInfo) -> bool:
         what = f"start of cycle {info.cycle}"
-        self._publish(self._stub.PublishCycleStart, cycle_start_to_proto, info, what)
+        return self._publish(self._stub.PublishCycleStart, cycle_start_to_proto, info, what)
 
-    def publish_outcome(self, outcome: LocalCycleOutcome) -> None:
+    def publish_outcome(self, outcome: LocalCycleOutcome) -> bool:
         what = f"outcome of cycle {outcome.cycle}"
-        self._publish(self._stub.PublishCycleOutcome, outcome_to_proto, outcome, what)
+        return self._publish(self._stub.PublishCycleOutcome, outcome_to_proto, outcome, what)
 
     def close(self) -> None:
         """Nothing to release: calls complete before a publish returns."""
 
-    def _publish(self, rpc, encode, record, what: str) -> None:
+    def _publish(self, rpc, encode, record, what: str) -> bool:
         try:
             request = encode(record)
         except Exception as e:
             logger.warning(f"Failed to encode the {what}: {e!r}")
-            return
+            return False
         try:
             rpc(request, timeout=self._rpc_timeout)
+            return True
         except grpc.RpcError as e:
-            logger.warning(f"Failed to publish the {what}: {e.code().name}: {e.details()}")
+            # The gRPC core's own account of the failure, e.g. a reset stream or a GOAWAY;
+            # details() alone can be as terse as "CANCELLED".
+            debug = e.debug_error_string() if hasattr(e, "debug_error_string") else ""
+            logger.warning(
+                f"Failed to publish the {what}: {e.code().name}: {e.details()} ({debug})"
+            )
         except Exception as e:  # e.g. the caller closed the channel
             logger.warning(f"Failed to publish the {what}: {e!r}")
+        return False
 
 
 def _drain(records: queue.SimpleQueue) -> List:

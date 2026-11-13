@@ -229,8 +229,6 @@ class RankMonitorServer:
         # First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it
         sig = self.cfg.rank_termination_signal
         try:
-            # Process.send_signal checks PID reuse against its saved creation time.
-            rank_process.send_signal(signal.SIGCONT)
             if timeout_stop is not None:
                 # Sent before the termination signal, so it is in the launcher's socket buffer
                 # by the time the worker exits from it. The message does not prove that the
@@ -240,6 +238,8 @@ class RankMonitorServer:
                     self._notify_timeout_stop(timeout_stop, rank_process.pid)
                 except Exception as e:  # never let the notification prevent the kill
                     self.logger.warning(f"Failed to notify the launcher of the timeout stop: {e!r}")
+            # Process.send_signal checks PID reuse against its saved creation time.
+            rank_process.send_signal(signal.SIGCONT)
             rank_process.send_signal(sig)
             self.logger.debug(
                 f"Rank monitor sent SIGCONT then {sig.name} to the rank (PID={rank_process.pid})"
