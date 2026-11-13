@@ -4,6 +4,7 @@
 import errno
 import os
 import select
+import signal
 import socket
 import subprocess
 import sys
@@ -36,8 +37,13 @@ def log_server_port():
         ("invalid_nproc", False),
     ],
 )
-def test_startup_failure_reaches_original_stderr(tmp_path, failure, redirect):
-    args = ["--nnodes=1", "--nproc-per-node=1"]
+def test_startup_failure_reaches_original_stderr(tmp_path, log_server_port, failure, redirect):
+    args = [
+        "--standalone",
+        "--nnodes=1",
+        "--nproc-per-node=1",
+        f"--ft-log-server-port={log_server_port}",
+    ]
     if redirect:
         args += [
             f"--ft-nvrx-logfile={tmp_path}/nvrx/logs/launcher.log",
@@ -78,7 +84,7 @@ def test_startup_failure_reaches_original_stderr(tmp_path, failure, redirect):
         assert "direct cause" in result.stderr
 
 
-def test_successful_launch_keeps_centralized_logging(tmp_path, log_server_port):
+def test_standalone_launch_keeps_local_logging(tmp_path, log_server_port):
     worker = tmp_path / "worker.py"
     worker.write_text(
         "import sys\nprint('worker stdout marker')\n"
@@ -111,7 +117,8 @@ def test_successful_launch_keeps_centralized_logging(tmp_path, log_server_port):
     app_log = (tmp_path / "train_cycle0.log").read_text()
     assert "worker stdout marker" in app_log
     assert "worker stderr marker" in app_log
-    assert "worker_start_completed" in log.read_text()
+    assert "worker_start_completed" in (log.parent / "launcher_agent.log").read_text()
+    assert not log.exists()
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -130,7 +137,6 @@ def test_main_closes_saved_stderr_after_service_cleanup(tmp_path, monkeypatch, f
 
     monkeypatch.setattr(launcher, "run", run)
     monkeypatch.setattr(launcher, "_stop_diagnostic_collector", cleanup)
-    monkeypatch.setattr(launcher, "_GRPC_SERVER_PROCESSES", [])
     monkeypatch.setattr(launcher, "_ATTRIBUTION_MANAGER", None)
 
     args = [f"--ft-nvrx-logfile={tmp_path}/launcher.log", "train.py"]
@@ -144,6 +150,35 @@ def test_main_closes_saved_stderr_after_service_cleanup(tmp_path, monkeypatch, f
     with pytest.raises(OSError) as closed:
         os.fstat(saved[0])
     assert closed.value.errno == errno.EBADF
+
+
+@pytest.mark.parametrize("is_control_host_agent", [False, True])
+@pytest.mark.parametrize(
+    "sigval,expected",
+    [(signal.SIGTERM, 143), (signal.SIGINT, 130), (signal.SIGHUP, 129), (signal.SIGQUIT, 131)],
+)
+def test_main_preserves_signal_exit_code_on_all_nodes(
+    monkeypatch, is_control_host_agent, sigval, expected
+):
+    args = launcher.parse_args(["train.py"])
+    if is_control_host_agent:
+        args._is_control_host_agent = True
+    monkeypatch.setattr(
+        launcher, "run", Mock(side_effect=launcher.SignalException("interrupted", sigval=sigval))
+    )
+    reporter = Mock(logs_specs=None)
+    monkeypatch.setattr(launcher, "launcher_error_reporter", reporter)
+    cleanup = Mock()
+    monkeypatch.setattr(launcher, "_stop_diagnostic_collector", cleanup)
+    monkeypatch.setattr(launcher, "_ATTRIBUTION_MANAGER", None)
+
+    with pytest.raises(SystemExit) as exc:
+        launcher.main(args)
+
+    assert exc.value.code == expected
+    cleanup.assert_called_once_with()
+    reporter.close.assert_called_once_with()
+    reporter.report_exception.assert_not_called()
 
 
 def test_main_closes_saved_stderr_even_if_cleanup_raises(tmp_path, monkeypatch):
@@ -177,7 +212,6 @@ def test_broken_original_stderr_does_not_mask_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "run", Mock(side_effect=ValueError("original failure")))
     cleanup = Mock()
     monkeypatch.setattr(launcher, "_stop_diagnostic_collector", cleanup)
-    monkeypatch.setattr(launcher, "_GRPC_SERVER_PROCESSES", [])
     monkeypatch.setattr(launcher, "_ATTRIBUTION_MANAGER", None)
     try:
         with pytest.raises(SystemExit) as exc:
@@ -284,30 +318,59 @@ def fail_before_agent(config, entrypoint):
 
 os.environ["NVRX_DISABLE_RANK_MONITORS"] = "1"
 launcher.elastic_launch = fail_before_agent
-launcher.main()
+# Exercise agent logging in this interpreter so the injected failure survives;
+# the public control-host path execs a fresh agent interpreter.
+args = launcher.parse_args(None)
+args._is_control_host_agent = True
+launcher.main(args)
 """
-    result = subprocess.run(
+    # A compute agent connects to supervisor-owned aggregation. It never starts
+    # servers itself, and standalone intentionally has no aggregation support.
+    server = subprocess.Popen(
         [
             sys.executable,
-            "-c",
-            code,
-            "--standalone",
-            "--nnodes=1",
-            "--nproc-per-node=1",
-            f"--ft-nvrx-logfile={log}",
-            f"--ft-per-cycle-applog-prefix={tmp_path}/train.log",
-            f"--ft-log-server-port={log_server_port}",
-            "--ft-log-server-graceful-shutdown-timeout=1",
-            "train.py",
+            "-m",
+            "nvidia_resiliency_ext.shared_utils.grpc_log_server",
+            "--port",
+            str(log_server_port),
+            "--allowed-root",
+            str(tmp_path),
+            "--graceful-shutdown-timeout=.1",
         ],
-        capture_output=True,
-        text=True,
-        timeout=30,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
     )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                code,
+                "--rdzv-endpoint=localhost:29500",
+                "--rdzv-conf=is_host=false",
+                "--nnodes=1",
+                "--nproc-per-node=1",
+                f"--ft-nvrx-logfile={log}",
+                f"--ft-per-cycle-applog-prefix={tmp_path}/train.log",
+                f"--ft-log-server-port={log_server_port}",
+                "train.py",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=5)
 
     assert result.returncode == 1, result.stderr
     assert "fatal forwarded error marker" not in result.stderr
     assert "ft_launcher failed on" not in result.stderr
-    text = log.read_text()
+    text = (log.parent / "launcher_agent.log").read_text()
+    assert not log.exists()
     assert "Traceback (most recent call last)" in text
     assert "ValueError: fatal forwarded error marker" in text

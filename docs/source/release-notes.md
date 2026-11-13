@@ -4,7 +4,28 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
 
 ## Unreleased
 
+### InJob control-host processes
+
+- On the control host, `ft_launcher` now supervises a separate job-controller,
+  node-agent, and enabled service processes. Existing colocated launch commands
+  remain unchanged. Control-process logs use the exact `--ft-nvrx-logfile` path;
+  node-agent and rank-monitor logs from every node use a derived `*_agent.log`
+  through the existing gRPC aggregation path. Update tools that read agent logs
+  from the configured path to use the derived agent file. See the
+  [deployment guide](fault_tolerance/deployment.rst) for ownership, shutdown,
+  and accepted exit-handling differences.
+
 ### Removals
+
+- Replaced the experimental `nvrx-control` command with
+  `ft_launcher --ft-control-only` for external CPU control hosts. When cycle-info
+  output is enabled, pass the compute job's ID with `--ft-cycle-info-job-id`.
+
+- Removed `--ft-log-server-log-prefix` and its underscore alias. The control
+  supervisor captures gRPC root/leaf process logs directly at the configured
+  `--ft-nvrx-logfile` path or original console; separate aggregator process log files
+  are no longer supported. `--standalone` uses local logging without gRPC
+  aggregation, including when `--ft-enable-log-server` is set.
 
 - **In-process restart has been removed**, including the `nvidia_resiliency_ext.inprocess` package, its documentation, examples, and tests. Use InJob restart through `ft_launcher`; see the [InJob restart usage guide](fault_tolerance/usage_guide.rst).
 
@@ -14,8 +35,8 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   straggler APIs directly; use the Megatron GPT walkthrough for InJob training.
   Documentation builds no longer require Lightning.
 
-- **YAML configuration for fault tolerance has been removed.** `ft_launcher` and
-  `nvrx-control` no longer accept `--ft-cfg-path`, and
+- **YAML configuration for fault tolerance has been removed.** `ft_launcher`
+  no longer accepts `--ft-cfg-path`, and
   `FaultToleranceConfig.from_yaml_file`/`to_yaml_file` are gone, along with the
   `pyyaml` dependency. `ft_launcher` also no longer reads `--ft-cfg-path`'s
   environment form, `PET_FT_CFG_PATH`: a job that sets only that variable now runs

@@ -184,9 +184,10 @@ a launcher-managed attribution service:
 
   The managed attribution app-log directory is derived from
   ``dirname(realpath(--ft-per-cycle-applog-prefix))``. When ``--ft-nvrx-logfile`` is set, the
-  managed service stdout/stderr log is derived from it as ``*_attribution.log`` and written
-  beside it. Without ``--ft-nvrx-logfile``, the log is named from the application prefix and
-  written under an ``nvrx/`` subdirectory of the application-log directory. The managed service
+  managed service stdout/stderr joins the supervisor's log at that exact path.
+  Without ``--ft-nvrx-logfile``, these logs go to the original console stream.
+  ``--standalone`` retains the embedded-control path and its separate ``*_attribution.log``.
+  See :doc:`operations` for the control and compute log paths. The managed service
   listens on ``127.0.0.1:50050`` and is exposed to the InJob client as
   ``http://localhost:50050``.
 
@@ -219,15 +220,16 @@ a launcher-managed attribution service:
   **Acting on a STOP verdict is opt-in.** With the default
   ``--ft-attribution-stop-action log``, attribution runs in full and every verdict is
   polled, logged and recorded, but a STOP never terminates anything. Set
-  ``--ft-attribution-stop-action no-restart`` to make a STOP end the job.
+  ``--ft-attribution-stop-action no-restart`` to make a STOP end the current generation.
 
   The default is deliberate because the two kinds of attribution mistake are not equally
   expensive. A missed STOP is bounded: the job crash-loops until ``--max-restarts`` runs
   out, and the progress tracker independently catches the stuck case. An enforced false
-  STOP is not bounded: the job ends with the no-restart exit code and stays down until a
-  human resubmits it. Run in ``log`` mode first, review the recorded verdicts against what
-  actually happened on your workloads, and enable ``no-restart`` once you trust the
-  precision.
+  STOP ends the current generation with the no-restart exit code and can discard
+  progress since the last checkpoint. Queued singleton successors remain eligible
+  to start and restore a checkpoint. Run in ``log`` mode first, review the verdicts
+  against what actually happened on your workloads, and enable ``no-restart`` once
+  you trust the precision.
 
   In ``log`` mode every failed cycle is analyzed, not just the first one that produces a
   STOP, so the verdicts accumulate over the life of the job. Each unenforced STOP is logged
@@ -235,8 +237,9 @@ a launcher-managed attribution service:
   of how many STOP verdicts have been seen so far. Comparing that count against the number
   of failed cycles is the measurement that tells you whether to enable ``no-restart``.
 
-  When enforcement is on, every launcher in the job exits with the no-restart exit code
-  rather than the generic failure code ``1``. See :ref:`ft-no-restart`.
+  When enforcement is on, launchers that observe the terminal verdict use the
+  no-restart exit code rather than the generic failure code ``1``. A delayed peer
+  may lose its TCPStore connection and exit ``1`` instead. See :ref:`ft-no-restart`.
 
   ``ft_launcher`` sends job metadata with each attribution submission: ``user`` is read from
   ``SLURM_JOB_USER`` or ``USER``, and ``job_id`` is read from ``SLURM_ARRAY_JOB_ID`` or

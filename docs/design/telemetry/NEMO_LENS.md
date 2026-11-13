@@ -38,12 +38,17 @@ NVRx-owned processes read Lens settings with the `NVRX_OTEL_` prefix first and f
 
 Resource attributes describe a process and remain fixed after provider initialization. Span attributes describe an operation, including values that change within the process. Resource publication accepts scalar strings, booleans, integers and floats, encoded as strings in `OTEL_RESOURCE_ATTRIBUTES`. Span attributes also accept homogeneous arrays of those types.
 
-| Process                      | `service.name`     | `service.instance.id` |
-| ---------------------------- | ------------------ | --------------------- |
-| Launcher agent               | `nvrx.ft_launcher` | `nvrx-agent-<node>`   |
-| Persistent checkpoint worker | `nvrx.ckpt_worker` | `nvrx-ckpt<rank>`     |
+| Process                      | `service.name`        | `service.instance.id`   |
+| ---------------------------- | --------------------- | ----------------------- |
+| Launcher agent               | `nvrx.ft_launcher`    | `node-agent-<node>`     |
+| Job controller               | `nvrx.job_controller` | `job-controller-<node>` |
+| Persistent checkpoint worker | `nvrx.ckpt_worker`    | `nvrx-ckpt<rank>`       |
 
 These IDs can repeat across restarts. Job identity, such as `nv.dl.job.uuid`, comes from the launching environment or training framework. The launcher also records `nv.nvrx.ftl.node` on its Resource. The framework owns trainer identity.
+
+Each telemetry-emitting process initializes its own provider. The control supervisor passes the existing environment, including `OTEL_RESOURCE_ATTRIBUTES`, to exec'd children; it does not pass a live provider. The node-agent and job-controller supply their own service and instance identities. The controller sets `nv.nvrx.ftl.node` to its host's fully qualified name and passes that same identity to the attribution poller. It stops the poller before bounded telemetry shutdown; flushing consumes part of the existing TCPStore shutdown grace.
+
+Rank monitors, timeout-dump collectors, gRPC aggregators, the supervisor, and the managed attribution server currently emit ordinary logs without OTEL spans. Adding instrumentation to those processes requires provider initialization in their own entrypoints. Rank monitors are forked before node-agent telemetry initialization, so later setup in the parent does not initialize a provider in them.
 
 ### Worker resources
 

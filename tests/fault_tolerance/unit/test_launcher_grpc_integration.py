@@ -300,8 +300,8 @@ def test_launcher_starts_grpc_server_on_correct_port(tmp_dir):
     assert f"port={custom_port}" in output, f"Server should be started on port {custom_port}"
 
 
-def test_launcher_creates_grpc_root_log(tmp_dir):
-    """Test that launcher creates a log file for the gRPC root log server."""
+def test_launcher_routes_grpc_process_logs_to_console_without_nvrx_log(tmp_dir):
+    """Colocated control process logs use the console when no NVRx log is set."""
     base_log_file = os.path.join(tmp_dir, "test.log")
     expected_server_log = os.path.join(tmp_dir, "test_grpc_root.log")
 
@@ -318,14 +318,9 @@ def test_launcher_creates_grpc_root_log(tmp_dir):
 
     ret_code, output = _run_launcher(launcher_cmd)
 
-    # Verify server log file was created
-    # Note: We don't strictly require it to exist as the launcher may clean up
-    # But if it does exist, verify it contains server startup message
-    if os.path.exists(expected_server_log):
-        with open(expected_server_log, 'r') as f:
-            server_content = f.read()
-            # Check for any indication the server started
-            assert len(server_content) > 0, "Server log should not be empty"
+    assert ret_code == 0, output
+    assert "Log aggregation server started" in output
+    assert not os.path.exists(expected_server_log)
 
 
 def test_launcher_without_grpc_flag_does_not_start_server(tmp_dir):
@@ -347,11 +342,9 @@ def test_launcher_without_grpc_flag_does_not_start_server(tmp_dir):
     assert "gRPC log server started" not in output, "gRPC server should not be started"
 
 
-def test_launcher_custom_server_log_prefix(tmp_dir):
-    """Test that --ft-log-server-log-prefix is used for root diagnostics."""
+def test_aggregator_process_logs_only_use_combined_control_log(tmp_dir):
+    """All control service logs use the combined local log in colocated mode."""
     base_log_file = os.path.join(tmp_dir, "test.log")
-    custom_server_log_prefix = os.path.join(tmp_dir, "custom_grpc_server")
-    custom_root_log = custom_server_log_prefix + "_root.log"
     default_root_log = os.path.join(tmp_dir, "test_grpc_root.log")
 
     cmd_to_run = f"{_get_util_script_path()} --scenario=test_ranks_exit_gracefully"
@@ -361,7 +354,7 @@ def test_launcher_custom_server_log_prefix(tmp_dir):
         f" {FT_ARGS}"
         " --ft-enable-log-server=true"
         f" --ft-per-cycle-applog-prefix={base_log_file}"
-        f" --ft-log-server-log-prefix={custom_server_log_prefix}"
+        f" --ft-nvrx-logfile={tmp_dir}/nvrx.log"
         " --ft-log-server-graceful-shutdown-timeout=1"
         f" --nproc-per-node={WORLD_SIZE}"
         f" {cmd_to_run}"
@@ -369,15 +362,8 @@ def test_launcher_custom_server_log_prefix(tmp_dir):
 
     ret_code, output = _run_launcher(launcher_cmd)
 
-    assert ret_code in [0, 1], f"Launcher should complete; output:\n{output}"
-    assert "gRPC log server started" in output, f"Expected gRPC startup log line; output:\n{output}"
-    assert os.path.isfile(
-        custom_root_log
-    ), f"Root log should be written to custom path {custom_root_log}. Output:\n{output}"
-    with open(custom_root_log, 'r') as f:
-        custom_content = f.read()
-    assert len(custom_content) > 0, "Custom root gRPC log file should not be empty"
-    assert not os.path.isfile(default_root_log), (
-        f"Default root log {default_root_log} should not be created when "
-        f"--ft-log-server-log-prefix is set (two-level mode regression check)"
-    )
+    assert ret_code == 0, output
+    with open(os.path.join(tmp_dir, "nvrx.log")) as f:
+        assert "gRPC log server started" in f.read()
+    assert not os.path.isfile(default_root_log)
+    assert not any(name.endswith("_root.log") or "_leaf_" in name for name in os.listdir(tmp_dir))

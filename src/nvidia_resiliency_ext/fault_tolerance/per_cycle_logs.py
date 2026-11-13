@@ -708,6 +708,9 @@ class MultiplexingReaderThread(threading.Thread):
             """Helper to add data to batch, lazily opening file if needed."""
             # Lazy open files as needed
             if log_file_path not in open_files:
+                # Launcher logs may use a different directory from application
+                # logs. Local mode has no aggregation server to create it.
+                os.makedirs(os.path.dirname(log_file_path) or ".", exist_ok=True)
                 # Match buffer size to batch size for optimal Lustre performance
                 # This ensures 256KB batches are written in 1-2 large syscalls instead of ~32 small ones
                 open_files[log_file_path] = open(log_file_path, 'a', buffering=_WRITE_BATCH_SIZE)
