@@ -172,7 +172,6 @@ class TestAsyncSave:
         thread_count=1,
         caching=False,
         open_file=open,
-        is_multiproc_io=False,
         use_cached_data_structure=False,
         use_cpu_shm_for_gpu_tensors=False,
         metadata_cache=None,
@@ -183,7 +182,6 @@ class TestAsyncSave:
             checkpoint_dir,
             thread_count=thread_count,
             open_file=open_file,
-            is_multiproc_io=is_multiproc_io,
             use_cached_data_structure=use_cached_data_structure,
             use_cpu_shm_for_gpu_tensors=use_cpu_shm_for_gpu_tensors,
         )
@@ -222,13 +220,8 @@ class TestAsyncSave:
         )
         return state_dict
 
-    @pytest.mark.parametrize(
-        ('persistent_is_daemon', 'is_multiproc_io'),
-        [(True, False), (False, True), (False, False)],
-    )
-    def test_async_is_equivalent_to_sync(
-        self, tmp_path_dist_ckpt, persistent_is_daemon, is_multiproc_io
-    ):
+    @pytest.mark.parametrize('persistent_is_daemon', [True, False])
+    def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt, persistent_is_daemon):
         """Verifies that async checkpointing produces the same results as sync checkpointing."""
         Utils.initialize_distributed()
         async_queue = AsyncCallsQueue(is_daemon=persistent_is_daemon)
@@ -241,9 +234,7 @@ class TestAsyncSave:
             planner = DefaultSavePlanner()
 
             # Perform async and sync saves
-            self.async_save_checkpoint(
-                async_ckpt_dir, state_dict, planner, async_queue, is_multiproc_io=is_multiproc_io
-            )
+            self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
             self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
 
             # Finalize async saves
@@ -372,35 +363,7 @@ class TestAsyncSave:
             md_writer.fast_metadata_enabled.cache_clear()
             md_writer._select_dumps.cache_clear()
 
-    @pytest.mark.parametrize(
-        ('persistent_is_daemon', 'is_multiproc_io'),
-        [(True, True)],
-    )
-    def test_invalid_async_setup(self, tmp_path_dist_ckpt, persistent_is_daemon, is_multiproc_io):
-        """
-        Verifies a clear error message when users incorrectly setup a daemon async worker
-        and configure FileWriter to perform multiprocessing.
-        """
-        Utils.initialize_distributed()
-        async_queue = AsyncCallsQueue(is_daemon=persistent_is_daemon)
-        model = FSDP(Model((1024, 1024), 8))
-        with (TempNamedDir(tmp_path_dist_ckpt / 'async_checkpoint', sync=True) as async_ckpt_dir,):
-            state_dict = model.state_dict()
-            planner = DefaultSavePlanner()
-            # Perform async and sync saves
-            self.async_save_checkpoint(
-                async_ckpt_dir, state_dict, planner, async_queue, is_multiproc_io=is_multiproc_io
-            )
-            with pytest.raises(CheckpointException) as exc_info:
-                # Finalize async saves
-                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-            rank = torch.distributed.get_rank()
-            if rank == 0:
-                assert 'Invalid Setup!' in str(exc_info.value)
-            async_queue.close()
-
-    @pytest.mark.parametrize('is_multiproc_io', [True, False])
-    def test_errors_are_reported(self, tmp_path_dist_ckpt, async_queue, is_multiproc_io):
+    def test_errors_are_reported(self, tmp_path_dist_ckpt, async_queue):
         Utils.initialize_distributed()
         rank = torch.distributed.get_rank()
         model = FSDP(Model((1024, 1024), 8))
@@ -420,7 +383,6 @@ class TestAsyncSave:
                 planner,
                 async_queue,
                 open_file=open_file,
-                is_multiproc_io=is_multiproc_io,
             )
             with pytest.raises(CheckpointException) as exc_info:
                 async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
@@ -1010,12 +972,8 @@ class TestAsyncSave:
             # Close in finally so failing ranks stay aligned for shutdown
             async_queue.close()
 
-    @pytest.mark.parametrize(
-        ('persistent_is_daemon', 'is_multiproc_io'), [(True, False), (False, True), (False, False)]
-    )
-    def test_async_cp_with_multiple_queue_and_abort(
-        self, tmp_path_dist_ckpt, persistent_is_daemon, is_multiproc_io
-    ):
+    @pytest.mark.parametrize('persistent_is_daemon', [True, False])
+    def test_async_cp_with_multiple_queue_and_abort(self, tmp_path_dist_ckpt, persistent_is_daemon):
         """
         Verifies that async checkpointing backend can be used with multiple async queues.
         For example, user may want to save 2 checkpoints i.e. one sharded state and one only on rank-0.
@@ -1037,13 +995,7 @@ class TestAsyncSave:
             planner = DefaultSavePlanner()
 
             # Perform async saves for both dist CP and non-dict CP use cases.
-            self.async_save_checkpoint(
-                async_ckpt_dir_dist,
-                state_dict,
-                planner,
-                async_queue_dist,
-                is_multiproc_io=is_multiproc_io,
-            )
+            self.async_save_checkpoint(async_ckpt_dir_dist, state_dict, planner, async_queue_dist)
             self.async_save_checkpoint_on_rank0(async_ckpt_dir_no_dist, state_dict, ckpt_impl)
             async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
             ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
@@ -1070,13 +1022,7 @@ class TestAsyncSave:
 
             # Perform async saves for both dist CP and non-dist CP use cases.
             # Validate that operations seamlessly resume after an abort operation
-            self.async_save_checkpoint(
-                async_ckpt_dir_dist,
-                state_dict,
-                planner,
-                async_queue_dist,
-                is_multiproc_io=is_multiproc_io,
-            )
+            self.async_save_checkpoint(async_ckpt_dir_dist, state_dict, planner, async_queue_dist)
             self.async_save_checkpoint_on_rank0(async_ckpt_dir_no_dist, state_dict, ckpt_impl)
             async_queue_dist.maybe_finalize_async_calls(blocking=True, no_dist=False)
             ckpt_impl.finalize_async_save(blocking=True, no_dist=True)
