@@ -67,7 +67,10 @@
 <li class="toctree-l3"><a class="reference internal" href="#capture-and-upload">Capture and upload</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#failures-and-retention">Failures and retention</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#known-issues">Known Issues</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#configuration">Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#configuration">Configuration</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#choosing-a-capture-timeout-for-cuda-gdb">Choosing a capture timeout for CUDA-GDB</a></li>
+</ul>
+</li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="api.html">API documentation</a></li>
@@ -484,6 +487,37 @@ local teardown is in progress.</p>
 <p>Timeout dumps are configured with the options below. Each corresponds to a field of
 <code class="docutils literal notranslate"><span class="pre">TimeoutDumpConfig</span></code>, the <code class="docutils literal notranslate"><span class="pre">timeout_dump</span></code> field of <code class="docutils literal notranslate"><span class="pre">FaultToleranceConfig</span></code>; tool
 options configure that tool’s entry in <code class="docutils literal notranslate"><span class="pre">tools</span></code>, whose order is the execution order.</p>
+<section id="choosing-a-capture-timeout-for-cuda-gdb">
+<h3>Choosing a capture timeout for CUDA-GDB<a class="headerlink" href="#choosing-a-capture-timeout-for-cuda-gdb" title="Link to this heading"></a></h3>
+<p>CUDA-GDB processes symbols from the worker’s loaded libraries before executing
+the capture commands. Large CUDA libraries can exhaust the default <strong>30-second
+total budget</strong> before CUDA-GDB produces any stack frames. That budget covers
+all configured tools, including startup and cleanup; it is not a separate
+30 seconds for each tool.</p>
+<p>In QA measurements on aarch64 nodes, CUDA-GDB 13.4 took approximately
+25 seconds to load <code class="docutils literal notranslate"><span class="pre">libtransformer_engine.so</span></code> from Transformer Engine 2.19,
+and 41 seconds with Transformer Engine 2.20.2 or 2.21.0. A complete
+<code class="docutils literal notranslate"><span class="pre">pyspy,gdb,cuda-gdb</span></code> capture took approximately 48–50 seconds per rank for
+the captures that completed in Megatron-LM 26.10 with Transformer Engine 2.21
+on GB300. These timings are specific to the measured environment; x86/H100
+was not measured.</p>
+<p>For Megatron-LM or NeMo workers using Transformer Engine 2.19 or later,
+increase <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-capture-timeout</span></code> when enabling CUDA-GDB. For
+example, start with 60 seconds and validate it with the deployed workload:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>--ft-timeout-dump-capture-timeout<span class="o">=</span><span class="m">60</span>
+</pre></div>
+</div>
+<p>Alternatively, omit CUDA-GDB with <code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-tools=pyspy,gdb</span></code>.
+60 seconds is a starting point, not a guarantee: library loading, earlier
+tools, debugger commands, and node load all consume the capture budget.</p>
+<p>A larger budget can delay worker termination and recovery, including when a
+debugger stalls until the deadline. Independently of the configured budget,
+the launcher can send SIGTERM to workers whose captures are still running
+(see <a class="reference internal" href="#known-issues">Known Issues</a>). In the QA run, some captures completed while others
+were interrupted by launcher SIGTERM, rather than exhausting their capture
+budget. Increasing the budget does not resolve this teardown coordination
+issue. It is separate from symbol loading exhausting the default budget,
+which can occur without a launcher signal during capture.</p>
 <table class="docutils align-default" id="id1">
 <caption><span class="caption-text">Shared fields</span><a class="headerlink" href="#id1" title="Link to this table"></a></caption>
 <colgroup>
@@ -523,7 +557,7 @@ options configure that tool’s entry in <code class="docutils literal notransla
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">capture_timeout</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">30</span></code> seconds</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--ft-timeout-dump-capture-timeout</span></code></p></td>
-<td><p>Total capture grace across all tools, including cleanup</p></td>
+<td><p>Total capture grace across all tools, including cleanup; see <a class="reference internal" href="#choosing-a-capture-timeout-for-cuda-gdb">Choosing a capture timeout for CUDA-GDB</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_capture_bytes</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1048576</span></code></p></td>
@@ -595,6 +629,7 @@ options configure that tool’s entry in <code class="docutils literal notransla
 </tr>
 </tbody>
 </table>
+</section>
 </section>
 </section>
 
