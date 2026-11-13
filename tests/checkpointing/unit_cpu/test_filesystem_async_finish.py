@@ -113,22 +113,21 @@ def test_finish_writes_per_rank_metadata(tmp_path, saved, metadata_template):
 
 
 @pytest.mark.parametrize(
-    ("mode", "version", "defers"),
+    ("mode", "version"),
     [
         pytest.param(
             None,
             None,
-            False,
             marks=pytest.mark.skipif(not ON_TESTED_TORCH, reason="torch outside the tested range"),
         ),
-        ("0", None, True),
+        ("0", None),
     ],
 )
 @GLOBAL_METADATA
-def test_finish_defers_to_torch(
-    monkeypatch, tmp_path, saved, mode, version, defers, metadata_template
+def test_finish_keeps_filesystem_ownership(
+    monkeypatch, tmp_path, saved, mode, version, metadata_template
 ):
-    """finish writes with torch's writer if nvrx's is off."""
+    """The standard pickle fallback also uses the selected filesystem."""
     if mode is not None:
         monkeypatch.setenv("NVRX_FAST_METADATA_PICKLE", mode)
     if version is not None:
@@ -138,8 +137,8 @@ def test_finish_defers_to_torch(
     monkeypatch.setattr(
         FileSystemWriter, "finish", lambda self, *args: calls.append(1) or torch_finish(self, *args)
     )
-    files, (md,) = finish(
+    _files, (md,) = finish(
         FileSystemWriterAsync, tmp_path, saved, metadata_template=metadata_template
     )
-    assert bool(calls) is defers
+    assert not calls
     assert md.storage_data == saved[0].storage_data

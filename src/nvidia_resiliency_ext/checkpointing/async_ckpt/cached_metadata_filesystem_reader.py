@@ -16,9 +16,13 @@
 """ FS Reader with metadata cached support. """
 
 import os
-from typing import Dict, Union
+from typing import ClassVar
 
 from torch.distributed.checkpoint import FileSystemReader, Metadata
+
+from ..filesystem import CheckpointFileSystem, LocalFileSystem
+
+_LOCAL_FILESYSTEM = LocalFileSystem()
 
 
 class CachedMetadataFileSystemReader(FileSystemReader):
@@ -26,15 +30,21 @@ class CachedMetadataFileSystemReader(FileSystemReader):
     Extends FileSystemReader to cache metadata for improved performance.
 
     Metadata is shared across all reader instances that use the same checkpoint
-    directory (same path), since the loaded metadata is identical.
+    directory and filesystem object, since the loaded metadata is identical.
 
     Attributes:
-        _metadata_cache (Dict[str, Metadata]): Class-level cache keyed by checkpoint path.
+        _metadata_cache: Metadata and filesystem references keyed by backend identity and path.
     """
 
-    _metadata_cache: Dict[str, Metadata] = {}
+    _metadata_cache: ClassVar[dict[tuple[int, str], tuple[CheckpointFileSystem, Metadata]]] = {}
 
-    def __init__(self, path: Union[str, os.PathLike], cache_metadata: bool = True) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike,
+        cache_metadata: bool = True,
+        *,
+        filesystem: CheckpointFileSystem | None = None,
+    ) -> None:
         """
         Initialize with file system path.
 
@@ -45,7 +55,20 @@ class CachedMetadataFileSystemReader(FileSystemReader):
                 If False, metadata is always read from disk on each call.
         """
         super().__init__(path=path)
-        self._cache_key = os.path.abspath(os.fspath(path)) if cache_metadata else None
+        self.fs = filesystem if filesystem is not None else _LOCAL_FILESYSTEM
+        self.path = self.fs.init_path(path)
+        self._cache_metadata = cache_metadata
+        self._update_cache_key()
+
+    def _update_cache_key(self):
+        cache_path = os.fspath(self.path)
+        if self.fs is _LOCAL_FILESYSTEM:
+            cache_path = os.path.abspath(cache_path)
+        self._cache_key = (id(self.fs), cache_path) if self._cache_metadata else None
+
+    def reset(self, checkpoint_id=None) -> None:
+        super().reset(checkpoint_id)
+        self._update_cache_key()
 
     def read_metadata(self) -> Metadata:
         """
@@ -59,12 +82,18 @@ class CachedMetadataFileSystemReader(FileSystemReader):
             return super().read_metadata()
         if self._cache_key not in CachedMetadataFileSystemReader._metadata_cache:
             CachedMetadataFileSystemReader._metadata_cache[self._cache_key] = (
-                super().read_metadata()
+                self.fs,
+                super().read_metadata(),
             )
-        return CachedMetadataFileSystemReader._metadata_cache[self._cache_key]
+        return CachedMetadataFileSystemReader._metadata_cache[self._cache_key][1]
 
     @classmethod
-    def clear_metadata_cache(cls, path: Union[str, os.PathLike, None] = None):
+    def clear_metadata_cache(
+        cls,
+        path: str | os.PathLike | None = None,
+        *,
+        filesystem: CheckpointFileSystem | None = None,
+    ):
         """
         Clear the metadata cache.
 
@@ -73,7 +102,13 @@ class CachedMetadataFileSystemReader(FileSystemReader):
                 this specific checkpoint path is removed. If None (default), the entire
                 cache is cleared.
         """
-        if path is None:
+        if path is None and filesystem is None:
             cls._metadata_cache.clear()
         else:
-            cls._metadata_cache.pop(os.path.abspath(os.fspath(path)), None)
+            fs = filesystem if filesystem is not None else _LOCAL_FILESYSTEM
+            cache_path = os.fspath(fs.init_path(path)) if path is not None else None
+            if cache_path is not None and fs is _LOCAL_FILESYSTEM:
+                cache_path = os.path.abspath(cache_path)
+            for key in list(cls._metadata_cache):
+                if key[0] == id(fs) and (cache_path is None or key[1] == cache_path):
+                    del cls._metadata_cache[key]

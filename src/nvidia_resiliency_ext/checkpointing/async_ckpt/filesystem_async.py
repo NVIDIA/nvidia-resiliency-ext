@@ -19,16 +19,15 @@ import hashlib
 import inspect
 import logging
 import os
+import pickle
 import queue
 import threading
 from functools import partial
 from heapq import heappop, heappush
-from io import UnsupportedOperation
 from itertools import chain
 from operator import itemgetter
-from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union
 
 import torch
 from torch import multiprocessing as mp
@@ -61,6 +60,7 @@ except ImportError:
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
+from ..filesystem import CheckpointFileSystem, LocalFileSystem, MultiStorageFileSystem
 from ..utils import _disable_gc
 from . import _metadata_pickler
 from ._metadata_template import MetadataTemplate
@@ -229,16 +229,25 @@ class FileSystemWriterAsync(FileSystemWriter):
         *args,
         separation_hint: Optional[str] = None,
         use_msc: bool = False,
+        filesystem: CheckpointFileSystem | None = None,
         is_multiproc_io: bool = False,
         use_cached_data_structure: bool = False,
         use_cpu_shm_for_gpu_tensors: bool = False,
         **kwargs,
     ):
-        self.checkpoint_dir = path
-        self.use_msc = use_msc
-        self.open_file = kwargs.pop("open_file", open)  # for overriding in tests
+        if "open_file" in kwargs:
+            raise TypeError(
+                "open_file is no longer supported; pass filesystem= with a create_stream method"
+            )
 
         super().__init__(path, *args, **kwargs)
+        self.fs = (
+            filesystem
+            if filesystem is not None
+            else (MultiStorageFileSystem() if use_msc else LocalFileSystem())
+        )
+        self.path = self.fs.init_path(path)
+        self.checkpoint_dir = self.path
         if not self.single_file_per_rank:
             raise NotImplementedError(
                 'single_file_per_rank flag not supported for FileSystemWriterAsync'
@@ -565,13 +574,6 @@ class FileSystemWriterAsync(FileSystemWriter):
         if not self.has_data_to_write:
             return None, None, []
 
-        if self.use_msc:
-            import multistorageclient as msc
-
-            open_file = msc.open
-        else:
-            open_file = self.open_file
-
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
 
         # Format: (identifier, (separation_hint, cached_tensor_data,
@@ -593,14 +595,16 @@ class FileSystemWriterAsync(FileSystemWriter):
         # Select write function based on IO mode
         if self.is_multi_proc_io:
             write_func = partial(
-                self.write_preloaded_data_multiproc, transform_list, self.use_msc, open_file
+                self.write_preloaded_data_multiproc, transform_list, self.fs, self.sync_files
             )
         else:
             write_func = partial(
-                self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
+                self.write_preloaded_data_multithread, transform_list, self.fs, self.sync_files
             )
 
-        preload_fn = partial(self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True)
+        preload_fn = partial(
+            self.preload_tensors, (self.checkpoint_dir, data_to_pass), True, filesystem=self.fs
+        )
 
         return (
             write_func,
@@ -609,7 +613,9 @@ class FileSystemWriterAsync(FileSystemWriter):
         )
 
     @staticmethod
-    def preload_tensors(resolved_plan_data: Tuple, non_blocking=True) -> List[WriteBucket]:
+    def preload_tensors(
+        resolved_plan_data: Tuple, non_blocking=True, *, filesystem=None
+    ) -> List[WriteBucket]:
         """
         Creates write_buckets and preloads tensors to host memory.
 
@@ -633,6 +639,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         logger = logging.getLogger(__name__)
 
         checkpoint_dir, data_or_identifier = resolved_plan_data
+        filesystem = filesystem if filesystem is not None else LocalFileSystem()
 
         # Helper to combine cached tensor, uncached tensor, and ByteIO data
         def combine_data(cached_tensor_data, uncached_tensor_data, byte_io_data):
@@ -710,7 +717,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     file_name = gen_file(prefix=group_name)
                     write_buckets.append(
                         (
-                            os.path.join(checkpoint_dir, file_name),
+                            filesystem.concat_path(checkpoint_dir, file_name),
                             file_name,
                             (bytes_data, tensor_data),
                         )
@@ -757,7 +764,11 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     @staticmethod
     def _build_worker_kwargs(
-        worker_idx: int, write_bucket: WriteBucket, use_msc: bool, worker_type: str, **extra_kwargs
+        worker_idx: int,
+        write_bucket: WriteBucket,
+        use_fsync: bool,
+        worker_type: str,
+        **extra_kwargs,
     ) -> dict:
         """
         Build kwargs for worker (thread or process).
@@ -765,7 +776,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         Args:
             worker_idx (int): index of the worker
             write_bucket (WriteBucket): data to write
-            use_msc (bool): flag to indicate use of multi storage client
+            use_fsync (bool): request backend durability synchronization
             worker_type (str): 'thread' or 'proc'
             **extra_kwargs: additional worker-specific kwargs
 
@@ -776,10 +787,8 @@ class FileSystemWriterAsync(FileSystemWriter):
         kwargs = {
             idx_key: worker_idx,
             'write_bucket': write_bucket,
-            'use_fsync': True,
+            'use_fsync': use_fsync,
         }
-        if use_msc:
-            kwargs['use_msc'] = use_msc
         kwargs.update(extra_kwargs)
         return kwargs
 
@@ -813,8 +822,8 @@ class FileSystemWriterAsync(FileSystemWriter):
     @_disable_gc()
     def write_preloaded_data_multiproc(
         transform_list: List[_StorageWriterTransforms],
-        use_msc: bool,
-        open_file: Callable,
+        filesystem: CheckpointFileSystem,
+        use_fsync: bool,
         rank: int,
         write_buckets: List[WriteBucket],
         global_results_queue: mp.Queue,
@@ -839,8 +848,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         Args:
             transform_list (List[_StorageWriterTransforms]): streaming transforms list
-            use_msc (bool): flag to indicate use of multi storage client
-            open_file (Callable): file open callable
+            filesystem (CheckpointFileSystem): filesystem used by every worker
+            use_fsync (bool): request backend durability synchronization
             rank (int): training rank
             write_buckets (List[WriteBucket]): write plan
             global_results_queue (mp.Queue): mp.Queue to collect Dict[List[WriteResults]]
@@ -867,7 +876,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 kwargs = FileSystemWriterAsync._build_worker_kwargs(
                     worker_idx=i,
                     write_bucket=write_bucket,
-                    use_msc=use_msc,
+                    use_fsync=use_fsync,
                     worker_type='proc',
                     results_queue=local_results_queue,
                     count_queue=count_queue,
@@ -878,7 +887,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                         target=partial(
                             FileSystemWriterAsync.write_preloaded_data_proc,
                             transform_list,
-                            open_file,
+                            filesystem,
                         ),
                         kwargs=kwargs,
                     )
@@ -929,20 +938,18 @@ class FileSystemWriterAsync(FileSystemWriter):
     @staticmethod
     def _write_bucket_to_storage(
         transform_list: List[_StorageWriterTransforms],
-        open_file: Callable,
+        filesystem: CheckpointFileSystem,
         write_bucket: WriteBucket,
         use_fsync: bool,
-        use_msc: bool,
     ) -> List[WriteResult]:
         """
         Core logic for writing a bucket to storage.
 
         Args:
             transform_list (List[_StorageWriterTransforms]): streaming transforms list
-            open_file (Callable): file open callable
+            filesystem (CheckpointFileSystem): checkpoint filesystem
             write_bucket (WriteBucket): data to write to storage
-            use_fsync (bool): if True, calls os.fsync at the end of saving
-            use_msc (bool): flag to indicate use of multi storage client
+            use_fsync (bool): request backend durability synchronization
 
         Returns:
             List[WriteResult]: list of write results
@@ -960,7 +967,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             write_fn = partial(_write_item, *transform_list)
 
         local_results = []
-        with open_file(file_name, "wb") as stream:
+        with filesystem.create_stream(file_name, "wb") as stream:
             for write_item, data in bytes_data:
                 local_results.append(
                     write_fn(stream, data, write_item, storage_key, **extra_kwargs)
@@ -973,10 +980,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                 )
 
             if use_fsync:
-                if use_msc:
-                    stream.fsync()
-                else:
-                    os.fsync(stream.fileno())
+                filesystem.sync(stream)
 
         return local_results
 
@@ -984,13 +988,12 @@ class FileSystemWriterAsync(FileSystemWriter):
     @_disable_gc()
     def write_preloaded_data_proc(
         transform_list: List[_StorageWriterTransforms],
-        open_file: Callable,
+        filesystem: CheckpointFileSystem,
         local_proc_idx: int,
         write_bucket: WriteBucket,
         results_queue: mp.SimpleQueue,
         count_queue: mp.JoinableQueue,
         use_fsync: bool,
-        **kwargs,
     ) -> None:
         """
         Performs actual data saving to storage (used by worker processes in multiproc mode).
@@ -1001,18 +1004,16 @@ class FileSystemWriterAsync(FileSystemWriter):
             results_queue (mp.Queue): queue to return the write results
                 to the proxy checkpoint process.
             count_queue (mp.JoinableQueue): queue to marks worker task as completed
-            use_fsync (bool): if True, calls os.fsync at the end of saving
+            use_fsync (bool): request backend durability synchronization
 
         Returns: None, the write results are put into the `results_queue`
         """
         logger = logging.getLogger(__name__)
         logger.debug(f'{local_proc_idx} started')
         mem_before = _process_memory()
-        use_msc = kwargs.get('use_msc', False)
-
         try:
             local_results = FileSystemWriterAsync._write_bucket_to_storage(
-                transform_list, open_file, write_bucket, use_fsync, use_msc
+                transform_list, filesystem, write_bucket, use_fsync
             )
             local_output = (local_proc_idx, local_results)
         except Exception as e:
@@ -1034,8 +1035,8 @@ class FileSystemWriterAsync(FileSystemWriter):
     @_disable_gc()
     def write_preloaded_data_multithread(
         transform_list: List[_StorageWriterTransforms],
-        use_msc: bool,
-        open_file: Callable,
+        filesystem: CheckpointFileSystem,
+        use_fsync: bool,
         rank: int,
         write_buckets: List[WriteBucket],
         global_results_queue: mp.Queue,
@@ -1054,8 +1055,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         Args:
             transform_list (List[_StorageWriterTransforms]): streaming transforms list
-            use_msc (bool): flag to indicate use of multi storage client for storage access
-            open_file (Callable): file open callable
+            filesystem (CheckpointFileSystem): filesystem used by every worker
+            use_fsync (bool): request backend durability synchronization
             rank (int): training rank
             write_buckets (List[WriteBucket]): write plan
             global_results_queue (mp.Queue): queue to send Dict[List[WriteResults]]
@@ -1085,17 +1086,15 @@ class FileSystemWriterAsync(FileSystemWriter):
                     "write_bucket": write_bucket,
                     "results_queue": local_results_queue,
                     "count_queue": count_queue,
-                    "use_fsync": True,
+                    "use_fsync": use_fsync,
                 }
-                if use_msc:
-                    kwargs["use_msc"] = use_msc
 
                 # Parallel writers: spawn threads for all but the last bucket
                 if i < len(write_buckets) - 1:
                     count_queue.put(i)
                     t = threading.Thread(
                         target=partial(
-                            FileSystemWriterAsync.write_preloaded_data, transform_list, open_file
+                            FileSystemWriterAsync.write_preloaded_data, transform_list, filesystem
                         ),
                         kwargs=kwargs,
                     )
@@ -1106,7 +1105,7 @@ class FileSystemWriterAsync(FileSystemWriter):
                     kwargs['results_queue'] = None
                     logger.debug('FileSystemWriterAsync: main worker started')
                     local_output = FileSystemWriterAsync.write_preloaded_data(
-                        transform_list, open_file, **kwargs
+                        transform_list, filesystem, **kwargs
                     )
                     if local_output is not None:
                         logger.debug(
@@ -1163,27 +1162,26 @@ class FileSystemWriterAsync(FileSystemWriter):
     @_disable_gc()
     def write_preloaded_data(
         transform_list: List[_StorageWriterTransforms],
-        open_file: Callable,
+        filesystem: CheckpointFileSystem,
         local_thread_idx: int,
         write_bucket: WriteBucket,
         results_queue: Optional[queue.Queue],
         count_queue: Optional[queue.Queue],
         use_fsync: bool,
-        **kwargs,
     ) -> Optional[Tuple[int, Union[List[WriteResult], Exception]]]:
         """
         Performs actual data saving to storage (used by worker threads in multithread mode).
 
         Args:
             transform_list (List[_StorageWriterTransforms]): streaming transforms list
-            open_file (Callable): file open callable
+            filesystem (CheckpointFileSystem): checkpoint filesystem
             local_thread_idx (int): index of the worker thread that performs writing
             write_bucket (WriteBucket): data to write to storage
             results_queue (queue.Queue): queue to return the write results.
                 If None (main-thread worker), result is returned directly.
             count_queue (queue.Queue): queue to signal worker task completion.
                 If None (main-thread worker), skipped.
-            use_fsync (bool): if True, calls os.fsync at the end of saving
+            use_fsync (bool): request backend durability synchronization
 
         Returns: None when running in a thread (results put in queue);
                  result tuple when running as main-thread worker (results_queue is None)
@@ -1191,11 +1189,9 @@ class FileSystemWriterAsync(FileSystemWriter):
         logger = logging.getLogger(__name__)
         logger.debug(f'{local_thread_idx} started')
         mem_before = _process_memory()
-        use_msc = kwargs.get('use_msc', False)
-
         try:
             local_results = FileSystemWriterAsync._write_bucket_to_storage(
-                transform_list, open_file, write_bucket, use_fsync, use_msc
+                transform_list, filesystem, write_bucket, use_fsync
             )
             local_output = (local_thread_idx, local_results)
         except Exception as e:
@@ -1284,9 +1280,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         Follows ``FileSystemWriter.finish`` of the torch versions in
         ``_metadata_pickler.TESTED_TORCH_VERSIONS``, but writes ``.metadata`` with
-        ``_metadata_pickler.dump_metadata``: the same pickle format as ``pickle.dump``, written
-        much faster. On other torch versions, or with ``NVRX_FAST_METADATA_PICKLE=0``, it uses
-        ``FileSystemWriter.finish`` (or, for MSC, ``pickle.dump``).
+        ``_metadata_pickler.dump_metadata``. Other torch versions, or
+        ``NVRX_FAST_METADATA_PICKLE=0``, use ``pickle.dump`` in the same format.
 
         Args:
             metadata (Metadata): metadata to save
@@ -1309,15 +1304,10 @@ class FileSystemWriterAsync(FileSystemWriter):
         """
         fast = _metadata_pickler.fast_metadata_enabled()
         assert storage_rows is None or fast, "write-result tables need the fast .metadata writer"
-        if not fast and not self.use_msc:
-            if isinstance(metadata, MetadataTemplate):
-                metadata = metadata.to_metadata()
-            super().finish(metadata, results)
-            return
+        if not fast and isinstance(metadata, MetadataTemplate):
+            metadata = metadata.to_metadata()
 
-        fields = {}
-        if fast:
-            fields["version"] = CURRENT_DCP_VERSION
+        fields = {"version": CURRENT_DCP_VERSION}
         fields["storage_meta"] = self.storage_meta()
         storage_md = None
         if storage_rows is None:
@@ -1340,15 +1330,10 @@ class FileSystemWriterAsync(FileSystemWriter):
             metadata.storage_meta = fields["storage_meta"]
 
             def dump(stream) -> None:
-                _metadata_pickler.dump_metadata(metadata, stream, storage_rows)
-
-        if self.use_msc:
-            import multistorageclient as msc
-
-            path = os.path.join(self.checkpoint_dir, ".metadata")
-            with msc.open(path, "wb") as metadata_file:
-                dump(metadata_file)
-            return
+                if fast:
+                    _metadata_pickler.dump_metadata(metadata, stream, storage_rows)
+                else:
+                    pickle.dump(metadata, stream)
 
         # Without collectives, each rank writes its own metadata file.
         if not self.use_collectives and self.rank is not None:
@@ -1357,35 +1342,17 @@ class FileSystemWriterAsync(FileSystemWriter):
         else:
             tmp_filename = f"{_metadata_fn}.tmp"
             metadata_path = self._get_metadata_path()
-        tmp_path = cast(Path, self.fs.concat_path(self.path, tmp_filename))
+        tmp_path = self.fs.concat_path(self.path, tmp_filename)
         with self.fs.create_stream(tmp_path, "wb") as metadata_file:
             dump(metadata_file)
             if self.sync_files:
-                # Flush Python-level buffers (OS for local files, network for cloud storage) before fsync.
-                metadata_file.flush()
-                try:
-                    os.fsync(metadata_file.fileno())
-                except (AttributeError, UnsupportedOperation):
-                    os.sync()  # as PyTorch < 2.14 does; 2.14 only warns
+                self.fs.sync(metadata_file)
 
         # delete in-case other checkpoints were present.
         if self.fs.exists(metadata_path):
             self.fs.rm_file(metadata_path)
 
         self.fs.rename(tmp_path, metadata_path)
-
-    def prepare_local_plan(self, plan: SavePlan) -> SavePlan:
-        """
-        Prepare the local plan for the checkpointing process.
-        """
-        if self.use_msc:
-            import multistorageclient as msc
-
-            msc.os.makedirs(str(self.checkpoint_dir), exist_ok=True)
-        else:
-            super().prepare_local_plan(plan)
-
-        return plan
 
     @property
     def checkpoint_id(self) -> Union[str, os.PathLike]:

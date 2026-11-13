@@ -53,6 +53,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     save_state_dict_async_plan,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
+from nvidia_resiliency_ext.checkpointing.filesystem import LocalFileSystem
 from nvidia_resiliency_ext.checkpointing.utils import diff
 from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Model, Utils
@@ -77,6 +78,14 @@ def slow_open(path: str, mode: str = "rb", **kwargs) -> IO[Any]:
     deterministically lands first."""
     sleep(0.5)
     return open(path, mode, **kwargs)
+
+
+class OpenFileSystem(LocalFileSystem):
+    def __init__(self, opener):
+        self.opener = opener
+
+    def create_stream(self, path, mode):
+        return self.opener(path, mode)
 
 
 def test_wrap_exception_for_gather_sanitizes_code_objects(monkeypatch):
@@ -182,7 +191,7 @@ class TestAsyncSave:
         writer = FileSystemWriterAsync(
             checkpoint_dir,
             thread_count=thread_count,
-            open_file=open_file,
+            filesystem=OpenFileSystem(open_file),
             is_multiproc_io=is_multiproc_io,
             use_cached_data_structure=use_cached_data_structure,
             use_cpu_shm_for_gpu_tensors=use_cpu_shm_for_gpu_tensors,

@@ -1,5 +1,67 @@
 Usage guide
 ===============================================================================
+
+Checkpoint storage
+------------------
+
+``FileSystemWriterAsync(path, filesystem=filesystem)`` uses one filesystem for
+payload files, directory creation, metadata, and synchronization. Omitting this
+argument preserves POSIX and mounted NFS storage. The legacy ``use_msc=True``
+option selects ``MultiStorageFileSystem`` only when no filesystem is supplied.
+An explicit filesystem always takes precedence.
+
+The public ``CheckpointFileSystem`` extends PyTorch DCP's ``FileSystemBase`` with
+``stat``, ``listdir``, and ``sync``. Streams use binary modes. Read streams must
+support seeking; output streams need ``write``, ``tell``, and ``flush`` without a
+file descriptor. Output context exit closes and commits the file, propagating
+errors. ``sync_files=False`` skips optional durability synchronization while
+retaining close and commit. Custom test openers should implement
+``create_stream`` on an injected filesystem; the former ``open_file`` constructor
+argument is no longer accepted.
+
+Arrow and MSC are optional dependencies, imported only when their adapters perform
+I/O. An Arrow factory must be a pickleable top-level callable that constructs a
+fresh native client with blocking writes:
+
+.. code-block:: python
+
+   from nvidia_resiliency_ext.checkpointing.filesystem import ArrowFileSystem
+   from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
+       FileSystemWriterAsync,
+   )
+
+   def create_arrow_filesystem():
+       import pyarrow.fs
+       return pyarrow.fs.S3FileSystem(background_writes=False)
+
+   filesystem = ArrowFileSystem(create_arrow_filesystem, uri_scheme="s3")
+   writer = FileSystemWriterAsync(
+       "s3://example-bucket/checkpoint", filesystem=filesystem
+   )
+
+Pass this writer to ``save_state_dict_async_plan`` and schedule/finalize the
+request as usual. ``CachedMetadataFileSystemReader`` accepts the same
+``filesystem=`` argument. Its shared cache separates backend object identities,
+retains those objects until cache clearing, and requires checkpoint contents to
+remain unchanged while cached. Use ``clear_metadata_cache(path, filesystem=fs)``
+after an intentional update.
+
+Arrow preserves URI strings and translates the declared scheme only at its native
+boundary. Its native clients are created lazily per process and omitted when the
+adapter is pickled. Writes are divided into ``max_write_bytes`` chunks and flushed
+before proceeding; native filesystem buffering remains the factory's
+responsibility. This adds no whole-payload buffer, upload scheduler, or temporary
+payload file. Arrow compression inference is disabled to preserve DCP bytes.
+
+Use one checkpoint writer at a time for each destination and keep checkpoint
+objects immutable during reads. Object-store rename may be copy/delete rather
+than atomic replacement. The Arrow adapter does not bind separate range reads to
+a conditional object version, so it does not protect a reader from concurrent
+replacement of a checkpoint object.
+
+Asynchronous execution
+----------------------
+
 The :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue`
 provides application users with an interface to schedule :py:class:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest`, 
 which defines checkpoint routine, its args/kwargs and finalization steps when the checkpoint routine is finished.
