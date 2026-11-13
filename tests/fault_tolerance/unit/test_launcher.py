@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -98,6 +99,66 @@ def _config_from_launcher_cli(cli_args):
     ) as setup_rank_monitors_early:
         config, cmd, cmd_args = launcher.config_from_args(args)
     return config, cmd, cmd_args, setup_rank_monitors_early
+
+
+@pytest.mark.parametrize('outcome', ['drained', 'timeout', 'unavailable', 'partial'])
+def test_memory_cleanup_reports_whether_wait_timed_out(outcome):
+    agent = MagicMock()
+    agent._ft_cfg = SimpleNamespace(
+        gpu_memory_reclaim_timeout=2,
+        gpu_memory_tolerance_mb=512,
+        gpu_memory_poll_interval=1,
+    )
+    clock = [0]
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    with (
+        patch.object(launcher, 'GPUMemoryLogger') as memory_logger,
+        patch.object(launcher.time, 'time', side_effect=lambda: clock[0]),
+        patch.object(launcher.time, 'sleep', side_effect=sleep) as wait,
+    ):
+        query = memory_logger.return_value.get_gpu_memory
+        if outcome == 'drained':
+            query.side_effect = [{'used_mb': 513}] * 4 + [{'used_mb': 512}] * 4
+        elif outcome == 'timeout':
+            query.return_value = {'used_mb': 24832}
+        elif outcome == 'unavailable':
+            query.return_value = None
+        else:
+            query.side_effect = [{'used_mb': 386}, None, {'used_mb': 386}, {'used_mb': 386}]
+        result = launcher.LocalElasticAgent._wait_for_gpu_memory_reclaim(agent, 4)
+
+    assert result is (outcome != 'timeout')
+    assert wait.call_count == {'drained': 1, 'timeout': 2, 'unavailable': 0, 'partial': 0}[outcome]
+
+
+@pytest.mark.parametrize(('enabled', 'reclaimed'), [(True, True), (True, False), (False, True)])
+def test_stop_workers_sets_latest_cleanup_outcome(enabled, reclaimed):
+    agent = MagicMock()
+    agent._ft_cfg = SimpleNamespace(
+        check_remaining_processes=False,
+        gpu_memory_reclaim_timeout=50 if enabled else 0,
+        gpu_memory_tolerance_mb=512,
+        gpu_memory_poll_interval=2,
+    )
+    agent._logs_specs = object()
+    agent._wait_for_gpu_memory_reclaim.return_value = reclaimed
+    checker = SimpleNamespace(gpu_memory_reclaimed=True)
+    worker_group = MagicMock()
+    worker_group.spec.local_world_size = 4
+    with (
+        patch.object(launcher, 'get_node_health_check', return_value=checker),
+        patch.object(launcher, 'record_profiling_event'),
+    ):
+        launcher.LocalElasticAgent._stop_workers(agent, worker_group)
+
+    assert checker.gpu_memory_reclaimed is (enabled and reclaimed)
+    if enabled:
+        agent._wait_for_gpu_memory_reclaim.assert_called_once_with(4)
+    else:
+        agent._wait_for_gpu_memory_reclaim.assert_not_called()
 
 
 def test_register_barrier_rdzv_handler_applies_c10d_patch():
