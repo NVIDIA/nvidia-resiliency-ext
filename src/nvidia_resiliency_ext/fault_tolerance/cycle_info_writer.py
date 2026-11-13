@@ -14,9 +14,9 @@
 # limitations under the License.
 
 """
-NVRx cycle info writer: writes NVRxCycleInfo as JSON to Lustre (or local).
+NVRx cycle info writer: writes CycleInfo as JSON to Lustre (or local).
 
-Uses the NVRxCycleInfo protobuf and protobuf JSON serialization. A dedicated background
+Uses the CycleInfo protobuf and protobuf JSON serialization. A dedicated background
 thread performs file I/O so the main launcher thread is not blocked. Writes are
 atomic (temp file + os.replace) for updates.
 """
@@ -27,7 +27,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from google.protobuf import json_format
@@ -36,8 +36,18 @@ from nvidia_resiliency_ext.shared_utils.job_metadata import job_id_from_env
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2
 
-from .cycle_info.records import CycleEndReason, CycleSummary, LocalCycleOutcome
+from .cycle_info.records import CycleSummary, EndReason, JobEndReason, NodeCycleEndReport
 from .utils import hostnames_to_slurm_nodelist, ranks_to_range_str, slurm_sort_addrs
+
+# EndReason values as named in nvrx_interface.proto, for the JSON of the cycle info file.
+_END_REASON_PROTO_NAMES = {
+    EndReason.UNSPECIFIED: "CycleEndReasonUnspecified",
+    EndReason.COMPLETED: "CycleEndReasonWorkerCompleted",
+    EndReason.FAILED: "CycleEndReasonWorkerFailed",
+    EndReason.TERMINATED_DUE_TO_PEER: "CycleEndReasonWorkerTerminatedDueToPeer",
+    EndReason.TERMINATED_BY_RANK_MONITOR: "CycleEndReasonWorkerTerminatedByRankMonitor",
+    EndReason.TERMINATED_BY_ATTRIBUTION: "CycleEndReasonWorkerTerminatedByAttribution",
+}
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -269,8 +279,8 @@ class CycleInfoWriter:
                 logger.exception("CycleInfoWriter task failed: %s", e)
 
     def _do_create(self, payload: Dict[str, Any]) -> None:
-        """Write a new cycle info file from a payload dict (keys match NVRxCycleInfo fields)."""
-        msg = nvrx_interface_pb2.NVRxCycleInfo()
+        """Write a new cycle info file from a payload dict (keys match CycleInfo fields)."""
+        msg = nvrx_interface_pb2.CycleInfo()
         for key, value in payload.items():
             if hasattr(msg, key):
                 setattr(msg, key, value)
@@ -333,7 +343,7 @@ class CycleInfoWriter:
         tmp_path = path + ".tmp"
         try:
             with open(path) as f:
-                msg = json_format.Parse(f.read(), nvrx_interface_pb2.NVRxCycleInfo())
+                msg = json_format.Parse(f.read(), nvrx_interface_pb2.CycleInfo())
             for key, value in update_payload.items():
                 if not hasattr(msg, key):
                     continue
@@ -474,10 +484,10 @@ class CycleInfoReporter:
     def report_cycle_summary(self, summary: CycleSummary) -> bool:
         """Write how `summary.cycle` ended for the job, in one update of its file.
 
-        Sets the outcome (NVRxCycleOutcome) and, when known, cycle_end_time. Formatting
+        Sets the end report (JobCycleEndReport) and, when known, cycle_end_time. Formatting
         happens on the writer thread, so the caller only enqueues. Launchers that only
-        followed a peer's restart are counted but not listed; the listed ones are sorted by
-        when they observed the end.
+        followed a peer's restart are not listed; the listed ones are sorted by when they
+        observed the end. Its end reason is the first detector's (see _job_end_reason).
         """
         if self._shutdown or summary.cycle not in self._started_cycles:
             return False
@@ -488,20 +498,21 @@ class CycleInfoReporter:
 
         def build_update() -> Dict[str, Any]:
             listed = sorted(
-                (o for o in summary.outcomes if o.node_end is not CycleEndReason.PEER_RESTART),
-                key=lambda outcome: (outcome.detected_at, outcome.node),
+                (
+                    o
+                    for o in summary.outcomes
+                    if o.end_reason is not EndReason.TERMINATED_DUE_TO_PEER
+                ),
+                key=lambda outcome: (outcome.detected_timestamp, outcome.node_name),
             )
-            ended_at = utc_iso(summary.ended_at) if summary.ended_at is not None else ""
-            outcome: Dict[str, Any] = {
-                "end_reason": summary.end_reason.value if summary.end_reason else "",
-                "ended_at": ended_at,
+            ended_at = utc_iso_ms(summary.ended_at) if summary.ended_at is not None else ""
+            end_report: Dict[str, Any] = {
+                "end_reason": _END_REASON_PROTO_NAMES[self._job_end_reason(summary)],
+                "ended_timestamp": ended_at,
                 "first_detected_nodes": list(summary.first_detected),
-                "missing_nodes": list(summary.missing),
-                "launcher_outcomes": [self._format_outcome(o) for o in listed],
-                "launchers_expected": summary.launchers_expected or 0,
-                "launchers_reported": len(summary.outcomes),
+                "launcher_end_reports": [self._format_end_report(o) for o in listed],
             }
-            update: Dict[str, Any] = {"outcome": outcome}
+            update: Dict[str, Any] = {"end_report": end_report}
             if ended_at:
                 update["cycle_end_time"] = ended_at
             return update
@@ -544,35 +555,40 @@ class CycleInfoReporter:
         return ranks_to_range_str(active_ranks)
 
     @staticmethod
-    def _format_outcome(outcome: LocalCycleOutcome) -> Dict[str, Any]:
-        """NVRxLauncherOutcome fields of `outcome`, as a JSON-style dict."""
-        ranks = []
-        for rank in outcome.ranks:
-            fields: Dict[str, Any] = {
-                "global_rank": rank.global_rank,
-                "local_rank": rank.local_rank,
-                "pid": rank.pid,
-                "end": rank.end.value,
-                "timeout_sections": list(rank.timeout_sections),
-            }
-            if rank.exitcode is not None:
-                fields["exitcode"] = rank.exitcode
-            if rank.exitdetails:
-                fields["exit_details"] = rank.exitdetails
-            if rank.timeout_kind is not None:
-                fields["timeout_kind"] = rank.timeout_kind.value
-            ranks.append(fields)
+    def _job_end_reason(summary: CycleSummary) -> EndReason:
+        """The job's end reason, as JobCycleEndReport carries it: the per-launcher EndReason
+        of the first detector, COMPLETED for a completed cycle, UNSPECIFIED otherwise."""
+        if summary.end_reason is JobEndReason.COMPLETED:
+            return EndReason.COMPLETED
+        first = [o for o in summary.outcomes if o.node_name in summary.first_detected]
+        if first:
+            return min(first, key=lambda outcome: outcome.detected_timestamp).end_reason
+        return EndReason.UNSPECIFIED
+
+    @staticmethod
+    def _format_end_report(report: NodeCycleEndReport) -> Dict[str, Any]:
+        """NodeCycleEndReport fields of `report`, as a JSON-style dict."""
         return {
-            "node": outcome.node,
-            "end": outcome.node_end.value,
-            "detected_at": utc_iso(outcome.detected_at),
-            "ranks": ranks,
+            "job_id": report.job_id,
+            "attempt_index": report.attempt_index,
+            "cycle_number": report.cycle_number,
+            "node_name": report.node_name,
+            "end_reason": _END_REASON_PROTO_NAMES[report.end_reason],
+            "detected_timestamp": report.detected_timestamp,
+            "exit_details": report.exit_details,
         }
 
 
 def utc_iso(timestamp: float) -> str:
     """Return `timestamp` (seconds since the epoch) in ISO 8601 UTC, like utc_iso_now()."""
     return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def utc_iso_ms(timestamp_ms: int) -> str:
+    """Return `timestamp_ms` (milliseconds since the epoch) in ISO 8601 UTC, exactly (e.g.
+    "2025-02-05T14:30:00.123Z")."""
+    moment = datetime.fromtimestamp(0, timezone.utc) + timedelta(milliseconds=timestamp_ms)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def utc_iso_now() -> str:

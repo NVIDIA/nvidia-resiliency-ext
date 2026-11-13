@@ -17,17 +17,15 @@ import pytest
 
 from nvidia_resiliency_ext.shared_utils.grpc_log_leaf_server import (
     _STOP,
-    LeafCycleInfoServicer,
     LeafLogServicer,
     _LeafChunkQueue,
     _UpstreamForwarder,
 )
 from nvidia_resiliency_ext.shared_utils.grpc_log_server import LogAggregationServicer
 from nvidia_resiliency_ext.shared_utils.proto import (
-    cycle_info_pb2,
-    cycle_info_pb2_grpc,
     log_aggregation_pb2,
     log_aggregation_pb2_grpc,
+    nvrx_interface_pb2,
 )
 
 # These tests exercise queueing/forwarding behaviour, not path confinement (see
@@ -43,10 +41,32 @@ def _chunk(data: bytes, file_path: str, node_id: str = "node_0") -> log_aggregat
     return log_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
 
 
+def _record(chunk: log_aggregation_pb2.LogChunk) -> log_aggregation_pb2.DataRecord:
+    return log_aggregation_pb2.DataRecord(log_chunk=chunk)
+
+
+def _records(chunks):
+    """`chunks` as the DataRecord stream StreamDataRecords receives."""
+    for chunk in chunks:
+        yield _record(chunk)
+
+
+def _end_report_record(node: str = "node0", cycle: int = 3) -> log_aggregation_pb2.DataRecord:
+    return log_aggregation_pb2.DataRecord(
+        node_cycle_end_report=nvrx_interface_pb2.NodeCycleEndReport(
+            job_id="job1",
+            cycle_number=cycle,
+            node_name=node,
+            end_reason=nvrx_interface_pb2.CycleEndReasonWorkerFailed,
+            detected_timestamp=1_700_000_000_000,
+        )
+    )
+
+
 def _start_root_server(servicer, host: str = "127.0.0.1"):
     """Bind a gRPC root server on an ephemeral port; return (server, port)."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    log_aggregation_pb2_grpc.add_LogAggregationServiceServicer_to_server(servicer, server)
+    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
     port = server.add_insecure_port(f"{host}:0")
     server.start()
     return server, port
@@ -71,7 +91,7 @@ def _start_leaf_stack(upstream_addr: str, host: str = "127.0.0.1"):
         chunk_q, reject_ev, forwarder.upstream_ready, allowed_roots=_TEST_ROOTS
     )
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    log_aggregation_pb2_grpc.add_LogAggregationServiceServicer_to_server(servicer, server)
+    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
     leaf_port = server.add_insecure_port(f"{host}:0")
     server.start()
     return server, leaf_port, forwarder, servicer, chunk_q, stop_ev, reject_ev
@@ -92,8 +112,8 @@ def _stop_leaf_stack(server, forwarder, chunk_q, stop_ev):
 def _stream_to_addr(addr: str, chunks):
     """Open a client channel to addr and stream chunks."""
     ch = grpc.insecure_channel(addr)
-    stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(ch)
-    stub.StreamLogs(iter(chunks))
+    stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(ch)
+    stub.StreamDataRecords(_records(chunks))
     ch.close()
 
 
@@ -106,10 +126,18 @@ class TestLeafChunkQueue:
     def test_put_and_get(self):
         q = _LeafChunkQueue(max_chunks=10)
         reject = threading.Event()
-        ok = q.put_chunk(_chunk(b"hello", "/tmp/x.log"), reject, peer="p", source_node_id="n")
+        ok = q.put_record(
+            _record(_chunk(b"hello", "/tmp/x.log")), reject, peer="p", source_node_id="n"
+        )
         assert ok
         item = q.get_upstream(timeout=1.0)
-        assert item.data == b"hello"
+        assert item.log_chunk.data == b"hello"
+
+    def test_end_reports_share_the_queue(self):
+        q = _LeafChunkQueue(max_chunks=10)
+        reject = threading.Event()
+        assert q.put_record(_end_report_record(), reject, peer="p", source_node_id="n")
+        assert q.get_upstream(timeout=1.0) == _end_report_record()
 
     def test_maxsize_property(self):
         q = _LeafChunkQueue(max_chunks=42)
@@ -119,17 +147,19 @@ class TestLeafChunkQueue:
         q = _LeafChunkQueue(max_chunks=10)
         reject = threading.Event()
         assert q.qsize() == 0
-        q.put_chunk(_chunk(b"a", "/tmp/x.log"), reject, peer="p", source_node_id="n")
+        q.put_record(_record(_chunk(b"a", "/tmp/x.log")), reject, peer="p", source_node_id="n")
         assert q.qsize() == 1
 
     def test_put_returns_false_when_rejected(self):
         q = _LeafChunkQueue(max_chunks=1)
         reject = threading.Event()
         # Fill queue
-        q.put_chunk(_chunk(b"fill", "/tmp/x.log"), reject, peer="p", source_node_id="n")
+        q.put_record(_record(_chunk(b"fill", "/tmp/x.log")), reject, peer="p", source_node_id="n")
         # Now queue is full; a second put with reject already set must return False immediately
         reject.set()
-        ok = q.put_chunk(_chunk(b"blocked", "/tmp/x.log"), reject, peer="p", source_node_id="n")
+        ok = q.put_record(
+            _record(_chunk(b"blocked", "/tmp/x.log")), reject, peer="p", source_node_id="n"
+        )
         assert not ok
 
     def test_put_stop_sentinel(self):
@@ -183,12 +213,12 @@ class TestLeafLogServicer:
         resp = svc.HealthCheck(log_aggregation_pb2.HealthRequest(), MagicMock())
         assert resp.connected_clients == 5
 
-    # --- StreamLogs ----------------------------------------------------------
+    # --- StreamDataRecords ---------------------------------------------------
 
     def test_stream_rejected_during_shutdown(self):
         svc, *_ = self._make(rejected=True)
         ctx = MagicMock()
-        svc.StreamLogs(iter([_chunk(b"data", "/tmp/x.log")]), ctx)
+        svc.StreamDataRecords(_records([_chunk(b"data", "/tmp/x.log")]), ctx)
         ctx.abort.assert_called_once()
         code, _msg = ctx.abort.call_args[0]
         assert code == grpc.StatusCode.UNAVAILABLE
@@ -196,21 +226,21 @@ class TestLeafLogServicer:
     def test_stream_enqueues_chunks(self):
         svc, chunk_q, *_ = self._make()
         chunks = [_chunk(b"line1\n", "/tmp/x.log"), _chunk(b"line2\n", "/tmp/x.log")]
-        svc.StreamLogs(iter(chunks), MagicMock())
+        svc.StreamDataRecords(_records(chunks), MagicMock())
         assert chunk_q.qsize() == 2
 
     def test_stream_chunks_are_copies(self):
         svc, chunk_q, *_ = self._make()
         original = _chunk(b"payload", "/tmp/x.log")
-        svc.StreamLogs(iter([original]), MagicMock())
-        queued = chunk_q.get_upstream(timeout=1.0)
+        svc.StreamDataRecords(_records([original]), MagicMock())
+        queued = chunk_q.get_upstream(timeout=1.0).log_chunk
         assert queued is not original
         assert queued.data == b"payload"
 
     def test_stream_client_count_zero_after_completion(self):
         svc, *_ = self._make()
         assert svc.connected_clients == 0
-        svc.StreamLogs(iter([_chunk(b"x", "/tmp/x.log")]), MagicMock())
+        svc.StreamDataRecords(_records([_chunk(b"x", "/tmp/x.log")]), MagicMock())
         assert svc.connected_clients == 0
 
     def test_stream_stops_mid_stream_on_reject(self):
@@ -221,13 +251,13 @@ class TestLeafLogServicer:
             reject.set()
             yield _chunk(b"second\n", "/tmp/x.log")
 
-        svc.StreamLogs(gen(), MagicMock())
+        svc.StreamDataRecords(_records(gen()), MagicMock())
         # Only the first chunk is queued; second arrives after reject is set
         assert chunk_q.qsize() == 1
 
     def test_stream_returns_ok_response(self):
         svc, *_ = self._make()
-        resp = svc.StreamLogs(iter([_chunk(b"data\n", "/tmp/x.log")]), MagicMock())
+        resp = svc.StreamDataRecords(_records([_chunk(b"data\n", "/tmp/x.log")]), MagicMock())
         assert resp.status == "OK"
         assert resp.bytes_received == len(b"data\n")
 
@@ -355,8 +385,8 @@ class TestTwoLevelLogAggregation:
             # Directly enqueue 5 chunks (bypass leaf gRPC layer)
             reject = threading.Event()
             for i in range(5):
-                chunk_q.put_chunk(
-                    _chunk(f"queued_line_{i}\n".encode(), log_file),
+                chunk_q.put_record(
+                    _record(_chunk(f"queued_line_{i}\n".encode(), log_file)),
                     reject,
                     peer="test",
                     source_node_id="n0",
@@ -428,7 +458,7 @@ class TestLeafServerConfinement:
 
     def _servicer(self, allowed_roots, max_chunks=64):
         # Nothing drains the queue in these tests, so it must hold every chunk sent:
-        # put_chunk blocks for backpressure once full.
+        # put_record blocks for backpressure once full.
         chunk_q = _LeafChunkQueue(max_chunks=max_chunks)
         upstream_ready = threading.Event()
         upstream_ready.set()
@@ -449,18 +479,18 @@ class TestLeafServerConfinement:
     def test_forwards_chunk_inside_root(self, log_root):
         servicer, chunk_q = self._servicer([log_root])
         target = os.path.join(log_root, "train.log")
-        resp = servicer.StreamLogs(iter([_chunk(b"hi\n", target)]), MagicMock())
+        resp = servicer.StreamDataRecords(_records([_chunk(b"hi\n", target)]), MagicMock())
         assert resp.status == "OK"
         assert chunk_q.qsize() == 1
-        assert chunk_q.get_upstream(timeout=1.0).file_path == target
+        assert chunk_q.get_upstream(timeout=1.0).log_chunk.file_path == target
 
     def test_rejects_chunk_outside_root_without_enqueueing(self, log_root, outside_dir):
         servicer, chunk_q = self._servicer([log_root])
         context = MagicMock()
         context.abort.side_effect = grpc.RpcError("aborted")
         with pytest.raises(grpc.RpcError):
-            servicer.StreamLogs(
-                iter([_chunk(b"payload\n", os.path.join(outside_dir, "owned.txt"))]), context
+            servicer.StreamDataRecords(
+                _records([_chunk(b"payload\n", os.path.join(outside_dir, "owned.txt"))]), context
             )
         context.abort.assert_called_once()
         assert context.abort.call_args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
@@ -471,7 +501,7 @@ class TestLeafServerConfinement:
         context = MagicMock()
         context.abort.side_effect = grpc.RpcError("aborted")
         with pytest.raises(grpc.RpcError):
-            servicer.StreamLogs(iter([_chunk(b"payload\n", "")]), context)
+            servicer.StreamDataRecords(_records([_chunk(b"payload\n", "")]), context)
         assert context.abort.call_args[0][0] == grpc.StatusCode.INVALID_ARGUMENT
         assert chunk_q.qsize() == 0
 
@@ -479,9 +509,10 @@ class TestLeafServerConfinement:
         """Leaf hands the root an already-resolved path, not the raw client string."""
         servicer, chunk_q = self._servicer([log_root])
         raw = os.path.join(log_root, "sub", "..", "train.log")
-        resp = servicer.StreamLogs(iter([_chunk(b"hi\n", raw)]), MagicMock())
+        resp = servicer.StreamDataRecords(_records([_chunk(b"hi\n", raw)]), MagicMock())
         assert resp.status == "OK"
-        assert chunk_q.get_upstream(timeout=1.0).file_path == os.path.join(log_root, "train.log")
+        forwarded = chunk_q.get_upstream(timeout=1.0).log_chunk
+        assert forwarded.file_path == os.path.join(log_root, "train.log")
 
     def test_cache_survives_many_restart_cycles(self, log_root, monkeypatch):
         """A long-lived stream rotates <prefix>_cycleN.log once per restart cycle.
@@ -513,7 +544,7 @@ class TestLeafServerConfinement:
                     yield _chunk(b"agent\n", launcher_log)
 
         total_chunks = cycles * chunks_per_cycle * 2
-        resp = servicer.StreamLogs(stream(), MagicMock())
+        resp = servicer.StreamDataRecords(_records(stream()), MagicMock())
         assert resp.status == "OK"
         assert chunk_q.qsize() == total_chunks
 
@@ -545,7 +576,9 @@ class TestLeafServerConfinement:
 
         monkeypatch.setattr(leaf_mod, "resolve_under_allowed_roots", counting)
         target = os.path.join(log_root, "train.log")
-        servicer.StreamLogs(iter([_chunk(b"a\n", target) for _ in range(50)]), MagicMock())
+        servicer.StreamDataRecords(
+            _records([_chunk(b"a\n", target) for _ in range(50)]), MagicMock()
+        )
         assert len(calls) == 1
         assert chunk_q.qsize() == 50
 
@@ -570,87 +603,87 @@ class TestLeafCliRequiresAllowedRoots:
         assert "--allowed-root" in proc.stderr
 
 
-class _UpstreamDown(grpc.RpcError):
-    def code(self):
-        return grpc.StatusCode.UNAVAILABLE
+class TestLeafEndReports:
+    """The leaf queues end reports with the log chunks, in arrival order, for the root."""
 
-    def details(self):
-        return "upstream down"
+    def _servicer(self, allowed_roots=_TEST_ROOTS):
+        chunk_q = _LeafChunkQueue(max_chunks=64)
+        upstream_ready = threading.Event()
+        upstream_ready.set()
+        servicer = LeafLogServicer(
+            chunk_q, threading.Event(), upstream_ready, allowed_roots=allowed_roots
+        )
+        return servicer, chunk_q
 
+    @staticmethod
+    def _drain(chunk_q):
+        items = []
+        while chunk_q.qsize():
+            items.append(chunk_q.get_upstream(timeout=1.0))
+        return items
 
-class TestLeafCycleInfoServicer:
-    """The leaf forwards the cycle records to the root and acknowledges them once it did."""
+    def test_end_reports_are_queued_in_arrival_order_with_the_chunks(self):
+        servicer, chunk_q = self._servicer()
+        chunk = _chunk(b"line\n", "/tmp/x.log")
+        records = [_end_report_record("n0"), _record(chunk), _end_report_record("n1")]
 
-    @pytest.mark.parametrize(
-        ("rpc", "request_"),
-        [
-            ("PublishCycleStart", cycle_info_pb2.CycleStart(cycle=3)),
-            ("PublishCycleOutcome", cycle_info_pb2.CycleOutcome(cycle=3, node="node0")),
-        ],
-    )
-    def test_record_is_forwarded_and_acknowledged(self, rpc, request_):
-        upstream, context = MagicMock(), MagicMock()
-        servicer = LeafCycleInfoServicer(upstream)
+        resp = servicer.StreamDataRecords(iter(records), MagicMock())
 
-        reply = getattr(servicer, rpc)(request_, context)
+        assert (resp.status, resp.bytes_received) == ("OK", len(b"line\n"))
+        queued = self._drain(chunk_q)
+        assert [r.WhichOneof("record") for r in queued] == [
+            "node_cycle_end_report",
+            "log_chunk",
+            "node_cycle_end_report",
+        ]
+        assert queued[0] == _end_report_record("n0")
+        assert queued[2] == _end_report_record("n1")
 
-        assert reply == cycle_info_pb2.PublishReply()
-        getattr(upstream, rpc).assert_called_once_with(request_)
-        context.abort.assert_not_called()
+    def test_end_reports_are_forwarded_without_path_checks(self, log_root):
+        servicer, chunk_q = self._servicer(allowed_roots=[log_root])
+        resp = servicer.StreamDataRecords(iter([_end_report_record()]), MagicMock())
+        assert resp.status == "OK"
+        assert self._drain(chunk_q) == [_end_report_record()]
 
-    def test_failed_forward_is_answered_with_the_root_status(self):
-        upstream, context = MagicMock(), MagicMock()
-        upstream.PublishCycleOutcome.side_effect = _UpstreamDown()
-        servicer = LeafCycleInfoServicer(upstream)
+    def test_empty_records_are_skipped(self):
+        servicer, chunk_q = self._servicer()
+        resp = servicer.StreamDataRecords(iter([log_aggregation_pb2.DataRecord()]), MagicMock())
+        assert resp.status == "OK"
+        assert chunk_q.qsize() == 0
 
-        servicer.PublishCycleOutcome(cycle_info_pb2.CycleOutcome(cycle=3), context)
-
-        assert context.abort.call_args.args[0] == grpc.StatusCode.UNAVAILABLE
-
-    def test_records_reach_the_root_through_the_leaf(self):
-        class _Root(cycle_info_pb2_grpc.CycleInfoServiceServicer):
+    def test_end_reports_reach_the_root_through_the_leaf(self, tmp_path):
+        class _Root(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
             def __init__(self):
                 self.records = []
-                self.received = threading.Event()
 
-            def PublishCycleStart(self, request, context):
-                return self._record(request)
+            def StreamDataRecords(self, request_iterator, context):
+                self.records.extend(request_iterator)
+                return log_aggregation_pb2.StreamResponse(status="OK")
 
-            def PublishCycleOutcome(self, request, context):
-                return self._record(request)
-
-            def _record(self, request):
-                self.records.append(request)
-                if len(self.records) == 2:
-                    self.received.set()
-                return cycle_info_pb2.PublishReply()
-
-        def start_server(servicer):
-            server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
-            cycle_info_pb2_grpc.add_CycleInfoServiceServicer_to_server(servicer, server)
-            port = server.add_insecure_port("127.0.0.1:0")
-            server.start()
-            return server, f"127.0.0.1:{port}"
+            def HealthCheck(self, request, context):
+                return log_aggregation_pb2.HealthResponse(healthy=True)
 
         root = _Root()
-        root_server, root_addr = start_server(root)
-        root_channel = grpc.insecure_channel(root_addr)
-        leaf_server, leaf_addr = start_server(
-            LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceStub(root_channel))
+        root_server, root_port = _start_root_server(root)
+        server, leaf_port, forwarder, _, chunk_q, stop_ev, _ = _start_leaf_stack(
+            f"127.0.0.1:{root_port}"
         )
-        launcher_channel = grpc.insecure_channel(leaf_addr)
-        start = cycle_info_pb2.CycleStart(cycle=3, active_nodes=["node0"])
-        outcome = cycle_info_pb2.CycleOutcome(cycle=3, node="node0")
         try:
-            launcher = cycle_info_pb2_grpc.CycleInfoServiceStub(launcher_channel)
-            launcher.PublishCycleStart(start, timeout=5)
-            launcher.PublishCycleOutcome(outcome, timeout=5)
+            assert forwarder.upstream_ready.wait(timeout=5.0), "leaf did not connect to root"
+            channel = grpc.insecure_channel(f"127.0.0.1:{leaf_port}")
+            stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
+            chunk = _chunk(b"line\n", str(tmp_path / "x.log"))
+            stub.StreamDataRecords(iter([_record(chunk), _end_report_record()]), timeout=5)
+            channel.close()
 
-            # Each publish returned once the root acknowledged it, so they arrived in order.
-            assert root.received.is_set()
-            assert root.records == [start, outcome]
+            # The forwarder's stream ends once the leaf drained its queue to the root.
+            _stop_leaf_stack(server, forwarder, chunk_q, stop_ev)
+
+            assert [r.WhichOneof("record") for r in root.records] == [
+                "log_chunk",
+                "node_cycle_end_report",
+            ]
+            assert root.records[1] == _end_report_record()
         finally:
-            for channel in (launcher_channel, root_channel):
-                channel.close()
-            for server in (leaf_server, root_server):
-                server.stop(grace=None)
+            root_server.stop(grace=1.0)
+            root_server.wait_for_termination(timeout=5.0)

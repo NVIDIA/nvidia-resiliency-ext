@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """The records the job-wide cycle info is built from.
 
-The store host records one `CycleStartInfo` per cycle, when the rendezvous round that
-starts it closes. Each launcher records one `LocalCycleOutcome` per cycle, when the cycle
-ends for it; outcomes are local facts, so the cycle end and which node caused a failure
-are concluded from the outcomes of all launchers.
+The store host records one `CycleInfo` per cycle, when the rendezvous round that starts
+it closes, and updates it when the cycle ends. Each launcher records one
+`NodeCycleEndReport` per cycle, when the cycle
+ends for it; end reports are local facts, so the cycle end and which node caused a failure
+are concluded from the end reports of all launchers.
 
 Serialize enum members with ``.value``: for ``(str, Enum)`` mixins, ``str()`` and
 f-strings render the member name on newer Python versions.
 """
 
+import json
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Mapping, Optional, Sequence
@@ -22,38 +25,35 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class CycleStartInfo:
-    """How the rendezvous started a cycle, as the store host assigned it."""
+class CycleInfo:
+    """A cycle as the store host assigned it; mirrors CycleInfo of nvrx_interface.proto.
 
-    cycle: int
-    # When the store host closed the round: time.time(), seconds since the Unix epoch in
-    # UTC. Comparable across nodes only up to their clock skew, as
-    # `LocalCycleOutcome.detected_at`.
-    started_at: float
-    active_nodes: tuple[str, ...] = ()
-    standby_nodes: tuple[str, ...] = ()  # hot spares: joined the round, run no workers
-    # Group ranks of the active nodes, aligned with `active_nodes`.
-    active_ranks: tuple[int, ...] = ()
+    The store host publishes it when the rendezvous round that starts the cycle closes,
+    then again with `ended_at` set when the cycle ends. `started_at` and `ended_at` are
+    time.time(), seconds since the Unix epoch in UTC (ISO 8601 strings in the proto);
+    `timestamp` is in milliseconds since the epoch (now_ms()). Comparable across nodes only
+    up to their clock skew, as `NodeCycleEndReport.detected_timestamp`.
+    """
+
+    job_id: str
+    attempt_index: int
+    cycle_number: int
+    started_at: float  # when the store host closed the round (cycle_start_time)
+    ended_at: Optional[float] = None  # when the cycle ended (cycle_end_time); None until then
     cycle_log_file: str = ""  # empty when per-cycle logs are not configured
+    # Host names of the active nodes and their group ranks, aligned. Compressed on the
+    # wire (SLURM node range format): after transport, the nodes are short host names,
+    # each once and sorted, and the ranks are in that host order.
+    active_nodes: tuple[str, ...] = ()
+    active_ranks: tuple[int, ...] = ()
+    standby_nodes: tuple[str, ...] = ()  # hot spares: joined the round, run no workers
+    # When this record was created, on the node that created it; milliseconds since the epoch.
+    timestamp: int = 0
 
 
-class CycleEndReason(str, Enum):
-    """Why the cycle ended on this launcher"""
-
-    COMPLETED = "completed"
-    FAILED = "failed"  # a local worker failed or was stopped by its rank monitor
-    PEER_RESTART = "peer_restart"  # a peer opened the next rendezvous round
-    TERMINATED = "terminated"  # a no-restart decision (attribution, progress, or a peer)
-
-
-class RankEndReason(str, Enum):
-    COMPLETED = "completed"
-    FAILED = "failed"  # exited with a nonzero code or a signal on its own
-    STOPPED_BY_LAUNCHER = "stopped_by_launcher"
-    # Exited after its rank monitor detected a timeout and signalled it. The monitor records
-    # the timeout only once it signals the worker, so a worker that exits on its own after
-    # detection (e.g. during a timeout dump capture) is reported as FAILED.
-    STOPPED_BY_RMON = "stopped_by_rank_monitor"
+def now_ms() -> int:
+    """The current time in milliseconds since the Unix epoch (UTC), as the records keep it."""
+    return time.time_ns() // 1_000_000
 
 
 class TimeoutKind(str, Enum):
@@ -68,54 +68,56 @@ class RankTimeout:
     sections: tuple[str, ...] = ()  # set only for SECTION
 
 
-@dataclass(frozen=True)
-class RankOutcome:
-    global_rank: int
-    local_rank: int
-    pid: int
-    end: RankEndReason
-    exitcode: Optional[int] = None  # negative for a signal, as reported by torchelastic
-    # How the worker ended beyond its exit code, e.g. an exception summary. Not captured
-    # yet: always empty for now.
-    exitdetails: str = ""
-    timeout_kind: Optional[TimeoutKind] = None  # set only when end is STOPPED_BY_RMON
-    # Workload section names; several open sections can time out at once.
-    timeout_sections: tuple[str, ...] = ()
+class EndReason(str, Enum):
+    """How the cycle ended on a launcher; mirrors the EndReason of nvrx_interface.proto."""
+
+    UNSPECIFIED = "unspecified"
+    COMPLETED = "completed"
+    FAILED = "failed"  # a local worker exited on its own
+    TERMINATED_DUE_TO_PEER = "terminated_due_to_peer"  # a peer opened the next round
+    # A local worker was stopped by its rank monitor on a timeout.
+    TERMINATED_BY_RANK_MONITOR = "terminated_by_rank_monitor"
+    TERMINATED_BY_ATTRIBUTION = "terminated_by_attribution"  # an attribution stop
 
 
 @dataclass(frozen=True)
-class LocalCycleOutcome:
-    cycle: int
-    node: str
-    node_end: CycleEndReason
-    # When the launcher observed the end: time.time(), seconds since the Unix epoch in UTC.
-    # Comparable across nodes only up to their clock skew (NTP/chrony, typically milliseconds);
-    detected_at: float
-    ranks: tuple[RankOutcome, ...]
+class NodeCycleEndReport:
+    """How a cycle ended on one launcher; mirrors NodeCycleEndReport of nvrx_interface.proto.
 
-    @property
-    def launcher(self) -> tuple[str, tuple[int, ...]]:
-        """Identifies the reporting launcher: its node and its workers' global ranks, as
-        hostnames can repeat when launchers share a host."""
-        return self.node, tuple(rank.global_rank for rank in self.ranks)
+    Recorded by the launcher's main thread when it observes the end; its publisher thread
+    converts it to the proto message.
+    """
+
+    job_id: str
+    attempt_index: int
+    cycle_number: int
+    node_name: str
+    end_reason: EndReason
+    # When the launcher observed the end, in milliseconds since the Unix epoch in UTC
+    # (now_ms()). Comparable across nodes only up to their clock skew.
+    detected_timestamp: int
+    # JSON list, one entry per local worker that failed or was stopped by its rank monitor
+    # (see build_node_cycle_end_report); "" when none did.
+    exit_details: str = ""
 
 
-# Bound each record when converting it to a wire format, so a workload with many or long
-# section names, or long exit details, cannot grow it.
+# Bound each record, so a workload with many or long section names, or many failed workers,
+# cannot grow it.
 MAX_TIMEOUT_SECTIONS = 4
 MAX_SECTION_NAME_LEN = 64
-MAX_EXIT_DETAILS_LEN = 256
+# Workers listed in NodeCycleEndReport.exit_details; the rest are counted, not listed.
+MAX_EXIT_DETAILS_WORKERS = 16
 
 
 # global start
 
 
 class JobEndReason(str, Enum):
-    """How the cycle ended for the job, as concluded from all launchers' outcomes."""
+    """How the cycle ended for the job, as concluded from all launchers' end reports."""
 
     COMPLETED = "completed"
     # A worker failed on its own or was stopped by its rank monitor on a timeout; the
-    # rank's record (RankOutcome) tells which, with the timeout's kind and sections.
+    # launcher's end report tells which.
     RANK_FAILURE = "rank_failure"
     TERMINATED = "terminated"  # a no-restart decision
     UNKNOWN = "unknown"
@@ -123,70 +125,81 @@ class JobEndReason(str, Enum):
 
 @dataclass(frozen=True)
 class CycleSummary:
-    # aggregated outcomes for the whole job
+    # aggregated end reports for the whole job
     cycle: int
-    outcomes: tuple[LocalCycleOutcome, ...]  # one per reporting launcher, de-duplicated
+    outcomes: tuple[NodeCycleEndReport, ...]  # one per reporting launcher, de-duplicated
     # Active launchers of the cycle start; None when the start was not received.
     launchers_expected: Optional[int] = None
-    # TODO: group ranks instead of node names for missing and first_detected, once outcomes
-    # carry their launcher's group rank; node names repeat when launchers share a host.
+    # TODO: group ranks instead of node names for missing and first_detected, once end
+    # reports carry their launcher's group rank; node names repeat when launchers share a
+    # host.
     missing: tuple[str, ...] = ()  # nodes of active launchers that did not report
     # Filled by optional aggregation steps; None means "not computed".
     end_reason: Optional[JobEndReason] = None
     first_detected: tuple[str, ...] = ()  # nodes that detected an issue first
-    # When the cycle ended, in UTC epoch seconds like LocalCycleOutcome.detected_at.
-    ended_at: Optional[float] = None
+    # When the cycle ended, in milliseconds since the Unix epoch in UTC, like
+    # NodeCycleEndReport.detected_timestamp.
+    ended_at: Optional[int] = None
 
 
 # global end
 
 
-def build_local_cycle_outcome(
+def build_node_cycle_end_report(
+    job_id: str,
+    attempt_index: int,
     cycle: int,
     node: str,
-    node_end_reason: CycleEndReason,
+    end_reason: EndReason,
     workers: Sequence["Worker"],
     failures: Optional[Mapping[int, "ProcessFailure"]],
-    detected_at: float,
+    detected_timestamp: int,
     timeouts: Optional[Mapping[int, RankTimeout]] = None,
-) -> LocalCycleOutcome:
-    """Classify each local worker at the moment the launcher observed the cycle end.
+) -> NodeCycleEndReport:
+    """Describe how the cycle ended on this launcher, when it observed the end.
 
     Workers in `failures` (keyed by global rank) exited; those also in `timeouts` (keyed
     by global rank) were stopped by their rank monitor, the others failed on their own.
-    When the cycle completed, the other workers completed too; otherwise the launcher
-    stops them.
+    Each is listed in `exit_details`, as JSON: its global and local rank, pid, how it
+    ended ("failed" or "stopped_by_rank_monitor"), its exit code, and for a rank monitor
+    stop the timeout kind and sections. A FAILED end becomes TERMINATED_BY_RANK_MONITOR
+    when any local worker was stopped by its rank monitor.
     """
     failures = failures or {}
     timeouts = timeouts or {}
-    ranks = []
+    exited = []
+    stopped_by_rank_monitor = False
     for worker in workers:
         failure = failures.get(worker.global_rank)
-        timeout = timeouts.get(worker.global_rank) if failure is not None else None
+        if failure is None:
+            continue
+        timeout = timeouts.get(worker.global_rank)
+        entry = {
+            "rank": worker.global_rank,
+            "local_rank": worker.local_rank,
+            "pid": worker.id,
+            "end": "stopped_by_rank_monitor" if timeout is not None else "failed",
+            "exitcode": failure.exitcode,
+        }
         if timeout is not None:
-            end, exitcode = RankEndReason.STOPPED_BY_RMON, failure.exitcode
-        elif failure is not None:
-            end, exitcode = RankEndReason.FAILED, failure.exitcode
-        elif node_end_reason is CycleEndReason.COMPLETED:
-            end, exitcode = RankEndReason.COMPLETED, 0
-        else:
-            end, exitcode = RankEndReason.STOPPED_BY_LAUNCHER, None
-        ranks.append(
-            RankOutcome(
-                global_rank=worker.global_rank,
-                local_rank=worker.local_rank,
-                pid=worker.id,
-                end=end,
-                exitcode=exitcode,
-                exitdetails="",
-                timeout_kind=timeout.kind if timeout is not None else None,
-                timeout_sections=timeout.sections if timeout is not None else (),
-            )
-        )
-    return LocalCycleOutcome(
-        cycle=cycle,
-        node=node,
-        node_end=node_end_reason,
-        detected_at=detected_at,
-        ranks=tuple(ranks),
+            stopped_by_rank_monitor = True
+            entry["timeout"] = timeout.kind.value
+            if timeout.sections:
+                entry["sections"] = [
+                    name[:MAX_SECTION_NAME_LEN] for name in timeout.sections[:MAX_TIMEOUT_SECTIONS]
+                ]
+        exited.append(entry)
+    if len(exited) > MAX_EXIT_DETAILS_WORKERS:
+        omitted = len(exited) - MAX_EXIT_DETAILS_WORKERS
+        exited = exited[:MAX_EXIT_DETAILS_WORKERS] + [{"omitted": omitted}]
+    if end_reason is EndReason.FAILED and stopped_by_rank_monitor:
+        end_reason = EndReason.TERMINATED_BY_RANK_MONITOR
+    return NodeCycleEndReport(
+        job_id=job_id,
+        attempt_index=attempt_index,
+        cycle_number=cycle,
+        node_name=node,
+        end_reason=end_reason,
+        detected_timestamp=detected_timestamp,
+        exit_details=json.dumps(exited, separators=(",", ":")) if exited else "",
     )

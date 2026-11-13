@@ -23,7 +23,7 @@ import subprocess  # nosec B404
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from enum import Enum
 from types import FrameType
@@ -68,9 +68,13 @@ from ..shared_utils.profiling import (
     set_profiling_cycle,
 )
 from ..shared_utils.telemetry import span
-from .cycle_info.records import CycleStartInfo
+from .cycle_info.records import CycleInfo, now_ms
 from .cycle_info.transport import CycleInfoPublisher
-from .cycle_info_writer import cycle_log_file
+from .cycle_info_writer import (
+    _cycle_info_attempt_index_from_env,
+    _cycle_info_job_id_from_env,
+    cycle_log_file,
+)
 from .data import WorkloadAction
 from .ipc_connector import IpcConnector
 from .launcher import FT_LAUNCHER_IPC_SOCKET, UnhealthyNodeException, get_node_health_check
@@ -637,8 +641,11 @@ class _RendezvousBarrierState:
         self._standby_node_addrs: Optional[List[str]] = None
         # Group ranks of active nodes, parallel to _active_node_addrs (same slot order)
         self._active_ranks: Optional[List[int]] = None
-        # Sends the cycle start info towards the CycleAnalyzer when this host closes a round.
+        # Sends the cycle info towards the CycleAnalyzer: when this host closes a round, and
+        # again when that cycle ends.
         self._cycle_info_publisher: Optional[CycleInfoPublisher] = None
+        # The cycle info last published as started and not yet as ended; None once ended.
+        self._open_cycle_info: Optional[CycleInfo] = None
         self._cycle_log_prefix = cycle_log_prefix
 
         # Reference to agent (set via set_agent() method in handler)
@@ -1120,6 +1127,8 @@ class _RendezvousBarrierState:
         next_key = f"{self.prefix}:round_done_{self._round + 1}"
         if not self.store.check([next_key]):
             return False
+        # The current cycle ended (published by the store host only).
+        self.publish_cycle_end_as_host()
         return True
 
     def _sync_from_per_round_state(self) -> bool:
@@ -1146,7 +1155,12 @@ class _RendezvousBarrierState:
             if val == 1:
                 N += 1  # Round N completed, check N+1
             else:
-                break  # Round N is open or in progress (val==0)
+                # Round N is open or in progress (val==0): an earlier cycle ended. This is
+                # how the store host of nvrx-control sees it (published by it only).
+                open_info = self._open_cycle_info
+                if open_info is not None and open_info.cycle_number < N:
+                    self.publish_cycle_end_as_host()
+                break
 
         if N > self._round:
             old_round = self._round
@@ -1687,23 +1701,51 @@ class _RendezvousBarrierState:
         if self._cycle_info_publisher is None:
             return
         try:
-            info = CycleStartInfo(
-                cycle=round_id,
-                started_at=time.time(),
-                active_nodes=tuple(self._active_node_addrs or ()),
-                standby_nodes=tuple(self._standby_node_addrs or ()),
-                active_ranks=tuple(self._active_ranks or ()),
+            now = now_ms()
+            info = CycleInfo(
+                job_id=_cycle_info_job_id_from_env(),
+                attempt_index=_cycle_info_attempt_index_from_env(),
+                cycle_number=round_id,
+                started_at=now / 1000,
                 cycle_log_file=(
                     cycle_log_file(self._cycle_log_prefix, round_id)
                     if self._cycle_log_prefix
                     else ""
                 ),
+                active_nodes=tuple(self._active_node_addrs or ()),
+                active_ranks=tuple(self._active_ranks or ()),
+                standby_nodes=tuple(self._standby_node_addrs or ()),
+                timestamp=now,
             )
-            self._cycle_info_publisher.publish_cycle_start(info)
+            self._open_cycle_info = info
+            self._cycle_info_publisher.publish_cycle_info(info)
         except SignalException:
             raise
         except Exception as e:
             log.warning("Failed to publish the start of cycle %s: %s", round_id, e, exc_info=True)
+
+    def publish_cycle_end_as_host(self) -> None:
+        """Publish that the cycle this host last published as started has ended, now.
+
+        Called when this host sees the next round open, and when the rendezvous shuts down.
+        Sent once per cycle: later calls do nothing until the next cycle starts. Best
+        effort: a failure is only logged.
+        """
+        info = self._open_cycle_info
+        if info is None or self._cycle_info_publisher is None:
+            return
+        self._open_cycle_info = None
+        try:
+            now = now_ms()
+            self._cycle_info_publisher.update_cycle_info(
+                replace(info, ended_at=now / 1000, timestamp=now)
+            )
+        except SignalException:
+            raise
+        except Exception as e:
+            log.warning(
+                "Failed to publish the end of cycle %s: %s", info.cycle_number, e, exc_info=True
+            )
 
     def _submit_attribution_log_for_round(self, round_id: int) -> None:
         """Submit the just-started cycle log from the rendezvous control host."""
@@ -2342,10 +2384,12 @@ class _RendezvousBarrierState:
         next_round_done_key = f"{self.prefix}:round_done_{self._round + 1}"
         if self.store.check([next_round_done_key]):
             log.debug(f"open_rendezvous() deferred - round_done_{self._round + 1} already exists.")
+            self.publish_cycle_end_as_host()  # the current cycle ended (store host only)
             return
 
         self.store.set(next_round_done_key, "0".encode('utf-8'))
         log.debug(f"Opened round {self._round + 1} for joining")
+        self.publish_cycle_end_as_host()  # the current cycle ended (store host only)
 
 
 class FtRendezvousBarrierHandler(RendezvousHandler):

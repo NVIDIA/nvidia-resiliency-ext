@@ -95,13 +95,18 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
-    CycleEndReason,
-    LocalCycleOutcome,
+    EndReason,
+    NodeCycleEndReport,
     RankTimeout,
-    build_local_cycle_outcome,
+    build_node_cycle_end_report,
+    now_ms,
 )
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.transport import CycleInfoPublisher
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
+    CycleInfoReporter,
+    _cycle_info_attempt_index_from_env,
+    _cycle_info_job_id_from_env,
+)
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
@@ -141,7 +146,9 @@ from nvidia_resiliency_ext.shared_utils.profiling import (
     get_profiling_cycle,
     record_profiling_event,
 )
-from nvidia_resiliency_ext.shared_utils.proto.cycle_info_pb2_grpc import CycleInfoServiceStub
+from nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc import (
+    DataRecordAggregationServiceStub,
+)
 
 __imports_finished__ = time.time()
 
@@ -161,6 +168,7 @@ CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
 RANK_MONITOR_QUERY_TIMEOUT = 1.0
 # Bound on joining the rank monitor listener thread at shutdown.
 RANK_MONITOR_LISTENER_JOIN_TIMEOUT = 2.0
+
 # Bound on waiting for the queued cycle outcomes to be published before the job ends; above
 # the publish RPC's own 5 s timeout, so a slow RPC still completes.
 CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT = 6.0
@@ -539,7 +547,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._cycle_phase = telemetry.Phase()
         self._run_phase = telemetry.Phase()
         # How the latest cycle ended on this launcher, recorded when the end is observed.
-        self._cycle_outcome: Optional[LocalCycleOutcome] = None
+        self._cycle_end_report: Optional[NodeCycleEndReport] = None
         # Sends the outcomes towards the CycleAnalyzer; None publishes nothing.
         self._cycle_info_publisher = cycle_info_publisher
         self._start_outcome_publisher()
@@ -551,7 +559,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         Publishing is a blocking RPC; on this thread it stays off the restart path.
         """
-        self._outcome_queue: "queue.Queue[Optional[LocalCycleOutcome]]" = queue.Queue()
+        self._outcome_queue: "queue.Queue[Optional[NodeCycleEndReport]]" = queue.Queue()
         # Outcomes queued and not yet published, guarded by _outcome_published.
         self._outcomes_unpublished = 0
         self._outcome_published = threading.Condition()
@@ -570,9 +578,11 @@ class LocalElasticAgent(SimpleElasticAgent):
             if outcome is None:
                 return
             try:
-                self._cycle_info_publisher.publish_outcome(outcome)
+                self._cycle_info_publisher.publish_end_report(outcome)
             except Exception as e:
-                logger.warning(f"Failed to publish the outcome of cycle {outcome.cycle}: {e}")
+                logger.warning(
+                    f"Failed to publish the outcome of cycle {outcome.cycle_number}: {e}"
+                )
             finally:
                 with self._outcome_published:
                     self._outcomes_unpublished -= 1
@@ -826,38 +836,40 @@ class LocalElasticAgent(SimpleElasticAgent):
             # No more restarts available
             return False
 
-    def _record_cycle_outcome(
-        self, node_end: CycleEndReason, failures: Optional[Dict[int, Any]] = None
+    def _record_cycle_end_report(
+        self, end_reason: EndReason, failures: Optional[Dict[int, Any]] = None
     ) -> None:
-        """Record how the current cycle ended on this launcher.
+        """Record how the current cycle ended on this launcher (a NodeCycleEndReport).
 
-        Call before stopping workers or deciding on a restart, so `detected_at` is the
-        moment the end was observed rather than the end of teardown.
+        Call before stopping workers or deciding on a restart, so `detected_timestamp` is
+        the moment the end was observed rather than the end of teardown.
 
         Best effort: a failure here is logged and never interrupts the restart path.
         """
         if not self._ft_cfg.is_cycle_outcome_enabled:
             return
         try:
-            detected_at = time.time()
+            detected_timestamp = now_ms()
             cycle = self._get_global_cycle_number()
             timeouts = self._collect_rank_monitor_timeouts(cycle, failures) if failures else None
-            self._cycle_outcome = build_local_cycle_outcome(
+            self._cycle_end_report = build_node_cycle_end_report(
+                job_id=_cycle_info_job_id_from_env(),
+                attempt_index=_cycle_info_attempt_index_from_env(),
                 cycle=cycle,
                 node=self._node_id,
-                node_end_reason=node_end,
+                end_reason=end_reason,
                 workers=self._worker_group.workers,
                 failures=failures,
-                detected_at=detected_at,
+                detected_timestamp=detected_timestamp,
                 timeouts=timeouts,
             )
-            logger.debug("Cycle outcome: %s", self._cycle_outcome)
+            logger.debug("Cycle end report: %s", self._cycle_end_report)
         except SignalException:
             # Termination signals must reach run(), which shuts the workers down.
             raise
         except Exception as e:
-            self._cycle_outcome = None
-            logger.warning(f"Failed to record the cycle outcome: {e}")
+            self._cycle_end_report = None
+            logger.warning(f"Failed to record the cycle end report: {e}")
 
     def _publish_cycle_outcome(self, wait: bool = False) -> None:
         """Queue the outcome of the cycle that just ended for the publisher thread.
@@ -866,10 +878,10 @@ class LocalElasticAgent(SimpleElasticAgent):
         time, until the outcome was published. Wait before anything that ends the job, as
         the shutdown key ends the CycleAnalyzer. Best effort: a failure is logged.
         """
-        outcome = self._cycle_outcome
+        outcome = self._cycle_end_report
         # Nothing recorded for this cycle: outcomes are disabled or recording failed. Checked
         # here, as the cycle number moves on once the next rendezvous completes.
-        if outcome is None or outcome.cycle != self._get_global_cycle_number():
+        if outcome is None or outcome.cycle_number != self._get_global_cycle_number():
             return
         if self._outcome_publisher_thread is None:
             return
@@ -877,7 +889,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._outcomes_unpublished += 1
         self._outcome_queue.put(outcome)
         if wait and not self._wait_for_outcomes_published(CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT):
-            logger.warning(f"The outcome of cycle {outcome.cycle} was not published in time")
+            logger.warning(
+                f"The outcome of cycle {outcome.cycle_number} was not published in time"
+            )
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         return self._invoke_run_with_any_failed_policy(role)
@@ -905,7 +919,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
-                self._record_cycle_outcome(CycleEndReason.COMPLETED)
+                self._record_cycle_end_report(EndReason.COMPLETED)
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -930,7 +944,9 @@ class LocalElasticAgent(SimpleElasticAgent):
             # because an earlier cycle was later attributed as fatal.
             if rdzv_handler.attribution_stop_requested():
                 # The worker group may also have failed in this same poll.
-                self._record_cycle_outcome(CycleEndReason.TERMINATED, run_result.failures)
+                self._record_cycle_end_report(
+                    EndReason.TERMINATED_BY_ATTRIBUTION, run_result.failures
+                )
                 logger.error(
                     "[%s] Attribution recommended stopping the job; terminating workers "
                     "and signalling the rest of the job.",
@@ -951,7 +967,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
 
             if state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
-                self._record_cycle_outcome(CycleEndReason.FAILED, run_result.failures)
+                # TERMINATED_BY_RANK_MONITOR instead if a rank monitor stopped a worker.
+                self._record_cycle_end_report(EndReason.FAILED, run_result.failures)
                 # Record failure detection event
                 record_profiling_event(
                     ProfilingEvent.FAILURE_DETECTED,
@@ -1014,9 +1031,9 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # The round may have been opened to broadcast a no-restart decision rather
                     # than to restart. One extra store read, only once, at the moment the
                     # job is ending.
+                    self._record_cycle_end_report(EndReason.TERMINATED_DUE_TO_PEER)
                     no_restart = rdzv_handler.no_restart_reason()
                     if no_restart is not None:
-                        self._record_cycle_outcome(CycleEndReason.TERMINATED)
                         logger.error(
                             "[%s] Another launcher reported a no-restart decision (%s); "
                             "terminating workers.",
@@ -1030,7 +1047,6 @@ class LocalElasticAgent(SimpleElasticAgent):
                         self._worker_group.state = WorkerState.FAILED
                         raise NoRestartRequested(no_restart)
 
-                    self._record_cycle_outcome(CycleEndReason.PEER_RESTART)
                     group_rank = self._worker_group.group_rank
                     # Record failure detection event
                     record_profiling_event(
@@ -2150,7 +2166,8 @@ def _is_store_host(params: RendezvousParameters) -> bool:
 def _create_cycle_info_publisher(
     config: LaunchConfig,
 ) -> Tuple[Optional[CycleInfoPublisher], Optional[grpc.Channel]]:
-    """Create the publisher of the cycle records, on its own channel to the gRPC log server.
+    """Create the publisher of this launcher's end reports, on its own channel to the gRPC
+    log server it streams logs to (StreamDataRecords).
 
     Returns:
         The publisher and its channel; both None when cycle info or the gRPC log server
@@ -2161,7 +2178,9 @@ def _create_cycle_info_publisher(
     try:
         # The channel connects lazily, on the first publish.
         channel = grpc.insecure_channel(config.log_server_address)
-        publisher = GrpcCycleInfoPublisher(CycleInfoServiceStub(channel))
+        publisher = GrpcCycleInfoPublisher(
+            data_record_stub=DataRecordAggregationServiceStub(channel)
+        )
     except Exception as e:
         logger.warning(f"Cycle records will not be published: {e}")
         return None, None
@@ -4042,10 +4061,8 @@ def _start_grpc_log_servers(
     aggregators that forward to the root. In two-level mode the root is given
     ``2 * graceful_shutdown_timeout`` so it outlasts leaf drain after SIGTERM.
 
-    Args:
-        cycle_analyzer_address: Where the root forwards the cycle records (the
-            CycleAnalyzer started by nvrx-control); None drops them.
-            Only set when called by nvrx-control
+    With `cycle_analyzer_address`, the root forwards the cycle end reports it receives to
+    that CycleAnalyzer; without it, it drops them.
 
     Returns:
         Non-empty list of Popen [root] or [root, leaf0, ...] on success, [] on failure.
@@ -4073,10 +4090,9 @@ def _start_grpc_log_servers(
         for root in allowed_roots:
             allowed_root_args += ['--allowed-root', root]
         logger.info(f"gRPC log server(s) confined to allowed roots: {allowed_roots}")
-        # Only the root forwards cycle records to the CycleAnalyzer; leaves forward to it.
-        root_only_args: List[str] = []
-        if cycle_analyzer_address:
-            root_only_args = ['--cycle-analyzer-address', cycle_analyzer_address]
+        root_analyzer_args: List[str] = (
+            ['--cycle-analyzer-address', cycle_analyzer_address] if cycle_analyzer_address else []
+        )
 
         if not funnel_ports.uses_two_level:
             grpc_server_log = _grpc_log_path(log_prefix, '_root.log')
@@ -4098,7 +4114,7 @@ def _start_grpc_log_servers(
                         '--graceful-shutdown-timeout',
                         str(graceful_shutdown_timeout),
                         *allowed_root_args,
-                        *root_only_args,
+                        *root_analyzer_args,
                     ],
                     stdout=fd,
                     stderr=subprocess.STDOUT,
@@ -4143,7 +4159,7 @@ def _start_grpc_log_servers(
                     '--graceful-shutdown-timeout',
                     str(root_graceful_shutdown_timeout),
                     *allowed_root_args,
-                    *root_only_args,
+                    *root_analyzer_args,
                 ],
                 stdout=root_fd,
                 stderr=subprocess.STDOUT,

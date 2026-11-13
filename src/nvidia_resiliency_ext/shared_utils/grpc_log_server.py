@@ -70,6 +70,7 @@ import argparse
 import contextlib
 import logging
 import os
+import queue
 import re
 import signal
 import sys
@@ -91,10 +92,10 @@ from nvidia_resiliency_ext.shared_utils.os_utils import (
 # Note: Proto files are in shared_utils/proto/ and compiled during build (build.py)
 try:
     from nvidia_resiliency_ext.shared_utils.proto import (
-        cycle_info_pb2,
-        cycle_info_pb2_grpc,
         log_aggregation_pb2,
         log_aggregation_pb2_grpc,
+        nvrx_interface_pb2,
+        nvrx_interface_pb2_grpc,
     )
 except ImportError:
     # Fallback for running as script
@@ -103,14 +104,16 @@ except ImportError:
 
     # Add shared_utils/proto to path
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_utils', 'proto'))
-    import cycle_info_pb2
-    import cycle_info_pb2_grpc
     import log_aggregation_pb2
     import log_aggregation_pb2_grpc
+    import nvrx_interface_pb2
+    import nvrx_interface_pb2_grpc
 
 # Default bind: all interfaces so remote training nodes can connect (cluster log funnel).
 _DEFAULT_GRPC_BIND_HOST = "0.0.0.0"  # nosec B104
 _DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS = 10.0
+# At shutdown, how long the queued end reports may take to reach the CycleAnalyzer.
+_END_REPORT_DRAIN_TIMEOUT_SECONDS = 10.0
 _CYCLE_LOG_RE = re.compile(r"_cycle(?P<cycle>\d+)(?=\D|$)")
 
 
@@ -137,7 +140,96 @@ def _format_grpc_peer(raw: Optional[str]) -> str:
     return urllib.parse.unquote(raw)
 
 
-class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
+class _EndReportForwarder:
+    """Forwards the ``NodeCycleEndReport`` records received on the data record streams to
+    the CycleAnalyzer at ``address`` (``CycleInfoService.PublishNodeCycleEndReport``), from
+    one thread.
+
+    Stream handlers only enqueue, so a slow or absent analyzer never holds the log streams.
+    Best effort: a report that fails to send is logged and dropped, not retried. A report
+    arriving while the queue is full is dropped too; there is one report per launcher and
+    cycle, so the queue only fills when the analyzer is stuck.
+    """
+
+    _STOP = object()
+
+    def __init__(
+        self,
+        address: str,
+        logger: logging.Logger,
+        *,
+        max_queue: int = 100_000,
+        rpc_timeout: float = 5.0,
+    ):
+        self.address = address
+        self._logger = logger
+        self._rpc_timeout = rpc_timeout
+        self._queue: "queue.Queue[Any]" = queue.Queue(maxsize=max_queue)
+        self._channel = grpc.insecure_channel(address)
+        self._stub = nvrx_interface_pb2_grpc.CycleInfoServiceStub(self._channel)
+        # Updated by the forwarding thread only.
+        self.forwarded = 0
+        self.failed = 0
+        self._thread = threading.Thread(target=self._run, name="EndReportForwarder", daemon=True)
+        self._thread.start()
+
+    def put(self, report: nvrx_interface_pb2.NodeCycleEndReport) -> bool:
+        """Queue `report` for the analyzer; False if it was dropped (queue full)."""
+        try:
+            self._queue.put_nowait(report)
+            return True
+        except queue.Full:
+            self._logger.warning(
+                f"Dropping the end report of cycle {report.cycle_number} from "
+                f"{report.node_name}: {self._queue.maxsize} reports already wait for the "
+                f"CycleAnalyzer at {self.address}"
+            )
+            return False
+
+    def _run(self) -> None:
+        while True:
+            report = self._queue.get()
+            if report is self._STOP:
+                return
+            self._send(report)
+
+    def _send(self, report: nvrx_interface_pb2.NodeCycleEndReport) -> None:
+        what = f"end report of cycle {report.cycle_number} from {report.node_name}"
+        try:
+            self._stub.PublishNodeCycleEndReport(report, timeout=self._rpc_timeout)
+            self.forwarded += 1
+        except grpc.RpcError as e:
+            self.failed += 1
+            # The gRPC core's own account of the failure; details() alone can be terse.
+            debug = e.debug_error_string() if hasattr(e, "debug_error_string") else ""
+            self._logger.warning(
+                f"Failed to forward the {what} to the CycleAnalyzer: "
+                f"{e.code().name}: {e.details()} ({debug})"
+            )
+        except Exception as e:
+            self.failed += 1
+            self._logger.warning(f"Failed to forward the {what} to the CycleAnalyzer: {e!r}")
+
+    def stop(self, timeout: float) -> None:
+        """Forward the reports already queued, then stop; waits up to `timeout` seconds."""
+        deadline = time.monotonic() + timeout
+        try:
+            self._queue.put(self._STOP, timeout=timeout)
+        except queue.Full:
+            pass
+        self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if self._thread.is_alive():
+            self._logger.warning(
+                f"End report forwarder did not finish within {timeout}s; "
+                f"~{self._queue.qsize()} report(s) not forwarded"
+            )
+        self._logger.info(
+            f"End report forwarder stopped: forwarded={self.forwarded} failed={self.failed}"
+        )
+        self._channel.close()
+
+
+class LogAggregationServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
     """
     gRPC servicer that receives log streams from multiple clients.
 
@@ -156,6 +248,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         completion_idle_timeout: float = _DEFAULT_COMPLETION_IDLE_TIMEOUT_SECONDS,
         *,
         allowed_roots: Sequence[str],
+        cycle_analyzer_address: Optional[str] = None,
     ):
         """
         Initialize log aggregation server.
@@ -177,6 +270,9 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                            rejected with ``INVALID_ARGUMENT``. Required with no default:
                            every chunk names its own destination, so there is no safe
                            unconfined mode.
+            cycle_analyzer_address: gRPC address of the CycleAnalyzer that the received
+                                    ``NodeCycleEndReport`` records are forwarded to. None
+                                    drops them (no analyzer runs).
 
         Raises:
             ValueError: If ``completion_idle_timeout`` is negative or ``allowed_roots`` is empty.
@@ -223,6 +319,13 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         self.flush_thread = threading.Thread(target=self._periodic_flush, daemon=True)
         self.flush_thread.start()
 
+        # Background thread forwarding the end reports to the CycleAnalyzer
+        self.end_report_forwarder: Optional[_EndReportForwarder] = None
+        if cycle_analyzer_address:
+            self.end_report_forwarder = _EndReportForwarder(cycle_analyzer_address, self.logger)
+            self.logger.info(f"Forwarding cycle end reports to {cycle_analyzer_address}")
+        self._warned_no_analyzer = False
+
     def _resolve_target_path(self, file_path: str) -> str:
         """
         Resolve a client-supplied target path, enforcing allowed-root confinement.
@@ -234,7 +337,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             The fully resolved path to actually open.
 
         Raises:
-            ValueError: If the path escapes every allowed root. ``StreamLogs`` maps this to
+            ValueError: If the path escapes every allowed root. ``StreamDataRecords`` maps this to
                 ``INVALID_ARGUMENT`` and ends the stream.
         """
         return resolve_under_allowed_roots(file_path, self.allowed_roots)
@@ -328,17 +431,20 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         if len(details) > max_detail:
             self.logger.info(f"  ... and {len(details) - max_detail} more paths with buffered data")
 
-    def StreamLogs(self, request_iterator, context):
+    def StreamDataRecords(self, request_iterator, context):
         """
-        Handle streaming logs from one upstream ``StreamLogs`` RPC.
+        Handle streaming data records from one upstream ``StreamDataRecords`` RPC.
 
         Each RPC is one direct training node (single-level) or one leaf aggregator
         (two-level). Logging uses neutral ``peer`` + ``source_node_id`` (``node_id`` on
         the first chunk, from ft_launcher clients always set) so the same messages
         apply to both topologies.
 
+        Each record is handled by its type: a ``LogChunk`` is buffered for its file, a
+        ``NodeCycleEndReport`` is queued for the CycleAnalyzer (see ``_EndReportForwarder``).
+
         Args:
-            request_iterator: Iterator of ``LogChunk`` messages from the upstream client.
+            request_iterator: Iterator of ``DataRecord`` messages from the upstream client.
             context: gRPC ServicerContext for this RPC.
 
         Returns:
@@ -350,16 +456,26 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
         peer = _format_grpc_peer(context.peer())
         client_bytes = 0
         client_chunks = 0
+        client_end_reports = 0
         source_node_id: Optional[str] = None
 
         try:
-            for chunk in request_iterator:
+            for record in request_iterator:
                 if self.shutdown_event.is_set():
                     break
+                kind = record.WhichOneof("record")
+                if kind == "node_cycle_end_report":
+                    self._forward_end_report(record.node_cycle_end_report)
+                    client_end_reports += 1
+                    continue
+                if kind != "log_chunk":
+                    continue  # empty record
+                chunk = record.log_chunk
                 if source_node_id is None:
                     source_node_id = chunk.node_id
                     self.logger.info(
-                        f"StreamLogs stream opened peer={peer} source_node_id={source_node_id}"
+                        f"StreamDataRecords stream opened peer={peer} "
+                        f"source_node_id={source_node_id}"
                     )
 
                 # Get data and target file
@@ -397,8 +513,9 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             else:
                 end_src = "source_node_id=n/a"
             self.logger.info(
-                f"StreamLogs stream ended peer={peer} {end_src} "
-                f"chunks={client_chunks} received_KiB={client_bytes / 1024:.1f}"
+                f"StreamDataRecords stream ended peer={peer} {end_src} "
+                f"chunks={client_chunks} received_KiB={client_bytes / 1024:.1f} "
+                f"end_reports={client_end_reports}"
             )
 
             # No flush-on-disconnect: periodic flush thread handles flushing (every 1s)
@@ -415,7 +532,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 else "source_node_id=n/a"
             )
             stream_info = f"peer={peer} {src}"
-            self.logger.error(f"I/O error in StreamLogs ({stream_info}): {e}", exc_info=True)
+            self.logger.error(f"I/O error in StreamDataRecords ({stream_info}): {e}", exc_info=True)
             raise
         except ValueError as e:
             src = (
@@ -424,7 +541,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 else "source_node_id=n/a"
             )
             stream_info = f"peer={peer} {src}"
-            self.logger.error(f"Protocol error in StreamLogs ({stream_info}): {e}")
+            self.logger.error(f"Protocol error in StreamDataRecords ({stream_info}): {e}")
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
         except grpc.RpcError as e:
             src = (
@@ -434,9 +551,9 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
             )
             stream_info = f"peer={peer} {src}"
             if self.shutdown_event.is_set():
-                self.logger.debug(f"StreamLogs aborted during shutdown ({stream_info}): {e}")
+                self.logger.debug(f"StreamDataRecords aborted during shutdown ({stream_info}): {e}")
             else:
-                self.logger.info(f"StreamLogs aborted ({stream_info}): {e}")
+                self.logger.info(f"StreamDataRecords aborted ({stream_info}): {e}")
             raise
         except Exception as e:
             src = (
@@ -445,11 +562,24 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
                 else "source_node_id=n/a"
             )
             stream_info = f"peer={peer} {src}"
-            self.logger.error(f"Unexpected error in StreamLogs ({stream_info}): {e}", exc_info=True)
+            self.logger.error(
+                f"Unexpected error in StreamDataRecords ({stream_info}): {e}", exc_info=True
+            )
             raise
         finally:
             with self.clients_lock:
                 self.connected_clients -= 1
+
+    def _forward_end_report(self, report: nvrx_interface_pb2.NodeCycleEndReport) -> None:
+        """Queue `report` for the CycleAnalyzer, or drop it when no analyzer is configured."""
+        if self.end_report_forwarder is not None:
+            self.end_report_forwarder.put(report)
+        elif not self._warned_no_analyzer:
+            self._warned_no_analyzer = True
+            self.logger.warning(
+                "Dropping cycle end reports: no CycleAnalyzer address is configured "
+                "(--cycle-analyzer-address)"
+            )
 
     def HealthCheck(self, request, context):
         """Health check endpoint."""
@@ -720,46 +850,15 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.LogAggregationServiceServi
 
         self._scan_cycle_log_completions(include_latest=True, force_idle=True)
 
+        # Streams are done: forward the end reports still queued, then stop.
+        if self.end_report_forwarder is not None:
+            self.end_report_forwarder.stop(timeout=_END_REPORT_DRAIN_TIMEOUT_SECONDS)
+
         self.logger.info(
             f"Server shutdown complete. "
             f"Total: {self.total_chunks_received} chunks, "
             f"{self.total_bytes_received / 1024 / 1024:.1f} MB"
         )
-
-
-class CycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceServicer):
-    """Receives the cycle records on the root server, for the CycleAnalyzer.
-
-    The store host publishes the cycle starts and every launcher its outcomes, each to the
-    server it sends logs to: this root directly, or a leaf that forwards them.
-
-    The root forwards each record to the CycleAnalyzer with a blocking call on the
-    handler's thread, and acknowledges it once the analyzer acknowledged it; a failed
-    forward is answered with the analyzer's status. Without an analyzer (e.g. when the
-    store host is a launcher rather than nvrx-control), records are accepted and dropped.
-    """
-
-    def __init__(self, analyzer_stub: Optional[cycle_info_pb2_grpc.CycleInfoServiceStub] = None):
-        self._analyzer = analyzer_stub
-        self._logger = logging.getLogger("LogAggregationServer")
-
-    def PublishCycleStart(self, request, context):
-        what = f"start of cycle {request.cycle}"
-        return self._forward("PublishCycleStart", request, what, context)
-
-    def PublishCycleOutcome(self, request, context):
-        what = f"outcome of cycle {request.cycle} from {request.node}"
-        return self._forward("PublishCycleOutcome", request, what, context)
-
-    def _forward(self, rpc_name: str, request, what: str, context):
-        if self._analyzer is None:
-            return cycle_info_pb2.PublishReply()
-        try:
-            getattr(self._analyzer, rpc_name)(request)
-        except grpc.RpcError as e:
-            self._logger.warning(f"Failed to forward the {what}: {e.code().name}: {e.details()}")
-            context.abort(e.code(), f"root failed to forward the {what}: {e.details()}")
-        return cycle_info_pb2.PublishReply()
 
 
 def serve(
@@ -787,8 +886,8 @@ def serve(
         max_workers: Maximum number of worker threads for gRPC
         graceful_shutdown_timeout: Maximum seconds to wait for clients during shutdown
         completion_idle_timeout: Idle seconds before heuristic per-cycle completion is logged
-        cycle_analyzer_address: gRPC address of the CycleAnalyzer to forward the cycle
-            records to, e.g. ``unix:/tmp/nvrx_cycle_analyzer_<pid>.sock``; None drops them.
+        cycle_analyzer_address: CycleAnalyzer address to forward cycle end reports to;
+            None drops them
 
     Raises:
         ValueError: If ``allowed_roots`` is empty.
@@ -804,6 +903,7 @@ def serve(
         graceful_shutdown_timeout=graceful_shutdown_timeout,
         completion_idle_timeout=completion_idle_timeout,
         allowed_roots=allowed_roots,
+        cycle_analyzer_address=cycle_analyzer_address,
     )
 
     # Create gRPC server
@@ -828,24 +928,7 @@ def serve(
     )
 
     # Add servicer to server
-    log_aggregation_pb2_grpc.add_LogAggregationServiceServicer_to_server(servicer, server)
-    # Same port: launchers publish their cycle records to the server they send logs to.
-    # The root forwards them to the CycleAnalyzer on a channel of their own (a Unix domain
-    # socket for a ``unix:`` address).
-    cycle_analyzer_channel = None
-    cycle_info_servicer = CycleInfoServicer()
-    if cycle_analyzer_address:
-        cycle_analyzer_channel = grpc.insecure_channel(cycle_analyzer_address)
-        cycle_info_servicer = CycleInfoServicer(
-            cycle_info_pb2_grpc.CycleInfoServiceStub(cycle_analyzer_channel)
-        )
-        logger.info(f"Forwarding cycle records to the CycleAnalyzer at {cycle_analyzer_address}")
-    cycle_info_pb2_grpc.add_CycleInfoServiceServicer_to_server(cycle_info_servicer, server)
-
-    def close_cycle_analyzer_forwarding():
-        # After the server stopped, so no forward is using the channel anymore.
-        if cycle_analyzer_channel is not None:
-            cycle_analyzer_channel.close()
+    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
 
     # Bind to address
     server_address = f'{host}:{port}'
@@ -875,7 +958,6 @@ def serve(
                 "Timed out waiting for gRPC log server to finish termination after stop() "
                 f"(>{termination_wait_timeout_seconds}s)"
             )
-        close_cycle_analyzer_forwarding()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
@@ -893,7 +975,6 @@ def serve(
                 "Timed out waiting for gRPC log server after keyboard interrupt "
                 f"(>{termination_wait_timeout_seconds}s)"
             )
-        close_cycle_analyzer_forwarding()
 
 
 def main():
@@ -952,8 +1033,8 @@ def main():
         '--cycle-analyzer-address',
         type=str,
         default=None,
-        help='gRPC address of the CycleAnalyzer to forward the cycle records to, e.g. '
-        'unix:/tmp/nvrx_cycle_analyzer_<pid>.sock. Without it, the records are dropped.',
+        help='gRPC address of the CycleAnalyzer (e.g. unix:/tmp/nvrx_cycle_analyzer.sock) '
+        'that received cycle end reports are forwarded to. Unset: they are dropped.',
     )
 
     args = parser.parse_args()

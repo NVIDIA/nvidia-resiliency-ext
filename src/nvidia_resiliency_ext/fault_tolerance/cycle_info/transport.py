@@ -2,21 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 """Transport of the cycle records to the CycleAnalyzer.
 
-The store host publishes a `CycleStartInfo` per cycle and each launcher publishes its
-`LocalCycleOutcome` per cycle, through a `CycleInfoPublisher`; the CycleAnalyzer, the only
-writer of the cycle info files, receives them through a `CycleInfoReader`. There is no
-cycle end record: the end is concluded from the outcomes. Implementations own their wire
-format and where they send to or read from; the interfaces exchange only the records.
+The store host publishes a `CycleInfo` per cycle when it starts, and updates it when the
+cycle ends; each launcher publishes its `NodeCycleEndReport` per cycle. They go through a
+`CycleInfoPublisher`; the CycleAnalyzer, the only writer of the cycle info files,
+receives them through a `CycleInfoReader`. Implementations own their wire format and
+where they send to or read from; the interfaces exchange only the records.
 
 Delivery is best effort: a record can be lost, e.g. when its node fails, and publishing
 must never delay the rendezvous or a launcher's restart. Records of one cycle can arrive
-in any order, e.g. outcomes before the start info, so the reader keys them by cycle.
+in any order, e.g. end reports before the cycle info, so the reader keys them by cycle.
 """
 
 from abc import ABC, abstractmethod
 from typing import List
 
-from .records import CycleStartInfo, LocalCycleOutcome
+from .records import CycleInfo, NodeCycleEndReport
 
 
 class CycleInfoPublisher(ABC):
@@ -27,15 +27,23 @@ class CycleInfoPublisher(ABC):
     """
 
     @abstractmethod
-    def publish_cycle_start(self, info: CycleStartInfo) -> bool:
-        """Publish how the rendezvous started a cycle; called by the store host only.
+    def publish_cycle_info(self, info: CycleInfo) -> bool:
+        """Publish a cycle that started; called by the store host only.
 
         Returns:
             True if the record was delivered.
         """
 
     @abstractmethod
-    def publish_outcome(self, outcome: LocalCycleOutcome) -> bool:
+    def update_cycle_info(self, info: CycleInfo) -> bool:
+        """Publish a cycle that ended (`info.ended_at` set); called by the store host only.
+
+        Returns:
+            True if the record was delivered.
+        """
+
+    @abstractmethod
+    def publish_end_report(self, report: NodeCycleEndReport) -> bool:
         """Publish how a cycle ended on this launcher.
 
         Returns:
@@ -54,12 +62,16 @@ class CycleInfoReader(ABC):
     """
 
     @abstractmethod
-    def read_cycle_starts(self) -> List[CycleStartInfo]:
-        """Return the cycle start infos received since the previous call."""
+    def read_cycle_infos(self) -> List[CycleInfo]:
+        """Return the published cycle infos (cycle starts) received since the previous call."""
 
     @abstractmethod
-    def read_outcomes(self) -> List[LocalCycleOutcome]:
-        """Return the launchers' outcomes received since the previous call."""
+    def read_cycle_info_updates(self) -> List[CycleInfo]:
+        """Return the updated cycle infos (cycle ends) received since the previous call."""
+
+    @abstractmethod
+    def read_end_reports(self) -> List[NodeCycleEndReport]:
+        """Return the launchers' end reports received since the previous call."""
 
     def close(self) -> None:
         """Stop receiving; records not yet read may be dropped."""

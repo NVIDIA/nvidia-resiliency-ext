@@ -5,24 +5,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-First-level gRPC log aggregator (leaf): accepts StreamLogs from training nodes,
-forwards chunks to the root log server over a single outbound StreamLogs RPC.
+First-level gRPC log aggregator (leaf): accepts StreamDataRecords from training nodes,
+forwards chunks to the root log server over a single outbound StreamDataRecords RPC.
 
 Uses a bounded queue for backpressure when the root is slow. Downstream handlers
 retry enqueue until space exists or shutdown (they do not discard the current
 chunk because the queue is full); gRPC flow-control slows senders until the
 forwarder drains toward root. That is **not** an end-to-end delivery guarantee:
-if the leaf→root ``StreamLogs`` RPC fails after items were ``get`` from the
+if the leaf→root ``StreamDataRecords`` RPC fails after items were ``get`` from the
 queue and yielded into gRPC but not yet committed at the root, they are not
 replayed on reconnect—treat leaf→root as best-effort (see also usage docs).
 Short ``put`` timeouts only exist so threads can observe ``reject_new_streams``
 during shutdown. Capacity is ``max-queue-chunks`` (item count); each ``put`` is O(1).
 
 The upstream forwarder polls the chunk queue with a timeout and exits when
-``stop_forwarder`` is set, so the leaf→root ``StreamLogs`` RPC can finish even
+``stop_forwarder`` is set, so the leaf→root ``StreamDataRecords`` RPC can finish even
 if the ``_STOP`` sentinel never enters a full queue. Root must be started before
 leaves (launcher order). The leaf does not bind its downstream TCP port until the
-upstream root is healthy and ``StreamLogs`` is active, so clients may see
+upstream root is healthy and ``StreamDataRecords`` is active, so clients may see
 ``ECONNREFUSED`` until then (see log line before the upstream-ready wait).
 """
 
@@ -48,8 +48,6 @@ from nvidia_resiliency_ext.shared_utils.os_utils import (
 
 try:
     from nvidia_resiliency_ext.shared_utils.proto import (
-        cycle_info_pb2,
-        cycle_info_pb2_grpc,
         log_aggregation_pb2,
         log_aggregation_pb2_grpc,
     )
@@ -57,8 +55,6 @@ except ImportError:
     import os
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_utils', 'proto'))
-    import cycle_info_pb2
-    import cycle_info_pb2_grpc
     import log_aggregation_pb2
     import log_aggregation_pb2_grpc
 
@@ -67,7 +63,7 @@ logger = logging.getLogger("LogLeafServer")
 # Default bind: all interfaces so remote training nodes can connect (cluster log funnel).
 _DEFAULT_GRPC_BIND_HOST = "0.0.0.0"  # nosec B104
 
-# Sentinel placed on queue after graceful drain to end upstream StreamLogs
+# Sentinel placed on queue after graceful drain to end upstream StreamDataRecords
 _STOP = object()
 
 # Per-RPC memo of validated file paths, keeping the confinement check off the per-chunk hot
@@ -81,7 +77,7 @@ _STOP = object()
 # 32 leaves wide headroom over a working set of 2 while hard-bounding per-stream memory.
 _LEAF_VALIDATED_PATH_CACHE_MAX = 32
 
-# Slice timeout for Queue.put / Condition.wait so StreamLogs handlers can poll
+# Slice timeout for Queue.put / Condition.wait so StreamDataRecords handlers can poll
 # ``reject_new_streams`` and exit during shutdown (no uninterruptible block).
 _LEAF_QUEUE_PUT_SLICE_S = 0.5
 _STOP_SENTINEL_PUT_TIMEOUT_S = 5.0
@@ -94,7 +90,7 @@ _LEAF_QUEUE_BACKPRESSURE_LOG_INTERVAL_S = 30.0
 # enqueued (e.g. queue full); poll and exit if ``stop_forwarder`` is set.
 _UPSTREAM_QUEUE_GET_TIMEOUT_S = 0.5
 
-# Max seconds to wait for root health + active leaf→root ``StreamLogs`` before binding
+# Max seconds to wait for root health + active leaf→root ``StreamDataRecords`` before binding
 # the downstream port and accepting compute-node clients.
 _LEAF_UPSTREAM_ROOT_READY_TIMEOUT_S = 120.0
 
@@ -131,7 +127,7 @@ def _format_grpc_peer(raw: Optional[str]) -> str:
 
 
 class _LeafChunkQueue:
-    """Per-leaf buffer from many StreamLogs handlers to one upstream forwarder."""
+    """Per-leaf buffer from many StreamDataRecords handlers to one upstream forwarder."""
 
     def __init__(self, max_chunks: int):
         if max_chunks < 1:
@@ -149,24 +145,24 @@ class _LeafChunkQueue:
     def put_stop(self, timeout: float) -> None:
         self._q.put(_STOP, timeout=timeout)
 
-    def get_upstream(self, timeout: float) -> Union[log_aggregation_pb2.LogChunk, object]:
+    def get_upstream(self, timeout: float) -> Union[log_aggregation_pb2.DataRecord, object]:
         return self._q.get(timeout=timeout)
 
-    def put_chunk(
+    def put_record(
         self,
-        chunk: log_aggregation_pb2.LogChunk,
+        record: log_aggregation_pb2.DataRecord,
         reject: threading.Event,
         *,
         peer: str,
         source_node_id: str,
     ) -> bool:
         """
-        Enqueue ``chunk`` (already a copy). Blocks until space or ``reject`` is set.
+        Enqueue ``record`` for the root. Blocks until space or ``reject`` is set.
 
         Returns:
             True if enqueued, False if ``reject`` was set while waiting (shutdown).
         """
-        sz = len(chunk.data)
+        sz = record.ByteSize()
         wait_start = time.monotonic()
         next_log_at = wait_start + _LEAF_QUEUE_BACKPRESSURE_LOG_FIRST_S
 
@@ -180,21 +176,21 @@ class _LeafChunkQueue:
             logger.warning(
                 f"Leaf queue backpressure (chunk count) after {elapsed:.1f}s "
                 f"(peer={peer} source_node_id={source_node_id} "
-                f"max_chunks={self.max_chunks} qsize≈{self._q.qsize()} chunk_bytes={sz})"
+                f"max_chunks={self.max_chunks} qsize≈{self._q.qsize()} record_bytes={sz})"
             )
 
         while True:
             if reject.is_set():
                 return False
             try:
-                self._q.put(chunk, timeout=_LEAF_QUEUE_PUT_SLICE_S)
+                self._q.put(record, timeout=_LEAF_QUEUE_PUT_SLICE_S)
                 return True
             except queue.Full:
                 maybe_log()
 
 
 class _UpstreamForwarder:
-    """Runs stub.StreamLogs in a thread; reconnects on failure until stopped."""
+    """Runs stub.StreamDataRecords in a thread; reconnects on failure until stopped."""
 
     def __init__(
         self,
@@ -208,7 +204,7 @@ class _UpstreamForwarder:
         self._stop = stop_event
         self._reconnect_sleep = reconnect_sleep
         self._thread: Optional[threading.Thread] = None
-        #: Set while an active upstream StreamLogs RPC is in progress (root can receive).
+        #: Set while an active upstream StreamDataRecords RPC is in progress (root can receive).
         self.upstream_ready = threading.Event()
 
     def start(self) -> None:
@@ -242,18 +238,18 @@ class _UpstreamForwarder:
                         ('grpc.keepalive_timeout_ms', 20000),
                     ],
                 )
-                stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(ch)
+                stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(ch)
                 if not self._wait_root_ready(stub):
                     break
 
-                def gen() -> Iterator[log_aggregation_pb2.LogChunk]:
+                def gen() -> Iterator[log_aggregation_pb2.DataRecord]:
                     while True:
                         try:
                             item = self._q.get_upstream(timeout=_UPSTREAM_QUEUE_GET_TIMEOUT_S)
                         except queue.Empty:
                             if self._stop.is_set():
                                 logger.info(
-                                    "Upstream StreamLogs generator exiting: stop requested "
+                                    "Upstream StreamDataRecords generator exiting: stop requested "
                                     f"and no chunk within {_UPSTREAM_QUEUE_GET_TIMEOUT_S}s "
                                     "(STOP sentinel may be missing if queue was full)"
                                 )
@@ -263,14 +259,14 @@ class _UpstreamForwarder:
                             return
                         yield item  # type: ignore[misc]
 
-                logger.info(f"Connected upstream StreamLogs to {self._upstream}")
+                logger.info(f"Connected upstream StreamDataRecords to {self._upstream}")
                 self.upstream_ready.set()
                 # Chunks leave _LeafChunkQueue when gen() yields them. If this RPC errors
                 # mid-flight, yields already handed to gRPC (send path / HTTP/2 buffers) may
                 # never reach the root and are not put back on the queue—the next loop
                 # iteration starts a fresh gen() at the new head. Not end-to-end lossless.
-                stub.StreamLogs(gen())
-                logger.info("Upstream StreamLogs ended")
+                stub.StreamDataRecords(gen())
+                logger.info("Upstream StreamDataRecords ended")
             except grpc.RpcError as e:
                 if not self._stop.is_set():
                     logger.warning(f"Upstream gRPC error, will retry: {e.code()} {e.details()}")
@@ -286,7 +282,7 @@ class _UpstreamForwarder:
         logger.info("Upstream forwarder stopped")
 
 
-class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
+class LeafLogServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
     def __init__(
         self,
         chunk_queue: _LeafChunkQueue,
@@ -299,7 +295,7 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
         Args:
             chunk_queue: Bounded queue drained by the upstream forwarder.
             reject_new_streams: Set during shutdown to stop accepting work.
-            upstream_ready: Set while the leaf->root StreamLogs RPC is active.
+            upstream_ready: Set while the leaf->root StreamDataRecords RPC is active.
             allowed_roots: Non-empty directories that client-supplied ``file_path`` values
                 must resolve under. Rejecting here keeps out-of-root chunks from consuming
                 queue capacity and from reaching the root at all. Required with no default:
@@ -349,7 +345,7 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
         memo[file_path] = resolved
         return resolved
 
-    def StreamLogs(self, request_iterator, context):
+    def StreamDataRecords(self, request_iterator, context):
         if self._reject.is_set():
             context.abort(grpc.StatusCode.UNAVAILABLE, "leaf server is shutting down")
             # abort() may return without raising on older grpcio; do not fall through.
@@ -360,19 +356,36 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
         source_node_id = None
         total = 0
         nchunks = 0
+        nreports = 0
         validated_paths: Dict[str, str] = {}
         try:
-            for chunk in request_iterator:
+            for record in request_iterator:
                 if self._reject.is_set():
                     break
+                kind = record.WhichOneof("record")
+                if kind == "node_cycle_end_report":
+                    # Forwarded to the root as received, without checks.
+                    if not self._chunkq.put_record(
+                        record,
+                        self._reject,
+                        peer=peer,
+                        source_node_id=source_node_id or 'n/a',
+                    ):
+                        break
+                    nreports += 1
+                    continue
+                if kind != "log_chunk":
+                    continue  # an empty record
+                chunk = record.log_chunk
                 if source_node_id is None:
                     source_node_id = chunk.node_id
                     logger.info(
-                        f"Compute node StreamLogs opened peer={peer} source_node_id={source_node_id}"
+                        f"Compute node StreamDataRecords opened peer={peer} "
+                        f"source_node_id={source_node_id}"
                     )
                 if not chunk.file_path:
                     msg = f"peer={peer} node_id={chunk.node_id!r} sent chunk without file_path"
-                    logger.error(f"Protocol error in leaf StreamLogs: {msg}")
+                    logger.error(f"Protocol error in leaf StreamDataRecords: {msg}")
                     context.abort(grpc.StatusCode.INVALID_ARGUMENT, msg)
                     return log_aggregation_pb2.StreamResponse(
                         status="INVALID_ARGUMENT", bytes_received=total
@@ -381,7 +394,7 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
                     target_path = self._resolve_target_path(chunk.file_path, validated_paths)
                 except ValueError as e:
                     logger.error(
-                        f"Rejected log chunk in leaf StreamLogs peer={peer} "
+                        f"Rejected log chunk in leaf StreamDataRecords peer={peer} "
                         f"source_node_id={source_node_id}: {e}"
                     )
                     context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
@@ -389,8 +402,8 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
                         status="INVALID_ARGUMENT", bytes_received=total
                     )
                 copied = _copy_chunk(chunk, file_path=target_path)
-                if not self._chunkq.put_chunk(
-                    copied,
+                if not self._chunkq.put_record(
+                    log_aggregation_pb2.DataRecord(log_chunk=copied),
                     self._reject,
                     peer=peer,
                     source_node_id=source_node_id or 'n/a',
@@ -406,8 +419,8 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
                 else "source_node_id=n/a"
             )
             logger.info(
-                f"Compute node StreamLogs ended peer={peer} {end_src} "
-                f"chunks={nchunks} received_KiB={total / 1024:.1f}"
+                f"Compute node StreamDataRecords ended peer={peer} {end_src} "
+                f"chunks={nchunks} end_reports={nreports} received_KiB={total / 1024:.1f}"
             )
             with self.clients_lock:
                 self.connected_clients -= 1
@@ -417,35 +430,6 @@ class LeafLogServicer(log_aggregation_pb2_grpc.LogAggregationServiceServicer):
             n = self.connected_clients
         ok = self._upstream_ready.is_set()
         return log_aggregation_pb2.HealthResponse(healthy=ok, connected_clients=n)
-
-
-class LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceServicer):
-    """Forwards the cycle records of the launchers sharded to this leaf to the root.
-
-    Launchers publish to the server they send logs to: their outcomes and, from the store
-    host's launcher, the cycle starts. Each record is forwarded with a blocking call on the
-    handler's thread and acknowledged once the root acknowledged it; a failed forward is
-    answered with the root's status.
-    """
-
-    def __init__(self, upstream_stub: cycle_info_pb2_grpc.CycleInfoServiceStub):
-        self._upstream = upstream_stub
-
-    def PublishCycleStart(self, request, context):
-        what = f"start of cycle {request.cycle}"
-        return self._forward(self._upstream.PublishCycleStart, request, what, context)
-
-    def PublishCycleOutcome(self, request, context):
-        what = f"outcome of cycle {request.cycle} from {request.node}"
-        return self._forward(self._upstream.PublishCycleOutcome, request, what, context)
-
-    def _forward(self, rpc, request, what: str, context):
-        try:
-            rpc(request)
-        except grpc.RpcError as e:
-            logger.warning(f"Failed to forward the {what}: {e.code().name}: {e.details()}")
-            context.abort(e.code(), f"leaf failed to forward the {what}: {e.details()}")
-        return cycle_info_pb2.PublishReply()
 
 
 def serve(
@@ -513,15 +497,7 @@ def serve(
         futures.ThreadPoolExecutor(max_workers=max_workers),
         options=_GRPC_OPTS,
     )
-    log_aggregation_pb2_grpc.add_LogAggregationServiceServicer_to_server(servicer, server)
-    # Same port: launchers publish their cycle records to the server they send logs to.
-    # The leaf forwards them on a channel of their own, which gRPC reconnects as needed.
-    # an optimization is for the leaf nodes to directly forward to the cycle analyzer
-    cycle_info_channel = grpc.insecure_channel(upstream, options=_GRPC_OPTS)
-    cycle_info_pb2_grpc.add_CycleInfoServiceServicer_to_server(
-        LeafCycleInfoServicer(cycle_info_pb2_grpc.CycleInfoServiceStub(cycle_info_channel)),
-        server,
-    )
+    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
     server.add_insecure_port(addr)
     server.start()
     logger.info(
@@ -536,10 +512,10 @@ def serve(
         fwd_alive = bool(forwarder._thread and forwarder._thread.is_alive())
         parts = [
             f"phase={phase!r}",
-            f"downstream_StreamLogs={downstream}",
+            f"downstream_StreamDataRecords={downstream}",
             f"chunk_queue_depth={qdepth}",
             f"chunk_queue_maxsize={max_queue_chunks}",
-            f"upstream_StreamLogs_active={upstream_ok}",
+            f"upstream_StreamDataRecords_active={upstream_ok}",
             f"forwarder_thread_alive={fwd_alive}",
         ]
         for k, v in sorted(kwargs.items()):
@@ -561,7 +537,7 @@ def serve(
             if time.time() - start >= graceful_shutdown_timeout:
                 exit_reason = f"timeout_after_{graceful_shutdown_timeout}s"
                 logger.warning(
-                    f"{ac} downstream StreamLogs client(s) still connected after "
+                    f"{ac} downstream StreamDataRecords client(s) still connected after "
                     f"{graceful_shutdown_timeout}s — closing may drop in-flight leaf→root data"
                 )
                 break
@@ -608,8 +584,6 @@ def serve(
                 "Timed out waiting for leaf gRPC server to finish termination after stop() "
                 f"(>{termination_wait_timeout_seconds}s)"
             )
-        # The server has terminated, so no forward is using the channel anymore.
-        cycle_info_channel.close()
         logger.info("Leaf server exit")
 
     def on_signal(signum, frame):

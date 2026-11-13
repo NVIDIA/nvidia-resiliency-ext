@@ -7,26 +7,22 @@ for them; the CycleAnalyzer reads the records and writes the job-wide cycle info
 """
 
 from .records import (
-    CycleEndReason,
-    CycleStartInfo,
-    LocalCycleOutcome,
-    RankEndReason,
-    RankOutcome,
+    CycleInfo,
+    EndReason,
+    NodeCycleEndReport,
     RankTimeout,
     TimeoutKind,
-    build_local_cycle_outcome,
+    build_node_cycle_end_report,
 )
 from .transport import CycleInfoPublisher, CycleInfoReader
 
 __all__ = [
-    "CycleEndReason",
+    "CycleInfo",
     "CycleInfoPublisher",
     "CycleInfoReader",
-    "CycleStartInfo",
-    "LocalCycleOutcome",
-    "RankEndReason",
-    "RankOutcome",
+    "EndReason",
+    "NodeCycleEndReport",
     "RankTimeout",
     "TimeoutKind",
-    "build_local_cycle_outcome",
+    "build_node_cycle_end_report",
 ]

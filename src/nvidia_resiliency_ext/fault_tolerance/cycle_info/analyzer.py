@@ -15,13 +15,13 @@ import signal
 import tempfile
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 
-from ..cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, utc_iso
+from ..cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, utc_iso, utc_iso_ms
 from .aggregator import CycleOutcomeAggregator
-from .records import CycleStartInfo, CycleSummary, LocalCycleOutcome
+from .records import CycleInfo, CycleSummary, NodeCycleEndReport
 from .transport import CycleInfoReader
 
 logger = logging.getLogger(LogConfig.name)
@@ -67,13 +67,16 @@ class CycleAnalyzer:
         self._poll_interval = poll_interval
         self._next_start_grace = next_start_grace
         self._outcome_quiet_period = outcome_quiet_period
-        # Starts and outcomes received so far, by cycle; dropped once the cycle's end is
-        # written (update_cycle_end_outcomes).
-        self._starts: Dict[int, CycleStartInfo] = {}
-        self._outcomes: Dict[int, List[LocalCycleOutcome]] = defaultdict(list)
-        # Launchers that reported an outcome, by cycle, to detect duplicates in O(1).
-        self._reported: Dict[int, Set[Tuple[str, Tuple[int, ...]]]] = defaultdict(set)
-        # Latest cycle opened at the reporter, from the store host's CycleStartInfo.
+        # Cycle infos (starts) and end reports received so far, by cycle; dropped once the
+        # cycle's end is written (update_cycle_end_outcomes).
+        self._starts: Dict[int, CycleInfo] = {}
+        self._outcomes: Dict[int, List[NodeCycleEndReport]] = defaultdict(list)
+        # When each cycle ended, from the store host's updated CycleInfo.
+        self._ended_at: Dict[int, float] = {}
+        # Launchers that reported, by cycle, to detect duplicates in O(1). TODO: keyed by
+        # node name, as end reports do not tell launchers of one host apart.
+        self._reported: Dict[int, Set[str]] = defaultdict(set)
+        # Latest cycle opened at the reporter, from the store host's CycleInfo.
         self._started_cycle: Optional[int] = None
         # Cycle the launchers are currently reporting outcomes for: the latest cycle any
         # outcome was received for.
@@ -99,14 +102,16 @@ class CycleAnalyzer:
     def process_received(self) -> None:
         """Handle the records received since the previous call, then write the cycles due."""
         now = time.monotonic()
-        for info in self._reader.read_cycle_starts():
+        for info in self._reader.read_cycle_infos():
             if self.report_cycle_start(info):
-                self._schedule_earlier_cycles(info.cycle, now)
+                self._schedule_earlier_cycles(info.cycle_number, now)
+        for info in self._reader.read_cycle_info_updates():
+            self.report_cycle_info_update(info)
         updated = set()
-        for outcome in self._reader.read_outcomes():
+        for outcome in self._reader.read_end_reports():
             if self.add_outcome(outcome):
-                updated.add(outcome.cycle)
-                self._last_outcome_at[outcome.cycle] = now
+                updated.add(outcome.cycle_number)
+                self._last_outcome_at[outcome.cycle_number] = now
         for cycle in self._due_cycles(updated, now):
             self.update_cycle_end_outcomes(cycle)
 
@@ -115,8 +120,8 @@ class CycleAnalyzer:
         for cycle in sorted(self._open_cycles()):
             self.update_cycle_end_outcomes(cycle)
 
-    def report_cycle_start(self, info: CycleStartInfo) -> bool:
-        """Open the cycle `info.cycle` at the reporter.
+    def report_cycle_start(self, info: CycleInfo) -> bool:
+        """Open the cycle `info.cycle_number` at the reporter, from the store host's CycleInfo.
 
         A start is ignored, with a warning, if its cycle was already started (still open,
         or already written) or is older than the latest started cycle: the store host
@@ -127,22 +132,23 @@ class CycleAnalyzer:
         Returns:
             True if the cycle was opened.
         """
-        if info.cycle in self._starts or info.cycle in self._written:
-            logger.warning("Ignoring a duplicate start of cycle %s", info.cycle)
+        cycle = info.cycle_number
+        if cycle in self._starts or cycle in self._written:
+            logger.warning("Ignoring a duplicate start of cycle %s", cycle)
             return False
-        if self._started_cycle is not None and info.cycle < self._started_cycle:
+        if self._started_cycle is not None and cycle < self._started_cycle:
             logger.warning(
                 "Ignoring the start of cycle %s: older than the latest started cycle %s",
-                info.cycle,
+                cycle,
                 self._started_cycle,
             )
             return False
         if not info.active_nodes:
-            logger.warning("The start of cycle %s has no active nodes", info.cycle)
-        self._starts[info.cycle] = info
+            logger.warning("The start of cycle %s has no active nodes", cycle)
+        self._starts[cycle] = info
         started = self.cycle_info_reporter.report_cycle_start(
             CycleInfoRoundSnapshot(
-                cycle_number=info.cycle,
+                cycle_number=cycle,
                 active_node_addrs=list(info.active_nodes),
                 standby_node_addrs=list(info.standby_nodes),
                 active_ranks=list(info.active_ranks),
@@ -151,52 +157,71 @@ class CycleAnalyzer:
             )
         )
         if started:
-            self._started_cycle = info.cycle
-            logger.debug("Opened the cycle info of cycle %s", info.cycle)
+            self._started_cycle = cycle
+            logger.debug("Opened the cycle info of cycle %s", cycle)
         return started
 
-    def add_outcome(self, outcome: LocalCycleOutcome) -> bool:
-        """Keep `outcome` with the outcomes received for its cycle.
+    def report_cycle_info_update(self, info: CycleInfo) -> bool:
+        """Record when cycle `info.cycle_number` ended, from the store host's updated CycleInfo.
 
-        An outcome is ignored, with a warning, if:
-        - its cycle is already written (a late outcome).
-        - its cycle was never started: it is older than the latest started cycle and was
-          not started itself, and starts arrive in order. An outcome of a later cycle is
-          kept, as its start may still be on its way;
-        - its launcher (LocalCycleOutcome.launcher) already reported for the cycle (a
-          duplicate); the first outcome is kept.
+        TODO: decide whether to also write it through the reporter (report_cycle_end), or
+        only use it when the cycle's end is written.
 
         Returns:
-            False if the outcome was ignored.
+            False if the update was ignored: no end time, or the cycle is already written.
         """
-        if outcome.cycle in self._written:
+        cycle = info.cycle_number
+        if info.ended_at is None:
+            logger.warning("Ignoring an update of cycle %s without an end time", cycle)
+            return False
+        if cycle in self._written:
+            logger.warning("Ignoring the end of cycle %s: the cycle is already written", cycle)
+            return False
+        self._ended_at[cycle] = info.ended_at
+        logger.debug("Cycle %s ended at %s", cycle, utc_iso(info.ended_at))
+        return True
+
+    def add_outcome(self, outcome: NodeCycleEndReport) -> bool:
+        """Keep `outcome` with the end reports received for its cycle.
+
+        An end report is ignored, with a warning, if:
+        - its cycle is already written (a late report).
+        - its cycle was never started: it is older than the latest started cycle and was
+          not started itself, and starts arrive in order. A report of a later cycle is
+          kept, as its start may still be on its way;
+        - its launcher already reported for the cycle (a duplicate); the first report is
+          kept. TODO: launchers are told apart by node name only.
+
+        Returns:
+            False if the end report was ignored.
+        """
+        cycle, node = outcome.cycle_number, outcome.node_name
+        if cycle in self._written:
             logger.warning(
-                "Ignoring the outcome of cycle %s from %s: the cycle is already written",
-                outcome.cycle,
-                outcome.node,
+                "Ignoring the end report of cycle %s from %s: the cycle is already written",
+                cycle,
+                node,
             )
             return False
         if (
             self._started_cycle is not None
-            and outcome.cycle < self._started_cycle
-            and outcome.cycle not in self._starts
+            and cycle < self._started_cycle
+            and cycle not in self._starts
         ):
             logger.warning(
-                "Ignoring the outcome of cycle %s from %s: the cycle was never started",
-                outcome.cycle,
-                outcome.node,
+                "Ignoring the end report of cycle %s from %s: the cycle was never started",
+                cycle,
+                node,
             )
             return False
-        if outcome.launcher in self._reported[outcome.cycle]:
-            logger.warning(
-                "Ignoring a duplicate outcome of cycle %s from %s", outcome.cycle, outcome.node
-            )
+        if node in self._reported[cycle]:
+            logger.warning("Ignoring a duplicate end report of cycle %s from %s", cycle, node)
             return False
-        self._reported[outcome.cycle].add(outcome.launcher)
-        self._outcomes[outcome.cycle].append(outcome)
-        if self._outcome_cycle is None or outcome.cycle > self._outcome_cycle:
-            self._outcome_cycle = outcome.cycle
-            logger.debug("Receiving the outcomes of cycle %s", outcome.cycle)
+        self._reported[cycle].add(node)
+        self._outcomes[cycle].append(outcome)
+        if self._outcome_cycle is None or cycle > self._outcome_cycle:
+            self._outcome_cycle = cycle
+            logger.debug("Receiving the end reports of cycle %s", cycle)
         return True
 
     def create_job_cycle_outcomes(self, cycle: int) -> CycleSummary:
@@ -219,13 +244,14 @@ class CycleAnalyzer:
         logger.info(
             "Cycle %s ended at %s: %s, first detected by %s; %d launchers reported%s",
             cycle,
-            utc_iso(summary.ended_at) if summary.ended_at is not None else "unknown",
+            utc_iso_ms(summary.ended_at) if summary.ended_at is not None else "unknown",
             summary.end_reason.value if summary.end_reason is not None else "unknown",
             ", ".join(summary.first_detected) or "none",
             len(summary.outcomes),
             f", missing {', '.join(summary.missing)}" if summary.missing else "",
         )
         self._starts.pop(cycle, None)
+        self._ended_at.pop(cycle, None)
         self._outcomes.pop(cycle, None)
         self._reported.pop(cycle, None)
         self._write_deadlines.pop(cycle, None)

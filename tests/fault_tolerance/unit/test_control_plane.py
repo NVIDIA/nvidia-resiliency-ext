@@ -77,8 +77,6 @@ def test_nvrx_control_starts_owned_services_without_worker_agent(tmp_path):
     manager.start_if_needed.assert_called_once()
     start_grpc.assert_called_once()
     assert start_grpc.call_args.args[1] == str(tmp_path / "train_grpc")
-    # The root forwards the cycle records to the analyzer started before it.
-    assert start_grpc.call_args.kwargs["cycle_analyzer_address"] == analyzer.address
     analyzer_cls.assert_called_once_with(
         str(tmp_path / "nvrx"),
         cycle_info_job_id="job-a",
@@ -427,6 +425,9 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
         def _request_terminal_attribution_for_submitted_cycle(self):
             self.final_terminal_requested = True
 
+        def publish_cycle_end_as_host(self):
+            pass
+
     node_generator = MagicMock()
     node_generator.generate.return_value = object()
 
@@ -451,7 +452,8 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
 
 @pytest.mark.parametrize("with_analyzer", [True, False], ids=["analyzer", "no_analyzer"])
 def test_control_rendezvous_loop_publishes_cycle_starts_to_the_analyzer(with_analyzer):
-    """nvrx-control closes the rounds, so its barrier state publishes the cycle starts."""
+    """nvrx-control closes the rounds, so its barrier state publishes the cycle infos: the
+    starts, and at shutdown the end of the last cycle, before the channel is closed."""
     args = SimpleNamespace(
         nnodes="1",
         rdzv_conf="",
@@ -463,6 +465,8 @@ def test_control_rendezvous_loop_publishes_cycle_starts_to_the_analyzer(with_ana
     analyzer = MagicMock(address="unix:/tmp/analyzer.sock") if with_analyzer else None
     services = control_plane.ControlServices(cycle_analyzer=analyzer)
     publishers_while_closing = []
+    publishers_at_end = []
+    channel = MagicMock()
 
     class FakeState:
         def __init__(self, *args, **kwargs):
@@ -477,7 +481,10 @@ def test_control_rendezvous_loop_publishes_cycle_starts_to_the_analyzer(with_ana
         def _request_terminal_attribution_for_submitted_cycle(self):
             pass
 
-    channel = MagicMock()
+        def publish_cycle_end_as_host(self):
+            channel.close.assert_not_called()  # still open for the publish
+            publishers_at_end.append(self._cycle_info_publisher)
+
     with (
         patch.object(control_plane, "_RendezvousBarrierState", FakeState),
         patch.object(control_plane, "_NodeDescGenerator", return_value=MagicMock()),
@@ -488,6 +495,7 @@ def test_control_rendezvous_loop_publishes_cycle_starts_to_the_analyzer(with_ana
         )
 
     (publisher,) = publishers_while_closing
+    assert publishers_at_end == [publisher]
     if with_analyzer:
         open_channel.assert_called_once_with("unix:/tmp/analyzer.sock")
         assert isinstance(publisher, control_plane.GrpcCycleInfoPublisher)

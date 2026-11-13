@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import threading
 from concurrent import futures
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import grpc
@@ -12,264 +12,275 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info import grpc_transport
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import (
     GrpcCycleInfoPublisher,
     GrpcCycleInfoReader,
-    cycle_start_from_proto,
-    cycle_start_to_proto,
-    outcome_from_proto,
-    outcome_to_proto,
+    cycle_info_from_proto,
+    cycle_info_to_proto,
+    end_report_from_proto,
+    end_report_to_proto,
 )
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
-    MAX_EXIT_DETAILS_LEN,
-    MAX_SECTION_NAME_LEN,
-    MAX_TIMEOUT_SECTIONS,
-    CycleEndReason,
-    CycleStartInfo,
-    LocalCycleOutcome,
-    RankEndReason,
-    RankOutcome,
-    TimeoutKind,
+    CycleInfo,
+    EndReason,
+    NodeCycleEndReport,
 )
-from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2 as pb
-from nvidia_resiliency_ext.shared_utils.proto import cycle_info_pb2_grpc as pb_grpc
+from nvidia_resiliency_ext.fault_tolerance.utils import range_str_to_ranks
+from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2_grpc as pb_grpc
 
-START = CycleStartInfo(3, 10.5, ("node0", "node1"), ("node2",), (0, 1), "/logs/train_cycle3.log")
-OUTCOME = LocalCycleOutcome(
-    cycle=3,
-    node="node0",
-    node_end=CycleEndReason.FAILED,
-    detected_at=12.25,
-    ranks=(
-        RankOutcome(0, 0, 100, RankEndReason.STOPPED_BY_LAUNCHER),
-        RankOutcome(
-            1,
-            1,
-            101,
-            RankEndReason.STOPPED_BY_RMON,
-            exitcode=-9,
-            timeout_kind=TimeoutKind.SECTION,
-            timeout_sections=("step",),
-        ),
-    ),
+# Nodes as the store host knows them (FQDN, rank order); ranks aligned with them.
+START = CycleInfo(
+    job_id="job1",
+    attempt_index=2,
+    cycle_number=3,
+    started_at=1_700_000_000.5,
+    cycle_log_file="/logs/train_cycle3.log",
+    active_nodes=("node002.cluster", "node001.cluster"),
+    active_ranks=(0, 1),
+    standby_nodes=("node003.cluster",),
+    timestamp=1_700_000_000_500,
+)
+END = replace(START, ended_at=1_700_000_100.25, timestamp=1_700_000_100_250)
+REPORT = NodeCycleEndReport(
+    job_id="job1",
+    attempt_index=2,
+    cycle_number=3,
+    node_name="node001.cluster",
+    end_reason=EndReason.TERMINATED_BY_RANK_MONITOR,
+    detected_timestamp=1_700_000_099_123,
+    exit_details='[{"rank":1}]',
 )
 
 
-def test_cycle_start_to_proto():
-    message = cycle_start_to_proto(START)
-    assert (message.cycle, message.started_at, message.cycle_log_file) == (
-        3,
-        10.5,
-        "/logs/train_cycle3.log",
+def test_cycle_info_to_proto():
+    message = cycle_info_to_proto(END)
+
+    assert (message.job_id, message.attempt_index, message.cycle_number) == ("job1", 2, 3)
+    assert message.cycle_start_time == "2023-11-14T22:13:20.500000Z"
+    assert message.cycle_end_time == "2023-11-14T22:15:00.250000Z"
+    assert message.cycle_log_file == "/logs/train_cycle3.log"
+    # Compressed: hosts sorted and without their domain.
+    assert message.active_nodes == "node[001-002]"
+    assert message.standby_nodes == "node[003]"
+    assert message.timestamp == 1_700_000_100_250
+
+
+def test_cycle_info_ranks_follow_the_sorted_hosts():
+    message = cycle_info_to_proto(START)
+    assert message.active_nodes == "node[001-002]"
+    # node001 has rank 1, node002 rank 0.
+    assert range_str_to_ranks(message.active_ranks) == [1, 0]
+
+
+def test_cycle_info_round_trip_normalizes_the_node_lists():
+    received = cycle_info_from_proto(cycle_info_to_proto(START))
+
+    assert received == replace(
+        START,
+        active_nodes=("node001", "node002"),
+        active_ranks=(1, 0),
+        standby_nodes=("node003",),
     )
-    assert list(message.active_nodes) == ["node0", "node1"]
-    assert list(message.standby_nodes) == ["node2"]
-    assert list(message.active_ranks) == [0, 1]
 
 
-def test_outcome_to_proto():
-    message = outcome_to_proto(OUTCOME)
-
-    assert (message.cycle, message.node, message.node_end, message.detected_at) == (
-        3,
-        "node0",
-        pb.CYCLE_END_REASON_FAILED,
-        12.25,
-    )
-    stopped, timed_out = message.ranks
-    assert (stopped.global_rank, stopped.local_rank, stopped.pid) == (0, 0, 100)
-    assert stopped.end == pb.RANK_END_REASON_STOPPED_BY_LAUNCHER
-    assert not stopped.HasField("exitcode")  # had not exited
-    assert stopped.timeout_kind == pb.TIMEOUT_KIND_UNSPECIFIED
-    assert timed_out.end == pb.RANK_END_REASON_STOPPED_BY_RANK_MONITOR
-    assert timed_out.exitcode == -9
-    assert timed_out.timeout_kind == pb.TIMEOUT_KIND_SECTION
-    assert list(timed_out.timeout_sections) == ["step"]
+def test_cycle_info_without_end_round_trips_unset():
+    message = cycle_info_to_proto(START)
+    assert message.cycle_end_time == ""
+    assert cycle_info_from_proto(message).ended_at is None
 
 
-def test_outcome_to_proto_bounds_workload_strings():
-    sections = tuple("s" * 100 + str(i) for i in range(MAX_TIMEOUT_SECTIONS + 2))
-    rank = RankOutcome(
-        0,
-        0,
-        100,
-        RankEndReason.STOPPED_BY_RMON,
-        exitcode=-9,
-        exitdetails="x" * 1000,
-        timeout_kind=TimeoutKind.SECTION,
-        timeout_sections=sections,
-    )
-    outcome = LocalCycleOutcome(3, "node0", CycleEndReason.FAILED, 1.0, (rank,))
-
-    message = outcome_to_proto(outcome).ranks[0]
-
-    assert message.exit_details == "x" * MAX_EXIT_DETAILS_LEN
-    assert list(message.timeout_sections) == [
-        name[:MAX_SECTION_NAME_LEN] for name in sections[:MAX_TIMEOUT_SECTIONS]
-    ]
+def test_cycle_info_end_round_trips():
+    assert cycle_info_from_proto(cycle_info_to_proto(END)).ended_at == END.ended_at
 
 
-@pytest.mark.parametrize(
-    ("enum", "mapping"),
-    [
-        (CycleEndReason, grpc_transport._CYCLE_END_TO_PROTO),
-        (RankEndReason, grpc_transport._RANK_END_TO_PROTO),
-        (TimeoutKind, grpc_transport._TIMEOUT_KIND_TO_PROTO),
-    ],
-)
-def test_every_enum_member_has_a_distinct_wire_value(enum, mapping):
-    assert set(enum) <= set(mapping)
-    wire_values = list(mapping.values())
-    assert len(set(wire_values)) == len(wire_values)
+def test_cycle_info_without_start_time_is_rejected():
+    message = cycle_info_to_proto(START)
+    message.cycle_start_time = ""
+    with pytest.raises(ValueError):
+        cycle_info_from_proto(message)
 
 
-class _Receiver(pb_grpc.CycleInfoServiceServicer):
+def test_end_report_to_proto():
+    message = end_report_to_proto(REPORT)
+
+    assert (message.job_id, message.attempt_index, message.cycle_number) == ("job1", 2, 3)
+    assert message.node_name == "node001.cluster"
+    assert message.end_reason == pb.CycleEndReasonWorkerTerminatedByRankMonitor
+    assert message.detected_timestamp == 1_700_000_099_123
+    assert message.exit_details == '[{"rank":1}]'
+
+
+def test_end_report_round_trips():
+    assert end_report_from_proto(end_report_to_proto(REPORT)) == REPORT
+
+
+def test_end_report_without_detection_time_is_rejected():
+    message = end_report_to_proto(REPORT)
+    message.detected_timestamp = 0
+    with pytest.raises(ValueError):
+        end_report_from_proto(message)
+
+
+def test_end_report_with_unknown_end_reason_is_rejected():
+    message = end_report_to_proto(REPORT)
+    message.end_reason = 99  # a value from a newer version
+    with pytest.raises(ValueError):
+        end_report_from_proto(message)
+
+
+def test_every_end_reason_has_a_distinct_wire_value():
+    mapping = grpc_transport._END_REASON_TO_PROTO
+    assert set(mapping) == set(EndReason)
+    assert sorted(mapping.values()) == sorted(pb.EndReason.values())
+
+
+def _rpc_error(code, details, debug=None):
+    class _Error(grpc.RpcError):
+        def code(self):
+            return code
+
+        def details(self):
+            return details
+
+        def debug_error_string(self):
+            return debug
+
+    return _Error()
+
+
+class TestPublisher:
+    def test_cycle_infos_are_blocking_calls_with_the_timeout(self):
+        stub = MagicMock()
+        publisher = GrpcCycleInfoPublisher(cycle_info_stub=stub, rpc_timeout=2.0)
+
+        assert publisher.publish_cycle_info(START) is True
+        assert publisher.update_cycle_info(END) is True
+
+        stub.PublishCycleInfo.assert_called_once_with(cycle_info_to_proto(START), timeout=2.0)
+        stub.UpdateCycleInfo.assert_called_once_with(cycle_info_to_proto(END), timeout=2.0)
+
+    def test_end_report_is_a_one_record_stream(self):
+        stub = MagicMock()
+        publisher = GrpcCycleInfoPublisher(data_record_stub=stub, rpc_timeout=2.0)
+
+        assert publisher.publish_end_report(REPORT) is True
+
+        (requests,), kwargs = stub.StreamDataRecords.call_args
+        assert kwargs == {"timeout": 2.0}
+        assert list(requests) == [
+            log_aggregation_pb2.DataRecord(node_cycle_end_report=end_report_to_proto(REPORT))
+        ]
+
+    @pytest.mark.parametrize("kind", ["cycle_info", "end_report"])
+    def test_publish_without_the_stub_is_dropped(self, kind):
+        publisher = GrpcCycleInfoPublisher()
+        with patch.object(grpc_transport, "logger") as logger:
+            if kind == "cycle_info":
+                assert publisher.publish_cycle_info(START) is False
+            else:
+                assert publisher.publish_end_report(REPORT) is False
+        logger.warning.assert_called_once()
+
+    def test_failed_call_logs_the_grpc_core_debug_string_without_raising(self):
+        stub = MagicMock()
+        stub.PublishCycleInfo.side_effect = _rpc_error(
+            grpc.StatusCode.CANCELLED, "CANCELLED", "Received RST_STREAM with error code 8"
+        )
+        with patch.object(grpc_transport, "logger") as logger:
+            assert GrpcCycleInfoPublisher(cycle_info_stub=stub).publish_cycle_info(START) is False
+        message = logger.warning.call_args.args[0]
+        assert "CANCELLED" in message
+        assert "Received RST_STREAM with error code 8" in message
+
+    def test_unexpected_error_is_logged_without_raising(self):
+        stub = MagicMock()
+        stub.StreamDataRecords.side_effect = ValueError("Cannot invoke RPC on closed channel!")
+        with patch.object(grpc_transport, "logger") as logger:
+            publisher = GrpcCycleInfoPublisher(data_record_stub=stub)
+            assert publisher.publish_end_report(REPORT) is False
+        logger.warning.assert_called_once()
+
+    def test_record_failing_to_encode_is_logged_without_raising(self):
+        stub = MagicMock()
+        publisher = GrpcCycleInfoPublisher(data_record_stub=stub)
+        with patch.dict(grpc_transport._END_REASON_TO_PROTO, clear=True):
+            with patch.object(grpc_transport, "logger") as logger:
+                assert publisher.publish_end_report(REPORT) is False
+        logger.warning.assert_called_once()
+        stub.StreamDataRecords.assert_not_called()
+
+
+class _DataRecordReceiver(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
     def __init__(self):
-        self.starts = []
-        self.outcomes = []
-        self.received = threading.Event()
+        self.records = []
 
-    def PublishCycleStart(self, request, context):
-        self.starts.append(request)
-        self.received.set()
-        return pb.PublishReply()
-
-    def PublishCycleOutcome(self, request, context):
-        self.outcomes.append(request)
-        self.received.set()
-        return pb.PublishReply()
+    def StreamDataRecords(self, request_iterator, context):
+        self.records.extend(request_iterator)
+        return log_aggregation_pb2.StreamResponse(status="OK")
 
 
-@pytest.fixture
-def receiver():
-    """A CycleInfoService on localhost, and a stub connected to it."""
-    servicer = _Receiver()
+def test_end_report_reaches_a_log_server():
+    receiver = _DataRecordReceiver()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    pb_grpc.add_CycleInfoServiceServicer_to_server(servicer, server)
+    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(receiver, server)
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     try:
-        yield servicer, pb_grpc.CycleInfoServiceStub(channel)
+        stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
+        assert GrpcCycleInfoPublisher(data_record_stub=stub).publish_end_report(REPORT)
+
+        # The publish returned once the server had the record.
+        (record,) = receiver.records
+        assert end_report_from_proto(record.node_cycle_end_report) == REPORT
     finally:
         channel.close()
         server.stop(grace=None)
 
 
-@pytest.mark.parametrize("kind", ["start", "outcome"])
-def test_records_reach_the_receiver(receiver, kind):
-    servicer, stub = receiver
-    publisher = GrpcCycleInfoPublisher(stub)
-
-    if kind == "start":
-        publisher.publish_cycle_start(START)
-    else:
-        publisher.publish_outcome(OUTCOME)
-
-    # The publish returned once the receiver acknowledged the record.
-    assert servicer.received.is_set()
-    if kind == "start":
-        assert servicer.starts == [cycle_start_to_proto(START)]
-    else:
-        assert servicer.outcomes == [outcome_to_proto(OUTCOME)]
-
-
-def test_publish_is_a_blocking_call_with_the_timeout():
-    stub = MagicMock()
-    publisher = GrpcCycleInfoPublisher(stub, rpc_timeout=2.0)
-
-    assert publisher.publish_outcome(OUTCOME) is True
-
-    stub.PublishCycleOutcome.assert_called_once_with(outcome_to_proto(OUTCOME), timeout=2.0)
-
-
-def test_failed_call_is_logged_without_raising():
-    class _Unavailable(grpc.RpcError):
-        def code(self):
-            return grpc.StatusCode.UNAVAILABLE
-
-        def details(self):
-            return "down"
-
-    stub = MagicMock()
-    stub.PublishCycleStart.side_effect = _Unavailable()
-    publisher = GrpcCycleInfoPublisher(stub)
-    with patch.object(grpc_transport, "logger") as logger:
-        assert publisher.publish_cycle_start(START) is False
-    logger.warning.assert_called_once()
-
-
-def test_failed_call_logs_the_grpc_core_debug_string():
-    class _Cancelled(grpc.RpcError):
-        def code(self):
-            return grpc.StatusCode.CANCELLED
-
-        def details(self):
-            return "CANCELLED"
-
-        def debug_error_string(self):
-            return "Received RST_STREAM with error code 8"
-
-    stub = MagicMock()
-    stub.PublishCycleOutcome.side_effect = _Cancelled()
-    with patch.object(grpc_transport, "logger") as logger:
-        assert GrpcCycleInfoPublisher(stub).publish_outcome(OUTCOME) is False
-    assert "Received RST_STREAM with error code 8" in logger.warning.call_args.args[0]
-
-
-def test_record_failing_to_encode_is_logged_without_raising():
-    stub = MagicMock()
-    publisher = GrpcCycleInfoPublisher(stub)
-    with patch.dict(grpc_transport._CYCLE_END_TO_PROTO, clear=True):
-        with patch.object(grpc_transport, "logger") as logger:
-            assert publisher.publish_outcome(OUTCOME) is False
-    logger.warning.assert_called_once()
-    stub.PublishCycleOutcome.assert_not_called()
-
-
-def test_records_round_trip_through_proto():
-    assert cycle_start_from_proto(cycle_start_to_proto(START)) == START
-    assert outcome_from_proto(outcome_to_proto(OUTCOME)) == OUTCOME
-
-
-@pytest.mark.parametrize("field", ["node_end", "rank_end"])
-def test_outcome_with_unspecified_reason_is_rejected(field):
-    message = outcome_to_proto(OUTCOME)
-    if field == "node_end":
-        message.node_end = pb.CYCLE_END_REASON_UNSPECIFIED
-    else:
-        message.ranks[0].end = pb.RANK_END_REASON_UNSPECIFIED
-    with pytest.raises(ValueError):
-        outcome_from_proto(message)
-
-
 @pytest.mark.parametrize("transport", ["unix", "tcp"])
-def test_reader_receives_what_the_publisher_sends(tmp_path, transport):
+def test_reader_receives_each_kind_once(tmp_path, transport):
     address = f"unix:{tmp_path}/analyzer.sock" if transport == "unix" else "127.0.0.1:0"
     reader = GrpcCycleInfoReader(address)
     target = address if transport == "unix" else f"127.0.0.1:{reader.port}"
     channel = grpc.insecure_channel(target)
-    publisher = GrpcCycleInfoPublisher(pb_grpc.CycleInfoServiceStub(channel))
+    stub = pb_grpc.CycleInfoServiceStub(channel)
+    publisher = GrpcCycleInfoPublisher(cycle_info_stub=stub)
     try:
-        publisher.publish_cycle_start(START)
-        publisher.publish_outcome(OUTCOME)
+        assert publisher.publish_cycle_info(START)
+        assert publisher.update_cycle_info(END)
+        # End reports reach the analyzer from the log root, directly over this RPC.
+        stub.PublishNodeCycleEndReport(end_report_to_proto(REPORT), timeout=5)
 
-        assert reader.read_cycle_starts() == [START]
-        assert reader.read_outcomes() == [OUTCOME]
-        assert reader.read_cycle_starts() == []  # each record is read once
-        assert reader.read_outcomes() == []
+        assert reader.read_cycle_infos() == [cycle_info_from_proto(cycle_info_to_proto(START))]
+        assert reader.read_cycle_info_updates() == [cycle_info_from_proto(cycle_info_to_proto(END))]
+        assert reader.read_end_reports() == [REPORT]
+        assert reader.read_cycle_infos() == []  # each record is read once
+        assert reader.read_cycle_info_updates() == []
+        assert reader.read_end_reports() == []
     finally:
         channel.close()
         reader.close()
 
 
-def test_reader_rejects_an_undecodable_record():
+@pytest.mark.parametrize(
+    "rpc", ["PublishCycleInfo", "UpdateCycleInfo", "PublishNodeCycleEndReport"]
+)
+def test_reader_rejects_an_undecodable_record(rpc):
     reader = GrpcCycleInfoReader("127.0.0.1:0")
     channel = grpc.insecure_channel(f"127.0.0.1:{reader.port}")
+    if rpc == "PublishNodeCycleEndReport":
+        message = end_report_to_proto(REPORT)
+        message.detected_timestamp = 0
+    else:
+        message = cycle_info_to_proto(START)
+        message.cycle_start_time = "not a time"
     try:
-        message = outcome_to_proto(OUTCOME)
-        message.node_end = pb.CYCLE_END_REASON_UNSPECIFIED
         with pytest.raises(grpc.RpcError) as error:
-            pb_grpc.CycleInfoServiceStub(channel).PublishCycleOutcome(message, timeout=5)
+            getattr(pb_grpc.CycleInfoServiceStub(channel), rpc)(message, timeout=5)
         assert error.value.code() == grpc.StatusCode.INVALID_ARGUMENT
-        assert reader.read_outcomes() == []
+        assert reader.read_cycle_infos() == []
+        assert reader.read_cycle_info_updates() == []
+        assert reader.read_end_reports() == []
     finally:
         channel.close()
         reader.close()

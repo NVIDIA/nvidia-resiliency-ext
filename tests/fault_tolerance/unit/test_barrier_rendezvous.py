@@ -32,6 +32,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import timedelta
 from unittest import TestCase, skip
 from unittest.mock import MagicMock, call, patch
@@ -1625,27 +1626,65 @@ class GroupRankAssignmentTest(TestCase):
         before = time.time()
         self._close_round_with_publisher(publisher, cycle_log_prefix="/tmp/train.log")
 
-        publisher.publish_cycle_start.assert_called_once()
-        info = publisher.publish_cycle_start.call_args.args[0]
+        publisher.publish_cycle_info.assert_called_once()
+        info = publisher.publish_cycle_info.call_args.args[0]
         self.assertEqual(
-            (info.cycle, info.active_nodes, info.standby_nodes, info.active_ranks),
+            (info.cycle_number, info.active_nodes, info.standby_nodes, info.active_ranks),
             (0, ("node_a", "node_b"), (), (0, 1)),
         )
         self.assertEqual(info.cycle_log_file, "/tmp/train_cycle0.log")
-        self.assertGreaterEqual(info.started_at, before)
+        self.assertIsNone(info.ended_at)
+        self.assertGreaterEqual(info.started_at, before - 0.001)
+        # One clock reading: the start time in seconds, the record's timestamp in ms.
+        self.assertIsInstance(info.timestamp, int)
+        self.assertEqual(info.started_at, info.timestamp / 1000)
 
     def test_cycle_start_has_no_log_file_without_a_prefix(self):
         publisher = MagicMock()
         self._close_round_with_publisher(publisher)
-        self.assertEqual(publisher.publish_cycle_start.call_args.args[0].cycle_log_file, "")
+        self.assertEqual(publisher.publish_cycle_info.call_args.args[0].cycle_log_file, "")
 
     def test_publish_failure_does_not_block_the_round(self):
         """A publisher failure is logged; the round is still released."""
         publisher = MagicMock()
-        publisher.publish_cycle_start.side_effect = RuntimeError("queue full")
+        publisher.publish_cycle_info.side_effect = RuntimeError("queue full")
         with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
             state = self._close_round_with_publisher(publisher)
         self.assertEqual(self.store.get(state.round_done_key), b"1")
+        mock_warning.assert_called_once()
+
+    def test_cycle_end_is_published_once_with_the_start(self):
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher, cycle_log_prefix="/tmp/train.log")
+        start = publisher.publish_cycle_info.call_args.args[0]
+
+        state.publish_cycle_end_as_host()
+        state.publish_cycle_end_as_host()  # already published: nothing more
+
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertEqual(replace(end, ended_at=None, timestamp=start.timestamp), start)
+        self.assertGreaterEqual(end.timestamp, start.timestamp)
+        self.assertEqual(end.ended_at, end.timestamp / 1000)
+
+    def test_no_cycle_end_without_a_published_start(self):
+        publisher = MagicMock()
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._cycle_info_publisher = publisher
+        state.publish_cycle_end_as_host()
+        publisher.update_cycle_info.assert_not_called()
+
+    def test_cycle_end_publish_failure_is_logged(self):
+        publisher = MagicMock()
+        publisher.update_cycle_info.side_effect = RuntimeError("unavailable")
+        state = self._close_round_with_publisher(publisher)
+        with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
+            state.publish_cycle_end_as_host()
         mock_warning.assert_called_once()
 
     def test_handler_sets_the_cycle_info_publisher(self):

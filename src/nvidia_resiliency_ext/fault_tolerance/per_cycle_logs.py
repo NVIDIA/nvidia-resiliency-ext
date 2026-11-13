@@ -354,7 +354,7 @@ class GrpcWriterThread(threading.Thread):
                         ('grpc.keepalive_timeout_ms', 20000),  # Wait 20s for ping response
                     ],
                 )
-                stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
+                stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
 
                 # Lightweight health check (not a full streaming connection)
                 response = stub.HealthCheck(log_aggregation_pb2.HealthRequest(), timeout=1.0)
@@ -481,10 +481,11 @@ class GrpcWriterThread(threading.Thread):
         Args:
             channel: Existing gRPC channel (caller manages lifecycle)
         """
-        stub = log_aggregation_pb2_grpc.LogAggregationServiceStub(channel)
+        stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
 
         def log_generator():
-            """Yield LogChunk messages from queue; drain remaining items when shutdown is requested."""
+            """Yield DataRecords with the log chunks from the queue; drain the remaining
+            items when shutdown is requested."""
             _empty_poll_count = 0
 
             while True:
@@ -504,7 +505,7 @@ class GrpcWriterThread(threading.Thread):
                     self.total_chunks_sent += 1
                     self.total_bytes_sent += len(data_bytes)
 
-                    yield chunk
+                    yield log_aggregation_pb2.DataRecord(log_chunk=chunk)
 
                 except queue.Empty:
                     if self.shutdown_requested:
@@ -535,7 +536,7 @@ class GrpcWriterThread(threading.Thread):
             # No timeout on the RPC - let it run as long as needed during normal operation.
             # On launcher exit the reader thread's finally calls join(timeout=...) on this
             # GrpcWriterThread after shutdown_requested, bounding post-shutdown drain time.
-            response = stub.StreamLogs(log_generator())
+            response = stub.StreamDataRecords(log_generator())
             self.logger.debug(
                 f"Stream completed: {response.status}, "
                 f"server received {response.bytes_received} bytes"

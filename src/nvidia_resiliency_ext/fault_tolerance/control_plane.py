@@ -63,7 +63,7 @@ from nvidia_resiliency_ext.fault_tolerance.rdzv_utils import (
 )
 from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
-from nvidia_resiliency_ext.shared_utils.proto.cycle_info_pb2_grpc import CycleInfoServiceStub
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2_grpc import CycleInfoServiceStub
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -216,7 +216,6 @@ def _start_control_services(
         if log_funnel_enabled:
             assert log_funnel_ports is not None
             assert grpc_log_prefix is not None
-            # The analyzer started above, so the root can forward the cycle records to it.
             services.grpc_processes = _start_grpc_log_servers(
                 args,
                 grpc_log_prefix,
@@ -284,13 +283,14 @@ def _run_control_rendezvous_loop(
         args.rdzv_endpoint,
     )
     state._attribution_service = services.attribution_service
-    # This host closes the rounds, so it publishes the cycle starts. The analyzer runs on
-    # this node: publish to it directly, without the gRPC log servers.
+    # This host closes the rounds, so it publishes the cycle infos: at each start, and at
+    # each end. The analyzer runs on this node: publish to it directly, without the gRPC
+    # log servers.
     cycle_info_channel = None
     if services.cycle_analyzer is not None:
         cycle_info_channel = grpc.insecure_channel(services.cycle_analyzer.address)
         state._cycle_info_publisher = GrpcCycleInfoPublisher(
-            CycleInfoServiceStub(cycle_info_channel)
+            cycle_info_stub=CycleInfoServiceStub(cycle_info_channel)
         )
 
     try:
@@ -311,6 +311,8 @@ def _run_control_rendezvous_loop(
 
         state._request_terminal_attribution_for_submitted_cycle()
     finally:
+        # The rendezvous shut down: the last cycle ended, as no next round will open.
+        state.publish_cycle_end_as_host()
         state._cycle_info_publisher = None
         if cycle_info_channel is not None:
             cycle_info_channel.close()

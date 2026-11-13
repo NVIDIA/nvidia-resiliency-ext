@@ -739,3 +739,52 @@ def ranks_to_range_str(ranks: list[int]) -> str:
             start = end = r
     ranges.append(f"{start}-{end}" if start != end else str(start))
     return ",".join(ranges)
+
+
+def slurm_nodelist_to_hostnames(nodelist: str) -> list[str]:
+    """Expand a node list from hostnames_to_slurm_nodelist back into host names.
+
+    E.g. "node[001-002,005],gpu7" -> ["node001", "node002", "node005", "gpu7"]. The result
+    has what the compressed form kept: short host names (no domain), each once, sorted;
+    several addresses on one host come back as one name.
+    """
+    hostnames: list[str] = []
+    part, depth = "", 0
+    for char in nodelist + ",":
+        depth += {"[": 1, "]": -1}.get(char, 0)
+        if char == "," and depth == 0:
+            hostnames.extend(_expand_slurm_node_part(part.strip()))
+            part = ""
+        else:
+            part += char
+    return hostnames
+
+
+def _expand_slurm_node_part(part: str) -> list[str]:
+    """Expand one comma-free (outside brackets) part, e.g. "node[001-002,005]" or "gpu7"."""
+    if not part:
+        return []
+    if "[" not in part:
+        return [part]
+    prefix, ranges = part.split("[", 1)
+    names = []
+    for item in ranges.rstrip("]").split(","):
+        first, _, last = item.partition("-")
+        width = len(first)  # zero padding, as written by _numbers_to_slurm_ranges
+        for number in range(int(first), int(last or first) + 1):
+            names.append(f"{prefix}{str(number).zfill(width)}")
+    return names
+
+
+def range_str_to_ranks(ranges: str) -> list[int]:
+    """Expand a range string from ranks_to_range_str, e.g. "0-2,5" -> [0, 1, 2, 5].
+
+    Exact inverse: order and repeats are kept.
+    """
+    ranks: list[int] = []
+    for item in ranges.split(","):
+        if not item.strip():
+            continue
+        first, _, last = item.strip().partition("-")
+        ranks.extend(range(int(first), int(last or first) + 1))
+    return ranks
