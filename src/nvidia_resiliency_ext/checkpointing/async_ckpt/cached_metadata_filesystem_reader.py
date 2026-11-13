@@ -15,24 +15,25 @@
 
 """ FS Reader with metadata cached support. """
 
+import dataclasses
+import functools
 import os
-from typing import Dict, Union
+import warnings
+from typing import Any, Union
 
 from torch.distributed.checkpoint import FileSystemReader, Metadata
+
+from ..utils import _disable_gc
 
 
 class CachedMetadataFileSystemReader(FileSystemReader):
     """
     Extends FileSystemReader to cache metadata for improved performance.
 
-    Metadata is shared across all reader instances that use the same checkpoint
-    directory (same path), since the loaded metadata is identical.
-
-    Attributes:
-        _metadata_cache (Dict[str, Metadata]): Class-level cache keyed by checkpoint path.
+    Metadata is cached for the life of the process and shared by all readers that read the same
+    checkpoint directory with the same arguments. The cache never checks the files again; call
+    clear_metadata_cache once the cached checkpoints are no longer needed or have changed.
     """
-
-    _metadata_cache: Dict[str, Metadata] = {}
 
     def __init__(self, path: Union[str, os.PathLike], cache_metadata: bool = True) -> None:
         """
@@ -40,40 +41,55 @@ class CachedMetadataFileSystemReader(FileSystemReader):
 
         Args:
             path (Union[str, os.PathLike]): Path to the checkpoint directory or file.
-            cache_metadata (bool): If True (default), metadata is cached at the class level
-                and shared across all instances pointing to the same checkpoint directory.
+            cache_metadata (bool): If True (default), metadata is cached and shared across all
+                instances that read the same checkpoint directory.
                 If False, metadata is always read from disk on each call.
         """
         super().__init__(path=path)
-        self._cache_key = os.path.abspath(os.fspath(path)) if cache_metadata else None
+        self._cache_metadata = cache_metadata
 
-    def read_metadata(self) -> Metadata:
+    @staticmethod
+    @functools.cache
+    @_disable_gc()
+    def _read_cached_metadata(path: str, *args: Any, **kwargs: Any) -> Metadata:
+        # Unpickling allocates millions of objects, which triggers thousands of collections over
+        # a growing heap: about half the read time.
+        return FileSystemReader(path).read_metadata(*args, **kwargs)
+
+    def read_metadata(self, *args: Any, **kwargs: Any) -> Metadata:
         """
         Read metadata from file system, caching for subsequent calls.
-        Shared across instances when the checkpoint directory is the same.
+        Shared across instances when the checkpoint directory and arguments are the same.
+
+        Note:
+            A cache miss turns the garbage collector off for the whole process while it reads,
+            then restores the collector's previous state. If another thread changes the
+            collector's state during a miss, that change can be undone.
 
         Returns:
-            Metadata: Checkpoint metadata.
+            Metadata: Checkpoint metadata. A shallow copy of the cached metadata, so that its
+                storage_meta carries this reader's load_id.
         """
-        if self._cache_key is None:
-            return super().read_metadata()
-        if self._cache_key not in CachedMetadataFileSystemReader._metadata_cache:
-            CachedMetadataFileSystemReader._metadata_cache[self._cache_key] = (
-                super().read_metadata()
-            )
-        return CachedMetadataFileSystemReader._metadata_cache[self._cache_key]
+        if not self._cache_metadata:
+            return super().read_metadata(*args, **kwargs)
+        metadata = self._read_cached_metadata(os.path.abspath(self.path), *args, **kwargs)
+        storage_meta = dataclasses.replace(metadata.storage_meta, load_id=self.load_id)
+        return dataclasses.replace(metadata, storage_meta=storage_meta)
 
     @classmethod
-    def clear_metadata_cache(cls, path: Union[str, os.PathLike, None] = None):
+    def clear_metadata_cache(cls, path: Union[str, os.PathLike, None] = None) -> None:
         """
         Clear the metadata cache.
 
         Args:
-            path (Union[str, os.PathLike, None]): If provided, only the cache entry for
-                this specific checkpoint path is removed. If None (default), the entire
-                cache is cleared.
+            path (Union[str, os.PathLike, None]): Deprecated. The whole cache is cleared whether
+                or not a path is given.
         """
-        if path is None:
-            cls._metadata_cache.clear()
-        else:
-            cls._metadata_cache.pop(os.path.abspath(os.fspath(path)), None)
+        if path is not None:
+            warnings.warn(
+                "The path argument of clear_metadata_cache is deprecated; the whole cache is "
+                "cleared.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        cls._read_cached_metadata.cache_clear()
