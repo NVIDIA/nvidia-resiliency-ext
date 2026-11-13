@@ -55,7 +55,6 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_template import Me
 from .metadata_assertions import NEEDS_FAST, NEEDS_NATIVE, assert_identical, stock_round_trip
 from .metadata_samples import (
     FIXED_METADATA,
-    SETTABLE_FIELD,
     SubclassedMetadata,
     SubclassedStr,
     large_metadata,
@@ -396,9 +395,9 @@ def test_with_fields():
     """Fields set on a table are written as if set on the Metadata; one the table doesn't have yet
     comes last. state_dict_metadata, storage_data and names that aren't fields are refused."""
     metadata = writer._sample_metadata()
-    delattr(metadata, SETTABLE_FIELD)
-    table = StateDictTable.from_metadata(metadata).with_fields(**{SETTABLE_FIELD: "9.9"})
-    setattr(metadata, SETTABLE_FIELD, "9.9")
+    del metadata.version
+    table = StateDictTable.from_metadata(metadata).with_fields(version="9.9")
+    metadata.version = "9.9"
     buf = io.BytesIO()
     writer.dump_metadata(table, buf, storage_data=metadata.storage_data)
     assert_identical(pickle.loads(buf.getvalue()), stock_round_trip(metadata))
@@ -410,9 +409,9 @@ def test_with_fields():
 def test_with_fields_shares_the_fqn_list():
     """A copy shares the fqn list its table computed, which a cached save writes from."""
     table = StateDictTable.from_metadata(writer._sample_metadata())
-    assert "fqn_list" not in vars(table.with_fields(**{SETTABLE_FIELD: "9.9"}))
+    assert "fqn_list" not in vars(table.with_fields(version="9.9"))
     fqn_list = table.fqn_list
-    assert table.with_fields(**{SETTABLE_FIELD: "9.9"}).fqn_list is fqn_list
+    assert table.with_fields(version="9.9").fqn_list is fqn_list
 
 
 def test_to_metadata():
@@ -562,9 +561,9 @@ def test_table_round_trips(producer, metadata, value):
     """to_metadata gives the metadata back, with the fields with_fields set, as stock pickle
     round-trips it; MetadataTemplate does in both its forms."""
     expected = stock_round_trip(metadata)
-    setattr(expected, SETTABLE_FIELD, value)
+    expected.version = value
     expected.storage_data = None
-    fields = {SETTABLE_FIELD: value}
+    fields = {"version": value}
     state_dict_table = producer.from_metadata(metadata).with_fields(**fields)
     assert_identical(state_dict_table.to_metadata(), expected)
     as_table = MetadataTemplate(producer.from_metadata(metadata)).with_fields(**fields)
