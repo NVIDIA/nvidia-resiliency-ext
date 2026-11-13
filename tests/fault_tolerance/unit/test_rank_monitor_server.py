@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 import socket
 import tempfile
 import time
@@ -692,23 +693,32 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
         cases = {
             "exited": self._process(is_running=False),
             "zombie": self._process(status=STATUS_ZOMBIE),
-            "gone_while_signalled": self._process(),
         }
-        cases["gone_while_signalled"].send_signal.side_effect = NoSuchProcess(12345)
         for name, process in cases.items():
             with self.subTest(case=name):
                 server = self._create_server()
                 server._shutdown_rank_if_alive(process, (3, RankTimeout(TimeoutKind.HEARTBEAT)))
                 self.assertIsNone(server._timeout_stop)
 
-    def test_draft_is_recorded_before_the_termination_signal(self):
-        """The record stays even if the worker is gone by the time the signal is sent."""
-        server = self._create_server()
-        draft = (3, RankTimeout(TimeoutKind.HEARTBEAT))
-        process = self._process()
-        process.send_signal.side_effect = [None, NoSuchProcess(12345)]  # SIGCONT, then gone
-        server._shutdown_rank_if_alive(process, draft)
-        self.assertEqual(server._timeout_stop, draft)
+    def test_draft_is_recorded_before_the_signals(self):
+        """The record stays even if the worker is gone by the time a signal is sent.
+
+        The stop is recorded and sent before SIGCONT, so a worker that exits on its own in
+        between is still reported as stopped by its monitor; its exit code tells otherwise.
+        """
+        gone = NoSuchProcess(12345)
+        cases = {
+            "gone_at_sigcont": [gone],
+            "gone_at_the_termination_signal": [None, gone],
+        }
+        for name, side_effect in cases.items():
+            with self.subTest(case=name):
+                server = self._create_server()
+                draft = (3, RankTimeout(TimeoutKind.HEARTBEAT))
+                process = self._process()
+                process.send_signal.side_effect = side_effect
+                server._shutdown_rank_if_alive(process, draft)
+                self.assertEqual(server._timeout_stop, draft)
 
     def test_failing_record_does_not_prevent_the_kill(self):
         server = self._create_server()
@@ -779,7 +789,7 @@ class TestRankMonitorServerLauncherChannel(unittest.TestCase):
         process.pid = 12345
         return process
 
-    def test_timeout_stop_is_sent_before_the_termination_signal(self):
+    def test_timeout_stop_is_sent_before_sigcont_and_the_termination_signal(self):
         server = self._create_server()
         server._launcher_channel = channel = self._channel()
         process = self._process()
@@ -790,7 +800,11 @@ class TestRankMonitorServerLauncherChannel(unittest.TestCase):
 
         server._shutdown_rank_if_alive(process, (3, timeout))
 
-        self.assertEqual([name for name, _, _ in calls.mock_calls], ["signal", "write", "signal"])
+        self.assertEqual([name for name, _, _ in calls.mock_calls], ["write", "signal", "signal"])
+        self.assertEqual(
+            [c.args[0] for c in process.send_signal.call_args_list],
+            [signal.SIGCONT, server.cfg.rank_termination_signal],
+        )
         (msg,) = _decode_frames(channel.write.call_args.args[0])
         self.assertIsInstance(msg, TimeoutStopMsg)
         self.assertEqual((msg.cycle, msg.pid, msg.timeout), (3, 12345, timeout))
