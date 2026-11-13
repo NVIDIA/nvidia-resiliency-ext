@@ -640,21 +640,25 @@ def _parse_hostname_prefix_suffix(name: str) -> Optional[tuple[str, int, str]]:
     return (m.group(1), int(m.group(2)), m.group(2))
 
 
-def _numbers_to_slurm_ranges(numbers: list[int], pad: int) -> list[str]:
-    """Turn sorted unique numbers into SLURM range parts, e.g. [1,2,3,5] -> ['001-003', '005']."""
-    if not numbers:
+def _numbers_to_slurm_ranges(suffixes: list[tuple[int, str]]) -> list[str]:
+    """Turn sorted (number, raw_suffix) pairs into SLURM range parts.
+
+    E.g. [(1, '001'), (2, '002'), (5, '005')] -> ['001-002', '005'] and
+    [(9, '9'), (10, '10')] -> ['9-10']. SLURM expands a range zero-padded to the width
+    of its lower bound, so a range only grows while that reproduces each raw suffix.
+    """
+    if not suffixes:
         return []
     ranges: list[str] = []
-    start = end = numbers[0]
-    for n in numbers[1:]:
-        if n == end + 1:
-            end = n
+    end, start_raw = suffixes[0]
+    end_raw = start_raw
+    for n, raw in suffixes[1:]:
+        if n == end + 1 and raw == str(n).zfill(len(start_raw)):
+            end, end_raw = n, raw
         else:
-            s, e = str(start).zfill(pad), str(end).zfill(pad)
-            ranges.append(f"{s}-{e}" if start != end else s)
-            start = end = n
-    s, e = str(start).zfill(pad), str(end).zfill(pad)
-    ranges.append(f"{s}-{e}" if start != end else s)
+            ranges.append(f"{start_raw}-{end_raw}" if start_raw != end_raw else start_raw)
+            end, start_raw, end_raw = n, raw, raw
+    ranges.append(f"{start_raw}-{end_raw}" if start_raw != end_raw else start_raw)
     return ranges
 
 
@@ -685,19 +689,16 @@ def hostnames_to_slurm_nodelist(addrs: list) -> str:
     if any(p is None for p in parsed):
         return ",".join(sorted(set(short_names)))
 
-    # Group by prefix; for each prefix keep unique node numbers and suffix for padding.
-    by_prefix: Dict[str, Dict[int, str]] = {}  # prefix -> {num: raw_suffix}
+    # Group by prefix; keep each unique (number, raw suffix) so zero padding is preserved.
+    by_prefix: Dict[str, set[tuple[int, str]]] = {}
     for p in parsed:
         assert p is not None  # we returned above if any were None
         prefix, num, raw_suffix = p
-        by_prefix.setdefault(prefix, {})[num] = raw_suffix  # same num keeps one suffix
+        by_prefix.setdefault(prefix, set()).add((num, raw_suffix))
 
     result_parts = []
     for prefix in sorted(by_prefix.keys()):
-        num_to_suffix = by_prefix[prefix]
-        nums = sorted(num_to_suffix.keys())
-        pad = max(len(num_to_suffix[n]) for n in nums)
-        range_strs = _numbers_to_slurm_ranges(nums, pad)
+        range_strs = _numbers_to_slurm_ranges(sorted(by_prefix[prefix]))
         result_parts.append(f"{prefix}[{','.join(range_strs)}]")
     return ",".join(result_parts)
 
