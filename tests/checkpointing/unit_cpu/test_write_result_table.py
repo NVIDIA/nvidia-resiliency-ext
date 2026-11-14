@@ -160,9 +160,8 @@ def test_torch_write_results_fit_the_table(tmp_path):
     writer = FileSystemWriterAsync(tmp_path)
     results = FileSystemWriterAsync._write_bucket_to_storage(
         [writer.transforms] if hasattr(writer, "transforms") else [],
-        open,
+        writer.fs,
         (str(tmp_path / "__0_0.distcp"), "__0_0.distcp", (others, tensors)),
-        False,
         False,
     )
     assert len(results) == 3
