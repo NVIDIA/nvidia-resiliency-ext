@@ -703,10 +703,10 @@ def _healthy_agent(fault_tol_cfg, logs_specs, **rdzv_overrides):
     return agent
 
 
-class TestCycleOutcomePublishedBeforeTheJobEnds(unittest.TestCase):
-    """When the job ends, each launcher publishes its outcome before the shutdown key.
+class TestCycleEndReportPublishedBeforeTheJobEnds(unittest.TestCase):
+    """When the job ends, each launcher publishes its end report before the shutdown key.
 
-    The shutdown key ends nvrx-control and its CycleAnalyzer, so an outcome published
+    The shutdown key ends nvrx-control and its CycleAnalyzer, so an end report published
     after it can be lost.
     """
 
@@ -720,7 +720,7 @@ class TestCycleOutcomePublishedBeforeTheJobEnds(unittest.TestCase):
         from nvidia_resiliency_ext.fault_tolerance import launcher
 
         calls = MagicMock()
-        agent._publish_cycle_outcome = calls.publish
+        agent._publish_cycle_end_report = calls.publish
         calls.attach_mock(agent._worker_group.spec.rdzv_handler.signal_no_restart, "signal")
         with contextlib.ExitStack() as stack:
             for name in ("_stop_workers", "_exit_barrier"):
@@ -2184,12 +2184,12 @@ class TestCycleTelemetry:
         agent._send_cycle_to_rank_monitors.assert_called_once_with(4)
 
 
-def _outcome_agent(cycle_info_dir="/cycle_infos", cycle_info_outcomes=True):
+def _end_report_agent(cycle_info_dir="/cycle_infos", cycle_info_end_reports=True):
     """Agent with just the state _record_cycle_end_report reads; two workers, global ranks 4
     and 5."""
     agent = launcher.LocalElasticAgent.__new__(launcher.LocalElasticAgent)
     agent._ft_cfg = FaultToleranceConfig(
-        cycle_info_dir=cycle_info_dir, cycle_info_outcomes=cycle_info_outcomes
+        cycle_info_dir=cycle_info_dir, cycle_info_end_reports=cycle_info_end_reports
     )
     agent._node_id = "node0"
     agent._worker_group = MagicMock()
@@ -2210,18 +2210,18 @@ class TestRecordCycleEndReport:
         monkeypatch.setenv("SLURM_RESTART_COUNT", "2")
 
     @pytest.mark.parametrize(
-        ("cycle_info_dir", "cycle_info_outcomes"),
+        ("cycle_info_dir", "cycle_info_end_reports"),
         [(None, True), ("/cycle_infos", False)],
-        ids=["no_cycle_info_dir", "outcomes_off"],
+        ids=["no_cycle_info_dir", "end_reports_off"],
     )
-    def test_disabled_records_nothing(self, cycle_info_dir, cycle_info_outcomes):
-        agent = _outcome_agent(cycle_info_dir, cycle_info_outcomes)
+    def test_disabled_records_nothing(self, cycle_info_dir, cycle_info_end_reports):
+        agent = _end_report_agent(cycle_info_dir, cycle_info_end_reports)
         agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
         assert agent._cycle_end_report is None
         agent._collect_rank_monitor_timeouts.assert_not_called()
 
     def test_completed_cycle_does_not_collect_monitor_timeouts(self):
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         with patch.object(launcher, "now_ms", return_value=1_700_000_000_123):
             agent._record_cycle_end_report(EndReason.COMPLETED)
 
@@ -2240,7 +2240,7 @@ class TestRecordCycleEndReport:
         agent._collect_rank_monitor_timeouts.assert_not_called()
 
     def test_failures_are_described_with_monitor_timeouts(self):
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         failures = {5: MagicMock(exitcode=-9)}
         agent._collect_rank_monitor_timeouts.return_value = {
             5: RankTimeout(TimeoutKind.SECTION, ("step",))
@@ -2263,7 +2263,7 @@ class TestRecordCycleEndReport:
         ]
 
     def test_failure_does_not_interrupt_the_caller(self):
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         agent._cycle_end_report = MagicMock()  # stale record from an earlier cycle
         agent._collect_rank_monitor_timeouts.side_effect = RuntimeError("boom")
         with patch.object(launcher, "logger"):
@@ -2271,7 +2271,7 @@ class TestRecordCycleEndReport:
         assert agent._cycle_end_report is None
 
     def test_termination_signal_propagates(self):
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         agent._collect_rank_monitor_timeouts.side_effect = launcher.SignalException(
             "terminated", signal.SIGTERM
         )
@@ -2286,9 +2286,9 @@ class TestCollectRankMonitorTimeouts:
 
     @pytest.fixture
     def agent(self):
-        """Outcome agent; workers 4 and 5 run as pids 100 and 101 on local ranks 0 and 1."""
-        agent = _outcome_agent()
-        del agent._collect_rank_monitor_timeouts  # the real method, not _outcome_agent's mock
+        """End report agent; workers 4 and 5 run as pids 100 and 101 on local ranks 0 and 1."""
+        agent = _end_report_agent()
+        del agent._collect_rank_monitor_timeouts  # the real method, not _end_report_agent's mock
         agent._timeout_stops = {}
         return agent
 
@@ -2323,7 +2323,7 @@ class TestCollectRankMonitorTimeouts:
         assert agent._timeout_stops == {}
 
     def test_connect_records_the_socket_path(self):
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         agent._rank_monitors = {0: launcher.RankMonitorState(process=MagicMock(pid=77))}
         agent._connect_to_rank_monitor(0, agent._rank_monitors[0].process)
         assert agent._rank_monitors[0].socket_path.endswith("_ft_launcher77_to_rmon.socket")
@@ -2341,7 +2341,7 @@ class TestRankMonitorListener:
         The listener opens the monitors' sockets by path; here each path names one end of a
         socket pair, whose other end stands for the monitor.
         """
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         agent._timeout_stops = {}
         agent._rank_monitor_listener = None
         agent._rank_monitor_loop = None
@@ -2433,76 +2433,76 @@ class TestRankMonitorListener:
         assert agent._rank_monitor_loop.is_closed()
 
 
-class TestPublishCycleOutcome:
+class TestPublishCycleEndReport:
     """The main thread queues the end report; the publisher thread publishes it."""
 
     @pytest.fixture
     def agent(self):
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         agent._cycle_info_publisher = MagicMock()
-        agent._start_outcome_publisher()
+        agent._start_end_report_publisher()
         agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
         yield agent
-        agent.stop_outcome_publisher()
+        agent.stop_end_report_publisher()
 
     def test_end_report_is_published_on_the_publisher_thread(self, agent):
         publish = agent._cycle_info_publisher.publish_end_report
         threads = []
         publish.side_effect = lambda report: threads.append(threading.current_thread())
-        agent._publish_cycle_outcome(wait=True)
+        agent._publish_cycle_end_report(wait=True)
         publish.assert_called_once_with(agent._cycle_end_report)
-        assert threads == [agent._outcome_publisher_thread]
+        assert threads == [agent._end_report_publisher_thread]
 
     def test_publish_does_not_wait_unless_asked(self, agent):
         release = threading.Event()
         agent._cycle_info_publisher.publish_end_report.side_effect = lambda _: release.wait(5)
         start = time.monotonic()
-        agent._publish_cycle_outcome()  # the restart path
+        agent._publish_cycle_end_report()  # the restart path
         assert time.monotonic() - start < 1.0
         release.set()
-        assert agent._wait_for_outcomes_published(5)
+        assert agent._wait_for_end_reports_published(5)
 
     def test_wait_is_bounded(self, agent):
         release = threading.Event()
         agent._cycle_info_publisher.publish_end_report.side_effect = lambda _: release.wait(5)
         with (
-            patch.object(launcher, "CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT", 0.05),
+            patch.object(launcher, "CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT", 0.05),
             patch.object(launcher, "logger") as logger,
         ):
-            agent._publish_cycle_outcome(wait=True)
+            agent._publish_cycle_end_report(wait=True)
         logger.warning.assert_called_once()
         release.set()
 
     def test_nothing_is_published_without_an_end_report_of_this_cycle(self, agent):
         agent._get_global_cycle_number.return_value = 4  # recorded report is of cycle 3
-        agent._publish_cycle_outcome(wait=True)
-        agent._cycle_end_report = None  # outcomes disabled, or recording failed
-        agent._publish_cycle_outcome(wait=True)
+        agent._publish_cycle_end_report(wait=True)
+        agent._cycle_end_report = None  # end reports disabled, or recording failed
+        agent._publish_cycle_end_report(wait=True)
         agent._cycle_info_publisher.publish_end_report.assert_not_called()
 
     def test_nothing_is_published_without_a_publisher(self):
-        agent = _outcome_agent()
+        agent = _end_report_agent()
         agent._cycle_info_publisher = None
-        agent._start_outcome_publisher()
+        agent._start_end_report_publisher()
         agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
-        agent._publish_cycle_outcome(wait=True)  # must not raise
-        assert agent._outcome_publisher_thread is None
-        agent.stop_outcome_publisher()  # nothing to stop
+        agent._publish_cycle_end_report(wait=True)  # must not raise
+        assert agent._end_report_publisher_thread is None
+        agent.stop_end_report_publisher()  # nothing to stop
 
     def test_publisher_failure_is_logged_and_the_thread_keeps_publishing(self, agent):
         publish = agent._cycle_info_publisher.publish_end_report
         publish.side_effect = [RuntimeError("unavailable"), None]
         with patch.object(launcher, "logger") as logger:
-            agent._publish_cycle_outcome(wait=True)
-            agent._publish_cycle_outcome(wait=True)
+            agent._publish_cycle_end_report(wait=True)
+            agent._publish_cycle_end_report(wait=True)
         logger.warning.assert_called_once()
         assert publish.call_count == 2
 
     def test_stop_ends_the_publisher_thread(self, agent):
-        thread = agent._outcome_publisher_thread
-        agent.stop_outcome_publisher()
+        thread = agent._end_report_publisher_thread
+        agent.stop_end_report_publisher()
         assert not thread.is_alive()
-        assert agent._outcome_publisher_thread is None
+        assert agent._end_report_publisher_thread is None
 
     @pytest.mark.parametrize("open_rendezvous", [True, False], ids=["failed", "peer_restart"])
     def test_restart_publishes_after_opening_the_round_and_before_rejoining(self, open_rendezvous):
@@ -2513,7 +2513,7 @@ class TestPublishCycleOutcome:
         agent._worker_group = MagicMock()
         calls = MagicMock()
         agent._open_rendezvous_for_restart = calls.open_rendezvous
-        agent._publish_cycle_outcome = calls.publish
+        agent._publish_cycle_end_report = calls.publish
         agent._restart_workers = calls.restart
 
         assert agent._handle_restart_decision(
@@ -2530,7 +2530,7 @@ class TestPublishCycleOutcome:
         agent._progress_tracker = MagicMock()
         agent._progress_tracker.should_terminate_early.return_value = False
         agent._remaining_restarts = 0
-        agent._publish_cycle_outcome = MagicMock()
+        agent._publish_cycle_end_report = MagicMock()
 
         assert not agent._handle_restart_decision("trainer", MagicMock(), "[%s] restarting")
-        agent._publish_cycle_outcome.assert_not_called()
+        agent._publish_cycle_end_report.assert_not_called()

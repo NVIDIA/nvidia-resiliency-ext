@@ -402,14 +402,14 @@ def _reporter_with_cycle(tmp_dir, **kwargs):
 
 
 def _summary(
-    outcomes,
+    end_reports,
     end_reason=JobEndReason.RANK_FAILURE,
     first_detected=("node001",),
     ended_at=10_250,
 ):
     return CycleSummary(
         cycle=3,
-        outcomes=tuple(outcomes),
+        end_reports=tuple(end_reports),
         launchers_expected=3,
         missing=("node004",),
         end_reason=end_reason,

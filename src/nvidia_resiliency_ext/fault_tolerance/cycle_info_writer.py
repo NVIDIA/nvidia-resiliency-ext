@@ -499,18 +499,18 @@ class CycleInfoReporter:
         def build_update() -> Dict[str, Any]:
             listed = sorted(
                 (
-                    o
-                    for o in summary.outcomes
-                    if o.end_reason is not EndReason.TERMINATED_DUE_TO_PEER
+                    report
+                    for report in summary.end_reports
+                    if report.end_reason is not EndReason.TERMINATED_DUE_TO_PEER
                 ),
-                key=lambda outcome: (outcome.detected_timestamp, outcome.node_name),
+                key=lambda report: (report.detected_timestamp, report.node_name),
             )
             ended_at = utc_iso_ms(summary.ended_at) if summary.ended_at is not None else ""
             end_report: Dict[str, Any] = {
                 "end_reason": _END_REASON_PROTO_NAMES[self._job_end_reason(summary)],
                 "ended_timestamp": ended_at,
                 "first_detected_nodes": list(summary.first_detected),
-                "launcher_end_reports": [self._format_end_report(o) for o in listed],
+                "launcher_end_reports": [self._format_end_report(report) for report in listed],
             }
             update: Dict[str, Any] = {"end_report": end_report}
             if ended_at:
@@ -560,9 +560,9 @@ class CycleInfoReporter:
         of the first detector, COMPLETED for a completed cycle, UNSPECIFIED otherwise."""
         if summary.end_reason is JobEndReason.COMPLETED:
             return EndReason.COMPLETED
-        first = [o for o in summary.outcomes if o.node_name in summary.first_detected]
+        first = [r for r in summary.end_reports if r.node_name in summary.first_detected]
         if first:
-            return min(first, key=lambda outcome: outcome.detected_timestamp).end_reason
+            return min(first, key=lambda report: report.detected_timestamp).end_reason
         return EndReason.UNSPECIFIED
 
     @staticmethod

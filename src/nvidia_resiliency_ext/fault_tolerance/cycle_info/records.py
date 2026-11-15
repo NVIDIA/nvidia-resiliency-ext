@@ -127,7 +127,7 @@ class JobEndReason(str, Enum):
 class CycleSummary:
     # aggregated end reports for the whole job
     cycle: int
-    outcomes: tuple[NodeCycleEndReport, ...]  # one per reporting launcher, de-duplicated
+    end_reports: tuple[NodeCycleEndReport, ...]  # one per reporting launcher, de-duplicated
     # Active launchers of the cycle start; None when the start was not received.
     launchers_expected: Optional[int] = None
     # TODO: group ranks instead of node names for missing and first_detected, once end

@@ -700,7 +700,7 @@ class RankMonitorServer:
                 out_of_section_timed_out = self._is_out_of_section_timeout_elapsed(curr_time)
                 if hb_timed_out or expired_sections or out_of_section_timed_out:
                     timeout_stop = None
-                    if self.cfg.is_cycle_outcome_enabled:
+                    if self.cfg.is_cycle_end_report_enabled:
                         timeout_stop = self._draft_timeout_stop(
                             expired_sections, out_of_section_timed_out
                         )

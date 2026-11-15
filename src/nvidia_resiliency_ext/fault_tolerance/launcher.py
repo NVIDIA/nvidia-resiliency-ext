@@ -169,9 +169,9 @@ RANK_MONITOR_QUERY_TIMEOUT = 1.0
 # Bound on joining the rank monitor listener thread at shutdown.
 RANK_MONITOR_LISTENER_JOIN_TIMEOUT = 2.0
 
-# Bound on waiting for the queued cycle outcomes to be published before the job ends; above
+# Bound on waiting for the queued cycle end reports to be published before the job ends; above
 # the publish RPC's own 5 s timeout, so a slow RPC still completes.
-CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT = 6.0
+CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT = 6.0
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -548,66 +548,68 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._run_phase = telemetry.Phase()
         # How the latest cycle ended on this launcher, recorded when the end is observed.
         self._cycle_end_report: Optional[NodeCycleEndReport] = None
-        # Sends the outcomes towards the CycleAnalyzer; None publishes nothing.
+        # Sends the end reports towards the CycleAnalyzer; None publishes nothing.
         self._cycle_info_publisher = cycle_info_publisher
-        self._start_outcome_publisher()
+        self._start_end_report_publisher()
 
     DEFAULT_ROLE = "default"  # FIXME
 
-    def _start_outcome_publisher(self) -> None:
-        """Start the background thread that publishes the outcomes the main thread queues.
+    def _start_end_report_publisher(self) -> None:
+        """Start the background thread that publishes the end reports the main thread queues.
 
         Publishing is a blocking RPC; on this thread it stays off the restart path.
         """
-        self._outcome_queue: "queue.Queue[Optional[NodeCycleEndReport]]" = queue.Queue()
-        # Outcomes queued and not yet published, guarded by _outcome_published.
-        self._outcomes_unpublished = 0
-        self._outcome_published = threading.Condition()
-        self._outcome_publisher_thread: Optional[threading.Thread] = None
+        self._end_report_queue: "queue.Queue[Optional[NodeCycleEndReport]]" = queue.Queue()
+        # End reports queued and not yet published, guarded by _end_report_published.
+        self._end_reports_unpublished = 0
+        self._end_report_published = threading.Condition()
+        self._end_report_publisher_thread: Optional[threading.Thread] = None
         if self._cycle_info_publisher is None:
             return
-        self._outcome_publisher_thread = threading.Thread(
-            target=self._run_outcome_publisher, name="CycleOutcomePublisher", daemon=True
+        self._end_report_publisher_thread = threading.Thread(
+            target=self._run_end_report_publisher, name="CycleEndReportPublisher", daemon=True
         )
-        self._outcome_publisher_thread.start()
+        self._end_report_publisher_thread.start()
 
-    def _run_outcome_publisher(self) -> None:
-        """Body of the publisher thread: publish the queued outcomes until None is queued."""
+    def _run_end_report_publisher(self) -> None:
+        """Body of the publisher thread: publish the queued end reports until None is queued."""
         while True:
-            outcome = self._outcome_queue.get()
-            if outcome is None:
+            report = self._end_report_queue.get()
+            if report is None:
                 return
             try:
-                self._cycle_info_publisher.publish_end_report(outcome)
+                self._cycle_info_publisher.publish_end_report(report)
             except Exception as e:
                 logger.warning(
-                    f"Failed to publish the outcome of cycle {outcome.cycle_number}: {e}"
+                    f"Failed to publish the end report of cycle {report.cycle_number}: {e}"
                 )
             finally:
-                with self._outcome_published:
-                    self._outcomes_unpublished -= 1
-                    self._outcome_published.notify_all()
+                with self._end_report_published:
+                    self._end_reports_unpublished -= 1
+                    self._end_report_published.notify_all()
 
-    def _wait_for_outcomes_published(self, timeout: float) -> bool:
-        """Wait up to `timeout` until every queued outcome was published (or failed)."""
-        with self._outcome_published:
-            return self._outcome_published.wait_for(
-                lambda: self._outcomes_unpublished == 0, timeout
+    def _wait_for_end_reports_published(self, timeout: float) -> bool:
+        """Wait up to `timeout` until every queued end report was published (or failed)."""
+        with self._end_report_published:
+            return self._end_report_published.wait_for(
+                lambda: self._end_reports_unpublished == 0, timeout
             )
 
-    def stop_outcome_publisher(self) -> None:
-        """Give the queued outcomes a bounded time to be published, then stop the thread.
+    def stop_end_report_publisher(self) -> None:
+        """Give the queued end reports a bounded time to be published, then stop the thread.
 
         Call before closing the publisher's channel.
         """
-        thread = self._outcome_publisher_thread
+        thread = self._end_report_publisher_thread
         if thread is None:
             return
-        if not self._wait_for_outcomes_published(CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT):
-            logger.warning("Stopping the outcome publisher with outcomes not yet published")
-        self._outcome_queue.put(None)
-        thread.join(timeout=CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT)
-        self._outcome_publisher_thread = None
+        if not self._wait_for_end_reports_published(CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT):
+            logger.warning(
+                "Stopping the end report publisher with end reports not yet published"
+            )
+        self._end_report_queue.put(None)
+        thread.join(timeout=CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT)
+        self._end_report_publisher_thread = None
 
     def open_telemetry_cycle(self, attributes: dict[str, Any]) -> None:
         self._cycle_phase.open(
@@ -815,7 +817,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             # requeue. Reported through the shared no-restart path so both causes are
             # indistinguishable to downstream tooling, rather than this one looking like
             # an ordinary crash. Publish first: the shutdown reason ends the CycleAnalyzer.
-            self._publish_cycle_outcome(wait=True)
+            self._publish_cycle_end_report(wait=True)
             self._rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_NO_PROGRESS)
             self._stop_workers(self._worker_group)
             self._worker_group.state = WorkerState.FAILED
@@ -829,7 +831,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
             # Queued for the publisher thread; the restart does not wait for it.
-            self._publish_cycle_outcome()
+            self._publish_cycle_end_report()
             self._restart_workers(self._worker_group)
             return True
         else:
@@ -846,7 +848,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         Best effort: a failure here is logged and never interrupts the restart path.
         """
-        if not self._ft_cfg.is_cycle_outcome_enabled:
+        if not self._ft_cfg.is_cycle_end_report_enabled:
             return
         try:
             detected_timestamp = now_ms()
@@ -871,26 +873,28 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._cycle_end_report = None
             logger.warning(f"Failed to record the cycle end report: {e}")
 
-    def _publish_cycle_outcome(self, wait: bool = False) -> None:
-        """Queue the outcome of the cycle that just ended for the publisher thread.
+    def _publish_cycle_end_report(self, wait: bool = False) -> None:
+        """Queue the end report of the cycle that just ended for the publisher thread.
 
         Returns without waiting for the publish, unless `wait`: then it waits, for a bounded
-        time, until the outcome was published. Wait before anything that ends the job, as
-        the shutdown key ends the CycleAnalyzer. Best effort: a failure is logged.
+        time, until the end report was published. Wait before anything that ends the job,
+        as the shutdown key ends the CycleAnalyzer. Best effort: a failure is logged.
         """
-        outcome = self._cycle_end_report
-        # Nothing recorded for this cycle: outcomes are disabled or recording failed. Checked
-        # here, as the cycle number moves on once the next rendezvous completes.
-        if outcome is None or outcome.cycle_number != self._get_global_cycle_number():
+        report = self._cycle_end_report
+        # Nothing recorded for this cycle: end reports are disabled or recording failed.
+        # Checked here, as the cycle number moves on once the next rendezvous completes.
+        if report is None or report.cycle_number != self._get_global_cycle_number():
             return
-        if self._outcome_publisher_thread is None:
+        if self._end_report_publisher_thread is None:
             return
-        with self._outcome_published:
-            self._outcomes_unpublished += 1
-        self._outcome_queue.put(outcome)
-        if wait and not self._wait_for_outcomes_published(CYCLE_OUTCOME_PUBLISH_WAIT_TIMEOUT):
+        with self._end_report_published:
+            self._end_reports_unpublished += 1
+        self._end_report_queue.put(report)
+        if wait and not self._wait_for_end_reports_published(
+            CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT
+        ):
             logger.warning(
-                f"The outcome of cycle {outcome.cycle_number} was not published in time"
+                f"The end report of cycle {report.cycle_number} was not published in time"
             )
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
@@ -928,7 +932,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 self._run_phase.close()
                 self._cycle_phase.close({CYCLE_OUTCOME: "completed"})
-                self._publish_cycle_outcome(wait=True)
+                self._publish_cycle_end_report(wait=True)
                 self._exit_barrier()
                 return run_result
 
@@ -953,7 +957,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     role,
                 )
                 # Before the shutdown reason is written, which ends the CycleAnalyzer.
-                self._publish_cycle_outcome(wait=True)
+                self._publish_cycle_end_report(wait=True)
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
                 self._run_phase.close()
@@ -1017,7 +1021,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     continue  # Continue monitoring after restart
 
                 # No more restarts (either exhausted or early termination).
-                self._publish_cycle_outcome(wait=True)
+                self._publish_cycle_end_report(wait=True)
                 self._stop_workers(self._worker_group)
                 self._cycle_phase.close()
                 self._worker_group.state = WorkerState.FAILED
@@ -1040,7 +1044,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                             role,
                             no_restart,
                         )
-                        self._publish_cycle_outcome(wait=True)
+                        self._publish_cycle_end_report(wait=True)
                         self._run_phase.close()
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
@@ -1066,7 +1070,7 @@ class LocalElasticAgent(SimpleElasticAgent):
 
                     if not should_restart:
                         # Publish before launch_agent writes the shutdown key.
-                        self._publish_cycle_outcome(wait=True)
+                        self._publish_cycle_end_report(wait=True)
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close()
                         self._worker_group.state = WorkerState.FAILED
@@ -2279,7 +2283,7 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
-    # One publisher for this launcher's outcomes and, on the store host, the cycle starts.
+    # The publisher of this launcher's end reports, through the gRPC log server.
     cycle_info_publisher, cycle_info_channel = _create_cycle_info_publisher(config)
 
     agent = LocalElasticAgent(
@@ -2393,7 +2397,7 @@ def launch_agent(
         agent.shutdown_rank_monitors()
         _stop_diagnostic_collector()
         # Before the publisher's channel closes under it.
-        agent.stop_outcome_publisher()
+        agent.stop_end_report_publisher()
         _close_cycle_info_publisher(cycle_info_publisher, cycle_info_channel)
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
@@ -3521,9 +3525,11 @@ def _validate_args(args: Any) -> None:
         raise ValueError(
             "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
         )
-    if getattr(args, "ft_cycle_info_outcomes", None) and not getattr(args, "ft_cycle_info_dir", None):
+    if getattr(args, "ft_cycle_info_end_reports", None) and not getattr(
+        args, "ft_cycle_info_dir", None
+    ):
         raise ValueError(
-            "--ft-cycle-info-outcomes requires --ft-cycle-info-dir to be specified."
+            "--ft-cycle-info-end-reports requires --ft-cycle-info-dir to be specified."
         )
 
 

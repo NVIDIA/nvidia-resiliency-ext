@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from nvidia_resiliency_ext.fault_tolerance.cycle_info.aggregator import CycleOutcomeAggregator
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.aggregator import CycleEndReportAggregator
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
     CycleInfo,
     EndReason,
@@ -36,7 +36,7 @@ def _completed(node, detected_timestamp):
     return _report(node, EndReason.COMPLETED, detected_timestamp)
 
 
-aggregate = CycleOutcomeAggregator().aggregate
+aggregate = CycleEndReportAggregator().aggregate
 
 
 def test_rank_failure_first_detected_by_the_failing_launcher():
@@ -104,13 +104,13 @@ def test_unspecified_end_is_unknown():
 def test_duplicate_reports_keep_the_first():
     first, second = _failed("n0", 10_000), _failed("n0", 9_000)
     summary = aggregate(3, START, [first, second])
-    assert summary.outcomes == (first,)
+    assert summary.end_reports == (first,)
 
 
 def test_launchers_sharing_a_host_count_as_one():
     """Known limitation: end reports are told apart by node name only."""
     summary = aggregate(3, START, [_peer("n0", 12_000), _peer("n0", 12_000)])
-    assert len(summary.outcomes) == 1
+    assert len(summary.end_reports) == 1
 
 
 def test_missing_nodes_are_matched_by_short_host_name():

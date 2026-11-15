@@ -110,9 +110,9 @@ class FaultToleranceConfig:
       the cycle_info.<job_id>.current symlink there. The workload receives the path
       to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
       Default: None (disabled).
-    * `cycle_info_outcomes` [bool] Record how each cycle ended on each launcher: the end
-      reason and per-rank outcomes, including rank monitor timeouts. Requires
-      `cycle_info_dir`. Default: False.
+    * `cycle_info_end_reports` [bool] Record how each cycle ended on each launcher (its end
+      report): the end reason and the local workers that failed or were stopped by their
+      rank monitor, with the timeout. Requires `cycle_info_dir`. Default: False.
     * `segment_health_check_dir` [str|None] Shared directory containing per-task
       segment health decision artifacts. Allocation-unit process 0 checks its artifact
       before joining a rendezvous. Default: None (disabled).
@@ -168,8 +168,8 @@ class FaultToleranceConfig:
 
     # NVRx cycle info: base directory for cycle_info JSON files
     cycle_info_dir: Optional[str] = None
-    # Record per-launcher cycle outcomes; only effective with cycle_info_dir
-    cycle_info_outcomes: bool = False
+    # Record per-launcher cycle end reports; only effective with cycle_info_dir
+    cycle_info_end_reports: bool = False
 
     # Segment health check: shared directory containing per-task decision artifacts
     segment_health_check_dir: Optional[str] = None
@@ -183,9 +183,10 @@ class FaultToleranceConfig:
         return self.max_no_progress_cycles > 0
 
     @property
-    def is_cycle_outcome_enabled(self) -> bool:
-        """Check if cycle outcomes are recorded (cycle info is written and outcomes are on)."""
-        return bool(self.cycle_info_dir) and self.cycle_info_outcomes
+    def is_cycle_end_report_enabled(self) -> bool:
+        """Check if cycle end reports are recorded (cycle info is written and end reports
+        are on)."""
+        return bool(self.cycle_info_dir) and self.cycle_info_end_reports
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
