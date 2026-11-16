@@ -10,11 +10,22 @@ cycles, and the next cycle ran clean. Cat 28 called both a deterministic launch
 or workload-code error and stopped the job, which was wrong for the second and
 wrong about the mechanism for the first.
 
-Labelling the category RESTART hands it to ``l1_category_confirmed_restart``,
-which overrides the workload_unrecoverable STOP on the *first* occurrence only
-and scopes the budget to the root fingerprint. A second occurrence falls through
-to the base rule and stops. These tests pin both halves, and the normalization
-the recurrence half silently depends on.
+What the RESTART label buys is the *absence* of an override. A STOP-labelled
+category fires ``l1_category_confirmed_stop``, which forces allowed_retries=0
+regardless of what the base rule concluded; a RESTART-labelled one falls through
+to the base rule, which already models retries. Running both production logs
+through the real pipeline confirms it end to end: first occurrence RESTART under
+concrete_confirmation_retry with allowed_retries=1, second occurrence of the same
+root STOP on retry_budget_exhausted.
+
+``l1_category_confirmed_restart`` is a separate path that only engages when the
+base rule reached workload_unrecoverable, which needs an *established* failure
+domain. Both production logs assess the domain as supported_but_unconfirmed, so
+they never take it. It is covered here too, because a future log with a firmer
+assessment would.
+
+These tests pin the label, both override paths, and the normalization the
+recurrence behaviour silently depends on.
 """
 
 from nvidia_resiliency_ext.attribution.restart_agent.identity import canonical_observed_fingerprint
@@ -196,8 +207,9 @@ def _evaluate(matching_root_attempts: int):
     ).retry_policy
 
 
-def test_first_occurrence_restarts_once():
-    """The 1-of-8-cycles case: cat 28 stopped a job whose next cycle ran clean."""
+def test_first_occurrence_restarts_once_when_the_domain_is_established():
+    """The override path. Not what the production logs take - they assess the
+    domain as supported_but_unconfirmed - but a firmer assessment would."""
 
     outcome = _evaluate(matching_root_attempts=0)
 
@@ -207,12 +219,84 @@ def test_first_occurrence_restarts_once():
     assert outcome.effective_policy.allowed_retries == 1
 
 
-def test_second_consecutive_occurrence_stops():
-    """The every-cycle case: one restart proves it recurs, and the job stops
-    rather than paying the same tax indefinitely."""
+def test_second_consecutive_occurrence_stops_on_the_override_path():
+    """Recurrence suppresses the first-occurrence override and the base rule stops."""
 
     outcome = _evaluate(matching_root_attempts=1)
 
     assert outcome.decision == Decision.STOP.value
     assert outcome.decision_basis == DecisionBasis.WORKLOAD_UNRECOVERABLE.value
     assert outcome.effective_policy.policy_context_id is None
+
+
+# ---------------------------------------------------------------------------
+# The path the production logs actually take
+# ---------------------------------------------------------------------------
+
+
+def _unconfirmed_workload() -> ModelRecoveryAssessment:
+    """What both production logs assess: workload domain, but not established.
+
+    This is why the base rule never reaches workload_unrecoverable, and so why
+    the category-restart override never engages on these logs.
+    """
+    return ModelRecoveryAssessment(
+        failure_domain=FailureDomainAssessment(
+            value=FailureDomain.WORKLOAD,
+            status=AssessmentStatus.SUPPORTED_BUT_UNCONFIRMED,
+            confidence=92,
+        ),
+        retry_outlook_without_workload_change=RetryOutlookAssessment(
+            value=RetryOutlookWithoutWorkloadChange.MAY_RECOVER,
+            status=AssessmentStatus.SUPPORTED_BUT_UNCONFIRMED,
+            confidence=80,
+        ),
+        rationale="allocator budget exhausted; domain supported but not established",
+    )
+
+
+def _evaluate_unconfirmed(category_id: int):
+    return evaluate_policy(
+        L4PolicyInput(
+            primary=_primary(),
+            current_failure_facts=_facts(),
+            history=HistorySummary(available=True, matching_root_attempts=0),
+            model_recovery_assessment=_unconfirmed_workload(),
+            policy_contexts=PolicyContextConfig(
+                l1_category_confirmed_restart=L1CategoryConfirmedRestartConfig(
+                    enabled=True, allowed_retries=1
+                ),
+            ),
+            l1_category_selection={
+                "category_id": category_id,
+                "category_confidence": 98,
+                "category_rationale": "test",
+            },
+        )
+    ).retry_policy
+
+
+def test_a_restart_label_leaves_the_base_rule_in_charge():
+    """No category context is stamped, so whatever retry budget the base rule
+    chose survives. This is the whole effect of the label on these logs."""
+
+    outcome = _evaluate_unconfirmed(PINNED_BUDGET_CATEGORY_ID)
+
+    assert outcome.decision == Decision.RESTART.value
+    assert outcome.effective_policy.policy_context_id is None
+    assert outcome.effective_policy.allowed_retries != 0
+
+
+def test_a_stop_label_would_force_zero_retries_instead():
+    """The regression this category exists to undo.
+
+    Cat 28 is STOP-labelled, so it fires l1_category_confirmed_stop and
+    overrides the base rule with allowed_retries=0 - a stop on first sight,
+    whatever the base rule had concluded.
+    """
+
+    outcome = _evaluate_unconfirmed(28)
+
+    assert outcome.decision == Decision.STOP.value
+    assert outcome.effective_policy.policy_context_id == "l1_category_confirmed_stop"
+    assert outcome.effective_policy.allowed_retries == 0
