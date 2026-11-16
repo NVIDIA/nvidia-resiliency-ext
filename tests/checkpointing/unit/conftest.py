@@ -28,16 +28,31 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue
 from .test_utilities import Utils
 
 
+def _is_distributed(item: pytest.Item) -> bool:
+    """Whether the test is marked `distributed`, `min_world_size(n)` or `max_world_size(n)`."""
+    return any(
+        item.get_closest_marker(name) is not None
+        for name in ("distributed", "min_world_size", "max_world_size")
+    )
+
+
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Skip a test that can't run in this launch.
 
-    Tests marked `distributed`, `min_world_size(n)` or `max_world_size(n)` need a process group,
-    so they run under torchrun, with as many ranks as the markers allow. Other tests are
-    standalone: they run without torchrun, or once, on rank 0, under torchrun.
+    Distributed tests need a process group, so they run under torchrun, with as many ranks as
+    the markers allow. Other tests are standalone: they run without torchrun, or once, on rank 0,
+    under torchrun. A standalone test can't use the shared scratch directories, which every rank
+    creates together.
     """
     fewest = item.get_closest_marker("min_world_size")
     most = item.get_closest_marker("max_world_size")
-    if item.get_closest_marker("distributed") is None and fewest is None and most is None:
+    if not _is_distributed(item):
+        if "_run_id" in item.fixturenames:
+            pytest.fail(
+                "standalone test uses a directory shared by all ranks; use tmp_path or mark it "
+                "distributed",
+                pytrace=False,
+            )
         if Utils.rank not in (None, 0):
             pytest.skip("standalone test; runs on rank 0 only under torchrun")
         return
