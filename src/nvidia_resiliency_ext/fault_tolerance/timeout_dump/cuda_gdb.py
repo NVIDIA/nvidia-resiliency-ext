@@ -6,7 +6,7 @@ import contextlib
 import dataclasses
 import enum
 import os
-import subprocess
+import subprocess  # nosec B404
 from dataclasses import dataclass
 from typing import ClassVar, Optional
 
