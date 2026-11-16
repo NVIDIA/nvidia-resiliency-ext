@@ -30,6 +30,7 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
     CycleInfoWriter,
     utc_iso_ms,
     utc_iso_now,
+    utc_iso_to_ms,
 )
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
@@ -212,26 +213,67 @@ def test_cycle_info_writer_update_cycle_end_report(tmp_dir):
     writer.update_cycle_later("job1", 0, 3, lambda: None)  # nothing to add: file unchanged
     writer.shutdown()
 
-    with open(os.path.join(tmp_dir, "cycle_info.job1.0.3")) as f:
-        data = json.load(f)
+    data = _read_cycle_info(tmp_dir, "job1", 3)
     assert data["cycle_end_time"] == "2024-01-01T00:01:00Z"
     assert "not_a_field" not in data
     end_report = data["end_report"]
     assert end_report["end_reason"] == "CycleEndReasonWorkerFailed"
     assert end_report["first_detected_nodes"] == ["node002"]
-    # Enum values by name; 64-bit integers are strings in proto3 JSON.
+    # Without the cycle's own job id, attempt index and cycle number; the end reason by
+    # name and the detection time in ISO 8601 UTC.
     assert end_report["launcher_end_reports"] == [
         {
-            "job_id": "job1",
-            "attempt_index": 0,
-            "cycle_number": 3,
             "node_name": "node002",
             "end_reason": "CycleEndReasonWorkerFailed",
-            "detected_timestamp": "1704067199000",
+            "detected_timestamp": "2023-12-31T23:59:59.000Z",
             "exit_details": "",
         }
     ]
     assert data["generation"] == "3"  # create, end, and two end report updates
+
+
+def test_cycle_info_writer_updates_a_file_with_launcher_end_reports(tmp_dir):
+    """The store host's end after the end reports: the file is read back and rewritten with
+    the launchers' end reports unchanged."""
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start(_file_info("job1", 3))
+    end_report = _job_end_report("node001", 1_700_000_000_123)
+    writer.update_cycle_later("job1", 0, 3, lambda: {"end_report": end_report})
+    writer.update_cycle_end("job1", 0, 3, "2024-01-01T00:01:00Z")
+    writer.shutdown()
+
+    data = _read_cycle_info(tmp_dir, "job1", 3)
+    assert data["cycle_end_time"] == "2024-01-01T00:01:00Z"
+    assert data["generation"] == "2"
+    (entry,) = data["end_report"]["launcher_end_reports"]
+    assert entry["detected_timestamp"] == "2023-11-14T22:13:20.123Z"
+    assert "cycle_number" not in entry
+
+
+def _read_cycle_info(tmp_dir, job_id, cycle_number):
+    with open(os.path.join(tmp_dir, f"cycle_info.{job_id}.0.{cycle_number}")) as f:
+        return json.load(f)
+
+
+def test_cycle_info_writer_does_not_write_the_internal_timestamp(tmp_dir):
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start(_file_info("job1", 3, timestamp=1_700_000_000_500))
+    writer.shutdown()  # also updates the file: stamps the cycle end
+
+    data = _read_cycle_info(tmp_dir, "job1", 3)
+    assert "timestamp" not in data
+    assert data["generation"] == "1"
+    assert data["end_report"] == {}  # by default, before any end report is written
+
+
+def test_cycle_info_writer_writes_an_empty_end_report_as_an_empty_object(tmp_dir):
+    """No end reports received for the cycle: its end report is {}."""
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start(_file_info("job1", 3))
+    writer.update_cycle_later("job1", 0, 3, lambda: {"end_report": pb.JobCycleEndReport()})
+    writer.shutdown()
+
+    assert _read_cycle_info(tmp_dir, "job1", 3)["end_report"] == {}
 
 
 def test_cycle_info_reporter_writes_the_store_host_start_in_its_namespace(tmp_dir):
@@ -450,6 +492,11 @@ def test_cycle_info_reporter_ends_a_given_cycle_at_a_given_time(tmp_dir):
 def test_utc_iso_ms_is_exact():
     assert utc_iso_ms(0) == "1970-01-01T00:00:00.000Z"
     assert utc_iso_ms(1_700_000_000_123) == "2023-11-14T22:13:20.123Z"
+
+
+@pytest.mark.parametrize("timestamp_ms", [0, 1, 1_700_000_000_123, 1_794_838_593_057])
+def test_utc_iso_to_ms_is_the_exact_inverse(timestamp_ms):
+    assert utc_iso_to_ms(utc_iso_ms(timestamp_ms)) == timestamp_ms
 
 
 def test_utc_iso_now_format():

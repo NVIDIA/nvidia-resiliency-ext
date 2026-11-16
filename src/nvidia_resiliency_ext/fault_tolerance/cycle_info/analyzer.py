@@ -34,7 +34,9 @@ class CycleAnalyzer:
     `run` owns all the state on one thread. Receiving and decoding happen in the reader
     and file writes on the reporter's writer thread, so this loop only aggregates.
 
-    The end of cycle N is written once, at the earliest of:
+    The cycle's end time (cycle_end_time) is written when the store host's end arrives,
+    before or after its end reports. The end reports of cycle N are written once, at the
+    earliest of:
     - every active launcher of N has sent its end report;
     - `next_start_grace` after a later cycle's start arrived. Launchers report before
       rejoining, so by then every launcher that rejoined has reported, but its end report
@@ -86,8 +88,11 @@ class CycleAnalyzer:
         # When to write a cycle whose next start arrived, and when its last end report did.
         self._write_deadlines: Dict[int, float] = {}
         self._last_end_report_at: Dict[int, float] = {}
-        # Cycles whose end was written; their late end reports are ignored.
+        # Cycles whose end reports were written; their late end reports are ignored.
         self._written: Set[int] = set()
+        # The store host's start of each written cycle whose end has not arrived yet, so
+        # that end is still written when it arrives (report_cycle_info_update). Dropped then.
+        self._awaiting_end: Dict[int, pb.CycleInfo] = {}
 
     def run(self, stop_event) -> None:
         """Process the received records until `stop_event` is set, then finish."""
@@ -158,24 +163,31 @@ class CycleAnalyzer:
     def report_cycle_info_update(self, info: pb.CycleInfo) -> bool:
         """End cycle `info.cycle_number` at the reporter, from the store host's updated CycleInfo.
 
+        The end is accepted even when the cycle's end reports were already written: the
+        store host's end can arrive after them, e.g. for the final cycle.
+
         The update is ignored, with a warning, if:
-        - its cycle is already written, was never started, or already ended;
+        - its cycle was never started, or already ended;
         - it is not newer than the cycle's start (`timestamp`; both are stamped by the
           store host, so comparable);
         - it has no end time, or one not after the start time.
-        Otherwise the end time is written, and the update replaces the cycle's CycleInfo,
-        which marks the cycle ended.
+        Otherwise the end time is written. For an open cycle, the update replaces the
+        cycle's CycleInfo, which marks the cycle ended; a written cycle is then forgotten.
 
         Returns:
             False if the update was ignored.
         """
         cycle = info.cycle_number
-        if cycle in self._written:
-            logger.warning("Ignoring the end of cycle %s: the cycle is already written", cycle)
-            return False
-        prev_info = self._cycle_infos.get(cycle)
+        written = cycle in self._written
+        prev_info = self._awaiting_end.get(cycle) if written else self._cycle_infos.get(cycle)
         if prev_info is None:
-            logger.warning("Ignoring the end of cycle %s: the cycle was never started", cycle)
+            if written:
+                # Its end was already written, or its start never arrived.
+                logger.warning(
+                    "Ignoring the end of cycle %s: already ended or never started", cycle
+                )
+            else:
+                logger.warning("Ignoring the end of cycle %s: the cycle was never started", cycle)
             return False
         if prev_info.cycle_end_time:
             logger.warning("Ignoring the end of cycle %s: the cycle already ended", cycle)
@@ -200,8 +212,13 @@ class CycleAnalyzer:
             return False
         if not self.cycle_info_reporter.report_cycle_end(cycle, info.cycle_end_time):
             logger.warning("The end of cycle %s was not written", cycle)
-        self._cycle_infos[cycle] = info
-        logger.debug("Cycle %s ended at %s", cycle, info.cycle_end_time)
+        if written:
+            # Its end reports are written too: nothing more to keep. Not reopened in
+            # _cycle_infos, so they are not written again.
+            del self._awaiting_end[cycle]
+        else:
+            self._cycle_infos[cycle] = info
+        logger.info("Cycle %s ended at %s", cycle, info.cycle_end_time)
         return True
 
     def add_end_report(self, report: pb.NodeCycleEndReport) -> bool:
@@ -247,8 +264,9 @@ class CycleAnalyzer:
             logger.debug("Receiving the end reports of cycle %s", cycle)
         return True
 
-    def create_job_end_report(self, cycle: int) -> pb.JobCycleEndReport:
-        """Aggregate the end reports received for `cycle` into the job-wide end report."""
+    def create_job_end_report(self, cycle: int) -> Optional[pb.JobCycleEndReport]:
+        """Aggregate the end reports received for `cycle` into the job-wide end report; None
+        when none were received."""
         return self._aggregator.aggregate(self._end_reports.get(cycle, ()))
 
     def update_cycle_end_reports(self, cycle: int) -> None:
@@ -257,21 +275,30 @@ class CycleAnalyzer:
         NOT TESTED YET end to end.
         """
         end_report = self.create_job_end_report(cycle)
-        # One update: the job-wide end report. The cycle's end time comes only from the
-        # store host's update (report_cycle_info_update).
-        self.cycle_info_reporter.report_cycle_end_report(cycle, end_report)
         reported = self._aggregator.deduplicate(self._end_reports.get(cycle, ()))
         missing = self._aggregator.missing_nodes(self._cycle_infos.get(cycle), reported)
-        logger.info(
-            "Cycle %s ended: %s, first detected at %s by %s; %d launchers reported%s",
-            cycle,
-            pb.EndReason.Name(end_report.end_reason),
-            end_report.first_detected_timestamp or "unknown",
-            ", ".join(end_report.first_detected_nodes) or "none",
-            len(reported),
-            f", missing {', '.join(missing)}" if missing else "",
-        )
-        self._cycle_infos.pop(cycle, None)
+        missing_text = f", missing {', '.join(missing)}" if missing else ""
+        if end_report is None:
+            # No end report received: nothing to write; the file keeps no end_report.
+            logger.info("Cycle %s ended: no launcher reported%s", cycle, missing_text)
+        else:
+            # One update: the job-wide end report. The cycle's end time comes only from
+            # the store host's update (report_cycle_info_update).
+            self.cycle_info_reporter.report_cycle_end_report(cycle, end_report)
+            logger.info(
+                "Cycle %s ended: %s, first detected at %s by %s; %d launchers reported%s",
+                cycle,
+                pb.EndReason.Name(end_report.end_reason),
+                end_report.first_detected_timestamp or "unknown",
+                ", ".join(end_report.first_detected_nodes) or "none",
+                len(reported),
+                missing_text,
+            )
+        # Forgotten either way: its late end reports are ignored. If the store host's end
+        # has not arrived yet, its start is kept so that end is still written.
+        info = self._cycle_infos.pop(cycle, None)
+        if info is not None and not info.cycle_end_time:
+            self._awaiting_end[cycle] = info
         self._end_reports.pop(cycle, None)
         self._reported.pop(cycle, None)
         self._write_deadlines.pop(cycle, None)

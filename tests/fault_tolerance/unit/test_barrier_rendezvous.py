@@ -1679,6 +1679,30 @@ class GroupRankAssignmentTest(TestCase):
         self.assertGreaterEqual(end.timestamp, start.timestamp)
         self.assertAlmostEqual(iso_to_seconds(end.cycle_end_time), end.timestamp / 1000, places=3)
 
+    def test_control_host_publishes_cycle_end_when_it_sees_the_next_round_open(self):
+        """nvrx-control's scan advances _round before the next round opens; Step 0 then sees
+        that round open and publishes the end of the cycle it started, once."""
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher)
+        start = publisher.publish_cycle_info.call_args.args[0]
+        control = _NodeDesc("control", 10, 0)
+
+        # The first Step 0 pass of the next close: round 1 is not opened yet.
+        state._last_stale_check_time = 0.0
+        self.assertTrue(state._sync_from_per_round_state())
+        self.assertEqual(state._round, 1)
+        publisher.update_cycle_info.assert_not_called()
+
+        # A launcher opens round 1.
+        self.store.set(f"{state.prefix}:round_done_1", "0".encode("utf-8"))
+        state._wait_for_rendezvous_open(control)
+        state._wait_for_rendezvous_open(control)  # seen again: nothing more
+
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertEqual(end.cycle_number, start.cycle_number)
+        self.assertNotEqual(end.cycle_end_time, "")
+
     def test_no_cycle_end_without_a_published_start(self):
         publisher = MagicMock()
         state = _RendezvousBarrierState(

@@ -21,6 +21,7 @@ thread performs file I/O so the main launcher thread is not blocked. Writes are
 atomic (temp file + os.replace) for updates.
 """
 
+import json
 import logging
 import os
 import queue
@@ -51,6 +52,51 @@ def _current_symlink_name(job_id: str) -> str:
 def cycle_log_file(base_log_file: str, cycle_index: int) -> str:
     base_without_ext, ext = os.path.splitext(os.path.abspath(base_log_file))
     return f"{base_without_ext}_cycle{cycle_index}{ext or '.log'}"
+
+
+# Fields of the launchers' end reports that the cycle info file leaves out: they repeat the
+# cycle's own job id, attempt index and cycle number.
+_FILE_OMITTED_END_REPORT_FIELDS = ("job_id", "attempt_index", "cycle_number")
+
+
+def _cycle_info_json(msg: nvrx_interface_pb2.CycleInfo) -> str:
+    """The cycle info file's JSON of `msg`: every field by its proto name, except the
+    internal `timestamp` (for the CycleAnalyzer's checks only). The end report is {} until
+    the cycle's end reports are written, and stays {} when none were received. Its
+    launchers' end reports leave out the cycle's job id, attempt index and cycle number, and
+    carry detected_timestamp in ISO 8601 UTC (millisecond precision); read back with
+    _cycle_info_from_json."""
+    data = json_format.MessageToDict(
+        msg,
+        preserving_proto_field_name=True,
+        always_print_fields_with_no_presence=True,
+    )
+    data.pop("timestamp", None)
+    if not msg.HasField("end_report") or msg.end_report.ByteSize() == 0:
+        data["end_report"] = {}
+    else:
+        entries = data["end_report"].get("launcher_end_reports", [])
+        for entry, report in zip(entries, msg.end_report.launcher_end_reports):
+            for key in _FILE_OMITTED_END_REPORT_FIELDS:
+                entry.pop(key, None)
+            entry["detected_timestamp"] = utc_iso_ms(report.detected_timestamp)
+    return json.dumps(data, indent=2)
+
+
+def _cycle_info_from_json(text: str) -> nvrx_interface_pb2.CycleInfo:
+    """The CycleInfo of a cycle info file written by _cycle_info_json. The omitted fields of
+    the launchers' end reports come back unset.
+
+    Raises:
+        json_format.ParseError: `text` is not a cycle info.
+        ValueError: `text` is not JSON, or a detected_timestamp is not an ISO 8601 time.
+    """
+    data = json.loads(text)
+    for entry in (data.get("end_report") or {}).get("launcher_end_reports", []):
+        detected = entry.get("detected_timestamp")
+        if isinstance(detected, str) and "T" in detected:
+            entry["detected_timestamp"] = utc_iso_to_ms(detected)
+    return json_format.ParseDict(data, nvrx_interface_pb2.CycleInfo())
 
 
 def _cycle_info_job_id_from_env() -> str:
@@ -248,14 +294,7 @@ class CycleInfoWriter:
         path = os.path.join(self._nvrx_dir, filename)
         try:
             with open(path, "w") as f:
-                f.write(
-                    json_format.MessageToJson(
-                        msg,
-                        indent=2,
-                        preserving_proto_field_name=True,
-                        always_print_fields_with_no_presence=True,
-                    )
-                )
+                f.write(_cycle_info_json(msg))
                 f.flush()
         except OSError as e:
             logger.warning("Failed to write cycle info file %s: %s", path, e)
@@ -298,22 +337,20 @@ class CycleInfoWriter:
         tmp_path = path + ".tmp"
         try:
             with open(path) as f:
-                msg = json_format.Parse(f.read(), nvrx_interface_pb2.CycleInfo())
+                msg = _cycle_info_from_json(f.read())
             for key, value in update_payload.items():
                 if not hasattr(msg, key):
                     continue
                 if isinstance(value, Message):
-                    # Message fields cannot be assigned; replace their contents.
-                    getattr(msg, key).CopyFrom(value)
+                    # Message fields cannot be assigned; replace their contents. Set even
+                    # when `value` is empty, so the field is written (e.g. end_report {}).
+                    field = getattr(msg, key)
+                    field.CopyFrom(value)
+                    field.SetInParent()
                 else:
                     setattr(msg, key, value)
             msg.generation = msg.generation + 1
-            text = json_format.MessageToJson(
-                msg,
-                indent=2,
-                preserving_proto_field_name=True,
-                always_print_fields_with_no_presence=True,
-            )
+            text = _cycle_info_json(msg)
             with open(tmp_path, "w") as f:
                 f.write(text)
                 f.flush()
@@ -327,7 +364,7 @@ class CycleInfoWriter:
                 (start - enqueued_at) * 1000 if enqueued_at is not None else 0.0,
                 prepare_ms,
             )
-        except (OSError, json_format.ParseError) as e:
+        except (OSError, ValueError, json_format.ParseError) as e:
             logger.warning("Failed to update cycle info in %s: %s", path, e)
             try:
                 os.remove(tmp_path)
@@ -477,6 +514,17 @@ def utc_iso_ms(timestamp_ms: int) -> str:
     "2025-02-05T14:30:00.123Z")."""
     moment = datetime.fromtimestamp(0, timezone.utc) + timedelta(milliseconds=timestamp_ms)
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def utc_iso_to_ms(value: str) -> int:
+    """Return the ISO 8601 UTC time `value` in milliseconds since the epoch; the exact inverse
+    of utc_iso_ms.
+
+    Raises:
+        ValueError: `value` is not an ISO 8601 time.
+    """
+    moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return (moment - datetime.fromtimestamp(0, timezone.utc)) // timedelta(milliseconds=1)
 
 
 def utc_iso_now() -> str:

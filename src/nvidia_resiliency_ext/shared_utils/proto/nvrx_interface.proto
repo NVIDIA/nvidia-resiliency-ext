@@ -69,12 +69,13 @@ message CycleInfo {
   string active_ranks = 10;
 
   // How the cycle ended for the job, concluded by the CycleAnalyzer from all launchers'
-  // end reports. Unset until the cycle's end is written. The time it ended is
-  // cycle_end_time.
+  // end reports. Unset until the cycle's end reports are written, and left unset when none
+  // were received; {} in the cycle info file then. The time it ended is cycle_end_time.
   JobCycleEndReport end_report = 11;
 
   // Timestamp in the local node where the CycleInfo object was created, in milliseconds
-  // since the Unix epoch (UTC). Used for updates
+  // since the Unix epoch (UTC). Used for updates; internal to the CycleAnalyzer's checks,
+  // not written to the cycle info file
   uint64 timestamp = 12;
 }
 
@@ -95,7 +96,8 @@ message JobCycleEndReport {
   // Nodes whose launchers observed the end first (several when they tie)
   repeated string first_detected_nodes = 3;
 
-  // End reports of launchers
+  // End reports of launchers. In the cycle info file, without job_id, attempt_index and
+  // cycle_number (the cycle's own), and with detected_timestamp in ISO 8601 UTC.
   repeated NodeCycleEndReport launcher_end_reports = 4;
 }
 

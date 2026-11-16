@@ -1380,7 +1380,13 @@ class _RendezvousBarrierState:
             value = int(self.store.get(key).decode('utf-8'))
 
             if value == 0:
-                # Round is open — proceed to Step 1
+                # Round is open — proceed to Step 1. An earlier cycle this host started has
+                # ended: this is where the store host of nvrx-control sees it, as its
+                # per-round scan advanced _round before the round opened (published by the
+                # store host only).
+                open_info = self._open_cycle_info
+                if open_info is not None and open_info.cycle_number < self._round:
+                    self.publish_cycle_end_as_host()
                 log.debug(f"[{node_desc}] [Step 0] Round {self._round} is open, proceeding to join")
                 break
 
@@ -1718,6 +1724,8 @@ class _RendezvousBarrierState:
             )
             # Kept for the end update, which publishes a copy; not modified after publishing.
             self._open_cycle_info = info
+            log.info("Publish next cycle start %s: %s", round_id, now_ms())
+
             self._cycle_info_publisher.publish_cycle_info(info)
         except SignalException:
             raise
@@ -1736,6 +1744,7 @@ class _RendezvousBarrierState:
             return
         self._open_cycle_info = None
         try:
+            log.info("Publish cycle end %s: %s", info.cycle_number, now_ms())
             self._cycle_info_publisher.update_cycle_info(ended_cycle_info(info, now_ms()))
         except SignalException:
             raise

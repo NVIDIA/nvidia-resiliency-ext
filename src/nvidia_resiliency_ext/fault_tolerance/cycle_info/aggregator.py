@@ -35,12 +35,17 @@ class CycleEndReportAggregator:
     cycle info: the CycleAnalyzer uses it to tell when every active launcher reported.
     """
 
-    def aggregate(self, end_reports: Sequence[pb.NodeCycleEndReport]) -> pb.JobCycleEndReport:
+    def aggregate(
+        self, end_reports: Sequence[pb.NodeCycleEndReport]
+    ) -> Optional[pb.JobCycleEndReport]:
         """How the cycle ended for the job, from the end reports received for it.
 
         Lists the end reports of the launchers that observed the end themselves, sorted by
         when they detected it; those that only followed a peer's restart are left out.
+        Without end reports there is nothing to conclude: None.
         """
+        if not end_reports:
+            return None
         end_reports = self.deduplicate(end_reports)
         first = self.first_detected(end_reports)
         first_detected_timestamp = self.first_detected_timestamp(end_reports, first)

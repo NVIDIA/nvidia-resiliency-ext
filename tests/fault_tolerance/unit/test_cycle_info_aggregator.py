@@ -108,11 +108,8 @@ def test_launchers_that_observed_the_end_are_listed_by_detection_time():
     assert list(end_report.launcher_end_reports) == [early, late]
 
 
-def test_no_reports():
-    end_report = aggregate([])
-    assert end_report.end_reason == pb.CycleEndReasonUnspecified
-    assert end_report.first_detected_timestamp == ""
-    assert list(end_report.launcher_end_reports) == []
+def test_no_reports_give_no_end_report():
+    assert aggregate([]) is None
 
 
 def test_ties_in_detection_time_are_all_first():

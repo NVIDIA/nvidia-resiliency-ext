@@ -247,7 +247,7 @@ class TestUpdateCycleEndReports:
         assert reporter.report_cycle_end_report.call_args.args[0] == 3
         reporter.report_cycle_end.assert_not_called()
 
-    def test_without_end_reports_the_end_is_not_stamped(self):
+    def test_without_end_reports_nothing_is_written_and_the_cycle_is_forgotten(self):
         reporter = MagicMock()
         reporter.report_cycle_start.return_value = True
         analyzer = CycleAnalyzer(_ListReader(), reporter)
@@ -255,9 +255,11 @@ class TestUpdateCycleEndReports:
 
         analyzer.update_cycle_end_reports(3)
 
-        # The cycle end time comes only from the store host's update.
+        # No end report to write; the cycle end time comes only from the store host.
+        reporter.report_cycle_end_report.assert_not_called()
         reporter.report_cycle_end.assert_not_called()
-        reporter.report_cycle_end_report.assert_called_once()
+        assert 3 in analyzer._written and 3 not in analyzer._cycle_infos
+        assert not analyzer.add_end_report(_end_report(3, "node0"))  # a late end report
 
     def test_the_start_of_the_store_host_is_reported_as_received(self):
         reporter = MagicMock()
@@ -374,10 +376,49 @@ class TestReportCycleInfoUpdate:
         self._assert_ignored(analyzer, reporter, _end(4))
         assert 4 not in analyzer._cycle_infos
 
-    def test_an_update_of_a_written_cycle_is_ignored(self):
+    def test_an_end_after_the_end_reports_is_still_written(self):
+        """The store host's end can arrive after the cycle's end reports were written."""
+        analyzer, reporter = self._analyzer()
+        analyzer.add_end_report(_end_report(3, "node0"))
+        analyzer.update_cycle_end_reports(3)
+        reporter.report_cycle_end_report.assert_called_once()
+
+        assert analyzer.report_cycle_info_update(_end(3))
+
+        reporter.report_cycle_end.assert_called_once_with(3, _end(3).cycle_end_time)
+        assert 3 not in analyzer._awaiting_end
+        # Not reopened: its end reports are not written again.
+        analyzer.finish()
+        reporter.report_cycle_end_report.assert_called_once()
+        assert 3 not in analyzer._cycle_infos
+
+    def test_a_second_end_after_the_end_reports_is_ignored(self):
         analyzer, reporter = self._analyzer()
         analyzer.update_cycle_end_reports(3)
+        analyzer.report_cycle_info_update(_end(3))
+        reporter.report_cycle_end.reset_mock()
+        self._assert_ignored(analyzer, reporter, ended_cycle_info(_start(3), 40_000))
+
+    def test_an_end_already_received_is_not_kept_once_written(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.report_cycle_info_update(_end(3))
+        analyzer.update_cycle_end_reports(3)
+        assert 3 not in analyzer._awaiting_end
+        reporter.report_cycle_end.reset_mock()
         self._assert_ignored(analyzer, reporter, _end(3))
+
+    def test_an_end_of_a_written_cycle_never_started_is_ignored(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.add_end_report(_end_report(4, "node0"))  # its start never arrives
+        analyzer.update_cycle_end_reports(4)
+        self._assert_ignored(analyzer, reporter, _end(4))
+
+    def test_an_invalid_end_after_the_end_reports_keeps_waiting(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.update_cycle_end_reports(3)
+        self._assert_ignored(analyzer, reporter, _replace(_end(3), timestamp=5_000))
+        assert analyzer._awaiting_end[3] == _start(3)
+        assert analyzer.report_cycle_info_update(_end(3))  # the valid end is still written
 
     def test_a_second_update_is_ignored(self):
         analyzer, reporter = self._analyzer()
