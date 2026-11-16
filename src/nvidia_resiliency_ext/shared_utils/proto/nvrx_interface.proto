@@ -68,30 +68,29 @@ message CycleInfo {
   // SLURM-range-compressed, e.g. "0-3,6".
   string active_ranks = 10;
 
-  // Moved into NVRxCycleOutcome. TODO: why do we need this here?
-  reserved 11, 12, 13;
-
   // How the cycle ended for the job, concluded by the CycleAnalyzer from all launchers'
   // end reports. Unset until the cycle's end is written. The time it ended is
   // cycle_end_time.
-  JobCycleEndReport end_report = 14;
+  JobCycleEndReport end_report = 11;
 
   // Timestamp in the local node where the CycleInfo object was created, in milliseconds
   // since the Unix epoch (UTC). Used for updates
-  uint64 timestamp = 15;
+  uint64 timestamp = 12;
 }
 
 // How a cycle ended for the job. Each launcher reports how the cycle ended for it; the
-// CycleAnalyzer writes this once every active launcher reported, or after a grace period
-// without waiting for absent launchers.
+// CycleAnalyzer summarizes the per-launcher reports and generates the job-wide report.
 message JobCycleEndReport {
   // "completed", "rank_failure" (a worker failed or was stopped by its rank monitor; the
   // launcher outcomes tell which), "terminated" (a no-restart decision), or "unknown"
   EndReason end_reason = 1;
 
-  // When the cycle ended, ISO 8601 UTC: when its end was first observed, or when the
-  // last launcher completed. Also written to NVRxCycleInfo.cycle_end_time.
-  string ended_timestamp = 2;
+  // When a launcher first detected the end of the cycle (its workers going from running to
+  // completed, unhealthy or failed), ISO 8601 UTC: the detected_timestamp of the first
+  // detecting launcher, or the earliest of all end reports when no launcher observed the end
+  // itself. From the end reports only; empty without them. Comparable across nodes only up
+  // to their clock skew. The cycle's end is CycleInfo.cycle_end_time.
+  string first_detected_timestamp = 2;
 
   // Nodes whose launchers observed the end first (several when they tie)
   repeated string first_detected_nodes = 3;
@@ -121,7 +120,7 @@ message NodeCycleEndReport {
   // When the launcher observed the end, in milliseconds since the Unix epoch (UTC)
   uint64 detected_timestamp = 6;
 
-  // Details about the node's ranks' failures - TODO: check if string is the right type here
+  // Details about the node's ranks' failures
   string exit_details = 7;
 }
 

@@ -32,7 +32,6 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import timedelta
 from unittest import TestCase, skip
 from unittest.mock import MagicMock, call, patch
@@ -49,6 +48,7 @@ from torch.distributed.elastic.rendezvous.api import (
 from nvidia_resiliency_ext.fault_tolerance import (
     ft_rendezvous_barrier as ft_rendezvous_barrier_module,
 )
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import active_hosts, iso_to_seconds
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     RDZV_SHUTDOWN_REASON_FAILURE,
     FtRendezvousBarrierHandler,
@@ -64,6 +64,8 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _StaleRendezvousRoundError,
 )
 from nvidia_resiliency_ext.fault_tolerance.segment_health_check import SegmentHealthCheck
+from nvidia_resiliency_ext.fault_tolerance.utils import range_str_to_ranks
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import CycleInfo
 
 # Test timeout configuration - use short timeouts to make tests run faster
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
@@ -1628,16 +1630,19 @@ class GroupRankAssignmentTest(TestCase):
 
         publisher.publish_cycle_info.assert_called_once()
         info = publisher.publish_cycle_info.call_args.args[0]
+        self.assertIsInstance(info, CycleInfo)
+        # The node and rank lists are compressed by the store host.
         self.assertEqual(
-            (info.cycle_number, info.active_nodes, info.standby_nodes, info.active_ranks),
-            (0, ("node_a", "node_b"), (), (0, 1)),
+            (info.cycle_number, active_hosts(info), info.standby_nodes),
+            (0, ["node_a", "node_b"], ""),
         )
+        self.assertEqual(range_str_to_ranks(info.active_ranks), [0, 1])
         self.assertEqual(info.cycle_log_file, "/tmp/train_cycle0.log")
-        self.assertIsNone(info.ended_at)
-        self.assertGreaterEqual(info.started_at, before - 0.001)
-        # One clock reading: the start time in seconds, the record's timestamp in ms.
-        self.assertIsInstance(info.timestamp, int)
-        self.assertEqual(info.started_at, info.timestamp / 1000)
+        self.assertEqual(info.cycle_end_time, "")
+        started_at = iso_to_seconds(info.cycle_start_time)
+        self.assertGreaterEqual(started_at, before - 0.001)
+        # One clock reading: the start time, and the record's timestamp in ms.
+        self.assertAlmostEqual(started_at, info.timestamp / 1000, places=3)
 
     def test_cycle_start_has_no_log_file_without_a_prefix(self):
         publisher = MagicMock()
@@ -1663,9 +1668,16 @@ class GroupRankAssignmentTest(TestCase):
 
         publisher.update_cycle_info.assert_called_once()
         end = publisher.update_cycle_info.call_args.args[0]
-        self.assertEqual(replace(end, ended_at=None, timestamp=start.timestamp), start)
+        self.assertIsNot(end, start)
+        self.assertEqual(start.cycle_end_time, "")  # the published start is not modified
+        # The start with its end time and a later timestamp.
+        start_with_end = CycleInfo()
+        start_with_end.CopyFrom(start)
+        start_with_end.cycle_end_time = end.cycle_end_time
+        start_with_end.timestamp = end.timestamp
+        self.assertEqual(end, start_with_end)
         self.assertGreaterEqual(end.timestamp, start.timestamp)
-        self.assertEqual(end.ended_at, end.timestamp / 1000)
+        self.assertAlmostEqual(iso_to_seconds(end.cycle_end_time), end.timestamp / 1000, places=3)
 
     def test_no_cycle_end_without_a_published_start(self):
         publisher = MagicMock()

@@ -13,7 +13,6 @@ import torch.multiprocessing
 from psutil import STATUS_SLEEPING, STATUS_ZOMBIE, NoSuchProcess
 
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import RankTimeout, TimeoutKind
 from nvidia_resiliency_ext.fault_tolerance.data import (
     AuthkeyMsg,
     HeartbeatMsg,
@@ -21,8 +20,10 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     LauncherChannelMsg,
     OkMsg,
     RankInfo,
+    RankTimeout,
     SectionAction,
     SectionMsg,
+    TimeoutKind,
     TimeoutStopMsg,
 )
 from nvidia_resiliency_ext.fault_tolerance.rank_monitor_server import RankMonitorServer
@@ -560,9 +561,9 @@ class TestRankMonitorServerWarmupAndStepSections(unittest.TestCase):
 
 
 class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
-    """The monitor records which timeout stopped its worker, for the launcher's cycle outcome."""
+    """The monitor records which timeout stopped its worker, for the launcher's end report."""
 
-    def _create_server(self, cycle_info_dir="/cycle_infos", cycle_info_outcomes=True):
+    def _create_server(self, cycle_info_dir="/cycle_infos", cycle_info_end_reports=True):
         with patch(
             "nvidia_resiliency_ext.fault_tolerance.rank_monitor_server.GPUHealthCheck",
             MagicMock(),
@@ -570,7 +571,7 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
             config = FaultToleranceConfig(
                 rank_section_timeouts={"step": 30.0},
                 cycle_info_dir=cycle_info_dir,
-                cycle_info_outcomes=cycle_info_outcomes,
+                cycle_info_end_reports=cycle_info_end_reports,
             )
             logger = MagicMock()
             logger.level = logging.INFO
@@ -633,10 +634,10 @@ class TestRankMonitorServerTimeoutRecord(unittest.TestCase):
                 # Detection alone records nothing.
                 self.assertIsNone(server._timeout_stop)
 
-    def test_no_draft_when_cycle_outcomes_are_disabled(self):
-        for cycle_info_dir, cycle_info_outcomes in ((None, True), ("/cycle_infos", False)):
-            with self.subTest(cycle_info_dir=cycle_info_dir, outcomes=cycle_info_outcomes):
-                server = self._create_server(cycle_info_dir, cycle_info_outcomes)
+    def test_no_draft_when_cycle_end_reports_are_disabled(self):
+        for cycle_info_dir, end_reports in ((None, True), ("/cycle_infos", False)):
+            with self.subTest(cycle_info_dir=cycle_info_dir, end_reports=end_reports):
+                server = self._create_server(cycle_info_dir, end_reports)
                 calls = self._run_one_check(server, False, {"step"}, False)
                 calls.draft.assert_not_called()
                 calls.handle_timeout.assert_called_once_with({"step"}, None)

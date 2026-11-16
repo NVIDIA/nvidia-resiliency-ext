@@ -37,12 +37,12 @@ from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
 from nvidia_resiliency_ext.fault_tolerance import launcher
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
-    EndReason,
+from nvidia_resiliency_ext.fault_tolerance.data import (
+    LauncherChannelMsg,
     RankTimeout,
     TimeoutKind,
+    TimeoutStopMsg,
 )
-from nvidia_resiliency_ext.fault_tolerance.data import LauncherChannelMsg, TimeoutStopMsg
 from nvidia_resiliency_ext.fault_tolerance.launcher import UnhealthyNodeException
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     DEFAULT_NO_RESTART_EXIT_CODE,
@@ -52,6 +52,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
 )
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 from nvidia_resiliency_ext.shared_utils.os_utils import resolve_under_allowed_roots
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
 WORLD_SIZE = 4
 DEFAULT_TIMEOUT = 90
@@ -2216,14 +2217,14 @@ class TestRecordCycleEndReport:
     )
     def test_disabled_records_nothing(self, cycle_info_dir, cycle_info_end_reports):
         agent = _end_report_agent(cycle_info_dir, cycle_info_end_reports)
-        agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+        agent._record_cycle_end_report(pb.CycleEndReasonWorkerFailed, {5: MagicMock(exitcode=1)})
         assert agent._cycle_end_report is None
         agent._collect_rank_monitor_timeouts.assert_not_called()
 
     def test_completed_cycle_does_not_collect_monitor_timeouts(self):
         agent = _end_report_agent()
         with patch.object(launcher, "now_ms", return_value=1_700_000_000_123):
-            agent._record_cycle_end_report(EndReason.COMPLETED)
+            agent._record_cycle_end_report(pb.CycleEndReasonWorkerCompleted)
 
         report = agent._cycle_end_report
         # From the Slurm environment, like the cycle info file names.
@@ -2234,7 +2235,7 @@ class TestRecordCycleEndReport:
         assert (report.cycle_number, report.node_name, report.end_reason) == (
             3,
             "node0",
-            EndReason.COMPLETED,
+            pb.CycleEndReasonWorkerCompleted,
         )
         assert (report.detected_timestamp, report.exit_details) == (1_700_000_000_123, "")
         agent._collect_rank_monitor_timeouts.assert_not_called()
@@ -2245,11 +2246,11 @@ class TestRecordCycleEndReport:
         agent._collect_rank_monitor_timeouts.return_value = {
             5: RankTimeout(TimeoutKind.SECTION, ("step",))
         }
-        agent._record_cycle_end_report(EndReason.FAILED, failures)
+        agent._record_cycle_end_report(pb.CycleEndReasonWorkerFailed, failures)
 
         agent._collect_rank_monitor_timeouts.assert_called_once_with(3, failures)
         report = agent._cycle_end_report
-        assert report.end_reason is EndReason.TERMINATED_BY_RANK_MONITOR
+        assert report.end_reason == pb.CycleEndReasonWorkerTerminatedByRankMonitor
         assert json.loads(report.exit_details) == [
             {
                 "rank": 5,
@@ -2267,7 +2268,9 @@ class TestRecordCycleEndReport:
         agent._cycle_end_report = MagicMock()  # stale record from an earlier cycle
         agent._collect_rank_monitor_timeouts.side_effect = RuntimeError("boom")
         with patch.object(launcher, "logger"):
-            agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+            agent._record_cycle_end_report(
+                pb.CycleEndReasonWorkerFailed, {5: MagicMock(exitcode=1)}
+            )
         assert agent._cycle_end_report is None
 
     def test_termination_signal_propagates(self):
@@ -2276,7 +2279,9 @@ class TestRecordCycleEndReport:
             "terminated", signal.SIGTERM
         )
         with pytest.raises(launcher.SignalException):
-            agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+            agent._record_cycle_end_report(
+                pb.CycleEndReasonWorkerFailed, {5: MagicMock(exitcode=1)}
+            )
 
 
 class TestCollectRankMonitorTimeouts:
@@ -2441,7 +2446,7 @@ class TestPublishCycleEndReport:
         agent = _end_report_agent()
         agent._cycle_info_publisher = MagicMock()
         agent._start_end_report_publisher()
-        agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+        agent._record_cycle_end_report(pb.CycleEndReasonWorkerFailed, {5: MagicMock(exitcode=1)})
         yield agent
         agent.stop_end_report_publisher()
 
@@ -2484,7 +2489,7 @@ class TestPublishCycleEndReport:
         agent = _end_report_agent()
         agent._cycle_info_publisher = None
         agent._start_end_report_publisher()
-        agent._record_cycle_end_report(EndReason.FAILED, {5: MagicMock(exitcode=1)})
+        agent._record_cycle_end_report(pb.CycleEndReasonWorkerFailed, {5: MagicMock(exitcode=1)})
         agent._publish_cycle_end_report(wait=True)  # must not raise
         assert agent._end_report_publisher_thread is None
         agent.stop_end_report_publisher()  # nothing to stop

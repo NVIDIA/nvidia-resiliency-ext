@@ -23,7 +23,7 @@ import subprocess  # nosec B404
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
 from types import FrameType
@@ -67,8 +67,9 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
+from ..shared_utils.proto.nvrx_interface_pb2 import CycleInfo
 from ..shared_utils.telemetry import span
-from .cycle_info.records import CycleInfo, now_ms
+from .cycle_info.messages import build_cycle_info, ended_cycle_info, now_ms
 from .cycle_info.transport import CycleInfoPublisher
 from .cycle_info_writer import (
     _cycle_info_attempt_index_from_env,
@@ -1701,22 +1702,21 @@ class _RendezvousBarrierState:
         if self._cycle_info_publisher is None:
             return
         try:
-            now = now_ms()
-            info = CycleInfo(
+            info = build_cycle_info(
                 job_id=_cycle_info_job_id_from_env(),
                 attempt_index=_cycle_info_attempt_index_from_env(),
                 cycle_number=round_id,
-                started_at=now / 1000,
+                started_at_ms=now_ms(),
                 cycle_log_file=(
                     cycle_log_file(self._cycle_log_prefix, round_id)
                     if self._cycle_log_prefix
                     else ""
                 ),
-                active_nodes=tuple(self._active_node_addrs or ()),
-                active_ranks=tuple(self._active_ranks or ()),
-                standby_nodes=tuple(self._standby_node_addrs or ()),
-                timestamp=now,
+                active_nodes=self._active_node_addrs or (),
+                active_ranks=self._active_ranks or (),
+                standby_nodes=self._standby_node_addrs or (),
             )
+            # Kept for the end update, which publishes a copy; not modified after publishing.
             self._open_cycle_info = info
             self._cycle_info_publisher.publish_cycle_info(info)
         except SignalException:
@@ -1736,10 +1736,7 @@ class _RendezvousBarrierState:
             return
         self._open_cycle_info = None
         try:
-            now = now_ms()
-            self._cycle_info_publisher.update_cycle_info(
-                replace(info, ended_at=now / 1000, timestamp=now)
-            )
+            self._cycle_info_publisher.update_cycle_info(ended_cycle_info(info, now_ms()))
         except SignalException:
             raise
         except Exception as e:

@@ -9,14 +9,18 @@ aggregate and where the result goes.
 from collections import Counter
 from typing import Optional, Sequence
 
-from .records import CycleInfo, CycleSummary, EndReason, JobEndReason, NodeCycleEndReport
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
-# Launchers whose workers failed or were stopped on a timeout.
-_RANK_FAILURES = (EndReason.FAILED, EndReason.TERMINATED_BY_RANK_MONITOR)
-# Launchers stopped by a no-restart decision.
-_NO_RESTART_STOPS = (EndReason.TERMINATED_BY_ATTRIBUTION,)
-# Launchers that saw the cycle end themselves, rather than following a peer's restart.
-_OBSERVED_ENDS = _RANK_FAILURES + _NO_RESTART_STOPS
+from ..cycle_info_writer import utc_iso_ms
+from .messages import active_hosts
+
+# Launchers that saw the cycle end themselves, rather than following a peer's restart:
+# their workers failed or were stopped on a timeout, or a no-restart decision stopped them.
+_OBSERVED_ENDS = (
+    pb.CycleEndReasonWorkerFailed,
+    pb.CycleEndReasonWorkerTerminatedByRankMonitor,
+    pb.CycleEndReasonWorkerTerminatedByAttribution,
+)
 
 
 def _short_host(name: str) -> str:
@@ -25,33 +29,34 @@ def _short_host(name: str) -> str:
 
 
 class CycleEndReportAggregator:
-    """Builds the CycleSummary of a cycle from its cycle info and the launchers' end reports.
+    """Builds the JobCycleEndReport of a cycle from the launchers' end reports.
 
-    Stateless; override a step to change one conclusion.
+    Stateless; override a step to change one conclusion. `missing_nodes` also needs the
+    cycle info: the CycleAnalyzer uses it to tell when every active launcher reported.
     """
 
-    def aggregate(
-        self,
-        cycle: int,
-        start: Optional[CycleInfo],
-        end_reports: Sequence[NodeCycleEndReport],
-    ) -> CycleSummary:
+    def aggregate(self, end_reports: Sequence[pb.NodeCycleEndReport]) -> pb.JobCycleEndReport:
+        """How the cycle ended for the job, from the end reports received for it.
+
+        Lists the end reports of the launchers that observed the end themselves, sorted by
+        when they detected it; those that only followed a peer's restart are left out.
+        """
         end_reports = self.deduplicate(end_reports)
         first = self.first_detected(end_reports)
-        return CycleSummary(
-            cycle=cycle,
-            end_reports=end_reports,
-            launchers_expected=self.launchers_expected(start),
-            missing=self.missing_nodes(start, end_reports),
+        first_detected_timestamp = self.first_detected_timestamp(end_reports, first)
+        return pb.JobCycleEndReport(
             end_reason=self.end_reason(end_reports, first),
-            first_detected=tuple(report.node_name for report in first),
-            ended_at=self.ended_at(end_reports, first),
+            first_detected_timestamp=(
+                utc_iso_ms(first_detected_timestamp) if first_detected_timestamp is not None else ""
+            ),
+            first_detected_nodes=[report.node_name for report in first],
+            launcher_end_reports=self.listed_end_reports(end_reports),
         )
 
     @staticmethod
     def deduplicate(
-        end_reports: Sequence[NodeCycleEndReport],
-    ) -> tuple[NodeCycleEndReport, ...]:
+        end_reports: Sequence[pb.NodeCycleEndReport],
+    ) -> tuple[pb.NodeCycleEndReport, ...]:
         """One end report per launcher, the first received.
 
         TODO: launchers are told apart by node name only, so launchers sharing a host
@@ -63,15 +68,8 @@ class CycleEndReportAggregator:
         return tuple(unique.values())
 
     @staticmethod
-    def launchers_expected(start: Optional[CycleInfo]) -> Optional[int]:
-        """Active launchers of the cycle, one per active group rank; None without the start."""
-        if start is None:
-            return None
-        return len(start.active_ranks) or len(start.active_nodes)
-
-    @staticmethod
     def missing_nodes(
-        start: Optional[CycleInfo], end_reports: Sequence[NodeCycleEndReport]
+        start: Optional[pb.CycleInfo], end_reports: Sequence[pb.NodeCycleEndReport]
     ) -> tuple[str, ...]:
         """Active hosts of the cycle with no end report; empty when the start is unknown.
 
@@ -81,13 +79,13 @@ class CycleEndReportAggregator:
         if start is None:
             return ()
         reported = Counter(_short_host(report.node_name) for report in end_reports)
-        missing = Counter(_short_host(node) for node in start.active_nodes) - reported
+        missing = Counter(_short_host(node) for node in active_hosts(start)) - reported
         return tuple(sorted(missing.elements()))
 
     @staticmethod
     def first_detected(
-        end_reports: Sequence[NodeCycleEndReport],
-    ) -> tuple[NodeCycleEndReport, ...]:
+        end_reports: Sequence[pb.NodeCycleEndReport],
+    ) -> tuple[pb.NodeCycleEndReport, ...]:
         """The end reports of the launchers that observed the end first.
 
         Only launchers that saw a failure or a no-restart decision themselves count, not
@@ -102,32 +100,47 @@ class CycleEndReportAggregator:
 
     @staticmethod
     def end_reason(
-        end_reports: Sequence[NodeCycleEndReport], first: Sequence[NodeCycleEndReport]
-    ) -> JobEndReason:
-        """Why the cycle ended for the job, from how it ended for the launchers that observed
-        it first. The details of each launcher's workers are in its end report."""
-        if end_reports and all(r.end_reason is EndReason.COMPLETED for r in end_reports):
-            return JobEndReason.COMPLETED
-        if any(report.end_reason in _RANK_FAILURES for report in first):
-            return JobEndReason.RANK_FAILURE
-        if any(report.end_reason in _NO_RESTART_STOPS for report in first):
-            return JobEndReason.TERMINATED
-        return JobEndReason.UNKNOWN
+        end_reports: Sequence[pb.NodeCycleEndReport], first: Sequence[pb.NodeCycleEndReport]
+    ) -> int:
+        """Why the cycle ended for the job, as a pb.EndReason value: WorkerCompleted when
+        every launcher completed, else the end reason of the first launcher that observed
+        the end, else Unspecified. The details of each launcher's workers are in its end
+        report."""
+        if end_reports and all(
+            r.end_reason == pb.CycleEndReasonWorkerCompleted for r in end_reports
+        ):
+            return pb.CycleEndReasonWorkerCompleted
+        if first:
+            return first[0].end_reason
+        return pb.CycleEndReasonUnspecified
 
     @staticmethod
-    def ended_at(
-        end_reports: Sequence[NodeCycleEndReport], first: Sequence[NodeCycleEndReport]
-    ) -> Optional[int]:
-        """When the cycle ended, in milliseconds since the epoch: when it was first observed
-        to end.
+    def listed_end_reports(
+        end_reports: Sequence[pb.NodeCycleEndReport],
+    ) -> list[pb.NodeCycleEndReport]:
+        """The end reports listed in the JobCycleEndReport: all but those of launchers that
+        only followed a peer's restart, sorted by detection time (then node name)."""
+        return sorted(
+            (
+                report
+                for report in end_reports
+                if report.end_reason != pb.CycleEndReasonWorkerTerminatedDueToPeer
+            ),
+            key=lambda report: (report.detected_timestamp, report.node_name),
+        )
 
-        A completed cycle ends when its last launcher completed. Without a launcher that
-        observed the end, the earliest detection of any launcher; None without reports.
+    @staticmethod
+    def first_detected_timestamp(
+        end_reports: Sequence[pb.NodeCycleEndReport], first: Sequence[pb.NodeCycleEndReport]
+    ) -> Optional[int]:
+        """When a launcher first detected the end of the cycle, in milliseconds since the
+        epoch: the detection time of the launchers that observed the end first.
+
+        Without a launcher that observed the end itself (e.g. a completed cycle), the
+        earliest detection of any launcher; None without reports.
         """
         if not end_reports:
             return None
-        if all(report.end_reason is EndReason.COMPLETED for report in end_reports):
-            return max(report.detected_timestamp for report in end_reports)
         if first:
             return first[0].detected_timestamp
         return min(report.detected_timestamp for report in end_reports)

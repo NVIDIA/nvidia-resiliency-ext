@@ -18,10 +18,11 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Set
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
-from ..cycle_info_writer import CycleInfoReporter, CycleInfoRoundSnapshot, utc_iso, utc_iso_ms
+from ..cycle_info_writer import CycleInfoReporter
 from .aggregator import CycleEndReportAggregator
-from .records import CycleInfo, CycleSummary, NodeCycleEndReport
+from .messages import iso_to_seconds
 from .transport import CycleInfoReader
 
 logger = logging.getLogger(LogConfig.name)
@@ -68,11 +69,12 @@ class CycleAnalyzer:
         self._poll_interval = poll_interval
         self._next_start_grace = next_start_grace
         self._end_report_quiet_period = end_report_quiet_period
-        # The store host's latest CycleInfo of each cycle: its start, replaced by its update
-        # once the cycle ended (ended_at set). With the end reports received so far, by
-        # cycle; both dropped once the cycle's end is written (update_cycle_end_reports).
-        self._cycle_infos: Dict[int, CycleInfo] = {}
-        self._end_reports: Dict[int, List[NodeCycleEndReport]] = defaultdict(list)
+        # The store host's latest CycleInfo of each cycle, as received: its start, replaced
+        # by its update once the cycle ended (cycle_end_time set). With the end reports
+        # received so far, by cycle; both dropped once the cycle's end reports are written
+        # (update_cycle_end_reports).
+        self._cycle_infos: Dict[int, pb.CycleInfo] = {}
+        self._end_reports: Dict[int, List[pb.NodeCycleEndReport]] = defaultdict(list)
         # Launchers that reported, by cycle, to detect duplicates in O(1). TODO: keyed by
         # node name, as end reports do not tell launchers of one host apart.
         self._reported: Dict[int, Set[str]] = defaultdict(set)
@@ -120,8 +122,9 @@ class CycleAnalyzer:
         for cycle in sorted(self._open_cycles()):
             self.update_cycle_end_reports(cycle)
 
-    def report_cycle_start(self, info: CycleInfo) -> bool:
-        """Open the cycle `info.cycle_number` at the reporter, from the store host's CycleInfo.
+    def report_cycle_start(self, info: pb.CycleInfo) -> bool:
+        """Open the cycle `info.cycle_number` at the reporter, from the store host's CycleInfo,
+        passed as received.
 
         A start is ignored, with a warning, if its cycle was already started (still open,
         or already written) or is older than the latest started cycle: the store host
@@ -146,22 +149,13 @@ class CycleAnalyzer:
         if not info.active_nodes:
             logger.warning("The start of cycle %s has no active nodes", cycle)
         self._cycle_infos[cycle] = info
-        started = self.cycle_info_reporter.report_cycle_start(
-            CycleInfoRoundSnapshot(
-                cycle_number=cycle,
-                active_node_addrs=list(info.active_nodes),
-                standby_node_addrs=list(info.standby_nodes),
-                active_ranks=list(info.active_ranks),
-                cycle_log_file=info.cycle_log_file,
-                started_at=info.started_at,
-            )
-        )
+        started = self.cycle_info_reporter.report_cycle_start(info)
         if started:
             self._started_cycle = cycle
             logger.debug("Opened the cycle info of cycle %s", cycle)
         return started
 
-    def report_cycle_info_update(self, info: CycleInfo) -> bool:
+    def report_cycle_info_update(self, info: pb.CycleInfo) -> bool:
         """End cycle `info.cycle_number` at the reporter, from the store host's updated CycleInfo.
 
         The update is ignored, with a warning, if:
@@ -183,7 +177,7 @@ class CycleAnalyzer:
         if prev_info is None:
             logger.warning("Ignoring the end of cycle %s: the cycle was never started", cycle)
             return False
-        if prev_info.ended_at is not None:
+        if prev_info.cycle_end_time:
             logger.warning("Ignoring the end of cycle %s: the cycle already ended", cycle)
             return False
         if info.timestamp <= prev_info.timestamp:
@@ -194,21 +188,23 @@ class CycleAnalyzer:
                 prev_info.timestamp,
             )
             return False
-        if info.ended_at is None or info.ended_at <= prev_info.started_at:
+        # Both parse: the reader checked them (check_cycle_info).
+        ended_at = iso_to_seconds(info.cycle_end_time)
+        if ended_at is None or ended_at <= iso_to_seconds(prev_info.cycle_start_time):
             logger.warning(
-                "Ignoring the end of cycle %s: end time %s is not after the start time %s",
+                "Ignoring the end of cycle %s: end time %r is not after the start time %r",
                 cycle,
-                info.ended_at,
-                prev_info.started_at,
+                info.cycle_end_time,
+                prev_info.cycle_start_time,
             )
             return False
-        if not self.cycle_info_reporter.report_cycle_end(cycle, ended_at=info.ended_at):
+        if not self.cycle_info_reporter.report_cycle_end(cycle, info.cycle_end_time):
             logger.warning("The end of cycle %s was not written", cycle)
         self._cycle_infos[cycle] = info
-        logger.debug("Cycle %s ended at %s", cycle, utc_iso(info.ended_at))
+        logger.debug("Cycle %s ended at %s", cycle, info.cycle_end_time)
         return True
 
-    def add_end_report(self, report: NodeCycleEndReport) -> bool:
+    def add_end_report(self, report: pb.NodeCycleEndReport) -> bool:
         """Keep `report` with the end reports received for its cycle.
 
         An end report is ignored, with a warning, if:
@@ -251,33 +247,29 @@ class CycleAnalyzer:
             logger.debug("Receiving the end reports of cycle %s", cycle)
         return True
 
-    def create_cycle_summary(self, cycle: int) -> CycleSummary:
-        """Aggregate the cycle info and the end reports received for `cycle` into the
-        job-wide view."""
-        return self._aggregator.aggregate(
-            cycle, self._cycle_infos.get(cycle), self._end_reports.get(cycle, ())
-        )
+    def create_job_end_report(self, cycle: int) -> pb.JobCycleEndReport:
+        """Aggregate the end reports received for `cycle` into the job-wide end report."""
+        return self._aggregator.aggregate(self._end_reports.get(cycle, ()))
 
     def update_cycle_end_reports(self, cycle: int) -> None:
-        """Write the end and the end reports of `cycle` to its cycle info, then forget the
-        cycle.
+        """Write the end reports of `cycle` to its cycle info, then forget the cycle.
 
         NOT TESTED YET end to end.
         """
-        summary = self.create_cycle_summary(cycle)
-        if summary.ended_at is None:
-            # No end report to date the end: stamp the time it is written.
-            self.cycle_info_reporter.report_cycle_end(cycle)
-        # One update: the end time from the end reports and the job-wide end report.
-        self.cycle_info_reporter.report_cycle_summary(summary)
+        end_report = self.create_job_end_report(cycle)
+        # One update: the job-wide end report. The cycle's end time comes only from the
+        # store host's update (report_cycle_info_update).
+        self.cycle_info_reporter.report_cycle_end_report(cycle, end_report)
+        reported = self._aggregator.deduplicate(self._end_reports.get(cycle, ()))
+        missing = self._aggregator.missing_nodes(self._cycle_infos.get(cycle), reported)
         logger.info(
-            "Cycle %s ended at %s: %s, first detected by %s; %d launchers reported%s",
+            "Cycle %s ended: %s, first detected at %s by %s; %d launchers reported%s",
             cycle,
-            utc_iso_ms(summary.ended_at) if summary.ended_at is not None else "unknown",
-            summary.end_reason.value if summary.end_reason is not None else "unknown",
-            ", ".join(summary.first_detected) or "none",
-            len(summary.end_reports),
-            f", missing {', '.join(summary.missing)}" if summary.missing else "",
+            pb.EndReason.Name(end_report.end_reason),
+            end_report.first_detected_timestamp or "unknown",
+            ", ".join(end_report.first_detected_nodes) or "none",
+            len(reported),
+            f", missing {', '.join(missing)}" if missing else "",
         )
         self._cycle_infos.pop(cycle, None)
         self._end_reports.pop(cycle, None)

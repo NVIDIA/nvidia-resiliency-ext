@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import threading
-from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,12 +12,13 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer import (
     CycleAnalyzerProcess,
     _StopRequest,
 )
-from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
-    CycleInfo,
-    EndReason,
-    NodeCycleEndReport,
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
+    build_cycle_info,
+    ended_cycle_info,
 )
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.transport import CycleInfoReader
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import utc_iso
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
 
 class _ListReader(CycleInfoReader):
@@ -40,25 +40,40 @@ class _ListReader(CycleInfoReader):
         return end_reports
 
 
+def _replace(message, **fields):
+    """A copy of the proto `message` with `fields` set, like dataclasses.replace."""
+    copy = type(message)()
+    copy.CopyFrom(message)
+    for name, value in fields.items():
+        setattr(copy, name, value)
+    return copy
+
+
 def _start(cycle, nodes=("node0",)):
-    return CycleInfo(
+    """The store host's start of `cycle`, at 10 + cycle seconds since the epoch."""
+    return build_cycle_info(
         job_id="job1",
         attempt_index=0,
         cycle_number=cycle,
-        started_at=10.0 + cycle,
-        active_nodes=tuple(nodes),
-        active_ranks=tuple(range(len(nodes))),
-        timestamp=10_000 + cycle * 1000,
+        started_at_ms=10_000 + cycle * 1000,
+        active_nodes=nodes,
+        active_ranks=range(len(nodes)),
     )
 
 
 def _end(cycle, nodes=("node0",)):
     """The store host's update of `_start(cycle)`: stamped later, with its end time."""
-    return replace(_start(cycle, nodes), ended_at=30.0 + cycle, timestamp=30_000 + cycle * 1000)
+    return ended_cycle_info(_start(cycle, nodes), 30_000 + cycle * 1000)
 
 
 def _end_report(cycle, node):
-    return NodeCycleEndReport("job1", 0, cycle, node, EndReason.FAILED, 20_000 + cycle)
+    return pb.NodeCycleEndReport(
+        job_id="job1",
+        cycle_number=cycle,
+        node_name=node,
+        end_reason=pb.CycleEndReasonWorkerFailed,
+        detected_timestamp=20_000 + cycle,
+    )
 
 
 def _analyzer(reader):
@@ -119,8 +134,8 @@ def test_run_processes_records_until_stopped_then_writes_the_open_cycles():
     thread.join(timeout=5)
 
     assert not thread.is_alive()
-    summary = analyzer.cycle_info_reporter.report_cycle_summary.call_args.args[0]
-    assert (summary.cycle, summary.end_reports) == (0, (_end_report(0, "late"),))
+    cycle, end_report = analyzer.cycle_info_reporter.report_cycle_end_report.call_args.args
+    assert (cycle, list(end_report.launcher_end_reports)) == (0, [_end_report(0, "late")])
 
 
 def test_a_failing_record_is_logged_and_the_loop_continues():
@@ -216,11 +231,12 @@ class TestUpdateCycleEndReports:
 
         analyzer.update_cycle_end_reports(3)
 
-        summary = reporter.report_cycle_summary.call_args.args[0]
-        assert (summary.cycle, summary.end_reports) == (3, (_end_report(3, "node0"),))
-        assert summary.ended_at == _end_report(3, "node0").detected_timestamp
+        cycle, end_report = reporter.report_cycle_end_report.call_args.args
+        assert (cycle, list(end_report.launcher_end_reports)) == (3, [_end_report(3, "node0")])
+        assert end_report.end_reason == pb.CycleEndReasonWorkerFailed
+        assert end_report.first_detected_timestamp == "1970-01-01T00:00:20.003Z"
         # Only the store host's end, when the update arrived: not again when written.
-        reporter.report_cycle_end.assert_called_once_with(3, ended_at=_end(3).ended_at)
+        reporter.report_cycle_end.assert_called_once_with(3, _end(3).cycle_end_time)
         assert 3 not in analyzer._end_reports and 3 not in analyzer._cycle_infos
 
     def test_writes_the_cycle_even_after_a_later_cycle_started(self):
@@ -228,10 +244,10 @@ class TestUpdateCycleEndReports:
 
         analyzer.update_cycle_end_reports(3)
 
-        assert reporter.report_cycle_summary.call_args.args[0].cycle == 3
+        assert reporter.report_cycle_end_report.call_args.args[0] == 3
         reporter.report_cycle_end.assert_not_called()
 
-    def test_without_end_reports_the_end_is_stamped_when_written(self):
+    def test_without_end_reports_the_end_is_not_stamped(self):
         reporter = MagicMock()
         reporter.report_cycle_start.return_value = True
         analyzer = CycleAnalyzer(_ListReader(), reporter)
@@ -239,20 +255,19 @@ class TestUpdateCycleEndReports:
 
         analyzer.update_cycle_end_reports(3)
 
-        reporter.report_cycle_end.assert_called_once_with(3)
-        reporter.report_cycle_summary.assert_called_once()
+        # The cycle end time comes only from the store host's update.
+        reporter.report_cycle_end.assert_not_called()
+        reporter.report_cycle_end_report.assert_called_once()
 
-    def test_the_start_of_the_store_host_is_reported(self):
-        _, reporter = self._analyzer_with_cycle()
-        snapshot = reporter.report_cycle_start.call_args.args[0]
-        assert (snapshot.cycle_number, snapshot.started_at) == (3, _start(3).started_at)
-        assert (snapshot.active_node_addrs, snapshot.active_ranks) == (["node0"], [0])
+    def test_the_start_of_the_store_host_is_reported_as_received(self):
+        reporter = MagicMock()
+        analyzer = CycleAnalyzer(_ListReader(), reporter)
+        start = _start(3)
 
-    def test_summary_uses_the_cycle_start(self):
-        analyzer, _ = self._analyzer_with_cycle()
-        summary = analyzer.create_cycle_summary(3)
-        assert summary.launchers_expected == len(_start(3).active_nodes)
-        assert summary.missing == ()  # its only active node reported
+        analyzer.report_cycle_start(start)
+
+        reporter.report_cycle_start.assert_called_once()
+        assert reporter.report_cycle_start.call_args.args[0] is start
 
 
 class TestReportCycleStart:
@@ -338,7 +353,7 @@ class TestReportCycleInfoUpdate:
 
         assert analyzer.report_cycle_info_update(_end(3))
 
-        reporter.report_cycle_end.assert_called_once_with(3, ended_at=_end(3).ended_at)
+        reporter.report_cycle_end.assert_called_once_with(3, _end(3).cycle_end_time)
         assert analyzer._cycle_infos[3] == _end(3)
 
     def test_the_cycle_is_kept_for_its_end_reports(self):
@@ -362,13 +377,12 @@ class TestReportCycleInfoUpdate:
     def test_an_update_of_a_written_cycle_is_ignored(self):
         analyzer, reporter = self._analyzer()
         analyzer.update_cycle_end_reports(3)
-        reporter.report_cycle_end.reset_mock()  # stamped when written, without end reports
         self._assert_ignored(analyzer, reporter, _end(3))
 
     def test_a_second_update_is_ignored(self):
         analyzer, reporter = self._analyzer()
         analyzer.report_cycle_info_update(_end(3))
-        later = replace(_end(3), ended_at=40.0, timestamp=40_000)
+        later = ended_cycle_info(_start(3), 40_000)
         with patch.object(analyzer_module, "logger") as logger:
             assert not analyzer.report_cycle_info_update(later)
         logger.warning.assert_called_once()
@@ -378,13 +392,16 @@ class TestReportCycleInfoUpdate:
     @pytest.mark.parametrize("timestamp", [5_000, 13_000], ids=["older", "same"])
     def test_an_update_not_newer_than_the_start_is_ignored(self, timestamp):
         analyzer, reporter = self._analyzer()
-        self._assert_ignored(analyzer, reporter, replace(_end(3), timestamp=timestamp))
+        self._assert_ignored(analyzer, reporter, _replace(_end(3), timestamp=timestamp))
         assert analyzer._cycle_infos[3] == _start(3)
 
-    @pytest.mark.parametrize("ended_at", [None, 5.0, 13.0], ids=["none", "before", "at_start"])
-    def test_an_update_without_a_valid_end_time_is_ignored(self, ended_at):
+    # The start is at 13 s since the epoch.
+    @pytest.mark.parametrize(
+        "cycle_end_time", ["", utc_iso(5.0), utc_iso(13.0)], ids=["none", "before", "at_start"]
+    )
+    def test_an_update_without_a_valid_end_time_is_ignored(self, cycle_end_time):
         analyzer, reporter = self._analyzer()
-        self._assert_ignored(analyzer, reporter, replace(_end(3), ended_at=ended_at))
+        self._assert_ignored(analyzer, reporter, _replace(_end(3), cycle_end_time=cycle_end_time))
         assert analyzer._cycle_infos[3] == _start(3)
 
 
@@ -405,7 +422,7 @@ class TestAddEndReport:
         assert analyzer.add_end_report(first)
 
         with patch.object(analyzer_module, "logger") as logger:
-            assert not analyzer.add_end_report(replace(first, detected_timestamp=1))
+            assert not analyzer.add_end_report(_replace(first, detected_timestamp=1))
 
         assert analyzer._end_reports[3] == [first]
         logger.warning.assert_called_once()

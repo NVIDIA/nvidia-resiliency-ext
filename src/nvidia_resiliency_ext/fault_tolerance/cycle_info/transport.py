@@ -5,8 +5,9 @@
 The store host publishes a `CycleInfo` per cycle when it starts, and updates it when the
 cycle ends; each launcher publishes its `NodeCycleEndReport` per cycle. They go through a
 `CycleInfoPublisher`; the CycleAnalyzer, the only writer of the cycle info files,
-receives them through a `CycleInfoReader`. Implementations own their wire format and
-where they send to or read from; the interfaces exchange only the records.
+receives them through a `CycleInfoReader`. The records are the messages of
+nvrx_interface.proto (see messages.py); implementations own how they carry them (e.g.
+gRPC, or the serialized bytes in a key-value store) and where they send to or read from.
 
 Delivery is best effort: a record can be lost, e.g. when its node fails, and publishing
 must never delay the rendezvous or a launcher's restart. Records of one cycle can arrive
@@ -16,14 +17,18 @@ in any order, e.g. end reports before the cycle info, so the reader keys them by
 from abc import ABC, abstractmethod
 from typing import List
 
-from .records import CycleInfo, NodeCycleEndReport
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import (
+    CycleInfo,
+    NodeCycleEndReport,
+)
 
 
 class CycleInfoPublisher(ABC):
     """Sends cycle records towards the CycleAnalyzer.
 
     The publish methods may wait for delivery, but only for a bounded time, and must not
-    raise on transport failures: a record that cannot be delivered is dropped.
+    raise on transport failures: a record that cannot be delivered is dropped. They do not
+    modify the record; the caller must not modify it after publishing either.
     """
 
     @abstractmethod
@@ -36,7 +41,8 @@ class CycleInfoPublisher(ABC):
 
     @abstractmethod
     def update_cycle_info(self, info: CycleInfo) -> bool:
-        """Publish a cycle that ended (`info.ended_at` set); called by the store host only.
+        """Publish a cycle that ended (`info.cycle_end_time` set); called by the store host
+        only.
 
         Returns:
             True if the record was delivered.

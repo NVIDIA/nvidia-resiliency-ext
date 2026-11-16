@@ -1,17 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import replace
-
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance.cycle_info import (
-    CycleInfo,
     CycleInfoPublisher,
     CycleInfoReader,
-    EndReason,
-    NodeCycleEndReport,
+    build_cycle_info,
+    ended_cycle_info,
 )
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
 
 class _ListTransport(CycleInfoPublisher, CycleInfoReader):
@@ -55,10 +53,24 @@ def test_interfaces_are_abstract(interface):
 
 def test_each_kind_is_read_separately_once():
     transport = _ListTransport()
-    start = CycleInfo("job1", 0, 3, 10.0, active_nodes=("node0", "node1"), active_ranks=(0, 1))
-    end = replace(start, ended_at=20.0, timestamp=20_000)
+    start = build_cycle_info(
+        job_id="job1",
+        attempt_index=0,
+        cycle_number=3,
+        started_at_ms=10_000,
+        active_nodes=("node0", "node1"),
+        active_ranks=(0, 1),
+    )
+    end = ended_cycle_info(start, 20_000)
     reports = [
-        NodeCycleEndReport("job1", 0, 3, node, EndReason.COMPLETED, 20_000) for node in ("n0", "n1")
+        pb.NodeCycleEndReport(
+            job_id="job1",
+            cycle_number=3,
+            node_name=node,
+            end_reason=pb.CycleEndReasonWorkerCompleted,
+            detected_timestamp=20_000,
+        )
+        for node in ("n0", "n1")
     ]
 
     for report in reports:

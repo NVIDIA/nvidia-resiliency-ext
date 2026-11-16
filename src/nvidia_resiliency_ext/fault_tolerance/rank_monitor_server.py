@@ -35,7 +35,6 @@ from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
 
 from ..shared_utils.health_check import GPUHealthCheck, NicHealthCheck
 from .config import FaultToleranceConfig
-from .cycle_info.records import RankTimeout, TimeoutKind
 from .data import (
     AuthkeyMsg,
     ErrorMsg,
@@ -43,8 +42,10 @@ from .data import (
     InitMsg,
     LauncherChannelMsg,
     OkMsg,
+    RankTimeout,
     SectionAction,
     SectionMsg,
+    TimeoutKind,
     TimeoutQueryMsg,
     TimeoutReplyMsg,
     TimeoutStopMsg,
@@ -663,13 +664,12 @@ class RankMonitorServer:
 
         Sent once per cycle: the shutdown paths of one timeout share its draft. The message is
         written with a single transport write and no await, so `_shutdown_rank` stays
-        synchronous. If the transport's buffer is empty afterwards, the whole message has
-        reached the launcher's socket buffer before the caller sends the termination signal.
+        synchronous.
         """
         previous = self._timeout_stop
         self._record_timeout_stop(timeout_stop)
         if self._timeout_stop is previous:
-            return  # already sent for this cycle, or a newer one was
+            return
         channel = self._launcher_channel
         if channel is None or channel.is_closing():
             self.logger.warning("No launcher channel: the launcher is not told of the timeout stop")

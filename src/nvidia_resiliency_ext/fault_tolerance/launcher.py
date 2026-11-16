@@ -94,10 +94,7 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
-from nvidia_resiliency_ext.fault_tolerance.cycle_info.records import (
-    EndReason,
-    NodeCycleEndReport,
-    RankTimeout,
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     build_node_cycle_end_report,
     now_ms,
 )
@@ -111,6 +108,7 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
     LauncherChannelMsg,
+    RankTimeout,
     TimeoutQueryMsg,
     TimeoutStopMsg,
     UpdateConfigMsg,
@@ -148,6 +146,13 @@ from nvidia_resiliency_ext.shared_utils.profiling import (
 )
 from nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc import (
     DataRecordAggregationServiceStub,
+)
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import (
+    CycleEndReasonWorkerCompleted,
+    CycleEndReasonWorkerFailed,
+    CycleEndReasonWorkerTerminatedByAttribution,
+    CycleEndReasonWorkerTerminatedDueToPeer,
+    NodeCycleEndReport,
 )
 
 __imports_finished__ = time.time()
@@ -839,9 +844,10 @@ class LocalElasticAgent(SimpleElasticAgent):
             return False
 
     def _record_cycle_end_report(
-        self, end_reason: EndReason, failures: Optional[Dict[int, Any]] = None
+        self, end_reason: int, failures: Optional[Dict[int, Any]] = None
     ) -> None:
-        """Record how the current cycle ended on this launcher (a NodeCycleEndReport).
+        """Record how the current cycle ended on this launcher (a NodeCycleEndReport);
+        `end_reason` is an EndReason value of nvrx_interface.proto.
 
         Call before stopping workers or deciding on a restart, so `detected_timestamp` is
         the moment the end was observed rather than the end of teardown.
@@ -923,7 +929,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
-                self._record_cycle_end_report(EndReason.COMPLETED)
+                self._record_cycle_end_report(CycleEndReasonWorkerCompleted)
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -949,7 +955,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             if rdzv_handler.attribution_stop_requested():
                 # The worker group may also have failed in this same poll.
                 self._record_cycle_end_report(
-                    EndReason.TERMINATED_BY_ATTRIBUTION, run_result.failures
+                    CycleEndReasonWorkerTerminatedByAttribution, run_result.failures
                 )
                 logger.error(
                     "[%s] Attribution recommended stopping the job; terminating workers "
@@ -971,8 +977,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
 
             if state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
-                # TERMINATED_BY_RANK_MONITOR instead if a rank monitor stopped a worker.
-                self._record_cycle_end_report(EndReason.FAILED, run_result.failures)
+                # WorkerTerminatedByRankMonitor instead if a rank monitor stopped a worker.
+                self._record_cycle_end_report(CycleEndReasonWorkerFailed, run_result.failures)
                 # Record failure detection event
                 record_profiling_event(
                     ProfilingEvent.FAILURE_DETECTED,
@@ -1035,7 +1041,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # The round may have been opened to broadcast a no-restart decision rather
                     # than to restart. One extra store read, only once, at the moment the
                     # job is ending.
-                    self._record_cycle_end_report(EndReason.TERMINATED_DUE_TO_PEER)
+                    self._record_cycle_end_report(CycleEndReasonWorkerTerminatedDueToPeer)
                     no_restart = rdzv_handler.no_restart_reason()
                     if no_restart is not None:
                         logger.error(

@@ -23,8 +23,6 @@ from typing import Mapping, Optional, Set
 
 import torch.distributed as dist
 
-from .cycle_info.records import RankTimeout
-
 """Env variable name that stores the path of IPC socket connecting a rank with its monitor"""
 FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR = "FT_RANK_MONITOR_IPC_SOCKET"
 
@@ -232,6 +230,22 @@ class UpdateConfigMsg:
         self.hb_timeouts = hb_timeouts
         self.section_timeouts = section_timeouts
         self.current_cycle = current_cycle
+
+
+class TimeoutKind(str, Enum):
+    """Which timeout of the rank monitor expired. Serialize with ``.value``."""
+
+    HEARTBEAT = "heartbeat"  # initial or subsequent heartbeat
+    SECTION = "section"
+    OUT_OF_SECTION = "out_of_section"
+
+
+@dataclass(frozen=True)
+class RankTimeout:
+    """The timeout on which a rank monitor stopped its worker (see TimeoutStopMsg)."""
+
+    kind: TimeoutKind
+    sections: tuple[str, ...] = ()  # set only for SECTION
 
 
 class TimeoutQueryMsg:
