@@ -253,10 +253,11 @@ class L1ResponseContract:
                 },
             },
             "description": (
-                "Optional evidence signal: which curated category best fits the primary "
-                "failure. See l1/categories.json for the curated taxonomy. "
-                "category_id=0 means no curated category matches. This block is optional "
-                "and does not itself control STOP/RESTART - L4 policy decides."
+                "Advisory evidence signal: which curated category best fits the primary "
+                "failure. See l1/categories.json for the curated taxonomy. Always include "
+                "this block; use category_id=0 when no curated category matches. Advisory "
+                "describes its effect - L4 policy decides STOP/RESTART - and not whether "
+                "the block is required."
             ),
         }
         return {
