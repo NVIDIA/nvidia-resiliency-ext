@@ -109,7 +109,6 @@ from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
     LauncherChannelMsg,
     RankTimeout,
-    TimeoutQueryMsg,
     TimeoutStopMsg,
     UpdateConfigMsg,
 )
@@ -169,8 +168,6 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
-# Bound on asking a rank monitor whether it stopped its worker; on the failure path only.
-RANK_MONITOR_QUERY_TIMEOUT = 1.0
 # Bound on joining the rank monitor listener thread at shutdown.
 RANK_MONITOR_LISTENER_JOIN_TIMEOUT = 2.0
 
@@ -1275,9 +1272,15 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         Reads the timeout stops the listener thread received. A monitor sends its
         TimeoutStopMsg before it signals the worker, so the message is in the launcher's
-        socket buffer by the time the worker exits; the listener may however not have
-        handled it yet when this runs - it needs some acknowledgement from the listener
-        to the rank monitor.
+        socket buffer by the time the worker exits.
+
+        TODO: known race, not handled yet. Being in the socket buffer does not mean the
+        listener has read and stored the message: if this runs first, a worker stopped by
+        its monitor is reported as failed. The monitor cannot tell when the launcher has
+        read it; only a reply can. A possible fix: the monitor waits for an ack before it
+        signals the worker. This delays the kill, by up to the ack timeout if the launcher
+        is stuck, and makes the monitor's kill depend on the launcher. The wait must not
+        block the monitor's event loop.
 
         Args:
             cycle: The cycle in which the workers exited.
@@ -1342,78 +1345,6 @@ class LocalElasticAgent(SimpleElasticAgent):
         except Exception as e:
             logger.error(f"Error sending cycle to rank monitors: {e}")
 
-    def _query_rank_monitor_timeouts(
-        self, cycle: int, failures: Dict[int, Any]
-    ) -> Dict[int, RankTimeout]:
-        """Ask the monitors of exited workers whether they stopped them on a timeout.
-
-        A monitor records its timeout before stopping the worker, so the record exists by
-        the time the launcher sees the exit. Best effort: a monitor that does not answer
-        within RANK_MONITOR_QUERY_TIMEOUT counts as no timeout.
-
-        Args:
-            cycle: The cycle in which the workers exited.
-            failures: Exited workers, keyed by global rank.
-
-        Returns:
-            Timeouts keyed by global rank, only for workers stopped by their monitor.
-        """
-        async def query_monitor(global_rank: int, socket_path: str):
-            try:
-                reader, writer = await asyncio.open_unix_connection(socket_path)
-                try:
-                    await write_obj_to_ipc_stream(TimeoutQueryMsg(cycle), writer)
-                    reply = await read_obj_from_ipc_stream(reader)
-                finally:
-                    writer.close()
-                    await writer.wait_closed()
-                return global_rank, reply.timeout
-            except SignalException:
-                # Termination signals surface here as exceptions; they must reach run().
-                raise
-            except Exception as e:
-                logger.warning(f"Failed to query rank monitor of rank {global_rank}: {e}")
-                return global_rank, None
-
-        async def query_all():
-            tasks = []
-            for worker in self._worker_group.workers:
-                state = self._rank_monitors.get(worker.local_rank)
-                if worker.global_rank in failures and state is not None and state.socket_path:
-                    tasks.append(
-                        asyncio.wait_for(
-                            query_monitor(worker.global_rank, state.socket_path),
-                            RANK_MONITOR_QUERY_TIMEOUT,
-                        )
-                    )
-            return await asyncio.gather(*tasks, return_exceptions=True)
-
-        timeouts = {}
-        start = time.monotonic()
-        results = []
-        try:
-            results = asyncio.run(query_all())
-            for result in results:
-                if isinstance(result, SignalException):
-                    raise result
-                if isinstance(result, BaseException):
-                    logger.warning(f"Rank monitor timeout query did not complete: {result!r}")
-                    continue
-                global_rank, timeout = result
-                if timeout is not None:
-                    timeouts[global_rank] = timeout
-        except SignalException:
-            raise
-        except Exception as e:
-            logger.error(f"Error querying rank monitors for timeouts: {e}")
-        logger.debug(
-            "Queried %d rank monitors about cycle %s in %.1fms: %d timeouts",
-            len(results),
-            cycle,
-            (time.monotonic() - start) * 1000,
-            len(timeouts),
-        )
-        return timeouts
 
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
         enable_watchdog_env_name = TORCHELASTIC_ENABLE_FILE_TIMER

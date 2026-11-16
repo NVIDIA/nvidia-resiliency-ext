@@ -46,8 +46,6 @@ from .data import (
     SectionAction,
     SectionMsg,
     TimeoutKind,
-    TimeoutQueryMsg,
-    TimeoutReplyMsg,
     TimeoutStopMsg,
     UpdateConfigMsg,
 )
@@ -197,7 +195,8 @@ class RankMonitorServer:
         # workload step reporting does not include warmup iterations.
         self._step_section_seen_this_cycle = False
         self.current_cycle = 0  # Track current cycle number for logging
-        # (cycle, timeout) of the latest worker stopped on a timeout, for launcher queries.
+        # (cycle, timeout) of the latest worker stopped on a timeout; the launcher is sent each
+        # one once (TimeoutStopMsg).
         self._timeout_stop: Optional[Tuple[int, RankTimeout]] = None
         self.timeout_dump = (
             TimeoutDumpManager(cfg.timeout_dump, logger) if cfg.timeout_dump.enabled else None
@@ -493,8 +492,6 @@ class RankMonitorServer:
                 elif isinstance(msg, UpdateConfigMsg):
                     # Handle cycle updates from launcher (no response needed - fire and forget)
                     await self._handle_update_config_msg(msg, writer, send_response=False)
-                elif isinstance(msg, TimeoutQueryMsg):
-                    await self._handle_timeout_query_msg(msg, writer)
                 else:
                     self.logger.warning(f"Received unknown message from launcher: {msg}")
         except (asyncio.IncompleteReadError, ConnectionResetError, BrokenPipeError, EOFError):
@@ -652,7 +649,7 @@ class RankMonitorServer:
             return None
 
     def _record_timeout_stop(self, timeout_stop: Tuple[int, RankTimeout]) -> None:
-        """Remember the first timeout that stopped the worker in its cycle, for launcher queries."""
+        """Remember the first timeout that stopped the worker in its cycle (sent once per cycle)."""
         recorded = self._timeout_stop
         # Cycles only grow; a late shutdown of an earlier cycle must not replace a newer record.
         if recorded is not None and recorded[0] >= timeout_stop[0]:
@@ -664,7 +661,8 @@ class RankMonitorServer:
 
         Sent once per cycle: the shutdown paths of one timeout share its draft. The message is
         written with a single transport write and no await, so `_shutdown_rank` stays
-        synchronous.
+        synchronous. Nothing confirms that the launcher read it before the worker exits; see
+        the TODO in the launcher's `_collect_rank_monitor_timeouts`.
         """
         previous = self._timeout_stop
         self._record_timeout_stop(timeout_stop)
@@ -682,12 +680,6 @@ class RankMonitorServer:
                 "The timeout stop notification is still buffered: the launcher may read it "
                 "after the worker exits"
             )
-
-    async def _handle_timeout_query_msg(self, msg: TimeoutQueryMsg, writer):
-        timeout = None
-        if self._timeout_stop is not None and self._timeout_stop[0] == msg.cycle:
-            timeout = self._timeout_stop[1]
-        await write_obj_to_ipc_stream(TimeoutReplyMsg(timeout), writer)
 
     async def _periodic_rank_check(self):
         while True:

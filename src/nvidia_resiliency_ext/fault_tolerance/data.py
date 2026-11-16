@@ -248,28 +248,6 @@ class RankTimeout:
     sections: tuple[str, ...] = ()  # set only for SECTION
 
 
-class TimeoutQueryMsg:
-    """
-    Sent from launcher -> rank monitor after the monitored worker exited.
-    Asks whether the monitor stopped that worker on a timeout in `cycle`.
-    The monitor replies with TimeoutReplyMsg.
-    """
-
-    def __init__(self, cycle: int):
-        self.cycle = cycle
-
-
-class TimeoutReplyMsg:
-    """
-    Reply to TimeoutQueryMsg (rank monitor -> launcher).
-    `timeout` holds the timeout kind and, for section timeouts, the expired section names.
-    It is None if the monitor did not stop its worker on a timeout in that cycle.
-    """
-
-    def __init__(self, timeout: Optional[RankTimeout] = None):
-        self.timeout = timeout
-
-
 class LauncherChannelMsg:
     """
     Sent from launcher -> rank monitor once, on the connection the launcher keeps open.
