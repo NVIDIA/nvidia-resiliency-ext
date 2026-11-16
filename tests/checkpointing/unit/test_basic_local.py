@@ -44,9 +44,11 @@ class TestLocalCheckpointing:
 
     @pytest.mark.parametrize(('use_ramdisk'), [True, False])
     @pytest.mark.parametrize(('async_save'), [True, False])
-    def test_basic_save_load_scenarios(self, tmp_path_dist_ckpt, use_ramdisk, async_save):
+    def test_basic_save_load_scenarios(
+        self, tmp_path_dist_ckpt, shm_path_dist_ckpt, use_ramdisk, async_save
+    ):
         if use_ramdisk:
-            tmp_path_dist_ckpt = Path("/dev/shm")
+            tmp_path_dist_ckpt = shm_path_dist_ckpt
         with TempNamedDir(tmp_path_dist_ckpt / "test_save_load") as local_ckpt_dir:
             local_ckpt_dir = local_ckpt_dir / "subdir"  # Test handling of non-existent directories
 

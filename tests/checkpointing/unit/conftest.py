@@ -13,32 +13,62 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
+from typing import Iterator
 
 import pytest
+import torch
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue
 
-from . import TempNamedDir
 from .test_utilities import Utils
 
 
 @pytest.fixture(scope="session")
-def tmp_path_dist_ckpt(tmp_path_factory) -> Path:
-    """Common directory for saving the checkpoint.
+def _run_id() -> str:
+    """A random name for this run's scratch directories, the same on every rank.
 
-    Can't use pytest `tmp_path_factory` directly because directory must be shared between processes.
+    Other runs on the machine, from another worktree or branch, get different names, so runs
+    can't delete each other's files.
     """
+    Utils.initialize_distributed()
+    run_id = [uuid.uuid4().hex if torch.distributed.get_rank() == 0 else None]
+    torch.distributed.broadcast_object_list(run_id, src=0)
+    return run_id[0]
 
-    tmp_dir = tmp_path_factory.mktemp('ignored', numbered=False)
-    tmp_dir = tmp_dir.parent.parent / 'tmp_dist_ckpt'
 
+def _make_shared_dir(path: Path) -> None:
+    """Create a new directory that every rank uses.
+
+    Rank 0 creates it and fails if it already exists, which would mean two users of one
+    directory. The other ranks wait until it exists.
+    """
+    if torch.distributed.get_rank() == 0:
+        path.mkdir(parents=True)
+    torch.distributed.barrier()
+
+
+def _scratch_root(parent: str, run_id: str) -> Iterator[Path]:
+    root = Path(parent) / f"nvrx-test-{run_id}"
+    _make_shared_dir(root)
+    yield root
     if Utils.rank == 0:
-        with TempNamedDir(tmp_dir, sync=False):
-            yield tmp_dir
+        shutil.rmtree(root, ignore_errors=True)
 
-    else:
-        yield tmp_dir
+
+@pytest.fixture(scope="session")
+def tmp_path_dist_ckpt(_run_id: str) -> Iterator[Path]:
+    """Directory for checkpoints, shared by the ranks of this run."""
+    yield from _scratch_root(tempfile.gettempdir(), _run_id)
+
+
+@pytest.fixture(scope="session")
+def shm_path_dist_ckpt(_run_id: str) -> Iterator[Path]:
+    """Like `tmp_path_dist_ckpt`, but in RAM (/dev/shm)."""
+    yield from _scratch_root("/dev/shm", _run_id)
 
 
 @pytest.fixture
