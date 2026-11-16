@@ -122,11 +122,9 @@ class TestLocalCheckpointing:
 
             yield checkpoint_manager, ckpt_files
 
+    @pytest.mark.min_world_size(2)
     @pytest.mark.parametrize(('extra_suffix'), ["", "some_suffix", "some suffix with spaces"])
     def test_find_latest_repl_disable(self, tmp_path_dist_ckpt, extra_suffix):
-        assert (
-            dist.get_world_size() >= 2
-        ), f"This test needs world_size >= 2, got {dist.get_world_size()}"
         with self.find_latest_skeleton(tmp_path_dist_ckpt, extra_suffix, repl_strategy=None) as (
             checkpoint_manager,
             ckpt_files,

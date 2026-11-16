@@ -21,7 +21,9 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsync
 from . import TempNamedDir
 from .test_utilities import Model, Utils
 
-pytestmark = pytest.mark.distributed
+# TorchAsyncCheckpoint is async torch.save, which is single-process. These tests use no
+# collectives; they need a process group only because the caller asks for the rank.
+pytestmark = pytest.mark.max_world_size(1)
 
 
 class TestAsyncSave:

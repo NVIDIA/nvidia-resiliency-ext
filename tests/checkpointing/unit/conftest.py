@@ -31,15 +31,22 @@ from .test_utilities import Utils
 def pytest_runtest_setup(item: pytest.Item) -> None:
     """Skip a test that can't run in this launch.
 
-    Tests marked `distributed` need a process group, so they run under torchrun. Other tests are
+    Tests marked `distributed`, `min_world_size(n)` or `max_world_size(n)` need a process group,
+    so they run under torchrun, with as many ranks as the markers allow. Other tests are
     standalone: they run without torchrun, or once, on rank 0, under torchrun.
     """
-    if item.get_closest_marker("distributed") is None:
+    fewest = item.get_closest_marker("min_world_size")
+    most = item.get_closest_marker("max_world_size")
+    if item.get_closest_marker("distributed") is None and fewest is None and most is None:
         if Utils.rank not in (None, 0):
             pytest.skip("standalone test; runs on rank 0 only under torchrun")
         return
     if Utils.world_size is None:
         pytest.skip("distributed test; run it under torchrun")
+    if fewest is not None and Utils.world_size < fewest.args[0]:
+        pytest.skip(f"needs at least {fewest.args[0]} ranks; running {Utils.world_size}")
+    if most is not None and Utils.world_size > most.args[0]:
+        pytest.skip(f"needs at most {most.args[0]} ranks; running {Utils.world_size}")
 
 
 @pytest.fixture(scope="session")

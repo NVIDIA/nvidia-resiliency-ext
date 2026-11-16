@@ -774,6 +774,7 @@ class TestAsyncSave:
             with pytest.raises(CheckpointException):
                 self.save_and_finalize(ckpt_dir, rank_state_dict(), async_queue, None)
 
+    @pytest.mark.min_world_size(2)
     def test_a_wrong_fqn_list_fails_the_save_on_every_rank(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch
     ):
