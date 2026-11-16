@@ -168,6 +168,21 @@ def set_fast_metadata(monkeypatch):
     clear_caches()
 
 
+# (mode, rank1) for test_metadata_matches_torch. Only rank1='same' runs on one rank. With mode '1'
+# every rank sends a table, so rank1='fast' would repeat rank1='same'.
+METADATA_CASES = [
+    pytest.param(
+        mode,
+        rank1,
+        id=f'{mode}-{rank1}',
+        marks=[] if rank1 == 'same' else pytest.mark.min_world_size(2),
+    )
+    for mode in ('1', 'python', '0')
+    for rank1 in ('same', 'unencodable', 'fast')
+    if not (mode == '1' and rank1 == 'fast')
+]
+
+
 class TestAsyncSave:
     def get_async_save_request(self, writer, pending, legacy=False) -> AsyncRequest:
         """Create an async save request with a finalization step.
@@ -320,8 +335,7 @@ class TestAsyncSave:
             loaded = self.load_checkpoint(ckpt_dir, deepcopy(state_dict))
             assert torch.equal(loaded[fqn], state_dict[fqn])
 
-    @pytest.mark.parametrize('rank1', ['same', 'unencodable', 'fast'])
-    @pytest.mark.parametrize('mode', ['1', 'python', '0'])
+    @pytest.mark.parametrize(('mode', 'rank1'), METADATA_CASES)
     def test_metadata_matches_torch(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch, set_fast_metadata, mode, rank1
     ):
@@ -338,10 +352,6 @@ class TestAsyncSave:
 
         Utils.initialize_distributed()
         rank, world_size = torch.distributed.get_rank(), torch.distributed.get_world_size()
-        if rank1 != 'same' and world_size < 2:
-            pytest.skip('needs a rank 1')
-        if rank1 == 'fast' and mode == '1':
-            pytest.skip('the same as rank1="same"')
         if rank == 1 and rank1 == 'fast':
             set_fast_metadata('1')
         encode, decode_payloads = write_result_table.encode, state_dict_saver._decode_payloads
