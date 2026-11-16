@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import re
 import shutil
 import tempfile
 import uuid
@@ -60,15 +61,36 @@ def _scratch_root(parent: str, run_id: str) -> Iterator[Path]:
 
 
 @pytest.fixture(scope="session")
-def tmp_path_dist_ckpt(_run_id: str) -> Iterator[Path]:
-    """Directory for checkpoints, shared by the ranks of this run."""
+def _tmp_root(_run_id: str) -> Iterator[Path]:
     yield from _scratch_root(tempfile.gettempdir(), _run_id)
 
 
 @pytest.fixture(scope="session")
-def shm_path_dist_ckpt(_run_id: str) -> Iterator[Path]:
-    """Like `tmp_path_dist_ckpt`, but in RAM (/dev/shm)."""
+def _shm_root(_run_id: str) -> Iterator[Path]:
     yield from _scratch_root("/dev/shm", _run_id)
+
+
+def _test_dir(root: Path, request: pytest.FixtureRequest) -> Path:
+    """`root/<module>/<class>/<test>`, so tests never share a directory.
+
+    Test names repeat across modules and classes, so the path includes both.
+    """
+    parts = [request.node.path.stem, request.cls.__name__ if request.cls else "", request.node.name]
+    path = root.joinpath(*(re.sub(r"[^\w.-]", "_", part) for part in parts if part))
+    _make_shared_dir(path)
+    return path
+
+
+@pytest.fixture
+def tmp_path_dist_ckpt(_tmp_root: Path, request: pytest.FixtureRequest) -> Path:
+    """Directory for this test's checkpoints, shared by the ranks of this run."""
+    return _test_dir(_tmp_root, request)
+
+
+@pytest.fixture
+def shm_path_dist_ckpt(_shm_root: Path, request: pytest.FixtureRequest) -> Path:
+    """Like `tmp_path_dist_ckpt`, but in RAM (/dev/shm)."""
+    return _test_dir(_shm_root, request)
 
 
 @pytest.fixture
