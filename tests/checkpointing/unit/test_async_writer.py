@@ -54,8 +54,9 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 from nvidia_resiliency_ext.checkpointing.utils import diff
-from tests.checkpointing.unit import TempNamedDir
-from tests.checkpointing.unit.test_utilities import Model, Utils
+
+from . import TempNamedDir
+from .test_utilities import Model, Utils
 
 pytestmark = pytest.mark.distributed
 

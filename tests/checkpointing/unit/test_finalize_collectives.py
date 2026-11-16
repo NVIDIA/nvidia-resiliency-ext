@@ -39,8 +39,9 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     CheckpointMetadataCache,
     save_state_dict_async_finalize,
 )
-from tests.checkpointing.unit import TempNamedDir
-from tests.checkpointing.unit.test_utilities import Utils
+
+from . import TempNamedDir
+from .test_utilities import Utils
 
 pytestmark = pytest.mark.distributed
 
