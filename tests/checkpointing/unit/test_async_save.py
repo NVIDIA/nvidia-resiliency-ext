@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import pytest
 import torch
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import abort_nvrx_checkpoint
@@ -19,6 +20,8 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsync
 
 from . import TempNamedDir
 from .test_utilities import Model, Utils
+
+pytestmark = pytest.mark.distributed
 
 
 class TestAsyncSave:

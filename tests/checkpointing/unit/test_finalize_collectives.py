@@ -42,6 +42,8 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Utils
 
+pytestmark = pytest.mark.distributed
+
 NEEDS_TABLES = pytest.mark.skipif(
     not writer.writes_tables(), reason="needs the fast .metadata writer"
 )

@@ -57,6 +57,8 @@ from nvidia_resiliency_ext.checkpointing.utils import diff
 from tests.checkpointing.unit import TempNamedDir
 from tests.checkpointing.unit.test_utilities import Model, Utils
 
+pytestmark = pytest.mark.distributed
+
 
 class _FrameWithCode:
     def __init__(self):

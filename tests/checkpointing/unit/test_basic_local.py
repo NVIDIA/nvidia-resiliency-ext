@@ -28,6 +28,8 @@ from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager impor
 from . import TempNamedDir
 from .test_utilities import SimpleTensorAwareStateDict, Utils
 
+pytestmark = pytest.mark.distributed
+
 
 class TestLocalCheckpointing:
     def setup_method(self, method):

@@ -28,6 +28,20 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue
 from .test_utilities import Utils
 
 
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Skip a test that can't run in this launch.
+
+    Tests marked `distributed` need a process group, so they run under torchrun. Other tests are
+    standalone: they run without torchrun, or once, on rank 0, under torchrun.
+    """
+    if item.get_closest_marker("distributed") is None:
+        if Utils.rank not in (None, 0):
+            pytest.skip("standalone test; runs on rank 0 only under torchrun")
+        return
+    if Utils.world_size is None:
+        pytest.skip("distributed test; run it under torchrun")
+
+
 @pytest.fixture(scope="session")
 def _run_id() -> str:
     """A random name for this run's scratch directories, the same on every rank.

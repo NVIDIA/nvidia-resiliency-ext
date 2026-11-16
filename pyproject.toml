@@ -149,4 +149,6 @@ ignore = ["F841"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-markers = []
+markers = [
+    "distributed: needs a torch.distributed process group; run it under torchrun",
+]
