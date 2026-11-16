@@ -146,6 +146,27 @@ def record_fqn_modes(monkeypatch):
     return modes
 
 
+@pytest.fixture
+def set_fast_metadata(monkeypatch):
+    """Set NVRX_FAST_METADATA_PICKLE for this test.
+
+    md_writer caches what it reads from the variable, so the caches are cleared whenever the
+    variable changes, and again when the test ends, however it ends: a cached value from this
+    test would otherwise outlive the variable and change the writer for every later test.
+    """
+
+    def clear_caches():
+        md_writer.fast_metadata_enabled.cache_clear()
+        md_writer._select_dumps.cache_clear()
+
+    def set_mode(mode: str) -> None:
+        monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
+        clear_caches()
+
+    yield set_mode
+    clear_caches()
+
+
 class TestAsyncSave:
     def get_async_save_request(self, writer, pending, legacy=False) -> AsyncRequest:
         """Create an async save request with a finalization step.
@@ -301,7 +322,7 @@ class TestAsyncSave:
     @pytest.mark.parametrize('rank1', ['same', 'unencodable', 'fast'])
     @pytest.mark.parametrize('mode', ['1', 'python', '0'])
     def test_metadata_matches_torch(
-        self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode, rank1
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch, set_fast_metadata, mode, rank1
     ):
         """FileSystemWriterAsync writes the same .metadata as torch's FileSystemWriter.
 
@@ -309,9 +330,7 @@ class TestAsyncSave:
         sends its write results as a table or pickled: rank 1 as the others, or pickled because it
         can't encode them ('unencodable'), or as a table with the fast writer on ('fast').
         """
-        monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
-        md_writer.fast_metadata_enabled.cache_clear()
-        md_writer._select_dumps.cache_clear()
+        set_fast_metadata(mode)
         native = md_writer.native.dumps if md_writer.native is not None else pickler.dumps
         expected = {'1': native, 'python': pickler.dumps, '0': None}[mode]
         assert md_writer._select_dumps() is expected
@@ -323,9 +342,7 @@ class TestAsyncSave:
         if rank1 == 'fast' and mode == '1':
             pytest.skip('the same as rank1="same"')
         if rank == 1 and rank1 == 'fast':
-            monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', '1')
-            md_writer.fast_metadata_enabled.cache_clear()
-            md_writer._select_dumps.cache_clear()
+            set_fast_metadata('1')
         encode, decode_payloads = write_result_table.encode, state_dict_saver._decode_payloads
 
         def encode_or_fail(results):
@@ -346,33 +363,29 @@ class TestAsyncSave:
         model = FSDP(Model((1024, 1024), 8))
         state_dict = model.state_dict()
         planner = DefaultSavePlanner()
-        try:
-            with (
-                TempNamedDir(tmp_path_dist_ckpt / 'nvrx_metadata', sync=True) as async_ckpt_dir,
-                TempNamedDir(tmp_path_dist_ckpt / 'torch_metadata', sync=True) as sync_ckpt_dir,
-            ):
-                self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
-                self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
-                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-                if rank == 0:  # whether each rank sent a table
-                    rank1_table = rank1 == 'fast' or (rank1 == 'same' and mode != '0')
-                    expected = [rank1_table if r == 1 else mode != '0' for r in range(world_size)]
-                    assert received == expected
+        with (
+            TempNamedDir(tmp_path_dist_ckpt / 'nvrx_metadata', sync=True) as async_ckpt_dir,
+            TempNamedDir(tmp_path_dist_ckpt / 'torch_metadata', sync=True) as sync_ckpt_dir,
+        ):
+            self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
+            self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            if rank == 0:  # whether each rank sent a table
+                rank1_table = rank1 == 'fast' or (rank1 == 'same' and mode != '0')
+                expected = [rank1_table if r == 1 else mode != '0' for r in range(world_size)]
+                assert received == expected
 
-                nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
-                torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
-                for field in fields(torch_md):
-                    if field.name != 'storage_meta':  # holds the checkpoint path
-                        assert getattr(nvrx_md, field.name) == getattr(
-                            torch_md, field.name
-                        ), f'{field.name} differs from torch\'s'
+            nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
+            torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
+            for field in fields(torch_md):
+                if field.name != 'storage_meta':  # holds the checkpoint path
+                    assert getattr(nvrx_md, field.name) == getattr(
+                        torch_md, field.name
+                    ), f'{field.name} differs from torch\'s'
 
-                loaded = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
-                for key, value in state_dict.items():
-                    assert torch.equal(loaded[key], value), f'Mismatch for key {key!r}'
-        finally:
-            md_writer.fast_metadata_enabled.cache_clear()
-            md_writer._select_dumps.cache_clear()
+            loaded = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
+            for key, value in state_dict.items():
+                assert torch.equal(loaded[key], value), f'Mismatch for key {key!r}'
 
     @pytest.mark.parametrize(
         ('persistent_is_daemon', 'is_multiproc_io'),
