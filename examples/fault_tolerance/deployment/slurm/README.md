@@ -181,7 +181,7 @@ valid whether or not one is in use.
 ```bash
 squeue -u $USER -n nvrx_singleton -r          # generations and their tasks
 ls $NVRX_WORK_DIR/nvrx/*/cycle_infos/          # one file per restart cycle
-tail -f $NVRX_WORK_DIR/nvrx/*/logs/nvrx_*.log  # launcher log
+tail -f $NVRX_WORK_DIR/nvrx/*/logs/nvrx_*.log  # control and node-agent logs
 cat $NVRX_WORK_DIR/checkpoints/latest_checkpointed_iteration.txt
 ```
 
