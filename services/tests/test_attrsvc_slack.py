@@ -1452,6 +1452,33 @@ def test_timing_block_reports_each_mark_and_the_llm_share():
     assert "`26.8s` of `42.1s`" in text and "(64%)" in text
 
 
+def test_the_llm_share_is_a_share_only_while_one_route_contributed():
+    """multi_route runs routes concurrently, so summing two overlapping calls
+    and dividing by elapsed can read past 100% - time the verdict never spent.
+
+    Production configures one route today, so the share below is the live
+    behaviour; the guard exists so adding a second route cannot quietly turn
+    it into a wrong number.
+    """
+
+    single = format_timing(_timing(llm_api_wall_clock_s=26.8, llm_api_call_routes=1))
+    assert "`26.8s` of `42.1s`" in single and "(64%)" in single
+
+    # Two 25s calls overlapping inside a 42.1s verdict: 50s of 42.1s is 119%.
+    concurrent = format_timing(_timing(llm_api_wall_clock_s=50.0, llm_api_call_routes=2))
+    assert "`50.0s`" in concurrent
+    assert "total across 2 routes" in concurrent
+    assert "%" not in concurrent, "a sum of overlapping calls is not a share of elapsed time"
+
+
+def test_the_share_survives_an_attempt_that_recorded_no_route_count():
+    """Older cached attempts carry no count. Suppressing the share for them
+    would lose a figure that was correct when it was recorded."""
+
+    text = format_timing(_timing(llm_api_wall_clock_s=26.8))
+    assert "(64%)" in text
+
+
 def test_timing_block_is_last_so_it_never_precedes_the_verdict():
     detail = format_details(_job(), _parsed(), _timing())
     assert detail.index("*Analysis timing:*") > detail.index("*Terminal issue:*")

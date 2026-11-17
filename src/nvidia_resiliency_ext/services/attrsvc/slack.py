@@ -797,7 +797,16 @@ def format_timing(timing: Optional[Mapping[str, Any]]) -> str:
     llm = _compact_duration(llm_s)
     if llm:
         line = f"  • LLM API           `{llm}`"
-        if isinstance(l4_s, (int, float)) and not isinstance(l4_s, bool) and l4_s > 0:
+        # The share is elapsed waiting time only while one route contributed.
+        # Routes run concurrently, so summing two overlapping calls and
+        # dividing by elapsed can read past 100% - a figure that invites an
+        # operator to go looking for time the verdict never spent. With more
+        # than one, say what the number is instead of what fraction it is.
+        routes = timing.get("llm_api_call_routes")
+        concurrent = isinstance(routes, int) and not isinstance(routes, bool) and routes > 1
+        if concurrent:
+            line += f"  _(total across {routes} routes)_"
+        elif isinstance(l4_s, (int, float)) and not isinstance(l4_s, bool) and l4_s > 0:
             line += f" of `{_compact_duration(l4_s)}`  _({llm_s / l4_s * 100:.0f}%)_"
         bullets.append(line)
 

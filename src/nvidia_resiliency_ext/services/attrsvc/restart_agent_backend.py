@@ -190,6 +190,10 @@ class _AttemptExecution:
     # the route trace so the share of the verdict spent waiting on the LLM is
     # readable without parsing a trace.
     l1_model_call_wall_clock_s: float | None = None
+    # How many routes contributed to the sum above. Routes run
+    # concurrently, so the sum is only the time the verdict waited when
+    # exactly one contributed; see format_timing.
+    l1_model_call_routes: int = 0
     accumulator: ProgressiveL0Accumulator | None = None
     precompute_future: Future[bool] | None = None
     next_poll_at: float | None = None
@@ -305,6 +309,7 @@ def _entry_timing(entry: _AttemptExecution) -> dict[str, Any]:
         "analysis_to_l0_answer_s": l0_s,
         "analysis_to_l4_answer_s": analysis_to_l4_s,
         "llm_api_wall_clock_s": mark("l1_model_call_wall_clock_s"),
+        "llm_api_call_routes": mark("l1_model_call_routes"),
         # Stage detail inside the analysis.
         "drain_wall_clock_s": mark("terminal_drain_wall_clock_s"),
         "l0a_ready_wall_clock_s": mark("terminal_l0a_ready_wall_clock_s"),
@@ -1059,12 +1064,15 @@ class RestartAgentServiceBackend:
                     current.route_complete_count += 1
                     model_call_s = _model_call_wall_clock_s(trace)
                     if model_call_s is not None:
-                        # Routes can complete more than once; sum rather than
-                        # overwrite, so the figure covers every call the verdict
-                        # actually waited on.
+                        # Sum rather than overwrite, so the figure covers every
+                        # model call the verdict involved. Count the
+                        # contributors too: multi_route runs routes
+                        # concurrently, so with more than one the sum overlaps
+                        # itself and is no longer elapsed waiting time.
                         current.l1_model_call_wall_clock_s = (
                             current.l1_model_call_wall_clock_s or 0.0
                         ) + model_call_s
+                        current.l1_model_call_routes += 1
                     if (
                         current.first_route_ready_wall_clock_s is None
                         and current.terminal_at is not None
