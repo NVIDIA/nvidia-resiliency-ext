@@ -24,7 +24,7 @@ Implementation Changes and Evolution
 
 * Now, we don't need :py:func:`~nvidia_resiliency_ext.checkpointing.utils.wrap_for_async` anymore because :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` is safe to call garbage collection in the spawned process.
 
-* :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` runs :py:func:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors` in the spawned process. 
+* Without CPU shared memory, :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` runs :py:func:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors` in the spawned process, to copy the GPU tensors to host memory.
    So, we've added a new field, :py:attr:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn`, to pass the preload function(preload_fn) to the spawned process.
   
   * The preload_fn should be self-contained with a proper list of arguments with :py:class:`functools.partial`.

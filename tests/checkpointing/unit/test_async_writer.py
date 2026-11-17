@@ -856,6 +856,33 @@ class TestAsyncSave:
             with pytest.raises(CheckpointException):
                 self.save_and_finalize(ckpt_dir, rank_state_dict(), async_queue, cache)
 
+    def test_a_forked_caller_saves_kept_shm_tensors(self, tmp_path_dist_ckpt):
+        """Each forked process is a new worker, so the second save must not rely on the first
+        save's process keeping the shared-memory tensors."""
+        Utils.initialize_distributed()
+        FileSystemWriterAsync.cleanup_tensor_caches()
+        # The same values on every rank, so that its replicated items load back
+        state_dict = {f'param_{i}': torch.full((64, 64), 0.0, device='cuda') for i in range(4)}
+        async_queue = AsyncCallsQueue(persistent=False)
+        try:
+            for i in range(2):
+                for tensor in state_dict.values():
+                    tensor.fill_(float(i))
+                with TempNamedDir(tmp_path_dist_ckpt / f'save_{i}', sync=True) as ckpt_dir:
+                    self.async_save_checkpoint(
+                        ckpt_dir,
+                        state_dict,
+                        DefaultSavePlanner(),
+                        async_queue,
+                        use_cached_data_structure=True,
+                        use_cpu_shm_for_gpu_tensors=True,
+                    )
+                    async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                    loaded = self.load_checkpoint(ckpt_dir, deepcopy(state_dict))
+                    assert not any(len(x) for x in diff(loaded, state_dict))
+        finally:
+            async_queue.close()
+
     def test_cached_data_structure(self, tmp_path_dist_ckpt):
         """
         Verifies that use_cached_data_structure correctly caches GPU tensors in the worker

@@ -29,7 +29,19 @@ from abc import ABC, abstractmethod
 from collections import deque
 from multiprocessing.connection import Connection
 from time import time
-from typing import Any, Callable, ClassVar, Deque, Dict, List, NamedTuple, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Deque,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 import torch
 from torch import multiprocessing as mp
@@ -365,6 +377,18 @@ class _ForkedSave(_SubmittedSave):
         return True
 
 
+@runtime_checkable
+class _KeptByWorker(Protocol):
+    """An argument of an `AsyncRequest` that leaves out what a worker keeps between saves.
+
+    For example, the write data of `FileSystemWriterAsync`, which sends a persistent worker
+    only the key of tensors it received with an earlier save.
+    """
+
+    def received_here(self) -> Any:
+        """This argument with what the worker keeps filled in, as this process holds it."""
+
+
 class TemporalAsyncCaller(AsyncCaller):
     """Runs each async request in a newly forked process."""
 
@@ -383,6 +407,14 @@ class TemporalAsyncCaller(AsyncCaller):
         """
         if async_req.async_fn is None:
             return _EmptySave()
+        # Each forked process is a new worker, which keeps nothing between saves. This process
+        # keeps it for them instead, and they inherit it when forked.
+        async_req = async_req._replace(
+            async_fn_args=tuple(
+                arg.received_here() if isinstance(arg, _KeptByWorker) else arg
+                for arg in async_req.async_fn_args
+            )
+        )
 
         async_fn_args = list(async_req.async_fn_args)
         preloaded = None

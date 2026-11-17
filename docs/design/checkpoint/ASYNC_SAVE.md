@@ -428,7 +428,7 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 | Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                                 |
 | Resolving the plan, `.metadata`               | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                              |
 | Staging into shared memory, or through IPC    | `staging.py`: `ShmStager` and its `ShmBuffers`, `IpcStager` and its `IpcHandles`, `receive_cached`                                                      |
-| Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                      |
+| Writing in the worker                         | `filesystem_async.py`: `write_staged_data`, `_make_write_buckets`, `write_preloaded_data_*`                                                             |
 | Cached metadata template                      | `_metadata_template.py`: `MetadataTemplate`                                                                                                             |
 | Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                          |
 | State dict table and its Python producer      | `_metadata_pickler/state_dict_table.py`                                                                                                                 |

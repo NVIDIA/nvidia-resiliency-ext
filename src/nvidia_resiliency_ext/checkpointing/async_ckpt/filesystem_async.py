@@ -24,11 +24,22 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from heapq import heappop, heappush
 from io import UnsupportedOperation
-from itertools import chain
+from itertools import chain, count
 from operator import itemgetter
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 
 import torch
 from torch import multiprocessing as mp
@@ -71,7 +82,7 @@ from .staging import (  # noqa: F401 (ConsistentDataIdentifier is re-exported)
     Stager,
     clear_default_stagers,
     default_stager,
-    receive_cached,
+    receive,
     set_shm_drain,
 )
 
@@ -118,6 +129,83 @@ def get_write_results_queue(mp_mode: str = 'spawn') -> mp.Queue:
 
 # Backward-compat alias for the former private name
 _get_write_results_queue = get_write_results_queue
+
+
+class _WriteData(NamedTuple):
+    """What the worker writes for one save.
+
+    Args:
+        checkpoint_dir: the directory to write the files into.
+        separation_hint: prefix of the items to write to separate files, or None.
+        tensors: the tensors as staged.
+        byte_io: BytesIO items and their data, or None.
+        thread_count: the number of threads or processes to write with.
+        storage_plan: this rank's storage data from the plan, with the file prefix.
+    """
+
+    checkpoint_dir: str
+    separation_hint: Optional[str]
+    tensors: StagedTensors
+    byte_io: Optional[Tuple[list, list]]
+    thread_count: int
+    storage_plan: Any
+
+    def received_here(self) -> '_WriteData':
+        """This write data with the kept tensors filled in, from this process's worker cache.
+
+        For a forked worker, which keeps nothing between saves; see `TemporalAsyncCaller`.
+        """
+        return self._replace(tensors=StagedTensors(None, receive(self.tensors), None))
+
+
+def _make_write_buckets(write_data: _WriteData) -> List[WriteBucket]:
+    """Group a save's items into one write bucket per file, in the worker."""
+    start = time()
+    items, resolved_data = receive(write_data.tensors)
+    if write_data.byte_io:
+        items = items + list(write_data.byte_io[0])
+        resolved_data = resolved_data + list(write_data.byte_io[1])
+    separation_hint = write_data.separation_hint
+    storage_plan = write_data.storage_plan
+    logger.debug(f"_make_write_buckets: thread_count: {write_data.thread_count}, time: {start}")
+
+    # Create buckets from items
+    bins = write_data.thread_count // 2 if separation_hint is not None else write_data.thread_count
+    item_buckets = _split_by_size_and_type(bins, items)
+    logger.debug(f"_make_write_buckets: bucket_prep, time: {time() - start}")
+
+    # Create a mapping from items to resolved data
+    item_to_data = {id(item): data for item, data in zip(items, resolved_data)}
+
+    # Files are numbered across all groups
+    file_numbers = count()
+
+    # Build write_buckets with items grouped by file, assigning one per worker
+    write_buckets = []
+    for group_name, group_buckets in _split_by_separation_hint(
+        item_buckets, separation_hint
+    ).items():
+        for bucket in group_buckets:
+            bytes_data = []
+            tensor_data = []
+            for item in bucket:
+                data = item_to_data[id(item)]
+                if item.type == WriteItemType.BYTE_IO:
+                    bytes_data.append((item, data))
+                else:
+                    # Tensor data, in host memory
+                    tensor_data.append((item, data))
+
+            if len(bytes_data) > 0 or len(tensor_data) > 0:
+                file_name = f"{group_name}{storage_plan.prefix}{next(file_numbers)}{DEFAULT_SUFFIX}"
+                write_buckets.append(
+                    (
+                        os.path.join(write_data.checkpoint_dir, file_name),
+                        file_name,
+                        (bytes_data, tensor_data),
+                    )
+                )
+    return write_buckets
 
 
 class FileSystemWriterAsync(FileSystemWriter):
@@ -269,7 +357,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         Returns: None (if there is nothing to write on this rank) or a tuple of:
             1) the function that saves the data.
-            2) the function that stages tensors to a destination for async checkpointing.
+            2) the function that finishes staging the tensors in the worker, or None if the
+               stager has finished staging them. Its result replaces the 2nd argument of 1).
                This function should be self-contained.
             3) arguments to that function in 1).
         """
@@ -285,147 +374,84 @@ class FileSystemWriterAsync(FileSystemWriter):
 
         transform_list = [self.transforms] if hasattr(self, 'transforms') else []
 
-        # Format: (identifier, (separation_hint, cached_tensor_data,
-        # uncached_tensor_data, byte_io_data, thread_count, storage_plan))
-        # identifier is None when caching is disabled
-        # uncached_tensor_data is always passed fresh (like ByteIO), never cached
-        data_to_pass = (
-            self.consistent_data_identifier,
-            (
-                self.separation_hint,
+        write_data = _WriteData(
+            str(self.checkpoint_dir),
+            self.separation_hint,
+            StagedTensors(
+                self.consistent_data_identifier,
                 self.cached_tensor_data,
                 self.uncached_tensor_data,
-                self.byte_io_data,
-                self.thread_count,
-                self.storage_plan,
             ),
+            self.byte_io_data,
+            self.thread_count,
+            self.storage_plan,
         )
 
-        write_func = partial(
+        write_buckets_func = partial(
             self.write_preloaded_data_multithread, transform_list, self.use_msc, open_file
         )
+        write_func = partial(self.write_staged_data, write_buckets_func)
 
-        preload_fn = partial(self.preload_tensors, (str(self.checkpoint_dir), data_to_pass), True)
+        preload_fn = (
+            partial(self.preload_tensors, write_data, True)
+            if self._stager.stages_in_worker
+            else None
+        )
 
         return (
             write_func,
             preload_fn,
-            [torch.distributed.get_rank(), None, self.results_queue],
+            [torch.distributed.get_rank(), write_data, self.results_queue],
         )
 
     @staticmethod
-    def preload_tensors(resolved_plan_data: Tuple, non_blocking=True) -> List[WriteBucket]:
+    def preload_tensors(write_data: '_WriteData', non_blocking=True) -> '_WriteData':
         """
-        Creates write_buckets and preloads tensors to host memory.
+        Copies the GPU tensors of a save to host memory, in the worker.
 
-        This runs in the persistent worker process. Bucket creation is done here
-        (not in prepare_write_data) so that cached tensor data stored in the
-        worker process can be retrieved and reused without re-pickling.
+        The worker step of `IpcStager`: with CPU shared memory, the tensors are copied to
+        host in the training process and there is no worker step.
 
         Args:
-            resolved_plan_data (Tuple): Tuple containing
-                (checkpoint_dir, (identifier, data_structure)) where:
-
-                - identifier: ConsistentDataIdentifier (caching) or None
-                - data_structure: (separation_hint, cached_tensor_data,
-                  uncached_tensor_data, byte_io_data, thread_count, storage_plan)
+            write_data (_WriteData): the save's write data, with the tensors as staged.
             non_blocking (bool, optional): Enable pinned D2H memcpy. Default is True.
 
         Returns:
-            List[WriteBucket]: List of write buckets with tensors moved to CPU
+            _WriteData: the write data with every tensor in host memory
         """
         start = time()
-        logger = logging.getLogger(__name__)
+        tensors = IpcStager.copy_to_host(write_data.tensors, non_blocking)
+        logger.debug(f"preload_tensors: D2H, time: {time() - start}")
+        return write_data._replace(tensors=tensors)
 
-        checkpoint_dir, data_or_identifier = resolved_plan_data
+    @staticmethod
+    def write_staged_data(
+        write_buckets_func: Callable,
+        rank: int,
+        write_data: '_WriteData',
+        global_results_queue: mp.Queue,
+    ) -> None:
+        """
+        Writes a save's staged data, in the worker.
 
-        # Helper to combine cached tensor, uncached tensor, and ByteIO data
-        def combine_data(cached_tensor_data, uncached_tensor_data, byte_io_data):
-            items, resolved = [], []
-            for data in [cached_tensor_data, uncached_tensor_data, byte_io_data]:
-                if data:
-                    items.extend(data[0])
-                    resolved.extend(data[1])
-            return items, resolved
+        Groups the items into one write bucket per file, then writes the buckets with
+        `write_buckets_func` (`write_preloaded_data_multithread`). The buckets are made here,
+        in the worker, so that tensors the worker keeps between saves need not be sent again.
 
-        # Parse data structure: (identifier, (separation_hint, cached_tensor_data,
-        # uncached_tensor_data, byte_io_data, thread_count, storage_plan))
-        # identifier is None when disabled, ConsistentDataIdentifier when enabled
-        identifier, data_structure = data_or_identifier
-        (
-            separation_hint,
-            cached_tensor_data,
-            uncached_tensor_data,
-            byte_io_data,
-            thread_count,
-            storage_plan,
-        ) = data_structure
-
-        cached_tensor_data = receive_cached(identifier, cached_tensor_data)
-
-        items, resolved_data = combine_data(cached_tensor_data, uncached_tensor_data, byte_io_data)
-
-        logger.debug(f"preload_tensors: thread_count: {thread_count}, time: {start}")
-
-        # Create buckets from items
-        bins = thread_count // 2 if separation_hint is not None else thread_count
-        item_buckets = _split_by_size_and_type(bins, items)
-        logger.debug(f"preload_tensors: bucket_prep, time: {time() - start}")
-
-        # Create a mapping from items to resolved data
-        item_to_data = {id(item): data for item, data in zip(items, resolved_data)}
-
-        file_count = 0
-
-        def gen_file(prefix=""):
-            nonlocal file_count
-            file_name = f"{prefix}{storage_plan.prefix}{file_count}{DEFAULT_SUFFIX}"
-            file_count += 1
-            return file_name
-
-        # Build write_buckets with items grouped by file, assigning one per worker
-        write_buckets = []
-        for group_name, group_buckets in _split_by_separation_hint(
-            item_buckets, separation_hint
-        ).items():
-            for bucket in group_buckets:
-                bytes_data = []
-                tensor_data = []
-                for item in bucket:
-                    data = item_to_data[id(item)]
-                    if item.type == WriteItemType.BYTE_IO:
-                        bytes_data.append((item, data))
-                    else:
-                        # Tensor data (GPU or CPU) - already cloned if needed
-                        tensor_data.append((item, data))
-
-                if len(bytes_data) > 0 or len(tensor_data) > 0:
-                    file_name = gen_file(prefix=group_name)
-                    write_buckets.append(
-                        (
-                            os.path.join(checkpoint_dir, file_name),
-                            file_name,
-                            (bytes_data, tensor_data),
-                        )
-                    )
-
-        # Move GPU tensors to CPU.  For the shm path, tensors are already on CPU so no
-        # tensor is copied — no D2H, no sync needed.
-        result: List[WriteBucket] = []
-        needs_sync = False
-        for bucket in write_buckets:
-            bucket_path, bucket_key, bucket_data = bucket
-            bytes_data, tensor_data = bucket_data
-            tensor_list, bucket_needs_sync = IpcStager.copy_to_host(tensor_data, non_blocking)
-            needs_sync = needs_sync or bucket_needs_sync
-            result.append((bucket_path, bucket_key, (bytes_data, tensor_list)))
-
-        if non_blocking and needs_sync:
-            torch.cuda.synchronize()
-
-        end = time()
-        logger.debug(f"preload_tensors: D2H and bucket creation, time: {end - start}")
-        return result
+        Args:
+            write_buckets_func (Callable): writes the buckets: called with `rank`, the buckets
+                and `global_results_queue`.
+            rank (int): training rank
+            write_data (_WriteData): the save's write data, with tensors in host memory.
+            global_results_queue (mp.Queue): queue to pass the write results to.
+        """
+        try:
+            write_buckets = _make_write_buckets(write_data)
+        except Exception as e:  # reported to finalize like a failed write
+            logger.error(f"Making the write buckets failed: {e}")
+            global_results_queue.put(e)
+            return
+        write_buckets_func(rank, write_buckets, global_results_queue)
 
     @staticmethod
     def _finalize_write_execution(

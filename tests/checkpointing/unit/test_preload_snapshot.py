@@ -15,17 +15,23 @@
 
 """nvbug 6439229 regression tests for async CPU tensor snapshots."""
 
+import queue
 from unittest.mock import Mock
 
 import torch
 from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
+    FileSystemWriterAsync,
+    _WriteData,
+)
 from nvidia_resiliency_ext.checkpointing.async_ckpt.staging import (
+    ConsistentDataIdentifier,
     PerSaveShmBuffers,
     PersistentShmBuffers,
     ShmStager,
+    StagedTensors,
 )
 
 
@@ -123,3 +129,16 @@ class TestFileSystemWriterPrepareSnapshot:
         for _ in range(2):
             self._prepare_writer(tmp_path, [torch.tensor(1.0)], stager=stager)
         assert drain.call_count == 2
+
+
+def test_a_save_that_cant_be_made_into_buckets_is_reported_as_failed(tmp_path):
+    """The error reaches finalize like a failed write, rather than ending the worker."""
+    # Only the key of tensors this process never received
+    missing = StagedTensors(ConsistentDataIdentifier('never sent'), None, None)
+    write_data = _WriteData(str(tmp_path), None, missing, None, 1, None)
+    results, write_buckets = queue.Queue(), Mock()
+
+    FileSystemWriterAsync.write_staged_data(write_buckets, 0, write_data, results)
+
+    assert isinstance(results.get_nowait(), RuntimeError)
+    write_buckets.assert_not_called()

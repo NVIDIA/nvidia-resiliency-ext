@@ -35,6 +35,15 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   `AsyncCallsQueue`, whose methods are unchanged, or use the new `AsyncCaller.submit`,
   which returns the submitted save.
 
+### Behavior changes
+
+- **`FileSystemWriterAsync.preload_tensors` only copies GPU tensors to host memory;**
+  CPU tensors are copied in the training process when the save is staged. It returns
+  the save's write data instead of write buckets; the save function makes the buckets.
+  With CPU shared memory, `get_save_function_and_args` returns no preload function,
+  because every tensor is already copied into shared memory. Pass its results to
+  `AsyncRequest` unchanged, as before.
+
 ## NVIDIA Resiliency Extension v0.7.1 (Unreleased)
 
 These notes describe the changes selected for the 0.7.1 release candidate relative

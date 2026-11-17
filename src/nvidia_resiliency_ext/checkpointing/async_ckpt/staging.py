@@ -134,6 +134,10 @@ class StagedTensors(NamedTuple):
 class Stager(ABC):
     """Stages the tensors resolved for a rank's write items, after planning."""
 
+    # Whether staging finishes in the worker (`AsyncRequest.preload_fn`), rather than in the
+    # training process when `stage` returns
+    stages_in_worker: bool = False
+
     def prepare(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, bool]:
         """Prepare one resolved tensor for staging. Called while the plan is resolved.
 
@@ -348,6 +352,9 @@ class IpcStager(Stager):
     `handles` decides whether the other GPU tensors' handles are too.
     """
 
+    # The worker copies the GPU tensors to host memory
+    stages_in_worker = True
+
     def __init__(self, handles: IpcHandles):
         self.handles = handles
 
@@ -388,24 +395,24 @@ class IpcStager(Stager):
         self.handles.clear()
 
     @staticmethod
-    def copy_to_host(
-        tensor_data: List[Tuple[WriteItem, Any]], non_blocking: bool
-    ) -> Tuple[List[Tuple[WriteItem, Any]], bool]:
-        """Copy the GPU tensors of `tensor_data` to host memory, in the worker.
+    def copy_to_host(staged: StagedTensors, non_blocking: bool) -> StagedTensors:
+        """Copy a save's GPU tensors to host memory, in the worker.
 
         Returns:
-            (items, tensors on the host), and whether the caller must synchronize before
-            reading the tensors.
+            StagedTensors: every tensor of the save, in host memory, kept by nothing.
         """
-        tensor_list = []
+        items, tensors = receive(staged)
+        host_tensors = []
         needs_sync = False
-        for item, tensor in tensor_data:
+        for tensor in tensors:
             if tensor.is_cuda:
                 needs_sync = True
-                tensor_list.append((item, tensor.to("cpu", non_blocking=non_blocking)))
+                host_tensors.append(tensor.to("cpu", non_blocking=non_blocking))
             else:
-                tensor_list.append((item, tensor))
-        return tensor_list, needs_sync
+                host_tensors.append(tensor)
+        if non_blocking and needs_sync:
+            torch.cuda.synchronize()
+        return StagedTensors(None, (items, host_tensors), None)
 
 
 def make_stager(cpu_shm: bool, persistent: bool) -> Stager:
@@ -447,6 +454,19 @@ def set_shm_drain(drain: Optional[Callable[[], None]]) -> None:
     """Set (or clear with None) the drain of the shared-memory buffers that weren't given one."""
     global _shm_drain
     _shm_drain = drain
+
+
+def receive(staged: StagedTensors) -> ItemsAndData:
+    """A save's tensors and their write items, in the worker.
+
+    The cached tensors as sent, or kept from an earlier save, then the uncached ones.
+    """
+    items, tensors = [], []
+    for part in (receive_cached(staged.identifier, staged.cached), staged.uncached):
+        if part:
+            items.extend(part[0])
+            tensors.extend(part[1])
+    return items, tensors
 
 
 def receive_cached(
