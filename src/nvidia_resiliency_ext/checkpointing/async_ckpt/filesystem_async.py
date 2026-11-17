@@ -15,7 +15,6 @@
 
 """ Storage writer for PyT Distributed format allowing asynchronous save. """
 import dataclasses
-import hashlib
 import inspect
 import logging
 import os
@@ -29,7 +28,7 @@ from itertools import chain
 from operator import itemgetter
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 import torch
 from torch import multiprocessing as mp
@@ -60,12 +59,21 @@ try:
 except ImportError:
     HAVE_PSUTIL = False
 
-from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
 from . import _metadata_pickler
 from ._metadata_template import MetadataTemplate
 from .core import PersistentAsyncCaller
+from .staging import (  # noqa: F401 (ConsistentDataIdentifier is re-exported)
+    ConsistentDataIdentifier,
+    IpcStager,
+    StagedTensors,
+    Stager,
+    clear_default_stagers,
+    default_stager,
+    receive_cached,
+    set_shm_drain,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -89,79 +97,6 @@ def _wrap_exception_for_gather(exc: BaseException) -> WRAPPED_EXCEPTION:
             object.__setattr__(frame, "_code", None)
 
     return wrapped_exception
-
-
-class ConsistentDataIdentifier:
-    """Identifier for consistent data structure stored in worker cache.
-
-    This allows passing a lightweight identifier instead of pickling
-    the entire data structure (which includes IPC handles) across process boundaries.
-    """
-
-    def __init__(self, key: str):
-        self.key = key
-
-
-def _compute_data_structure_key_from_plan(items: List[WriteItem]) -> str:
-    """Compute a hash key based on plan items only (no data resolution needed).
-
-    This creates a deterministic key from plan metadata that's available without
-    resolving the actual tensor data.
-
-    Args:
-        items: List of WriteItem from the plan
-
-    Returns:
-        Hex-digest string key representing the data structure
-    """
-    structure_info = []
-
-    for item in items:
-        # Include item metadata that defines the structure
-        item_info = (
-            item.index.fqn,  # Fully qualified name
-            item.type,  # WriteItemType (BYTE_IO or TENSOR)
-        )
-
-        # Include metadata from plan (available without resolving data)
-        if item.tensor_data is not None:
-            # Use tensor metadata from the plan
-            data_info = (
-                tuple(item.tensor_data.chunk.sizes),  # Tensor chunk shape
-                str(item.tensor_data.properties.dtype),  # Data type
-            )
-        else:
-            # For non-tensor data (BYTE_IO), use placeholder
-            data_info = (("BYTE_IO",), "BYTE_IO")
-        structure_info.append((item_info, data_info))
-
-    # Use SHA-256 for collision resistance and cross-process stability
-    # (Python's built-in hash() is randomized per-process and collision-prone)
-    return hashlib.sha256(str(structure_info).encode()).hexdigest()
-
-
-def _compute_tensor_data_ptrs(items: List[WriteItem], tensors: List[Any]) -> Tuple[Tuple, ...]:
-    """Compute a storage identity fingerprint for tensors cached via CUDA IPC."""
-    ptrs = []
-    for item, tensor in zip(items, tensors):
-        chunk = item.tensor_data.chunk if item.tensor_data is not None else None
-        chunk_info = (tuple(chunk.offsets), tuple(chunk.sizes)) if chunk is not None else None
-
-        if isinstance(tensor, torch.Tensor):
-            storage = tensor.untyped_storage()
-            tensor_info = (
-                str(tensor.device),
-                tensor.data_ptr(),
-                storage.data_ptr(),
-                tensor.storage_offset(),
-                tuple(tensor.size()),
-                tuple(tensor.stride()),
-                str(tensor.dtype),
-            )
-        else:
-            tensor_info = (type(tensor).__qualname__,)
-        ptrs.append((item.index.fqn, chunk_info, tensor_info))
-    return tuple(ptrs)
 
 
 @_disable_gc()
@@ -205,25 +140,6 @@ class FileSystemWriterAsync(FileSystemWriter):
     (intermediate state is stored as writer attributes).
     """
 
-    # Class-level cache to track identifiers that have been sent to worker across instances
-    _cached_identifiers: set = set()
-
-    # Training-side CUDA IPC tensor fingerprint cache.
-    # Key: SHA-256 of plan items (same as ConsistentDataIdentifier).
-    # Value: data/storage pointer fingerprint for the GPU tensors sent to the worker.
-    _cached_tensor_data_ptrs: ClassVar[Dict[str, Tuple[Tuple, ...]]] = {}
-
-    # Training-side shm tensor cache: reuses allocations across checkpoints.
-    # Only populated when use_cpu_shm_for_gpu_tensors=True AND use_cached_data_structure=True.
-    # Key: SHA-256 of plan items (same as ConsistentDataIdentifier).
-    # Value: (items, shm_tensors) — one managed share_memory_() snapshot per tensor.
-    _shm_tensor_cache: ClassVar[Dict[str, Tuple[List, List]]] = {}
-
-    # Blocking drain registered by AsyncCallsQueue when cpu_shm_mode=True.
-    # Called in prepare_write_data before the first copy_() into a reused shm tensor,
-    # so any prior write that is still reading from those tensors completes first.
-    _shm_drain_callback: ClassVar[Optional[Callable[[], None]]] = None
-
     def __init__(
         self,
         path: Union[str, os.PathLike],
@@ -233,6 +149,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         is_multiproc_io: bool = False,
         use_cached_data_structure: bool = False,
         use_cpu_shm_for_gpu_tensors: bool = False,
+        stager: Optional[Stager] = None,
         **kwargs,
     ):
         self.checkpoint_dir = path
@@ -264,6 +181,13 @@ class FileSystemWriterAsync(FileSystemWriter):
         # Avoids cuMemImportFromShareableHandle on MNNVL systems where NVLink fabric
         # resources are exhausted by the training ranks.
         self.use_cpu_shm_for_gpu_tensors = use_cpu_shm_for_gpu_tensors
+        # Stages the tensors after planning. Without one, the process's default stager for
+        # `use_cpu_shm_for_gpu_tensors` and `use_cached_data_structure`.
+        self._stager: Stager = (
+            stager
+            if stager is not None
+            else default_stager(use_cpu_shm_for_gpu_tensors, use_cached_data_structure)
+        )
 
     def prepare_write_data(self, plan: SavePlan, planner: SavePlanner) -> None:
         """
@@ -286,230 +210,31 @@ class FileSystemWriterAsync(FileSystemWriter):
                 self.thread_count > 1
             ), "thread_count must be at least 2 if separation_hint is provided"
 
-        def _clone_or_dequantize_if_needed(ten: torch.Tensor):
-            """Snapshot CPU tensors and dequantize supported GPU tensors.
-
-            Unless the CPU shared-memory path is enabled, CPU tensors must be cloned
-            before an ``AsyncRequest`` is sent to a persistent worker. With CPU shared
-            memory enabled, all tensors are copied into managed shared-memory snapshots
-            below instead.
-
-            Non-CPU tensors are returned as-is after any required dequantization. Their
-            transfer is handled later by the selected GPU-IPC or CPU shared-memory path.
-
-            Returns:
-                (tensor, was_dequantized): the processed tensor and a bool indicating
-                    whether dequantize() was called. Tracked explicitly because some
-                    frameworks (e.g. TransformerEngine MXFP8) use a fake bfloat16 dtype
-                    for quantized tensors, making dtype-based detection unreliable.
-            """
-            ten = ten.detach()
-            if ten.device.type == "cpu" and not self.use_cpu_shm_for_gpu_tensors:
-                return ten.clone(), False
-            if ten.device.type == "cuda" and "dequantize" in type(ten).__dict__:
-                return ten.dequantize(), True
-            return ten, False
-
-        def resolve_data(items):
+        def resolve_data(items, prepare=None):
             resolved = []
             dequantized_flags = []
             for item in items:
                 data = planner.resolve_data(item)
-                # Apply cloning/dequantize logic during resolution
-                if isinstance(data, torch.Tensor):
-                    data, was_dequantized = _clone_or_dequantize_if_needed(data)
+                if prepare is not None and isinstance(data, torch.Tensor):
+                    data, was_dequantized = prepare(data)
                 else:
                     was_dequantized = False
                 resolved.append(data)
                 dequantized_flags.append(was_dequantized)
             return resolved, dequantized_flags
 
-        # Separate tensor data from ByteIO data. Tensor routing depends on the transfer mode.
+        # Separate tensor data from ByteIO data. The stager stages the tensors.
         tensor_items = [item for item in plan.items if item.type != WriteItemType.BYTE_IO]
         byte_io_items = [item for item in plan.items if item.type == WriteItemType.BYTE_IO]
 
-        # The GPU IPC path separates resolved tensors into cacheable vs uncached buckets.
-        # Dequantized tensors are tracked explicitly via dequantized_flags because
-        # some frameworks (e.g. TransformerEngine MXFP8) report bfloat16 as the dtype
-        # for quantized tensors, making dtype-based detection unreliable.
-        def separate_for_gpu_ipc(items, resolved_data, dequantized_flags):
-            """Exclude tensors that cannot reuse a stable GPU IPC handle."""
-            cacheable_items, cacheable_data = [], []
-            uncached_items, uncached_data = [], []
-
-            for item, data, was_dequantized in zip(items, resolved_data, dequantized_flags):
-                if isinstance(data, torch.Tensor) and data.device.type == "cpu" or was_dequantized:
-                    uncached_items.append(item)
-                    uncached_data.append(data)
-                else:
-                    cacheable_items.append(item)
-                    cacheable_data.append(data)
-
-            return (cacheable_items, cacheable_data), (uncached_items, uncached_data)
-
-        # Handle tensor caching. The GPU IPC path caches only stable GPU allocations. The CPU
-        # shared-memory path snapshots and caches tensors from both CPU and GPU sources.
-        if (self.use_cached_data_structure or self.use_cpu_shm_for_gpu_tensors) and tensor_items:
-            key = _compute_data_structure_key_from_plan(tensor_items)
-            cache_exists = key in FileSystemWriterAsync._cached_identifiers
-
-            # Resolve every tensor before routing it for the selected transfer mode.
-            resolved_tensors, dequantized_flags = resolve_data(tensor_items)
-            (cacheable_items, cacheable_data), (uncached_items, uncached_data) = (
-                separate_for_gpu_ipc(tensor_items, resolved_tensors, dequantized_flags)
-                if not self.use_cpu_shm_for_gpu_tensors
-                else ((tensor_items, resolved_tensors), ([], []))
-            )
-
-            if cacheable_items and self.use_cpu_shm_for_gpu_tensors:
-                # --- CPU shared-memory path ---
-                # Snapshot every tensor into shared CPU memory so the worker never needs
-                # CUDA IPC / fabric handles or references to live training tensors.
-                if (
-                    self.use_cached_data_structure
-                    and key in FileSystemWriterAsync._shm_tensor_cache
-                ):
-                    # Reuse existing allocations.  Drain any in-flight write first:
-                    # the worker for checkpoint N may still be reading these buffers
-                    # while we are about to overwrite them with checkpoint N+1 values.
-                    if FileSystemWriterAsync._shm_drain_callback is not None:
-                        with telemetry.span(
-                            semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.shm_drain"
-                        ):
-                            FileSystemWriterAsync._shm_drain_callback()
-                    _, shm_tensors = FileSystemWriterAsync._shm_tensor_cache[key]
-                    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
-                        pending_cuda_copies = 0
-                        for shm_t, source_t in zip(shm_tensors, cacheable_data):
-                            shm_t.copy_(source_t, non_blocking=True)
-                            # Periodically sync to avoid exhausting CUDA's pageable staging
-                            # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
-                            pending_cuda_copies += int(source_t.device.type == "cuda")
-                            if pending_cuda_copies == 8:
-                                torch.cuda.synchronize()
-                                pending_cuda_copies = 0
-                        if pending_cuda_copies:
-                            torch.cuda.synchronize()
-                    logger.debug(
-                        f"Copied {len(shm_tensors)} tensors into reused shm allocations "
-                        f"(key={key})"
-                    )
-                else:
-                    # Allocate one independent shm tensor per source tensor and copy current
-                    # values in. Allocations are cached only when structure caching is enabled.
-                    shm_tensors = []
-                    total_bytes = 0
-                    with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
-                        pending_cuda_copies = 0
-                        for tensor in cacheable_data:
-                            contiguous_tensor = tensor.contiguous()
-                            shm_t = torch.empty(
-                                contiguous_tensor.shape, dtype=contiguous_tensor.dtype
-                            ).share_memory_()
-                            shm_t.copy_(contiguous_tensor, non_blocking=True)
-                            shm_tensors.append(shm_t)
-                            total_bytes += shm_t.nbytes
-                            # Periodically sync to avoid exhausting CUDA's pageable staging pages
-                            pending_cuda_copies += int(contiguous_tensor.device.type == "cuda")
-                            if pending_cuda_copies == 8:
-                                torch.cuda.synchronize()
-                                pending_cuda_copies = 0
-                        if pending_cuda_copies:
-                            torch.cuda.synchronize()
-                    if self.use_cached_data_structure:
-                        FileSystemWriterAsync._shm_tensor_cache[key] = (
-                            cacheable_items,
-                            shm_tensors,
-                        )
-                    logger.debug(
-                        f"Allocated {len(shm_tensors)} shm tensors ({total_bytes} bytes total) "
-                        f"and copied current values (key={key})"
-                    )
-
-                if self.use_cached_data_structure:
-                    self.consistent_data_identifier = ConsistentDataIdentifier(key)
-                    if cache_exists:
-                        # Worker already has the shm tensor references cached; send None to
-                        # signal it should reuse them (values are fresh after the copy above).
-                        self.cached_tensor_data = None
-                        logger.debug(
-                            f"Reusing worker-cached shm tensors (key={key}), "
-                            f"{len(uncached_items)} uncached tensors passed fresh"
-                        )
-                    else:
-                        # First checkpoint with caching: send shm tensors to worker.
-                        self.cached_tensor_data = (cacheable_items, shm_tensors)
-                        FileSystemWriterAsync._cached_identifiers.add(key)
-                        logger.debug(
-                            f"Sending {len(shm_tensors)} shm tensors to worker (key={key}), "
-                            f"{len(uncached_items)} uncached tensors passed fresh"
-                        )
-                else:
-                    # No caching: always send fresh shm tensors; worker uses them directly.
-                    self.consistent_data_identifier = None
-                    self.cached_tensor_data = (cacheable_items, shm_tensors)
-                    logger.debug(
-                        f"Sending {len(shm_tensors)} fresh shm tensors to worker (no caching), "
-                        f"{len(uncached_items)} uncached tensors passed fresh"
-                    )
-            elif cache_exists:
-                # --- original GPU IPC path, reuse ---
-                current_data_ptrs = _compute_tensor_data_ptrs(cacheable_items, cacheable_data)
-                cache_data_is_current = (
-                    FileSystemWriterAsync._cached_tensor_data_ptrs.get(key) == current_data_ptrs
-                )
-                self.consistent_data_identifier = ConsistentDataIdentifier(key)
-                self.cached_tensor_data = (
-                    None if cache_data_is_current else (cacheable_items, cacheable_data)
-                )
-                if not cache_data_is_current:
-                    FileSystemWriterAsync._cached_tensor_data_ptrs[key] = current_data_ptrs
-                cache_action = "Reusing" if cache_data_is_current else "Refreshing"
-                logger.debug(
-                    f"{cache_action} cached GPU tensors (key={key}), "
-                    f"{len(uncached_items)} uncached tensors passed fresh"
-                )
-            elif cacheable_items:
-                # --- original GPU IPC path, first time ---
-                self.consistent_data_identifier = ConsistentDataIdentifier(key)
-                self.cached_tensor_data = (cacheable_items, cacheable_data)
-                FileSystemWriterAsync._cached_identifiers.add(key)
-                FileSystemWriterAsync._cached_tensor_data_ptrs[key] = _compute_tensor_data_ptrs(
-                    cacheable_items, cacheable_data
-                )
-                logger.debug(
-                    f"Caching {len(cacheable_items)} GPU tensors (key={key}), "
-                    f"{len(uncached_items)} uncached tensors passed fresh"
-                )
-            else:
-                # No GPU tensors to cache; skip caching entirely
-                self.consistent_data_identifier = None
-                self.cached_tensor_data = None
-                logger.debug(
-                    f"No GPU tensors to cache (key={key}), "
-                    f"{len(uncached_items)} uncached tensors passed fresh"
-                )
-
-            # Uncached tensors are always passed fresh (never cached)
-            self.uncached_tensor_data = (uncached_items, uncached_data) if uncached_items else None
+        if tensor_items:
+            resolved_tensors, dequantized_flags = resolve_data(tensor_items, self._stager.prepare)
+            staged = self._stager.stage(tensor_items, resolved_tensors, dequantized_flags)
         else:
-            # No caching - resolve and separate all tensors
-            self.consistent_data_identifier = None
-
-            if tensor_items:
-                resolved_tensors, dequantized_flags = resolve_data(tensor_items)
-                (cacheable_items, cacheable_data), (uncached_items, uncached_data) = (
-                    separate_for_gpu_ipc(tensor_items, resolved_tensors, dequantized_flags)
-                )
-                self.cached_tensor_data = (
-                    (cacheable_items, cacheable_data) if cacheable_items else None
-                )
-                self.uncached_tensor_data = (
-                    (uncached_items, uncached_data) if uncached_items else None
-                )
-            else:
-                self.cached_tensor_data = None
-                self.uncached_tensor_data = None
+            staged = StagedTensors(None, None, None)
+        self.consistent_data_identifier = staged.identifier
+        self.cached_tensor_data = staged.cached
+        self.uncached_tensor_data = staged.uncached
 
         # Always resolve ByteIO fresh (cannot use IPC)
         self.byte_io_data = (
@@ -525,24 +250,8 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     @classmethod
     def cleanup_tensor_caches(cls) -> None:
-        """Release training-side tensor caches and invalidate the identifier set.
-
-        Must be called whenever the worker process is restarted.  A fresh worker
-        has an empty ``_worker_data_cache``, so both paths need re-priming:
-
-        - **CPU shm path** (``use_cpu_shm_for_gpu_tensors=True``): clears
-          ``_shm_tensor_cache`` so the next checkpoint re-allocates shm tensors
-          and sends them to the worker instead of sending ``None`` (which would
-          cause a worker-side cache miss).
-        - **GPU IPC path** (``use_cached_data_structure=True``): clearing
-          ``_cached_identifiers`` forces the next checkpoint to re-send the GPU
-          tensor IPC handles rather than assuming the worker already has them.
-        """
-        if cls._shm_tensor_cache:
-            logger.info(f"Clearing shm tensor cache ({len(cls._shm_tensor_cache)} entries)")
-            cls._shm_tensor_cache.clear()
-        cls._cached_identifiers.clear()
-        cls._cached_tensor_data_ptrs.clear()
+        """Make the default stagers send everything again. Called when a new worker starts."""
+        clear_default_stagers()
 
     @classmethod
     def register_shm_drain_callback(cls, fn: Optional[Callable[[], None]]) -> None:
@@ -551,7 +260,7 @@ class FileSystemWriterAsync(FileSystemWriter):
         AsyncCallsQueue registers this when cpu_shm_mode=True so that
         prepare_write_data drains any in-flight write before overwriting shm tensors.
         """
-        cls._shm_drain_callback = fn
+        set_shm_drain(fn)
 
     def get_save_function_and_args(self) -> Tuple[Optional[Callable], Optional[Callable], List]:
         """
@@ -652,19 +361,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             storage_plan,
         ) = data_structure
 
-        if isinstance(identifier, ConsistentDataIdentifier):
-            # Caching enabled: get or cache tensor data in the worker process
-            # On the GPU IPC path, CPU and dequantized tensors remain uncached.
-            key = identifier.key
-            if cached_tensor_data is not None:
-                PersistentAsyncCaller._worker_data_cache[key] = cached_tensor_data
-                logger.debug(f"Worker cached tensors (key={key})")
-            elif key in PersistentAsyncCaller._worker_data_cache:
-                cached_tensor_data = PersistentAsyncCaller._worker_data_cache[key]
-                logger.debug(f"Worker retrieved cached tensors (key={key})")
-            else:
-                raise RuntimeError(f"Worker cache miss for key {key}. Worker may have restarted.")
-        # else: identifier is None, no caching needed
+        cached_tensor_data = receive_cached(identifier, cached_tensor_data)
 
         items, resolved_data = combine_data(cached_tensor_data, uncached_tensor_data, byte_io_data)
 
@@ -712,20 +409,15 @@ class FileSystemWriterAsync(FileSystemWriter):
                         )
                     )
 
-        # Move GPU tensors to CPU.  For the shm path, tensors are already on CPU so the
-        # .to("cpu") branch is skipped entirely — no D2H, no sync needed.
+        # Move GPU tensors to CPU.  For the shm path, tensors are already on CPU so no
+        # tensor is copied — no D2H, no sync needed.
         result: List[WriteBucket] = []
         needs_sync = False
         for bucket in write_buckets:
             bucket_path, bucket_key, bucket_data = bucket
             bytes_data, tensor_data = bucket_data
-            tensor_list = []
-            for item, tensor in tensor_data:
-                if tensor.is_cuda:
-                    needs_sync = True
-                    tensor_list.append((item, tensor.to("cpu", non_blocking=non_blocking)))
-                else:
-                    tensor_list.append((item, tensor))
+            tensor_list, bucket_needs_sync = IpcStager.copy_to_host(tensor_data, non_blocking)
+            needs_sync = needs_sync or bucket_needs_sync
             result.append((bucket_path, bucket_key, (bytes_data, tensor_list)))
 
         if non_blocking and needs_sync:
@@ -933,12 +625,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             # Worker failed — its data cache may have been lost (e.g. after a restart).
             # Drop any identifier we recorded as cached so the next save re-populates it.
             if self.consistent_data_identifier is not None:
-                FileSystemWriterAsync._cached_identifiers.discard(
-                    self.consistent_data_identifier.key
-                )
-                FileSystemWriterAsync._cached_tensor_data_ptrs.pop(
-                    self.consistent_data_identifier.key, None
-                )
+                self._stager.forget(self.consistent_data_identifier.key)
             try:
                 raise RuntimeError(
                     f'Worker failure: {write_results_or_exc}'

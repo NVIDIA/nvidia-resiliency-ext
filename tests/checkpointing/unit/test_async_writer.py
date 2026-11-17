@@ -47,6 +47,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.core import (
     abort_nvrx_checkpoint,
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+from nvidia_resiliency_ext.checkpointing.async_ckpt.staging import make_stager
 from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
     CheckpointMetadataCache,
     save_state_dict_async_finalize,
@@ -215,6 +216,7 @@ class TestAsyncSave:
         use_cpu_shm_for_gpu_tensors=False,
         metadata_cache=None,
         legacy=False,
+        stager=None,
     ):
         """Performs an asynchronous model checkpoint save."""
         writer = FileSystemWriterAsync(
@@ -223,6 +225,7 @@ class TestAsyncSave:
             open_file=open_file,
             use_cached_data_structure=use_cached_data_structure,
             use_cpu_shm_for_gpu_tensors=use_cpu_shm_for_gpu_tensors,
+            stager=stager,
         )
         coordinator_rank = 0
 
@@ -865,12 +868,7 @@ class TestAsyncSave:
         Utils.initialize_distributed()
 
         # Default path: persistent=True, is_daemon=True.
-        # async_queue.close() terminates the worker process, which calls
-        # cleanup_worker_data_cache() in async_loop on exit — so _worker_data_cache is
-        # reset inside the worker. _cached_identifiers lives in the main process and is
-        # NOT cleared by close(), so clear it here to avoid cross-test contamination.
-        FileSystemWriterAsync._cached_identifiers.clear()
-        FileSystemWriterAsync._cached_tensor_data_ptrs.clear()
+        stager = make_stager(cpu_shm=False, persistent=True)
         async_queue = AsyncCallsQueue(persistent=True, is_daemon=True)
 
         model = FSDP(Model((1024, 1024), 8))
@@ -885,7 +883,7 @@ class TestAsyncSave:
                 state_dict,
                 planner,
                 async_queue,
-                use_cached_data_structure=True,
+                stager=stager,
             )
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             if i < 2:
@@ -908,8 +906,7 @@ class TestAsyncSave:
         """
         Utils.initialize_distributed()
 
-        FileSystemWriterAsync._cached_identifiers.clear()
-        FileSystemWriterAsync._cached_tensor_data_ptrs.clear()
+        stager = make_stager(cpu_shm=False, persistent=True)
         async_queue = AsyncCallsQueue(persistent=True, is_daemon=True)
 
         model = FSDP(Model((1024, 1024), 8))
@@ -938,7 +935,7 @@ class TestAsyncSave:
                 state_dict,
                 planner,
                 async_queue,
-                use_cached_data_structure=True,
+                stager=stager,
             )
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             if last_ckpt_dir is not None:
@@ -967,10 +964,7 @@ class TestAsyncSave:
         """
         Utils.initialize_distributed()
 
-        # Clear class-level caches to avoid cross-test contamination
-        FileSystemWriterAsync._cached_identifiers.clear()
-        FileSystemWriterAsync._cached_tensor_data_ptrs.clear()
-        FileSystemWriterAsync._shm_tensor_cache.clear()
+        stager = make_stager(cpu_shm=True, persistent=True)
         async_queue = AsyncCallsQueue(persistent=True, is_daemon=True)
 
         model = FSDP(Model((1024, 1024), 8))
@@ -990,8 +984,7 @@ class TestAsyncSave:
                 state_dict,
                 planner,
                 async_queue,
-                use_cached_data_structure=True,
-                use_cpu_shm_for_gpu_tensors=True,
+                stager=stager,
             )
             async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
             if last_ckpt_dir is not None:
@@ -1021,9 +1014,9 @@ class TestAsyncSave:
         checkpoint (nvbug 6439229); slow_open keeps the write pending during the mutation."""
         Utils.initialize_distributed()
 
-        # Clear class-level caches to avoid cross-test contamination
-        FileSystemWriterAsync._cached_identifiers.clear()
-        FileSystemWriterAsync._shm_tensor_cache.clear()
+        stager = make_stager(
+            cpu_shm=use_cpu_shm_for_gpu_tensors, persistent=use_cached_data_structure
+        )
         async_queue = AsyncCallsQueue(persistent=True)
 
         model = FSDP(Model((64, 64), 2))
@@ -1047,8 +1040,7 @@ class TestAsyncSave:
                     async_queue,
                     thread_count=2,
                     open_file=slow_open,
-                    use_cached_data_structure=use_cached_data_structure,
-                    use_cpu_shm_for_gpu_tensors=use_cpu_shm_for_gpu_tensors,
+                    stager=stager,
                 )
 
                 # Mutate in place right after scheduling, while the worker is still writing
