@@ -75,7 +75,7 @@ classDiagram
         relative_path : str
         offset : int
         length : int
-        transform_descriptors : 2.8+
+        transform_descriptors : list of str or None
     }
     class StorageMeta {
         checkpoint_id
@@ -112,7 +112,7 @@ PyTorch's types have some fundamental performance issues:
 
 To address these issues, NVRx uses a compact storage representation by defining its own types. Strings like FQNs are memoized into a list and referenced via an index. Tensor shapes and offsets are encoded as a pair of numpy arrays, one that holds the shapes and offsets contiguously, the other holds the starting location for each tensor's shape and offset. Tensor properties are pickled and deduplicated, multiple tensors may reference the same pickled representation of their properties. Similar optimizations are performed for `WriteResult` gathered during the `finalize` step. Further, as each rank writes FQNs that should already be present on the coordinator in its `state_dict_metadata`, ranks can reference the same list and only provide indices into this list during the `finalize` step.
 
-Refer to the [paths](#paths) section below for when these optimizations are enabled. NVRx types are enabled only for tested PyTorch versions and may be overridden by the `NVRX_FAST_METADATA_PICKLE` environment variable. Setting it to `0` turns off these optimizations, setting it to `force` enables optimizations even for untested versions of PyTorch. This feature is never turned on for known-bad versions of PyTorch.
+Refer to the [paths](#paths) section below for when these optimizations are enabled. NVRx types are enabled only for tested PyTorch versions and may be overridden by the `NVRX_FAST_METADATA_PICKLE` environment variable. Setting it to `0` turns off these optimizations, setting it to `force` enables optimizations even for untested versions of PyTorch.
 
 ```mermaid
 classDiagram
