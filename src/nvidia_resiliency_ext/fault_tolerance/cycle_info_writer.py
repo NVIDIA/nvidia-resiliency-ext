@@ -59,7 +59,7 @@ def cycle_log_file(base_log_file: str, cycle_index: int) -> str:
 _FILE_OMITTED_END_REPORT_FIELDS = ("job_id", "attempt_index", "cycle_number")
 
 
-def _cycle_info_json(msg: nvrx_interface_pb2.CycleInfo) -> str:
+def _cycle_info_to_json(msg: nvrx_interface_pb2.CycleInfo) -> str:
     """The cycle info file's JSON of `msg`: every field by its proto name, except the
     internal `timestamp` (for the CycleAnalyzer's checks only). The end report is {} until
     the cycle's end reports are written, and stays {} when none were received. Its
@@ -84,7 +84,7 @@ def _cycle_info_json(msg: nvrx_interface_pb2.CycleInfo) -> str:
 
 
 def _cycle_info_from_json(text: str) -> nvrx_interface_pb2.CycleInfo:
-    """The CycleInfo of a cycle info file written by _cycle_info_json. The omitted fields of
+    """The CycleInfo of a cycle info file written by _cycle_info_to_json. The omitted fields of
     the launchers' end reports come back unset.
 
     Raises:
@@ -294,7 +294,7 @@ class CycleInfoWriter:
         path = os.path.join(self._nvrx_dir, filename)
         try:
             with open(path, "w") as f:
-                f.write(_cycle_info_json(msg))
+                f.write(_cycle_info_to_json(msg))
                 f.flush()
         except OSError as e:
             logger.warning("Failed to write cycle info file %s: %s", path, e)
@@ -350,7 +350,7 @@ class CycleInfoWriter:
                 else:
                     setattr(msg, key, value)
             msg.generation = msg.generation + 1
-            text = _cycle_info_json(msg)
+            text = _cycle_info_to_json(msg)
             with open(tmp_path, "w") as f:
                 f.write(text)
                 f.flush()

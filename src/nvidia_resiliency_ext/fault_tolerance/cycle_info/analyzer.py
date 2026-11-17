@@ -270,10 +270,7 @@ class CycleAnalyzer:
         return self._aggregator.aggregate(self._end_reports.get(cycle, ()))
 
     def update_cycle_end_reports(self, cycle: int) -> None:
-        """Write the end reports of `cycle` to its cycle info, then forget the cycle.
-
-        NOT TESTED YET end to end.
-        """
+        """Write the end reports of `cycle` to its cycle info, then forget the cycle."""
         end_report = self.create_job_end_report(cycle)
         reported = self._aggregator.deduplicate(self._end_reports.get(cycle, ()))
         missing = self._aggregator.missing_nodes(self._cycle_infos.get(cycle), reported)
