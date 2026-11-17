@@ -199,7 +199,7 @@ class TestAsyncSave:
             metadata_cache=metadata_cache,
         )
         async_request = self.get_async_save_request(writer, pending, legacy=legacy)
-        async_queue.schedule_async_request(async_request)
+        return async_queue.schedule_async_request(async_request)
 
     def sync_save_checkpoint(self, checkpoint_dir, state_dict, planner):
         """Performs a synchronous model checkpoint save using FileSystemWriter."""
@@ -629,6 +629,33 @@ class TestAsyncSave:
         )
         for key, value in state_dict.items():
             assert torch.equal(loaded[key], value), f'mismatch for {key!r}'
+
+    def test_call_idx_increments_per_save_and_finalize_returns_it(
+        self, tmp_path_dist_ckpt, async_queue
+    ):
+        """Each scheduled save gets the next call_idx, and finalize returns the call_idx of
+        every save it finalized, whether finalized alone or together with another."""
+        Utils.initialize_distributed()
+        state_dict = rank_state_dict()
+        with (
+            TempNamedDir(tmp_path_dist_ckpt / 'call_idx_0', sync=True) as first_dir,
+            TempNamedDir(tmp_path_dist_ckpt / 'call_idx_1', sync=True) as second_dir,
+            TempNamedDir(tmp_path_dist_ckpt / 'call_idx_2', sync=True) as third_dir,
+        ):
+            first = self.async_save_checkpoint(
+                first_dir, state_dict, DecentralizedSavePlanner(), async_queue
+            )
+            assert first == 0
+            assert async_queue.maybe_finalize_async_calls(blocking=True) == [0]
+
+            in_flight = [
+                self.async_save_checkpoint(
+                    ckpt_dir, state_dict, DecentralizedSavePlanner(), async_queue
+                )
+                for ckpt_dir in (second_dir, third_dir)
+            ]
+            assert in_flight == [1, 2]
+            assert async_queue.maybe_finalize_async_calls(blocking=True) == [1, 2]
 
     @pytest.mark.parametrize('cached', [True, False], ids=['cache', 'no-cache'])
     def test_fqns_are_sent_as_entries_once_every_rank_has_the_list(
