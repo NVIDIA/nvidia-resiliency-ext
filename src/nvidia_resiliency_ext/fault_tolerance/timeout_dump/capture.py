@@ -8,7 +8,7 @@ import dataclasses
 import os
 import shutil
 import signal
-import subprocess
+import subprocess  # nosec B404
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -175,7 +175,8 @@ class ToolCapture(ABC):
 
     def _popen(self, **kwargs) -> subprocess.Popen:
         # run() reads the pipe, and kill() signals the new session's process group.
-        return subprocess.Popen(
+        # Tool commands use validated configuration and an argv list, never a shell.
+        return subprocess.Popen(  # nosec B603
             self.command(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

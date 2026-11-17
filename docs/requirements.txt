@@ -3,7 +3,7 @@ sphinx-rtd-theme
 sphinxcontrib-napoleon
 sphinx-copybutton
 myst-parser
-torch>=2.8.0
+torch
 numpy>=1.26
 psutil
 defusedxml

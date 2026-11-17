@@ -34,23 +34,19 @@ import torch
 from torch import multiprocessing as mp
 from torch.distributed.checkpoint import FileSystemWriter
 from torch.distributed.checkpoint.api import WRAPPED_EXCEPTION, _wrap_exception
-from torch.distributed.checkpoint.filesystem import DEFAULT_SUFFIX, _StoragePrefix, _write_item
+from torch.distributed.checkpoint.filesystem import (
+    CURRENT_DCP_VERSION,
+    DEFAULT_SUFFIX,
+    _metadata_fn,
+    _StoragePrefix,
+    _write_item,
+)
 from torch.distributed.checkpoint.metadata import Metadata
-
-try:
-    from torch.distributed.checkpoint.filesystem import _metadata_fn  # PyTorch 2.4+
-except ImportError:  # finish() uses FileSystemWriter.finish there
-    _metadata_fn = None
 
 try:
     from torch.distributed.checkpoint.filesystem import _StorageWriterTransforms
 except ImportError:
     _StorageWriterTransforms = Any
-
-try:
-    from torch.distributed.checkpoint.filesystem import CURRENT_DCP_VERSION  # PyTorch 2.9+
-except ImportError:
-    CURRENT_DCP_VERSION = None
 
 from torch.distributed.checkpoint.planner import SavePlan, SavePlanner, WriteItem, WriteItemType
 from torch.distributed.checkpoint.storage import WriteResult
@@ -67,6 +63,7 @@ from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
 from ..utils import _disable_gc
 from . import _metadata_pickler
+from ._metadata_template import MetadataTemplate
 from .core import PersistentAsyncCaller
 
 if TYPE_CHECKING:
@@ -1299,61 +1296,70 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     def _finish(
         self,
-        metadata: Metadata,
+        metadata: Union[Metadata, "MetadataTemplate"],
         results: List[List[WriteResult]],
         storage_rows: Optional["np.ndarray"] = None,
     ) -> None:
-        """``finish``, or with storage_rows (the ranks' write results as tables, one zero-padded
-        table per row of a 2-D uint8 array, see ``_metadata_pickler.table``), written as
-        storage_data instead of results."""
+        """Write .metadata as finish does, also from a MetadataTemplate, which it doesn't modify.
+
+        With storage_rows (the ranks' write results as tables, one zero-padded table per row of a
+        2-D uint8 array, see ``_metadata_pickler.write_result_table``), storage_data is written
+        from them instead of results. Finalize passes rows only when this process writes from tables, which
+        needs the fast writer.
+        """
         fast = _metadata_pickler.fast_metadata_enabled()
-        if storage_rows is not None and not fast:
-            logger.warning(
-                "write-result tables without the fast .metadata writer; "
-                "converting them to write results"
-            )
-            tables = _metadata_pickler.table.decode_rows(storage_rows)
-            results = [_metadata_pickler.table.to_write_results(t) for t in tables]
-            storage_rows = None
+        assert storage_rows is None or fast, "write-result tables need the fast .metadata writer"
         if not fast and not self.use_msc:
+            if isinstance(metadata, MetadataTemplate):
+                metadata = metadata.to_metadata()
             super().finish(metadata, results)
             return
 
-        if fast and CURRENT_DCP_VERSION is not None:
-            metadata.version = CURRENT_DCP_VERSION
-
+        fields = {}
+        if fast:
+            fields["version"] = CURRENT_DCP_VERSION
+        fields["storage_meta"] = self.storage_meta()
+        storage_md = None
         if storage_rows is None:
             storage_md = {}
             for wr_list in results:
                 storage_md.update({wr.index: wr.storage_data for wr in wr_list})
-            metadata.storage_data = storage_md
 
-        # storage_meta was introduced since PyTorch 2.4
-        if "storage_meta" in inspect.signature(Metadata).parameters:
-            metadata.storage_meta = self.storage_meta()
+        if isinstance(metadata, MetadataTemplate):
+            metadata = metadata.with_fields(**fields)
+
+            def dump(stream) -> None:
+                metadata.dump(stream, storage_rows, storage_md)
+
+        else:
+            # As torch's finish does: on the Metadata given, which torch's save returns.
+            if "version" in fields:
+                metadata.version = fields["version"]
+            if storage_md is not None:
+                metadata.storage_data = storage_md
+            metadata.storage_meta = fields["storage_meta"]
+
+            def dump(stream) -> None:
+                _metadata_pickler.dump_metadata(metadata, stream, storage_rows)
 
         if self.use_msc:
             import multistorageclient as msc
 
             path = os.path.join(self.checkpoint_dir, ".metadata")
             with msc.open(path, "wb") as metadata_file:
-                _metadata_pickler.dump_metadata(metadata, metadata_file, storage_rows)
+                dump(metadata_file)
             return
 
-        # PyTorch 2.9+ writes one metadata file per rank when collectives are disabled.
-        rank = getattr(self, "rank", None)
-        if not getattr(self, "use_collectives", True) and rank is not None:
-            tmp_filename = f"__{rank}{_metadata_fn}.tmp"
-            metadata_path = self._get_metadata_path(rank)
+        # Without collectives, each rank writes its own metadata file.
+        if not self.use_collectives and self.rank is not None:
+            tmp_filename = f"__{self.rank}{_metadata_fn}.tmp"
+            metadata_path = self._get_metadata_path(self.rank)
         else:
             tmp_filename = f"{_metadata_fn}.tmp"
-            if hasattr(self, "_get_metadata_path"):  # PyTorch 2.9+
-                metadata_path = self._get_metadata_path()
-            else:
-                metadata_path = self.metadata_path
+            metadata_path = self._get_metadata_path()
         tmp_path = cast(Path, self.fs.concat_path(self.path, tmp_filename))
         with self.fs.create_stream(tmp_path, "wb") as metadata_file:
-            _metadata_pickler.dump_metadata(metadata, metadata_file, storage_rows)
+            dump(metadata_file)
             if self.sync_files:
                 # Flush Python-level buffers (OS for local files, network for cloud storage) before fsync.
                 metadata_file.flush()

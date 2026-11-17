@@ -13,6 +13,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from urllib.parse import unquote, urlparse
 
 from pydantic import Field, field_validator
@@ -31,6 +32,13 @@ from nvidia_resiliency_ext.attribution.orchestration.config import ErrorCode as 
 logger = logging.getLogger(__name__)
 
 _LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+#: Cap the on-disk log at four rotations of 64 MiB. Large enough that an
+#: ordinary run never rotates - the deployed service writes under a megabyte a
+#: month at INFO - and small enough that a DEBUG run cannot quietly fill a
+#: mount that other work depends on.
+_LOG_FILE_MAX_BYTES = 64 * 1024 * 1024
+_LOG_FILE_BACKUPS = 3
 
 # Service-specific constants
 DEFAULT_HOST = "127.0.0.1"
@@ -229,6 +237,13 @@ class Settings(BaseSettings):
     )
 
     CLUSTER_NAME: str = Field(default="", description="Cluster name for dataflow")
+
+    LOG_FILE: str = Field(
+        default="",
+        description="Write service logs to this file in addition to stderr. Empty "
+        "keeps stderr only. Lets a deployment read startup state without shell "
+        "access to the host, when the path is on shared storage",
+    )
 
     # Slack integration (optional; env vars have no NVRX_ATTRSVC_ prefix)
     SLACK_BOT_TOKEN: str = Field(
@@ -472,17 +487,107 @@ class Settings(BaseSettings):
         return path
 
 
-def configure_logging(log_level: str = "INFO") -> None:
-    """Configure attrsvc logging, including the pre-configuration startup window."""
+def _has_file_handler(log_file: str) -> bool:
+    """Is the root logger already writing to ``log_file``?
+
+    ``configure_logging`` runs more than once -- once for the startup window and
+    again once Settings is built -- and ``addHandler`` is not idempotent the way
+    ``basicConfig`` is, so without this every record lands in the file twice.
+    """
+    target = os.path.abspath(log_file)
+    return any(
+        isinstance(h, logging.FileHandler) and os.path.abspath(h.baseFilename) == target
+        for h in logging.getLogger().handlers
+    )
+
+
+def configure_logging(log_level: str = "INFO", log_file: str | None = None) -> None:
+    """Configure attrsvc logging, including the pre-configuration startup window.
+
+    ``log_file`` defaults to the environment because the first call runs before
+    ``Settings`` exists. The second call passes the resolved setting, so a path
+    named only in ``.env`` is honored rather than silently dropped - every other
+    setting reads from there, and logging quietly not doing so is a trap.
+    """
 
     root_level = getattr(logging, log_level, logging.INFO)
     logging.basicConfig(level=root_level, format=_LOG_FORMAT)
+    if log_file is None:
+        log_file = os.environ.get("NVRX_ATTRSVC_LOG_FILE") or ""
+    log_file = log_file.strip()
+    if log_file and not _has_file_handler(log_file):
+        try:
+            os.makedirs(os.path.dirname(log_file) or ".", exist_ok=True)
+            # Rotating rather than plain: this file is long-lived and a
+            # deployment typically points it at shared storage, where a service
+            # that never stops writing eventually fills a mount other work
+            # depends on. Container log limits do not cover a file like this.
+            handler: logging.Handler = RotatingFileHandler(
+                log_file,
+                maxBytes=_LOG_FILE_MAX_BYTES,
+                backupCount=_LOG_FILE_BACKUPS,
+            )
+            handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+            logging.getLogger().addHandler(handler)
+        except OSError as exc:  # a bad path must not stop the service starting
+            logging.getLogger(__name__).warning(
+                "Could not open log file %s: %s; continuing on stderr only", log_file, exc
+            )
     # ``basicConfig`` is a no-op when the embedding process already has a
     # handler. The explicit level assignment still honors attrsvc configuration.
     logging.getLogger().setLevel(root_level)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
+
+DEFAULT_ENV_FILE = "/var/lib/nvrx/attrsvc.env"
+ENV_FILE_VAR = "NVRX_ATTRSVC_ENV_FILE"
+
+
+def load_env_file(path: str | None = None) -> str | None:
+    """Populate the environment from a deployment env file. Returns the path used.
+
+    Deployments need somewhere to put configuration that the service finds on
+    its own. ``--env-file`` cannot serve: it is a client-side flag, so an image
+    cannot default it, and the systemd and SLURM paths do not use it at all.
+    Settings' own ``env_file`` cannot serve either, because it populates the
+    model and not the environment -- ``LLM_API_KEY_FILE`` is read straight from
+    ``os.environ`` by the model client, so the credential would stay unset and
+    the service would come up healthy and fail on its first analysis.
+
+    Reading the file here, before Settings is built, gives every consumer the
+    same values regardless of how the service was started.
+
+    Variables already set win: anything in the environment came from whoever
+    started the service, and must outrank a file the deployment left on disk.
+    Values are used verbatim, matching ``docker --env-file``, which does no
+    shell quoting -- write ``VALUE``, not ``"VALUE"``.
+    """
+
+    if path is None:
+        path = os.environ.get(ENV_FILE_VAR, DEFAULT_ENV_FILE)
+    path = (path or "").strip()
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        # A deployment that configures the service some other way is normal,
+        # and an unreadable file must not stop it starting.
+        return None
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        key = key.strip()
+        if not separator or not key.isidentifier():
+            continue
+        os.environ.setdefault(key, value.strip())
+    return path
 
 
 def setup() -> Settings:
@@ -493,10 +598,16 @@ def setup() -> Settings:
 
     Field validators handle validation of PORT, LOG_LEVEL, COMPUTE_TIMEOUT,
     ALLOWED_ROOT, CACHE_FILE (when set), and rate limits. See Settings class for details.
+
+    A deployment env file is read first, so a service started with no explicit
+    configuration still finds it. See ``load_env_file``.
     """
+    env_file = load_env_file()
     cfg = Settings()  # type: ignore[call-arg]
     _ = cfg.SERVICE_ENDPOINT
 
-    configure_logging(cfg.LOG_LEVEL)
+    configure_logging(cfg.LOG_LEVEL, cfg.LOG_FILE)
+    if env_file:
+        logging.getLogger(__name__).info("Loaded deployment env file: %s", env_file)
 
     return cfg

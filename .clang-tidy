@@ -1,0 +1,116 @@
+Checks: >
+  modernize-*,
+  performance-*,
+  readability-*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  misc-*,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -bugprone-easily-swappable-parameters,
+  -misc-multiple-inheritance
+
+HeaderFilterRegex: ".*"
+
+WarningsAsErrors: "*"
+
+CheckOptions:
+  - key: readability-function-cognitive-complexity.IgnoreMacros
+    value: true
+  - key: misc-non-private-member-variables-in-classes.IgnorePublicMemberVariables
+    value: true
+  - key: cppcoreguidelines-non-private-member-variables-in-classes.IgnorePublicMemberVariables
+    value: true
+  # Lambdas deduce their return types.
+  - key: modernize-use-trailing-return-type.TransformLambdas
+    value: none
+  # Whether a pointer's pointee can be const: it ignores pointers that escape through a return type
+  # of pointer to mutable, and its fix then makes the return ill-formed.
+  - key: misc-const-correctness.WarnPointersAsPointers
+    value: false
+  # pybind11's umbrella header provides both its own API and the CPython API (Python.h); don't ask
+  # for the internal headers that define each name.
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: "pybind11/.*;python3\\.[0-9]+/.*"
+
+  # readability-identifier-naming
+  # Types: PascalCase
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.UnionCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeTemplateParameterCase
+    value: CamelCase
+  - key: readability-identifier-naming.TemplateTemplateParameterCase
+    value: CamelCase
+
+  # Non-type template parameters: snake_case (they are values, not types)
+  - key: readability-identifier-naming.ValueTemplateParameterCase
+    value: lower_case
+
+  # Namespaces: snake_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+  # Functions and methods: snake_case
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+
+  # Variables and parameters: snake_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterPackCase
+    value: lower_case
+
+  # Constants: UPPER_SNAKE for constexpr, global and static constants (no k_ prefix), like Rust's
+  # const and static; other constants and variables snake_case
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.StaticConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.StaticVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+
+  # Data members: snake_case; private/protected get trailing _
+  - key: readability-identifier-naming.PublicMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.ProtectedMemberSuffix
+    value: _
+
+  # Enum values: CamelCase, like Rust's enum variants
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: CamelCase
+
+  # Macros: UPPER_SNAKE_CASE (unavoidable for preprocessor)
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE

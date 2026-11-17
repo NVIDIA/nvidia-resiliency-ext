@@ -23,11 +23,38 @@ from typing import Optional
 import numpy as np
 from torch.distributed.checkpoint.metadata import Metadata
 
-from . import _native, pickler
+from . import _native, state_dict_table
+from .opcodes import small_pickle
 
 
-def dumps(md: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
-    """The pickle of md, byte for byte as pickler.dumps writes it. With storage_rows (the gathered
-    write-result tables, see table.py), storage_data is written from them instead of
-    md.storage_data; the extension reads the rows itself."""
-    return _native.dumps(md, pickler.small_pickle, storage_rows)
+class StateDictTable(state_dict_table.StateDictTable):
+    """state_dict_table.StateDictTable, converted from a Metadata by the C++ producer, which gives
+    exactly the table the Python producer gives."""
+
+    @classmethod
+    def from_metadata(cls, metadata: Metadata) -> "StateDictTable":
+        """Convert metadata, without its storage_data, to a table with the C++ producer."""
+        return _native.from_metadata(metadata, small_pickle, cls)
+
+
+def dumps_table(
+    table: state_dict_table.StateDictTable,
+    storage_data: Optional[dict] = None,
+    storage_rows: Optional[np.ndarray] = None,
+) -> bytes:
+    """Pickle the Metadata that table was converted from, and return the bytes.
+
+    storage_data is written from storage_rows (the gathered write-result tables, see
+    write_result_table.py) if given, else from the storage_data dict, else as None. The bytes equal pickler.dumps_table's; the
+    extension reads the rows itself.
+    """
+    return _native.dumps_table(table, small_pickle, storage_data, storage_rows)
+
+
+def dumps(metadata: Metadata, storage_rows: Optional[np.ndarray] = None) -> bytes:
+    """Pickle metadata and return the bytes.
+
+    storage_data is written from storage_rows (the gathered write-result tables, see
+    write_result_table.py) if given, else from metadata.storage_data. The bytes equal pickler.dumps's.
+    """
+    return dumps_table(StateDictTable.from_metadata(metadata), metadata.storage_data, storage_rows)

@@ -43,7 +43,7 @@ Environment variables (prefix: `NVRX_ATTRSVC_`):
 | `FAST_API_ROOT_PATH` | `""` | FastAPI root path when serving behind a path-prefixing proxy |
 | `ALLOWED_ROOT` | (required) | Base directory for allowed log paths |
 | `ENDPOINT` | `""` | Unified bind endpoint. Supports `http://host:port`, `host:port`, `unix:///absolute/path.sock`, or an absolute socket path. Overrides `HOST`/`PORT`. |
-| `HOST` | `127.0.0.1` | Listen address. Deployments that need remote access should set `NVRX_ATTRSVC_HOST=0.0.0.0` explicitly. |
+| `HOST` | `127.0.0.1` | Listen address. Deployments that need remote access should set `NVRX_ATTRSVC_HOST=0.0.0.0` explicitly; the container image already does. |
 | `PORT` | `8000` | Listen port |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, or `WARNING` for root logging; FastAPI `debug` when set to `DEBUG`. |
 | `CLUSTER_NAME` | `""` | Cluster name retained for controller dataflow configuration |
@@ -110,8 +110,8 @@ analysis as a threaded reply. A channel of full attributions is unscannable, so
 the channel keeps one line per job and the detail stays one click away.
 
 ```
-*NVRx attribution:* `RESTART` on *aws-cmh-slurm-1* _(source: l1_enriched:eccn-gpt-5.4)_
-*Job ID:* `4103814_0 (nemotron4_ultra_60t_phase1_v0) cycle 3`
+*NVRx attribution:* `RESTART` on *clusterB-slurm-1* _(source: l1_enriched:eccn-gpt-5.4)_
+*Job ID:* `2200300_0 (trainjob_tierA_s4_phase1_v0) cycle 3`
 *Log path:* `/scratch/.../logs/..._cycle3.log`
 ```
 
@@ -272,7 +272,7 @@ action is non-stopping. Terminal analysis failure is also a completed request:
 ## Deployment
 
 All deployment and run scripts live under `deploy/`:
-- **Docker**: `deploy/Dockerfile`
+- **Docker**: `deploy/Dockerfile`, configured by `deploy/attrsvc.env.example` (installed at `/var/lib/nvrx/attrsvc.env`, or passed with `--env-file`)
 - **Kubernetes**: `deploy/kubernetes.yaml`
 - **SLURM**: `deploy/slurm.sbatch`
 - **Run (background)**: `deploy/run_attrsvc.sh [output_dir]`
@@ -340,7 +340,8 @@ asyncio.run(main())
 | `deploy/supervise_attrsvc.sh` | Restart an attrsvc Slurm child after transient exits |
 | `deploy/snapshot_attrsvc.sh` | Periodic endpoint snapshot for debugging |
 | `deploy/Dockerfile` | Docker build instructions |
-| `deploy/requirements.txt` | Standalone attrsvc image dependencies; excludes workload-side PyTorch/CUDA |
+| `deploy/requirements.txt` | Standalone attrsvc image dependencies; excludes workload-side PyTorch/CUDA. Checked against `pyproject.toml` by `test_attrsvc_service_requirements` |
+| `deploy/attrsvc.env.example` | Deployment configuration; install at `/var/lib/nvrx/attrsvc.env` or pass with `--env-file` |
 | `deploy/kubernetes.yaml` | Kubernetes deployment manifest |
 | `deploy/slurm.sbatch` | SLURM batch script |
 

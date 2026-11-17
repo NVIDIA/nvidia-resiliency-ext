@@ -58,7 +58,7 @@ jobs:
       - name: Set up environment
         run: |
           "$PYTHON" -m pip install pytest hypothesis
-          "$PYTHON" -m pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==2.8.0+cpu"
+          "$PYTHON" -m pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==2.9.0+cpu"
           PY_VER_NODOT=$("$PYTHON" -c"import sysconfig; print(sysconfig.get_config_var('py_version_nodot'))")
           "$PYTHON" -m pip install ./dist/nvidia_resiliency_ext-*-cp${PY_VER_NODOT}-*.whl
       - name: Run unit tests

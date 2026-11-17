@@ -418,6 +418,44 @@ Timeout dumps are configured with the options below. Each corresponds to a field
 ``TimeoutDumpConfig``, the ``timeout_dump`` field of ``FaultToleranceConfig``; tool
 options configure that tool's entry in ``tools``, whose order is the execution order.
 
+Choosing a capture timeout for CUDA-GDB
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CUDA-GDB processes symbols from the worker's loaded libraries before executing
+the capture commands. Large CUDA libraries can exhaust the default **30-second
+total budget** before CUDA-GDB produces any stack frames. That budget covers
+all configured tools, including startup and cleanup; it is not a separate
+30 seconds for each tool.
+
+In QA measurements on aarch64 nodes, CUDA-GDB 13.4 took approximately
+25 seconds to load ``libtransformer_engine.so`` from Transformer Engine 2.19,
+and 41 seconds with Transformer Engine 2.20.2 or 2.21.0. A complete
+``pyspy,gdb,cuda-gdb`` capture took approximately 48--50 seconds per rank for
+the captures that completed in Megatron-LM 26.10 with Transformer Engine 2.21
+on GB300. These timings are specific to the measured environment; x86/H100
+was not measured.
+
+For Megatron-LM or NeMo workers using Transformer Engine 2.19 or later,
+increase ``--ft-timeout-dump-capture-timeout`` when enabling CUDA-GDB. For
+example, start with 60 seconds and validate it with the deployed workload:
+
+.. code-block:: bash
+
+   --ft-timeout-dump-capture-timeout=60
+
+Alternatively, omit CUDA-GDB with ``--ft-timeout-dump-tools=pyspy,gdb``.
+60 seconds is a starting point, not a guarantee: library loading, earlier
+tools, debugger commands, and node load all consume the capture budget.
+
+A larger budget can delay worker termination and recovery, including when a
+debugger stalls until the deadline. Independently of the configured budget,
+the launcher can send SIGTERM to workers whose captures are still running
+(see `Known Issues`_). In the QA run, some captures completed while others
+were interrupted by launcher SIGTERM, rather than exhausting their capture
+budget. Increasing the budget does not resolve this teardown coordination
+issue. It is separate from symbol loading exhausting the default budget,
+which can occur without a launcher signal during capture.
+
 .. list-table:: Shared fields
    :header-rows: 1
    :widths: 25 20 25 30
@@ -445,7 +483,7 @@ options configure that tool's entry in ``tools``, whose order is the execution o
    * - ``capture_timeout``
      - ``30`` seconds
      - ``--ft-timeout-dump-capture-timeout``
-     - Total capture grace across all tools, including cleanup
+     - Total capture grace across all tools, including cleanup; see `Choosing a capture timeout for CUDA-GDB`_
    * - ``max_capture_bytes``
      - ``1048576``
      - ``--ft-timeout-dump-max-capture-bytes``
