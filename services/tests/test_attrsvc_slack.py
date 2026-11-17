@@ -1435,21 +1435,54 @@ def _timing(**over):
         "analysis_to_l0_answer_s": 14.2,
         "analysis_to_l4_answer_s": 42.1,
         "llm_api_wall_clock_s": 26.8,
+        "llm_api_call_routes": 1,
+        "drain_wall_clock_s": 8.0,
     }
     base.update(over)
     return base
 
 
-def test_timing_block_reports_each_mark_and_the_llm_share():
+def test_timing_block_reports_two_spans_and_where_the_verdict_went():
     text = format_timing(_timing())
 
     assert "*Analysis timing:*" in text
-    assert "`12:18:44`" in text  # cycle start, time only
-    assert "`15:18:44`" in text  # analysis start
-    assert "(3h0m into the cycle)" in text
-    assert "`15:18:58`" in text and "(+14.2s)" in text
-    assert "`15:19:26`" in text and "(+42.1s)" in text
-    assert "`26.8s` of `42.1s`" in text and "(64%)" in text
+    # Two spans rather than one running total: the cycle is hours and the
+    # verdict is seconds, and a reader must not take the first for the second.
+    assert "`12:18:44` \u2192 `15:18:44`" in text and "(3h0m)" in text
+    assert "`15:18:44` \u2192 `15:19:26`" in text and "(42.1s)" in text
+    assert "storage sync  `8.0s`" in text
+    assert "model call    `26.8s`" in text and "(64%)" in text
+
+
+def test_storage_sync_is_taken_back_out_of_the_signature_figure():
+    """The drain runs at the front of the window the signature pass is timed
+    in. Reported as-is the two would double-count, and a reader adding the
+    breakdown up would overshoot the verdict."""
+
+    text = format_timing(_timing(analysis_to_l0_answer_s=14.2, drain_wall_clock_s=8.0))
+
+    assert "signatures    `6.2s`" in text, "14.2s measured minus 8.0s of waiting"
+    assert "`14.2s`" not in text
+
+
+def test_the_signature_figure_is_dropped_rather_than_shown_negative():
+    """If the marks disagree, saying nothing beats reporting a negative span."""
+
+    text = format_timing(_timing(analysis_to_l0_answer_s=3.0, drain_wall_clock_s=8.0))
+
+    assert "signatures" not in text
+    assert "storage sync  `8.0s`" in text
+
+
+def test_a_cycle_without_a_recorded_drain_still_reports_its_spans():
+    """Storage sync is a progressive-source measurement; an attempt analysed
+    without one still has a cycle and a verdict worth showing."""
+
+    text = format_timing(_timing(drain_wall_clock_s=None))
+
+    assert "storage sync" not in text
+    assert "(42.1s)" in text
+    assert "signatures    `14.2s`" in text, "with no drain to subtract, L0 stands as measured"
 
 
 def test_the_llm_share_is_a_share_only_while_one_route_contributed():
@@ -1462,11 +1495,11 @@ def test_the_llm_share_is_a_share_only_while_one_route_contributed():
     """
 
     single = format_timing(_timing(llm_api_wall_clock_s=26.8, llm_api_call_routes=1))
-    assert "`26.8s` of `42.1s`" in single and "(64%)" in single
+    assert "model call    `26.8s`" in single and "(64%)" in single
 
     # Two 25s calls overlapping inside a 42.1s verdict: 50s of 42.1s is 119%.
     concurrent = format_timing(_timing(llm_api_wall_clock_s=50.0, llm_api_call_routes=2))
-    assert "`50.0s`" in concurrent
+    assert "model call    `50.0s`" in concurrent
     assert "total across 2 routes" in concurrent
     assert "%" not in concurrent, "a sum of overlapping calls is not a share of elapsed time"
 
@@ -1497,9 +1530,9 @@ def test_timing_block_survives_a_half_measured_attempt():
         _timing(l4_answer_at=None, analysis_to_l4_answer_s=None, llm_api_wall_clock_s=None)
     )
     assert "*Analysis timing:*" in text
-    assert "`15:18:58`" in text
-    assert "L4 answer" not in text
-    assert "LLM API" not in text
+    assert "`12:18:44` \u2192 `15:18:44`" in text
+    assert "verdict" not in text
+    assert "model call" not in text
 
 
 def test_llm_share_is_omitted_rather_than_divided_by_zero():
@@ -1510,9 +1543,9 @@ def test_llm_share_is_omitted_rather_than_divided_by_zero():
 
 def test_durations_are_sized_for_a_reader():
     # A span is rendered at a scale a reader can size up at a glance.
-    assert "(45.0s into the cycle)" in format_timing(_timing(cycle_to_analysis_s=45))
-    assert "(3m20s into the cycle)" in format_timing(_timing(cycle_to_analysis_s=200))
-    assert "(2h5m into the cycle)" in format_timing(_timing(cycle_to_analysis_s=7500))
+    assert "_(45.0s)_" in format_timing(_timing(cycle_to_analysis_s=45))
+    assert "_(3m20s)_" in format_timing(_timing(cycle_to_analysis_s=200))
+    assert "_(2h5m)_" in format_timing(_timing(cycle_to_analysis_s=7500))
 
 
 def test_healthz_names_the_channels_alerts_go_to(monkeypatch):

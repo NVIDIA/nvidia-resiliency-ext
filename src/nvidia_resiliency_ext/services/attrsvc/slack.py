@@ -764,39 +764,67 @@ def _compact_duration(seconds: Any) -> str:
 def format_timing(timing: Optional[Mapping[str, Any]]) -> str:
     """How long the verdict took, as the thread reply's closing block.
 
-    Kept out of the channel line, which is deliberately one scannable line per
-    alert. The cycle start and the analysis start are separate bullets because
-    only the second one begins any analysis: collapsing them would present the
-    training cycle's own length as though it were how long a verdict took.
+    Two spans, not one running total. The cycle's own length is hours and the
+    verdict's is seconds, so collapsing them would present the training run's
+    duration as though it were how long this service took to answer.
+
+    Under the verdict, where that time actually went. Storage sync is broken
+    out because it is waiting for the log to finish landing on shared storage
+    rather than work this service is doing, and on a slow filesystem it can
+    dominate everything else. It runs at the front of the same window the
+    signature pass is measured in, so the signature figure has it subtracted
+    out; left in, the two would double-count and a reader adding them up would
+    overshoot the verdict.
     """
     if not isinstance(timing, Mapping):
         return ""
-    l4_s = timing.get("analysis_to_l4_answer_s")
+
+    def number(key: str) -> float | None:
+        value = timing.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
     bullets: list[str] = []
 
-    cycle_at = _clock(timing.get("cycle_started_at"))
-    if cycle_at:
-        bullets.append(f"  • cycle started     `{cycle_at}`")
-    started_at = _clock(timing.get("analysis_started_at"))
-    if started_at:
-        into = _compact_duration(timing.get("cycle_to_analysis_s"))
-        suffix = f"  _({into} into the cycle)_" if into else ""
-        bullets.append(f"  • analysis started  `{started_at}`{suffix}")
-    for label, at_key, delta_key in (
-        ("L0 answer       ", "l0_answer_at", "analysis_to_l0_answer_s"),
-        ("L4 answer       ", "l4_answer_at", "analysis_to_l4_answer_s"),
-    ):
-        at = _clock(timing.get(at_key))
-        if not at:
-            continue
-        delta = _compact_duration(timing.get(delta_key))
-        suffix = f"  _(+{delta})_" if delta else ""
-        bullets.append(f"  • {label}  `{at}`{suffix}")
+    cycle_from = _clock(timing.get("cycle_started_at"))
+    cycle_to = _clock(timing.get("analysis_started_at"))
+    cycle_len = _compact_duration(number("cycle_to_analysis_s"))
+    if cycle_from and cycle_to:
+        suffix = f"  _({cycle_len})_" if cycle_len else ""
+        bullets.append(f"  • cycle      `{cycle_from}` → `{cycle_to}`{suffix}")
+    elif cycle_from:
+        bullets.append(f"  • cycle      `{cycle_from}`")
 
-    llm_s = timing.get("llm_api_wall_clock_s")
+    verdict_to = _clock(timing.get("l4_answer_at"))
+    verdict_s = number("analysis_to_l4_answer_s")
+    verdict_len = _compact_duration(verdict_s)
+    if cycle_to and verdict_to:
+        suffix = f"  _({verdict_len})_" if verdict_len else ""
+        bullets.append(f"  • verdict    `{cycle_to}` → `{verdict_to}`{suffix}")
+    elif verdict_to:
+        bullets.append(f"  • verdict    `{verdict_to}`")
+
+    breakdown: list[str] = []
+
+    drain_s = number("drain_wall_clock_s")
+    drain = _compact_duration(drain_s)
+    if drain:
+        breakdown.append(f"      · storage sync  `{drain}`")
+
+    # The signature pass is timed from the same mark the drain starts at, so
+    # take the drain back out rather than reporting the window twice.
+    l0_s = number("analysis_to_l0_answer_s")
+    if l0_s is not None and drain_s is not None:
+        l0_s = l0_s - drain_s if l0_s >= drain_s else None
+    signatures = _compact_duration(l0_s)
+    if signatures:
+        breakdown.append(f"      · signatures    `{signatures}`")
+
+    llm_s = number("llm_api_wall_clock_s")
     llm = _compact_duration(llm_s)
     if llm:
-        line = f"  • LLM API           `{llm}`"
+        line = f"      · model call    `{llm}`"
         # The share is elapsed waiting time only while one route contributed.
         # Routes run concurrently, so summing two overlapping calls and
         # dividing by elapsed can read past 100% - a figure that invites an
@@ -806,10 +834,11 @@ def format_timing(timing: Optional[Mapping[str, Any]]) -> str:
         concurrent = isinstance(routes, int) and not isinstance(routes, bool) and routes > 1
         if concurrent:
             line += f"  _(total across {routes} routes)_"
-        elif isinstance(l4_s, (int, float)) and not isinstance(l4_s, bool) and l4_s > 0:
-            line += f" of `{_compact_duration(l4_s)}`  _({llm_s / l4_s * 100:.0f}%)_"
-        bullets.append(line)
+        elif verdict_s is not None and verdict_s > 0:
+            line += f"  _({llm_s / verdict_s * 100:.0f}%)_"
+        breakdown.append(line)
 
+    bullets.extend(breakdown)
     if not bullets:
         return ""
     return "*Analysis timing:*\n" + "\n".join(bullets)

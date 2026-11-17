@@ -1201,6 +1201,7 @@ class RestartAgentServiceBackend:
                 # read, so one definition of how long a verdict took serves
                 # all three rather than each deriving its own.
                 cycle_to_analysis_s=completed_timing.get("cycle_to_analysis_s"),
+                storage_sync_s=completed_timing.get("drain_wall_clock_s"),
                 analysis_to_l0_answer_s=completed_timing.get("analysis_to_l0_answer_s"),
                 analysis_to_l4_answer_s=completed_timing.get("analysis_to_l4_answer_s"),
                 llm_api_wall_clock_s=completed_timing.get("llm_api_wall_clock_s"),
