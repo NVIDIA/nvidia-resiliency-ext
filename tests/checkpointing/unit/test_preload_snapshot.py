@@ -52,7 +52,7 @@ class TestFileSystemWriterPrepareSnapshot:
 
     def _prepare(self, checkpoint_dir, tensors):
         writer = self._prepare_writer(checkpoint_dir, tensors)
-        _, snapshotted = writer.uncached_tensor_data
+        _, snapshotted = writer._write_data.tensors.uncached
         return snapshotted
 
     def test_cpu_tensors_are_snapshotted_before_queueing(self, tmp_path):
@@ -89,8 +89,8 @@ class TestFileSystemWriterPrepareSnapshot:
 
         first_writer = self._prepare_writer(tmp_path, [source], stager=stager)
 
-        assert first_writer.uncached_tensor_data is None
-        _, first_snapshots = first_writer.cached_tensor_data
+        assert first_writer._write_data.tensors.uncached is None
+        _, first_snapshots = first_writer._write_data.tensors.cached
         (first_snapshot,) = first_snapshots
         assert first_snapshot.untyped_storage().is_shared()
         assert first_snapshot.data_ptr() != source.data_ptr()
@@ -100,8 +100,8 @@ class TestFileSystemWriterPrepareSnapshot:
 
         second_writer = self._prepare_writer(tmp_path, [source], stager=stager)
 
-        assert second_writer.uncached_tensor_data is None
-        assert second_writer.cached_tensor_data is None
+        assert second_writer._write_data.tensors.uncached is None
+        assert second_writer._write_data.tensors.cached is None
         (cached_snapshots,) = buffers._buffers.values()
         (reused_snapshot,) = cached_snapshots
         assert reused_snapshot.data_ptr() == first_snapshot.data_ptr()

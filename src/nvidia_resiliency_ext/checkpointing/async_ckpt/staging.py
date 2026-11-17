@@ -28,7 +28,7 @@ the same write items need not send them again.
 import hashlib
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
 import torch
 from torch.distributed.checkpoint.planner import WriteItem
@@ -138,8 +138,8 @@ class Stager(ABC):
     # training process when `stage` returns
     stages_in_worker: bool = False
 
-    def prepare(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, bool]:
-        """Prepare one resolved tensor for staging. Called while the plan is resolved.
+    def _prepare(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, bool]:
+        """Prepare one resolved tensor for staging, as it is resolved.
 
         Returns:
             (tensor, was_dequantized): the tensor, and whether dequantize() was called on it.
@@ -152,11 +152,27 @@ class Stager(ABC):
             return tensor.dequantize(), True
         return tensor, False
 
+    def stage(self, items: List[WriteItem], tensors: Iterable[torch.Tensor]) -> StagedTensors:
+        """Stage the tensors of `items`, in the training process.
+
+        Args:
+            items: this rank's tensor write items, from the final plan.
+            tensors: the resolved tensor of each item, in order. Each is prepared as it is
+                taken, so an iterable that resolves them lazily holds one at a time.
+        """
+        prepared = [
+            self._prepare(tensor) if isinstance(tensor, torch.Tensor) else (tensor, False)
+            for tensor in tensors
+        ]
+        return self._stage(
+            items, [tensor for tensor, _ in prepared], [dequantized for _, dequantized in prepared]
+        )
+
     @abstractmethod
-    def stage(
-        self, items: List[WriteItem], tensors: List[Any], dequantized: List[bool]
+    def _stage(
+        self, items: List[WriteItem], tensors: List[torch.Tensor], dequantized: List[bool]
     ) -> StagedTensors:
-        """Stage the prepared tensors of `items`, in the training process."""
+        """Stage the prepared tensors of `items`."""
 
     @abstractmethod
     def forget(self, key: str) -> None:
@@ -272,7 +288,7 @@ class ShmStager(Stager):
     def __init__(self, buffers: ShmBuffers):
         self.buffers = buffers
 
-    def stage(self, items, tensors, dequantized):
+    def _stage(self, items, tensors, dequantized):
         key = _compute_data_structure_key_from_plan(items)
         shm_tensors, identifier, worker_has_them = self.buffers.acquire(key, tensors)
         with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
@@ -358,13 +374,13 @@ class IpcStager(Stager):
     def __init__(self, handles: IpcHandles):
         self.handles = handles
 
-    def prepare(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, bool]:
+    def _prepare(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, bool]:
         # CPU tensors must be cloned before an ``AsyncRequest`` is sent to a persistent worker.
         if tensor.device.type == "cpu":
             return tensor.detach().clone(), False
-        return super().prepare(tensor)
+        return super()._prepare(tensor)
 
-    def stage(self, items, tensors, dequantized):
+    def _stage(self, items, tensors, dequantized):
         stable_items, stable_data = [], []
         uncached_items, uncached_data = [], []
         for item, data, was_dequantized in zip(items, tensors, dequantized):
