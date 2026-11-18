@@ -100,7 +100,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">logging</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">queue</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">threading</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">concurrent.futures</span><span class="w"> </span><span class="kn">import</span> <span class="n">ThreadPoolExecutor</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">functools</span><span class="w"> </span><span class="kn">import</span> <span class="n">partial</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">heapq</span><span class="w"> </span><span class="kn">import</span> <span class="n">heappop</span><span class="p">,</span> <span class="n">heappush</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">io</span><span class="w"> </span><span class="kn">import</span> <span class="n">UnsupportedOperation</span>
@@ -1152,16 +1152,14 @@
         <span class="n">global_results_queue</span><span class="p">:</span> <span class="n">mp</span><span class="o">.</span><span class="n">Queue</span><span class="p">,</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">"""</span>
-<span class="sd">        Performs saving data to storage with multiple threads.</span>
+<span class="sd">        Performs saving data to storage with one thread per write bucket, all running concurrently.</span>
 
 <span class="sd">        Uses threads (not processes) so that this can run safely inside a daemon process</span>
-<span class="sd">        without spawning child processes. The last bucket runs on the calling thread to</span>
-<span class="sd">        avoid thread creation overhead. Uses two queues for worker coordination:</span>
-<span class="sd">        - local_results_queue - to collect write results from worker threads</span>
-<span class="sd">        - count_queue - to signal worker completion (get + task_done / join).</span>
+<span class="sd">        without spawning child processes.</span>
 
 <span class="sd">        Triggering GC during execution can lead to CUDA errors when tensors are shared.</span>
 <span class="sd">        To prevent this, we disable the GC explicitly for this function with _disable_gc.</span>
+<span class="sd">        The worker threads run inside it, so GC stays disabled until they have all finished.</span>
 
 <span class="sd">        Args:</span>
 <span class="sd">            transform_list (List[_StorageWriterTransforms]): streaming transforms list</span>
@@ -1175,116 +1173,40 @@
 <span class="sd">        """</span>
         <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
         <span class="n">w_start</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-        <span class="n">write_results_or_exc</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">dict</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">]</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">()</span>
-        <span class="n">local_results_queue</span><span class="p">:</span> <span class="n">queue</span><span class="o">.</span><span class="n">Queue</span> <span class="o">=</span> <span class="n">queue</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
-        <span class="n">count_queue</span><span class="p">:</span> <span class="n">queue</span><span class="o">.</span><span class="n">Queue</span> <span class="o">=</span> <span class="n">queue</span><span class="o">.</span><span class="n">Queue</span><span class="p">()</span>
-        <span class="n">thread_list</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
-
-        <span class="k">def</span><span class="w"> </span><span class="nf">check_local_output</span><span class="p">(</span><span class="n">local_results_or_exc</span><span class="p">,</span> <span class="n">local_worker_idx</span><span class="p">):</span>
-            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">local_results_or_exc</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">):</span>
-                <span class="n">err_msg</span> <span class="o">=</span> <span class="p">(</span>
-                    <span class="sa">f</span><span class="s2">"Local worker </span><span class="si">{</span><span class="n">local_worker_idx</span><span class="si">}</span><span class="s2"> encountered"</span>
-                    <span class="sa">f</span><span class="s2">" an error: </span><span class="si">{</span><span class="n">local_results_or_exc</span><span class="si">}</span><span class="s2">"</span>
-                <span class="p">)</span>
-                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
-                <span class="k">raise</span> <span class="n">local_results_or_exc</span>
-
-        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">write_bucket</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">):</span>
-            <span class="k">try</span><span class="p">:</span>
-                <span class="n">kwargs</span> <span class="o">=</span> <span class="p">{</span>
-                    <span class="s2">"local_thread_idx"</span><span class="p">:</span> <span class="n">i</span><span class="p">,</span>
-                    <span class="s2">"write_bucket"</span><span class="p">:</span> <span class="n">write_bucket</span><span class="p">,</span>
-                    <span class="s2">"results_queue"</span><span class="p">:</span> <span class="n">local_results_queue</span><span class="p">,</span>
-                    <span class="s2">"count_queue"</span><span class="p">:</span> <span class="n">count_queue</span><span class="p">,</span>
-                    <span class="s2">"use_fsync"</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
-                <span class="p">}</span>
-                <span class="k">if</span> <span class="n">use_msc</span><span class="p">:</span>
-                    <span class="n">kwargs</span><span class="p">[</span><span class="s2">"use_msc"</span><span class="p">]</span> <span class="o">=</span> <span class="n">use_msc</span>
-
-                <span class="c1"># Parallel writers: spawn threads for all but the last bucket</span>
-                <span class="k">if</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">:</span>
-                    <span class="n">count_queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
-                    <span class="n">t</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">(</span>
-                        <span class="n">target</span><span class="o">=</span><span class="n">partial</span><span class="p">(</span>
-                            <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">write_preloaded_data</span><span class="p">,</span> <span class="n">transform_list</span><span class="p">,</span> <span class="n">open_file</span>
-                        <span class="p">),</span>
-                        <span class="n">kwargs</span><span class="o">=</span><span class="n">kwargs</span><span class="p">,</span>
+        <span class="n">write_results_or_exc</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">dict</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">]</span>
+        <span class="k">try</span><span class="p">:</span>  <span class="c1"># also catches a failure to start a thread, which must not kill the worker</span>
+            <span class="k">with</span> <span class="n">ThreadPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)))</span> <span class="k">as</span> <span class="n">executor</span><span class="p">:</span>
+                <span class="n">futures</span> <span class="o">=</span> <span class="p">[</span>
+                    <span class="n">executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span>
+                        <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">write_preloaded_data</span><span class="p">,</span>
+                        <span class="n">transform_list</span><span class="p">,</span>
+                        <span class="n">open_file</span><span class="p">,</span>
+                        <span class="n">i</span><span class="p">,</span>
+                        <span class="n">write_bucket</span><span class="p">,</span>
+                        <span class="n">use_fsync</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                        <span class="n">use_msc</span><span class="o">=</span><span class="n">use_msc</span><span class="p">,</span>
                     <span class="p">)</span>
-                    <span class="n">thread_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
-                <span class="k">else</span><span class="p">:</span>
-                    <span class="c1"># Run last bucket on the calling thread (no thread overhead)</span>
-                    <span class="n">kwargs</span><span class="p">[</span><span class="s1">'count_queue'</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-                    <span class="n">kwargs</span><span class="p">[</span><span class="s1">'results_queue'</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-                    <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">'FileSystemWriterAsync: main worker started'</span><span class="p">)</span>
-                    <span class="n">local_output</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">write_preloaded_data</span><span class="p">(</span>
-                        <span class="n">transform_list</span><span class="p">,</span> <span class="n">open_file</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span>
-                    <span class="p">)</span>
-                    <span class="k">if</span> <span class="n">local_output</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
-                            <span class="s1">'FileSystemWriterAsync: main worker results successfully collected'</span>
-                        <span class="p">)</span>
-                        <span class="n">check_local_output</span><span class="p">(</span><span class="n">local_output</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">local_output</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-                        <span class="n">write_results_or_exc</span><span class="p">[</span><span class="n">local_output</span><span class="p">[</span><span class="mi">0</span><span class="p">]]</span> <span class="o">=</span> <span class="n">local_output</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
-
-            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-                <span class="n">err_msg</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">"An error is caught while starting worker </span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">, error: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">"</span>
-                <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
-                <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
-
-        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">,</span> <span class="ne">Exception</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">thread_list</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">thread_list</span><span class="p">:</span>
-                <span class="n">t</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
-
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"FileSystemWriterAsync: collecting worker results..."</span><span class="p">)</span>
-
-            <span class="n">count_queue</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
-            <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">):</span>
-                <span class="k">try</span><span class="p">:</span>
-                    <span class="n">local_thread_idx</span><span class="p">,</span> <span class="n">local_results_or_exc</span> <span class="o">=</span> <span class="n">local_results_queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-                <span class="k">except</span> <span class="n">queue</span><span class="o">.</span><span class="n">Empty</span><span class="p">:</span>
-                    <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-                        <span class="s2">"Unexpected empty `local_results_queue`"</span>
-                        <span class="sa">f</span><span class="s2">" (expected </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">1</span><span class="si">}</span><span class="s2"> items)"</span>
-                    <span class="p">)</span>
-                    <span class="k">break</span>
-                <span class="k">else</span><span class="p">:</span>
-                    <span class="k">try</span><span class="p">:</span>
-                        <span class="n">check_local_output</span><span class="p">(</span><span class="n">local_results_or_exc</span><span class="p">,</span> <span class="n">local_thread_idx</span><span class="p">)</span>
-                    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">worker_exc</span><span class="p">:</span>
-                        <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="n">worker_exc</span>
-                        <span class="k">break</span>
-                    <span class="n">write_results_or_exc</span><span class="p">[</span><span class="n">local_thread_idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">local_results_or_exc</span>
-            <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">thread_list</span><span class="p">:</span>
-                <span class="n">t</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">'FileSystemWriterAsync: collected worker results successfully'</span><span class="p">)</span>
-
-        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">,</span> <span class="nb">dict</span><span class="p">)</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">)</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span>
-            <span class="n">write_buckets</span>
-        <span class="p">):</span>
-            <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="ne">RuntimeError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">"Incomplete write results: expected </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)</span><span class="si">}</span><span class="s2"> buckets,"</span>
-                <span class="sa">f</span><span class="s2">" got </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span>
-            <span class="p">)</span>
-        <span class="n">global_results_queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">write_results_or_exc</span><span class="p">)</span>
-
-        <span class="n">w_end</span> <span class="o">=</span> <span class="n">time</span><span class="p">()</span>
-        <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">w_end</span><span class="si">}</span><span class="s2">, rank: </span><span class="si">{</span><span class="n">rank</span><span class="si">}</span><span class="s2">, write(sync,threads): </span><span class="si">{</span><span class="n">w_end</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">w_start</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span></div>
+                    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">write_bucket</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">write_buckets</span><span class="p">)</span>
+                <span class="p">]</span>
+            <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="p">{</span><span class="n">i</span><span class="p">:</span> <span class="n">future</span><span class="o">.</span><span class="n">result</span><span class="p">()</span> <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">future</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">futures</span><span class="p">)}</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">write_results_or_exc</span> <span class="o">=</span> <span class="n">e</span>
+        <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_finalize_write_execution</span><span class="p">(</span>
+            <span class="n">global_results_queue</span><span class="p">,</span> <span class="n">write_results_or_exc</span><span class="p">,</span> <span class="n">rank</span><span class="p">,</span> <span class="n">w_start</span><span class="p">,</span> <span class="s2">"MultiThread"</span><span class="p">,</span> <span class="n">logger</span>
+        <span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="FileSystemWriterAsync.write_preloaded_data">
 <a class="viewcode-back" href="../../../../checkpointing/async/api/filesystem_async.html#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data">[docs]</a>
     <span class="nd">@staticmethod</span>
-    <span class="nd">@_disable_gc</span><span class="p">()</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">write_preloaded_data</span><span class="p">(</span>
         <span class="n">transform_list</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">_StorageWriterTransforms</span><span class="p">],</span>
         <span class="n">open_file</span><span class="p">:</span> <span class="n">Callable</span><span class="p">,</span>
         <span class="n">local_thread_idx</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
         <span class="n">write_bucket</span><span class="p">:</span> <span class="n">WriteBucket</span><span class="p">,</span>
-        <span class="n">results_queue</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">queue</span><span class="o">.</span><span class="n">Queue</span><span class="p">],</span>
-        <span class="n">count_queue</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">queue</span><span class="o">.</span><span class="n">Queue</span><span class="p">],</span>
         <span class="n">use_fsync</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
-        <span class="o">**</span><span class="n">kwargs</span><span class="p">,</span>
-    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">Union</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">WriteResult</span><span class="p">],</span> <span class="ne">Exception</span><span class="p">]]]:</span>
+        <span class="n">use_msc</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">WriteResult</span><span class="p">]:</span>
 <span class="w">        </span><span class="sd">"""</span>
 <span class="sd">        Performs actual data saving to storage (used by worker threads in multithread mode).</span>
 
@@ -1293,42 +1215,27 @@
 <span class="sd">            open_file (Callable): file open callable</span>
 <span class="sd">            local_thread_idx (int): index of the worker thread that performs writing</span>
 <span class="sd">            write_bucket (WriteBucket): data to write to storage</span>
-<span class="sd">            results_queue (queue.Queue): queue to return the write results.</span>
-<span class="sd">                If None (main-thread worker), result is returned directly.</span>
-<span class="sd">            count_queue (queue.Queue): queue to signal worker task completion.</span>
-<span class="sd">                If None (main-thread worker), skipped.</span>
 <span class="sd">            use_fsync (bool): if True, calls os.fsync at the end of saving</span>
+<span class="sd">            use_msc (bool): flag to indicate use of multi storage client for storage access</span>
 
-<span class="sd">        Returns: None when running in a thread (results put in queue);</span>
-<span class="sd">                 result tuple when running as main-thread worker (results_queue is None)</span>
+<span class="sd">        Returns: the write results of this bucket. Raises if writing fails.</span>
 <span class="sd">        """</span>
         <span class="n">logger</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">local_thread_idx</span><span class="si">}</span><span class="s1"> started'</span><span class="p">)</span>
         <span class="n">mem_before</span> <span class="o">=</span> <span class="n">_process_memory</span><span class="p">()</span>
-        <span class="n">use_msc</span> <span class="o">=</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">'use_msc'</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
-
         <span class="k">try</span><span class="p">:</span>
             <span class="n">local_results</span> <span class="o">=</span> <span class="n">FileSystemWriterAsync</span><span class="o">.</span><span class="n">_write_bucket_to_storage</span><span class="p">(</span>
                 <span class="n">transform_list</span><span class="p">,</span> <span class="n">open_file</span><span class="p">,</span> <span class="n">write_bucket</span><span class="p">,</span> <span class="n">use_fsync</span><span class="p">,</span> <span class="n">use_msc</span>
             <span class="p">)</span>
-            <span class="n">local_output</span> <span class="o">=</span> <span class="p">(</span><span class="n">local_thread_idx</span><span class="p">,</span> <span class="n">local_results</span><span class="p">)</span>
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
-            <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">local_thread_idx</span><span class="si">}</span><span class="s1"> failed with exception </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s1">'</span><span class="p">)</span>
-            <span class="n">local_output</span> <span class="o">=</span> <span class="p">(</span><span class="n">local_thread_idx</span><span class="p">,</span> <span class="n">e</span><span class="p">)</span>
-
-        <span class="k">if</span> <span class="n">results_queue</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">results_queue</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">local_output</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">count_queue</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="c1"># Signal this thread is done.</span>
-            <span class="n">count_queue</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
-            <span class="n">count_queue</span><span class="o">.</span><span class="n">task_done</span><span class="p">()</span>
-
+            <span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Local worker </span><span class="si">{</span><span class="n">local_thread_idx</span><span class="si">}</span><span class="s2"> encountered an error: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+            <span class="k">raise</span>
         <span class="n">mem_after</span> <span class="o">=</span> <span class="n">_process_memory</span><span class="p">()</span>
         <span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">local_thread_idx</span><span class="si">}</span><span class="s2"> consumed: </span><span class="si">{</span><span class="n">mem_after</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">mem_before</span><span class="si">}</span><span class="s2">,"</span>
             <span class="sa">f</span><span class="s2">" before: </span><span class="si">{</span><span class="n">mem_before</span><span class="si">}</span><span class="s2">, after: </span><span class="si">{</span><span class="n">mem_after</span><span class="si">}</span><span class="s2">"</span>
         <span class="p">)</span>
-        <span class="k">return</span> <span class="n">local_output</span></div>
+        <span class="k">return</span> <span class="n">local_results</span></div>
 
 
 <div class="viewcode-block" id="FileSystemWriterAsync.write_data">
