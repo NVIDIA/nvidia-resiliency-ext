@@ -39,6 +39,7 @@ from .pipeline import (
 )
 from .slack import (
     HAS_SLACK,
+    SlackClientError,
     SlackStats,
     get_slack_stats,
     get_slack_user_id,
@@ -76,4 +77,5 @@ __all__ = [
     "send_slack_notification",
     "should_notify_slack",
     "HAS_SLACK",
+    "SlackClientError",
 ]

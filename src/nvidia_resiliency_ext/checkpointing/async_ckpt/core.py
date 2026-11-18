@@ -235,8 +235,10 @@ class AsyncRequest(NamedTuple):
                     "nv.nvrx.ckpt.save.validate_call_idx_all_reduce",
                 ):
                     torch.distributed.all_reduce(ten, op=torch.distributed.ReduceOp.MAX)
-                assert ten.item() == self.call_idx, "Unmatched async calls. "
-                "That probably means not all ranks are participating in async finalization"
+                assert ten.item() == self.call_idx, (
+                    "Unmatched async calls. "
+                    "That probably means not all ranks are participating in async finalization"
+                )
         return self.call_idx
 
 
@@ -1025,12 +1027,10 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         # Backward compatibility for local checkpointing built with the old AsyncRequest
         if len(async_request._fields) != len(AsyncRequest._fields):
             async_request = AsyncRequest(**async_request._asdict())
-        async_request = async_request.freeze()
+        async_request = async_request._replace(call_idx=self.call_idx).freeze()
         schedule_attrs = {semconv.CKPT_CALL_IDX: self.call_idx}
         with telemetry.span(semconv.SPAN_GROUP_CKPT, "nv.nvrx.ckpt.save.schedule", schedule_attrs):
-            async_caller.schedule_async_call(
-                async_request._replace(call_idx=self.call_idx, finalize_fns=[])
-            )
+            async_caller.schedule_async_call(async_request._replace(finalize_fns=[]))
         self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
         return self.call_idx
 

@@ -69,7 +69,7 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from . import pickler, write_result_table
+from . import pickler, write_result_table  # nosec B403
 from .state_dict_table import StateDictTable
 
 try:
@@ -216,7 +216,8 @@ def _works(dumps: Callable[[Metadata], bytes]) -> bool:
     """Whether dumps writes the sample Metadata so that it unpickles equal to itself."""
     md = _sample_metadata()
     try:
-        return pickle.loads(dumps(md)) == md  # nosec - our own bytes
+        # Self-check only decodes bytes generated above from synthetic metadata.
+        return pickle.loads(dumps(md)) == md  # nosec B301
     except Exception:
         logger.warning("fast .metadata pickling failed its self-check", exc_info=True)
         return False

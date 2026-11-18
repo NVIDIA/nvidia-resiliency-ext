@@ -20,7 +20,7 @@ import inspect
 import logging
 import os
 import queue
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from heapq import heappop, heappush
 from io import UnsupportedOperation
@@ -1041,16 +1041,14 @@ class FileSystemWriterAsync(FileSystemWriter):
         global_results_queue: mp.Queue,
     ) -> None:
         """
-        Performs saving data to storage with multiple threads.
+        Performs saving data to storage with one thread per write bucket, all running concurrently.
 
         Uses threads (not processes) so that this can run safely inside a daemon process
-        without spawning child processes. The last bucket runs on the calling thread to
-        avoid thread creation overhead. Uses two queues for worker coordination:
-        - local_results_queue - to collect write results from worker threads
-        - count_queue - to signal worker completion (get + task_done / join).
+        without spawning child processes.
 
         Triggering GC during execution can lead to CUDA errors when tensors are shared.
         To prevent this, we disable the GC explicitly for this function with _disable_gc.
+        The worker threads run inside it, so GC stays disabled until they have all finished.
 
         Args:
             transform_list (List[_StorageWriterTransforms]): streaming transforms list
@@ -1064,113 +1062,37 @@ class FileSystemWriterAsync(FileSystemWriter):
         """
         logger = logging.getLogger(__name__)
         w_start = time()
-        write_results_or_exc: Union[dict, Exception] = dict()
-        local_results_queue: queue.Queue = queue.Queue()
-        count_queue: queue.Queue = queue.Queue()
-        thread_list: List[threading.Thread] = []
-
-        def check_local_output(local_results_or_exc, local_worker_idx):
-            if isinstance(local_results_or_exc, Exception):
-                err_msg = (
-                    f"Local worker {local_worker_idx} encountered"
-                    f" an error: {local_results_or_exc}"
-                )
-                logger.error(err_msg)
-                raise local_results_or_exc
-
-        for i, write_bucket in enumerate(write_buckets):
-            try:
-                kwargs = {
-                    "local_thread_idx": i,
-                    "write_bucket": write_bucket,
-                    "results_queue": local_results_queue,
-                    "count_queue": count_queue,
-                    "use_fsync": True,
-                }
-                if use_msc:
-                    kwargs["use_msc"] = use_msc
-
-                # Parallel writers: spawn threads for all but the last bucket
-                if i < len(write_buckets) - 1:
-                    count_queue.put(i)
-                    t = threading.Thread(
-                        target=partial(
-                            FileSystemWriterAsync.write_preloaded_data, transform_list, open_file
-                        ),
-                        kwargs=kwargs,
+        write_results_or_exc: Union[dict, Exception]
+        try:  # also catches a failure to start a thread, which must not kill the worker
+            with ThreadPoolExecutor(max_workers=max(1, len(write_buckets))) as executor:
+                futures = [
+                    executor.submit(
+                        FileSystemWriterAsync.write_preloaded_data,
+                        transform_list,
+                        open_file,
+                        i,
+                        write_bucket,
+                        use_fsync=True,
+                        use_msc=use_msc,
                     )
-                    thread_list.append(t)
-                else:
-                    # Run last bucket on the calling thread (no thread overhead)
-                    kwargs['count_queue'] = None
-                    kwargs['results_queue'] = None
-                    logger.debug('FileSystemWriterAsync: main worker started')
-                    local_output = FileSystemWriterAsync.write_preloaded_data(
-                        transform_list, open_file, **kwargs
-                    )
-                    if local_output is not None:
-                        logger.debug(
-                            'FileSystemWriterAsync: main worker results successfully collected'
-                        )
-                        check_local_output(local_output[1], local_output[0])
-                        write_results_or_exc[local_output[0]] = local_output[1]
-
-            except Exception as e:
-                err_msg = f"An error is caught while starting worker {i}, error: {e}"
-                logger.error(err_msg)
-                write_results_or_exc = RuntimeError(err_msg)
-
-        if not isinstance(write_results_or_exc, Exception) and len(thread_list) > 0:
-            for t in thread_list:
-                t.start()
-
-            logger.debug("FileSystemWriterAsync: collecting worker results...")
-
-            count_queue.join()
-            for _ in range(len(write_buckets) - 1):
-                try:
-                    local_thread_idx, local_results_or_exc = local_results_queue.get()
-                except queue.Empty:
-                    write_results_or_exc = RuntimeError(
-                        "Unexpected empty `local_results_queue`"
-                        f" (expected {len(write_buckets) - 1} items)"
-                    )
-                    break
-                else:
-                    try:
-                        check_local_output(local_results_or_exc, local_thread_idx)
-                    except Exception as worker_exc:
-                        write_results_or_exc = worker_exc
-                        break
-                    write_results_or_exc[local_thread_idx] = local_results_or_exc
-            for t in thread_list:
-                t.join()
-            logger.debug('FileSystemWriterAsync: collected worker results successfully')
-
-        if isinstance(write_results_or_exc, dict) and len(write_results_or_exc) != len(
-            write_buckets
-        ):
-            write_results_or_exc = RuntimeError(
-                f"Incomplete write results: expected {len(write_buckets)} buckets,"
-                f" got {len(write_results_or_exc)}"
-            )
-        global_results_queue.put(write_results_or_exc)
-
-        w_end = time()
-        logger.debug(f"{w_end}, rank: {rank}, write(sync,threads): {w_end - w_start}")
+                    for i, write_bucket in enumerate(write_buckets)
+                ]
+            write_results_or_exc = {i: future.result() for i, future in enumerate(futures)}
+        except Exception as e:
+            write_results_or_exc = e
+        FileSystemWriterAsync._finalize_write_execution(
+            global_results_queue, write_results_or_exc, rank, w_start, "MultiThread", logger
+        )
 
     @staticmethod
-    @_disable_gc()
     def write_preloaded_data(
         transform_list: List[_StorageWriterTransforms],
         open_file: Callable,
         local_thread_idx: int,
         write_bucket: WriteBucket,
-        results_queue: Optional[queue.Queue],
-        count_queue: Optional[queue.Queue],
         use_fsync: bool,
-        **kwargs,
-    ) -> Optional[Tuple[int, Union[List[WriteResult], Exception]]]:
+        use_msc: bool,
+    ) -> List[WriteResult]:
         """
         Performs actual data saving to storage (used by worker threads in multithread mode).
 
@@ -1179,42 +1101,27 @@ class FileSystemWriterAsync(FileSystemWriter):
             open_file (Callable): file open callable
             local_thread_idx (int): index of the worker thread that performs writing
             write_bucket (WriteBucket): data to write to storage
-            results_queue (queue.Queue): queue to return the write results.
-                If None (main-thread worker), result is returned directly.
-            count_queue (queue.Queue): queue to signal worker task completion.
-                If None (main-thread worker), skipped.
             use_fsync (bool): if True, calls os.fsync at the end of saving
+            use_msc (bool): flag to indicate use of multi storage client for storage access
 
-        Returns: None when running in a thread (results put in queue);
-                 result tuple when running as main-thread worker (results_queue is None)
+        Returns: the write results of this bucket. Raises if writing fails.
         """
         logger = logging.getLogger(__name__)
         logger.debug(f'{local_thread_idx} started')
         mem_before = _process_memory()
-        use_msc = kwargs.get('use_msc', False)
-
         try:
             local_results = FileSystemWriterAsync._write_bucket_to_storage(
                 transform_list, open_file, write_bucket, use_fsync, use_msc
             )
-            local_output = (local_thread_idx, local_results)
         except Exception as e:
-            logger.debug(f'{local_thread_idx} failed with exception {e}')
-            local_output = (local_thread_idx, e)
-
-        if results_queue is not None:
-            results_queue.put(local_output)
-        if count_queue is not None:
-            # Signal this thread is done.
-            count_queue.get()
-            count_queue.task_done()
-
+            logger.error(f"Local worker {local_thread_idx} encountered an error: {e}")
+            raise
         mem_after = _process_memory()
         logger.debug(
             f"{local_thread_idx} consumed: {mem_after - mem_before},"
             f" before: {mem_before}, after: {mem_after}"
         )
-        return local_output
+        return local_results
 
     def write_data(self, plan: SavePlan, planner: SavePlanner) -> Future[List[WriteResult]]:
         """Write all items from ``plan``."""
