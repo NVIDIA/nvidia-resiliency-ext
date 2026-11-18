@@ -32,8 +32,8 @@ startup alone is not recovered training. No fixed restart latency is guaranteed.
 
 .. _ft-no-restart:
 
-No restart: telling "do not requeue" apart from a failure
----------------------------------------------------------
+No restart: distinguishing a terminal decision from a failure
+--------------------------------------------------------------
 
 Two built-in policies report a dedicated no-restart verdict:
 
@@ -51,10 +51,16 @@ without advancing the checkpoint -- for example Megatron-LM's rerun state machin
 re-running a suspect result on different hardware to tell silent data corruption apart from
 a genuine data issue. Those replays look identical to a stuck job from the outside.
 
-Both answer the same scheduler-facing question, so both report the same result: every
-launcher in the job exits with ``--ft-no-restart-exit-code`` (default ``93``) instead of
-the generic failure code ``1``. Downstream tooling therefore needs a single rule -- exit
-code ``93`` means NVRx decided, do not requeue -- rather than one rule per cause.
+Both end further InJob recovery in the current generation and report the same
+``--ft-no-restart-exit-code`` (default ``93``), rather than the generic failure
+code ``1``. Peers that observe the shutdown reason also use that code; delayed
+peers may instead lose their store connection and exit ``1``, as described below.
+The code does not itself cancel queued jobs or configure Slurm requeue behavior.
+The intended singleton policy is to cancel only the current array on control-host
+exit and leave queued successors eligible to start, including after ``93`` or
+successful completion with ``0``. The repository's example currently also uses
+``control/no_restart`` to cancel queued successors. Correcting that existing
+example policy is separate from this control-host refactor.
 
 The specific cause is recorded in the rendezvous store shutdown key as ``attribution_stop``
 or ``no_progress``, and is named in the launcher logs, so the two remain distinguishable
@@ -63,8 +69,9 @@ for diagnosis without complicating the scheduler contract.
 Running out of restarts is deliberately *not* one of these cases. Exhausting
 ``--max-restarts`` means this launcher used up its retry budget, not that the job is
 unrecoverable, so it still exits ``1`` and leaves requeueing to your scheduler policy.
-The distinction is scope: a no-restart decision is a verdict about the job, while the
-restart budget is a limit on a single allocation.
+The distinction is the cause: ``93`` identifies an explicit attribution or
+no-progress decision, while ``1`` identifies exhaustion of the ordinary retry
+budget. Both stop InJob recovery in the current generation.
 
 * CLI:
 
@@ -75,9 +82,17 @@ Note that SLURM reports the maximum exit code across tasks and that ``sacct`` de
 codes are lossy, so treat this as a best-effort signal.
 
 Nodes other than the one that made the decision read the reason from the rendezvous store,
-so the store must outlive them. Both the store-host launcher and ``nvrx-control`` hold it
+so the store must outlive them. Both the store-host launcher and ``job-controller`` hold it
 open for a few seconds after shutting down, but a node that has not read the key by then
 exits ``1`` rather than the no-restart code. The job still stops either way.
+
+The separate job-controller also continues enforcing attribution STOP while a
+node-agent waits in the success exit barrier. Until graceful rendezvous shutdown
+is recorded, a STOP can produce ``93`` after local workers have succeeded and
+can stop peers that are still finishing. This accepted change from embedded
+control, together with differing peer exit codes, is described in
+:doc:`deployment`. Future per-cycle ``end_reason`` reporting will consolidate the
+terminal outcomes.
 
 
 GPU Memory Reclaim
@@ -140,6 +155,54 @@ Two write paths are possible:
    critical diagnostics, use rank monitor logs (launcher log) for failure/timeout correlation and
    OS-level core dumps for reliable crash post-mortem. Do not assume aggregated logs are complete
    or reliable.
+
+Control-host process logs
+-------------------------
+
+The control-host supervisor writes its own logs and the stdout/stderr of
+``job-controller``, managed attribution, and the gRPC root/leaf processes into one
+control log. For example, ``--ft-nvrx-logfile /lustre/job/nvrx.log`` produces:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - File
+     - Contents
+   * - ``nvrx.log``
+     - Supervisor, control, managed attribution, and gRPC servers' own logs;
+       written locally by one writer, independently of the gRPC path.
+   * - ``nvrx_agent.log``
+     - Node-agents and rank monitors on all nodes, including the control-host agent;
+       uses the existing compute gRPC path.
+
+The configured path is used exactly for the control log. No extra launcher
+option is required. For the shared agent log, a trailing ``.log`` is replaced
+with ``_agent.log``; otherwise ``_agent.log`` is appended. Without
+``--ft-nvrx-logfile``, these process logs go to the original console stream.
+Existing file-name headers are retained, with no extra component field.
+The supervisor does not create separate attribution, root, or leaf log files.
+This also applies to an external CPU host using ``--ft-control-only``; compute
+logs still arrive through gRPC from the GPU nodes. Aggregators' own logs always
+use the supervisor's local capture; there is no separate root/leaf file path or
+process-log prefix option. ``--standalone`` is for single-node development and
+does not start gRPC aggregation. Its configured application and launcher logs
+are written locally; the embedded agent uses the derived ``*_agent.log`` and
+there is no separate supervisor control log. Tools that previously read
+node-agent or rank-monitor messages from the configured path should now read
+the derived agent file.
+
+A reader thread drains each process pipe and a separate writer appends to the
+control log. Process exit codes determine completion and failure; no lifecycle
+channel or log parsing is used for supervision. During cleanup, the node agent
+has its worker termination allowance plus 15 seconds for cleanup and log draining
+before the gRPC servers stop. The local writer remains
+alive until control-service and aggregator logs have drained.
+Capture is best effort: the implementation limits pending log memory and falls
+back to original stderr on write failure. Overflow uses stderr when it supports
+nonblocking writes; otherwise excess chunks are dropped. A blocked console can
+also lose fallback data. File writes never run in the supervision loop; shutdown
+has a finite drain deadline.
 
 Workload control and diagnosis
 ------------------------------

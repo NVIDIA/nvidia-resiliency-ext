@@ -3245,7 +3245,7 @@ class HandlerIntegrationTest(BaseRendezvousTest):
             },
             clear=False,
         ):
-            with self.assertLogs(level="INFO") as logs:
+            with self.assertLogs("nvrx", level="INFO") as logs:
                 handler = FtRendezvousBarrierHandler.from_backend(
                     run_id=self.run_id,
                     store=self.store,
