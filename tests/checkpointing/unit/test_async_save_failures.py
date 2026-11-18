@@ -25,16 +25,20 @@ one it is still running.
 import os
 import time
 import warnings
+from typing import IO, Any
 from unittest import mock
 
 import pytest
 import torch
 from torch.distributed.checkpoint import (
+    CheckpointException,
     DefaultLoadPlanner,
     DefaultSavePlanner,
     FileSystemReader,
     load,
 )
+from torch.distributed.checkpoint.metadata import MetadataIndex
+from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt.core import AsyncCallsQueue, AsyncRequest
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
@@ -94,6 +98,64 @@ def test_close_returns_when_the_worker_has_died(warm_queue):
     warm_queue.close()
 
 
+def _prepare_shm_save(checkpoint_dir, tensor):
+    """Plan a save of `tensor` through CPU shared memory, as a rank's planner resolves it."""
+    planner = mock.Mock()
+    planner.resolve_data.return_value = tensor
+    writer = FileSystemWriterAsync(
+        checkpoint_dir, use_cpu_shm_for_gpu_tensors=True, use_cached_data_structure=True
+    )
+    item = WriteItem(index=MetadataIndex(fqn="tensor"), type=WriteItemType.TENSOR)
+    writer.prepare_write_data(SavePlan([item]), planner)
+    return writer
+
+
+@pytest.mark.timeout(30)
+def test_reusing_shm_buffers_waits_for_the_write_without_finalizing(tmp_path):
+    """Finalizing is collective, and ranks reuse their buffers at different points: only the
+    next maybe_finalize_async_calls, which every rank calls together, may finalize."""
+    AsyncCallsQueue.warmup_persistent_caller(rank=0, cpu_shm_mode=True)
+    async_queue = AsyncCallsQueue(persistent=True, cpu_shm_mode=True)
+    finalize = mock.Mock()
+    try:
+        _prepare_shm_save(tmp_path, torch.tensor(1.0))
+        # A write that is still running when the next save reuses the buffers
+        async_queue.schedule_async_request(AsyncRequest(time.sleep, (0.5,), [finalize]))
+
+        _prepare_shm_save(tmp_path, torch.tensor(2.0))
+
+        finalize.assert_not_called()
+        assert async_queue.maybe_finalize_async_calls(blocking=True, no_dist=True) == [0]
+        finalize.assert_called_once_with()
+    finally:
+        FileSystemWriterAsync.register_shm_drain_callback(None)
+        async_queue.close(abort=True)
+
+
+class _SlowWrites:
+    """A file on storage that writes 1 MiB/s, so that a save's write is long."""
+
+    def __init__(self, path: str, mode: str):
+        self._file = open(path, mode)
+
+    def write(self, data):
+        time.sleep(memoryview(data).nbytes / 2**20)
+        return self._file.write(data)
+
+    def __getattr__(self, name):
+        return getattr(self._file, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self._file.close()
+
+
+def _slow_write_open(path: str, mode: str = "rb") -> IO[Any]:
+    return _SlowWrites(path, mode)
+
+
 @pytest.mark.distributed
 class TestSavesAcrossWorkers:
     def plan(self, checkpoint_dir, state_dict, cpu_shm=False, kept=False, open_file=open):
@@ -137,6 +199,43 @@ class TestSavesAcrossWorkers:
             f"the checkpoint differs from the saved values: {only_loaded=} {only_saved=} "
             f"{mismatched=}"
         )
+
+    @pytest.mark.min_world_size(2)
+    def test_a_worker_killed_mid_save_fails_the_save_on_every_rank(self, tmp_path_dist_ckpt):
+        """Every rank raises CheckpointException for the save, also when the next save is planned
+        first and waits for it: no rank hangs or fails with another error."""
+        Utils.initialize_distributed()
+        FileSystemWriterAsync.cleanup_tensor_caches()
+        rank = torch.distributed.get_rank()
+        # 8 tensors of 1 MiB: rank 1's write takes 8 s
+        state_dict = {
+            f"param_{i}": torch.full((512, 512), float(i), device="cuda") for i in range(8)
+        }
+        async_queue = AsyncCallsQueue(persistent=True, cpu_shm_mode=True)
+        try:
+            with TempNamedDir(tmp_path_dist_ckpt / "first", sync=True) as ckpt_dir:
+                self.save(async_queue, ckpt_dir, state_dict, cpu_shm=True, kept=True)
+            with (
+                TempNamedDir(tmp_path_dist_ckpt / "killed", sync=True) as ckpt_dir,
+                TempNamedDir(tmp_path_dist_ckpt / "next", sync=True) as next_dir,
+            ):
+                open_file = _slow_write_open if rank == 1 else open
+                async_queue.schedule_async_request(
+                    self.plan(ckpt_dir, state_dict, cpu_shm=True, kept=True, open_file=open_file)
+                )
+                if rank == 1:
+                    time.sleep(1)  # the worker is in the middle of the write
+                    worker = _worker(async_queue)
+                    worker.kill()
+                    worker.join()
+                # Reuses the shm buffers, so it waits for the killed save first
+                self.plan(next_dir, state_dict, cpu_shm=True, kept=True)
+
+                with pytest.raises(CheckpointException):
+                    async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+        finally:
+            FileSystemWriterAsync.register_shm_drain_callback(None)
+            async_queue.close(abort=True)
 
     def test_finalize_reads_its_own_write_results(self, tmp_path_dist_ckpt):
         """A save that is never finalized must not leave its write results to the next save,

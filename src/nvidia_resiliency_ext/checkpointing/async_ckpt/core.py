@@ -1009,9 +1009,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
             # disk-read pass and the current checkpoint's D2H copy.
             from .filesystem_async import FileSystemWriterAsync
 
-            FileSystemWriterAsync.register_shm_drain_callback(
-                lambda: self.maybe_finalize_async_calls(blocking=True, no_dist=True)
-            )
+            FileSystemWriterAsync.register_shm_drain_callback(self._wait_for_writes)
 
     def _get_async_caller(self) -> AsyncCaller:
         if self._caller is None:
@@ -1152,6 +1150,15 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                     )
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
+
+    def _wait_for_writes(self) -> None:
+        """Wait until this rank is finished with every call in the queue, without finalizing.
+
+        Finalizing is collective, and ranks reach this wait at different points, so the calls
+        are left for the next `maybe_finalize_async_calls`, which every rank reaches together.
+        """
+        for active in self.async_calls:  # in the order they were submitted
+            active.save.finished(blocking=True)
 
     def _head_finished(self, blocking: bool, no_dist: bool) -> bool:
         """Whether the oldest call is finished on this rank, and on every rank unless `no_dist`.
