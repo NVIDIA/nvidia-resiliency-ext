@@ -27,7 +27,7 @@ import subprocess  # nosec B404
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
-from multiprocessing.connection import Connection
+from multiprocessing.connection import Connection, wait
 from time import time
 from typing import (
     Any,
@@ -513,9 +513,9 @@ class PersistentAsyncCaller(AsyncCaller):
     # This cache contains IPC handles and must be cleaned up properly.
     _worker_data_cache: Dict = {}
 
-    # Callbacks invoked in the training process whenever a fresh worker is spawned.
-    # Used by FileSystemWriterAsync to invalidate training-side shm caches so the
-    # next checkpoint re-sends actual tensor data to the new worker.
+    # Callbacks invoked in the training process whenever a fresh worker is spawned, and when
+    # a worker is found dead. Used by FileSystemWriterAsync to invalidate training-side shm
+    # caches so the next checkpoint re-sends actual tensor data to the new worker.
     _worker_restart_callbacks: ClassVar[List[Callable]] = []
 
     @classmethod
@@ -535,12 +535,12 @@ class PersistentAsyncCaller(AsyncCaller):
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
         self.sigterm_timeout = sigterm_timeout
-        ctx = mp.get_context('spawn')
+        # Each worker gets its own channels, made when it starts:
         # main queue to deliver `AsyncRequest` from host to the ckpt worker
-        self.queue: mp.JoinableQueue = ctx.JoinableQueue()
-        # Pipe the worker reports on, in order, when it has staged a save and when it has
-        # finished one
-        self._report_conn, self._report_send = ctx.Pipe(duplex=False)
+        self.queue: Optional[mp.JoinableQueue] = None
+        # the read end of the pipe the worker reports on, in order, when it has staged a save
+        # and when it has finished one
+        self._report_conn: Optional[Connection] = None
         # Saves sent to the worker that it has not reported finished, oldest first
         self._unfinished: Deque[_QueuedSave] = deque()
         self.rank: int = None
@@ -561,6 +561,8 @@ class PersistentAsyncCaller(AsyncCaller):
             rank (int): the rank of the current trainer process.
         """
         ctx = mp.get_context('spawn')
+        self.queue = ctx.JoinableQueue()
+        self._report_conn, report_send = ctx.Pipe(duplex=False)
         if rank == 0:
             logger.info(f"PersistentAsyncCaller: {rank}, Starting Async Caller")
         else:
@@ -575,7 +577,7 @@ class PersistentAsyncCaller(AsyncCaller):
             args=(
                 rank,
                 self.queue,
-                self._report_send,
+                report_send,
                 logger.getEffectiveLevel(),
                 self.cpu_priority,
                 self.io_priority,
@@ -586,17 +588,29 @@ class PersistentAsyncCaller(AsyncCaller):
 
         # Read the trainer's live attributes. NVRx may have been imported before
         # the trainer published them.
-        with telemetry.publish_otel_resource_attributes(
-            telemetry.compose_attributes(
-                telemetry.get_otel_resource_attributes(),
-                defaults={"nv.dl.rank": rank},
-                overrides={
-                    "nv.dl.role": "ckpt_worker",
-                    "service.instance.id": f"nvrx-ckpt{rank}",
-                },
-            )
-        ):
-            self.process.start()
+        try:
+            with telemetry.publish_otel_resource_attributes(
+                telemetry.compose_attributes(
+                    telemetry.get_otel_resource_attributes(),
+                    defaults={"nv.dl.rank": rank},
+                    overrides={
+                        "nv.dl.role": "ckpt_worker",
+                        "service.instance.id": f"nvrx-ckpt{rank}",
+                    },
+                )
+            ):
+                self.process.start()
+        except BaseException:
+            # Leave no worker that never started: the next save starts a new one.
+            report_send.close()
+            self._report_conn.close()
+            self.queue.cancel_join_thread()
+            self.queue.close()
+            self.process = None
+            raise
+        # The worker has its own copy now. Closing ours means that once the worker dies,
+        # nothing holds the write end and the trainer's reads see EOF.
+        report_send.close()
         logger.debug(f"PersistentAsyncCaller: {rank}, Started Async Caller {self.process}")
         for cb in PersistentAsyncCaller._worker_restart_callbacks:
             cb()
@@ -638,11 +652,24 @@ class PersistentAsyncCaller(AsyncCaller):
     def _read_report(self, blocking: bool) -> bool:
         """Read the worker's next report and record it on the save it is about.
 
+        If the worker has died, it will send no more reports: its saves are all done.
+
         Returns False if there is no report yet and `blocking` is False.
         """
-        if not self._report_conn.poll(None if blocking else 0):
-            return False
-        report, idx = self._report_conn.recv()
+        # Returns once the worker has sent a report or exited, or straight away if not blocking.
+        ready = wait([self._report_conn, self.process.sentinel], timeout=None if blocking else 0)
+        # Poll after the wait rather than trusting `ready`: the wait checks the pipe before the
+        # sentinel, so a worker that reports and then exits in between shows up as exited only.
+        if not self._report_conn.poll():
+            if self.process.sentinel not in ready:
+                return False
+            self._worker_died()
+            return True
+        try:
+            report, idx = self._report_conn.recv()
+        except EOFError:  # No process holds the write end any more: the worker is gone.
+            self._worker_died()
+            return True
         # The worker handles saves in order, so every report is about the oldest unfinished one.
         save = self._unfinished[0]
         assert save.idx == idx, f"worker reported {report} for call {idx}, expected {save.idx}"
@@ -691,18 +718,40 @@ class PersistentAsyncCaller(AsyncCaller):
                     self.process.kill()
                     self.process.join()
             else:
+                # The worker handles requests in order, so its exit means it has handled every
+                # one. Unlike `queue.join()`, this also returns if the worker has died.
                 self.queue.put('DONE')
-                self.queue.join()
                 self.process.join()
+            self._release_worker()
 
-            self.process = None
-            # The worker is gone, so no more reports will come: discard any it sent that were
-            # not read, and treat its outstanding saves as done.
-            while self._report_conn.poll():
-                self._report_conn.recv()
-            for save in self._unfinished:
-                save.is_staged = save.is_finished = True
-            self._unfinished.clear()
+    def _worker_died(self) -> None:
+        """Record that the worker has died, and let the next save start a new one."""
+        self.process.join()
+        logger.error(
+            f"rank: {self.rank}, persistent checkpoint worker died with exit code "
+            f"{self.process.exitcode}"
+        )
+        self._release_worker()
+        # The training-side caches describe data that only this worker had. Clear them now,
+        # before the next save decides what to send, rather than when the next worker starts.
+        for cb in PersistentAsyncCaller._worker_restart_callbacks:
+            cb()
+
+    def _release_worker(self) -> None:
+        """Forget the worker, which has exited: no more reports will come.
+
+        Its outstanding saves are treated as done; finalize then finds out from the write
+        results whether each was saved.
+        """
+        for save in self._unfinished:
+            save.is_staged = save.is_finished = True
+        self._unfinished.clear()
+        # The queue's feeder thread may be blocked on a pipe that a dead worker will never
+        # read, so don't wait for it at exit.
+        self.queue.cancel_join_thread()
+        self.queue.close()
+        self._report_conn.close()
+        self.process = None
 
     def __del__(self):
         self.close()
@@ -833,6 +882,9 @@ class PersistentAsyncCaller(AsyncCaller):
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
+                        # Keep reports small (well under PIPE_BUF). A small message reaches the
+                        # pipe in a single write, whole or not at all, so if the worker is killed
+                        # while sending, the trainer can't be left reading half a report.
                         report_conn.send(('finished', item.call_idx))
                         queue.task_done()
                         del async_fn_args
@@ -1002,7 +1054,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 warmed.process.pid,
             )
             warmed.process.join()  # reap the zombie before discarding
-            warmed.process = None
+            warmed._release_worker()
         return warmed
 
     @classmethod

@@ -109,6 +109,22 @@ class TestFileSystemWriterPrepareSnapshot:
         drain.assert_called_once_with()
         cuda_synchronize.assert_not_called()
 
+    def test_cpu_shm_resends_tensors_when_the_drain_finds_the_worker_dead(self, tmp_path):
+        """A drain that finds the worker dead clears the buffers, so the save that ran it must
+        send the next worker new shm tensors instead of relying on the dead one's."""
+        buffers = PersistentShmBuffers()
+        buffers.drain = Mock(side_effect=buffers.clear)
+        stager = ShmStager(buffers)
+        source = torch.tensor(1.0)
+
+        self._prepare_writer(tmp_path, [source], stager=stager)
+        source.fill_(2.0)
+        writer = self._prepare_writer(tmp_path, [source], stager=stager)
+
+        buffers.drain.assert_called_once_with()
+        _, (sent,) = writer._write_data.tensors.cached
+        assert torch.equal(sent, torch.tensor(2.0))
+
     def test_a_given_stager_uses_the_registered_drain(self, tmp_path):
         """Buffers a writer is given drain like the default ones before they are reused."""
         drain = Mock()

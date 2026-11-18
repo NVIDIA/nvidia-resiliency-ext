@@ -22,7 +22,9 @@ use builtins: `abs` is a call the worker finishes, `os._exit` one it dies in, an
 one it is still running.
 """
 
+import os
 import time
+import warnings
 from unittest import mock
 
 import pytest
@@ -49,6 +51,13 @@ from . import TempNamedDir
 from .test_utilities import Utils
 
 
+def _worker(async_queue: AsyncCallsQueue):
+    """The queue's persistent worker process."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return async_queue.persistent_caller.process
+
+
 @pytest.fixture
 def warm_queue():
     """A persistent queue whose worker was started before the first save, as Megatron does."""
@@ -65,6 +74,24 @@ def test_a_rank_with_nothing_to_write_finishes_with_a_started_worker(warm_queue)
 
     assert warm_queue.maybe_finalize_async_calls(blocking=True, no_dist=True) == [0]
     finalize.assert_called_once_with()
+
+
+@pytest.mark.timeout(30)
+def test_a_save_the_worker_dies_in_finishes(warm_queue):
+    warm_queue.schedule_async_request(AsyncRequest(os._exit, (1,), [mock.Mock()]))
+
+    assert warm_queue.maybe_finalize_async_calls(blocking=True, no_dist=True) == [0]
+
+
+@pytest.mark.timeout(30)
+def test_close_returns_when_the_worker_has_died(warm_queue):
+    warm_queue.schedule_async_request(AsyncRequest(abs, (0,), [mock.Mock()]))
+    warm_queue.maybe_finalize_async_calls(blocking=True, no_dist=True)
+    worker = _worker(warm_queue)
+    worker.kill()
+    worker.join()
+
+    warm_queue.close()
 
 
 @pytest.mark.distributed
