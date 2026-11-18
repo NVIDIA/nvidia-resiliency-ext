@@ -15,7 +15,7 @@
 
 import os
 from datetime import timedelta
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 from torch._C._distributed_c10d import PrefixStore
@@ -24,10 +24,17 @@ from torch.distributed import rendezvous
 from nvidia_resiliency_ext.checkpointing.local.base_state_dict import TensorAwareStateDict
 
 
+def _torchrun_env(name: str) -> Optional[int]:
+    """An integer that torchrun sets in the environment, or None when not run by torchrun."""
+    value = os.environ.get(name)
+    return None if value is None else int(value)
+
+
 class Utils:
 
-    world_size = int(os.environ['WORLD_SIZE'])
-    rank = int(os.environ['RANK'])
+    # None when not run by torchrun; only distributed tests use them, and those then skip.
+    world_size = _torchrun_env('WORLD_SIZE')
+    rank = _torchrun_env('RANK')
     inited = False
     store = None
 

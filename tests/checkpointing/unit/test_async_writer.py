@@ -54,8 +54,11 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 )
 from nvidia_resiliency_ext.checkpointing.async_ckpt.torch_ckpt import TorchAsyncCheckpoint
 from nvidia_resiliency_ext.checkpointing.utils import diff
-from tests.checkpointing.unit import TempNamedDir
-from tests.checkpointing.unit.test_utilities import Model, Utils
+
+from . import TempNamedDir
+from .test_utilities import Model, Utils
+
+pytestmark = pytest.mark.distributed
 
 
 class _FrameWithCode:
@@ -142,6 +145,42 @@ def record_fqn_modes(monkeypatch):
 
     monkeypatch.setattr(state_dict_saver, '_encode_write_results', recording)
     return modes
+
+
+@pytest.fixture
+def set_fast_metadata(monkeypatch):
+    """Set NVRX_FAST_METADATA_PICKLE for this test.
+
+    md_writer caches what it reads from the variable, so the caches are cleared whenever the
+    variable changes, and again when the test ends, however it ends: a cached value from this
+    test would otherwise outlive the variable and change the writer for every later test.
+    """
+
+    def clear_caches():
+        md_writer.fast_metadata_enabled.cache_clear()
+        md_writer._select_dumps.cache_clear()
+
+    def set_mode(mode: str) -> None:
+        monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
+        clear_caches()
+
+    yield set_mode
+    clear_caches()
+
+
+# (mode, rank1) for test_metadata_matches_torch. Only rank1='same' runs on one rank. With mode '1'
+# every rank sends a table, so rank1='fast' would repeat rank1='same'.
+METADATA_CASES = [
+    pytest.param(
+        mode,
+        rank1,
+        id=f'{mode}-{rank1}',
+        marks=[] if rank1 == 'same' else pytest.mark.min_world_size(2),
+    )
+    for mode in ('1', 'python', '0')
+    for rank1 in ('same', 'unencodable', 'fast')
+    if not (mode == '1' and rank1 == 'fast')
+]
 
 
 class TestAsyncSave:
@@ -329,10 +368,9 @@ class TestAsyncSave:
             )
             assert same, f'{key!r} did not load back as saved'
 
-    @pytest.mark.parametrize('rank1', ['same', 'unencodable', 'fast'])
-    @pytest.mark.parametrize('mode', ['1', 'python', '0'])
+    @pytest.mark.parametrize(('mode', 'rank1'), METADATA_CASES)
     def test_metadata_matches_torch(
-        self, tmp_path_dist_ckpt, async_queue, monkeypatch, mode, rank1
+        self, tmp_path_dist_ckpt, async_queue, monkeypatch, set_fast_metadata, mode, rank1
     ):
         """FileSystemWriterAsync writes the same .metadata as torch's FileSystemWriter.
 
@@ -340,23 +378,15 @@ class TestAsyncSave:
         sends its write results as a table or pickled: rank 1 as the others, or pickled because it
         can't encode them ('unencodable'), or as a table with the fast writer on ('fast').
         """
-        monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', mode)
-        md_writer.fast_metadata_enabled.cache_clear()
-        md_writer._select_dumps.cache_clear()
+        set_fast_metadata(mode)
         native = md_writer.native.dumps if md_writer.native is not None else pickler.dumps
         expected = {'1': native, 'python': pickler.dumps, '0': None}[mode]
         assert md_writer._select_dumps() is expected
 
         Utils.initialize_distributed()
         rank, world_size = torch.distributed.get_rank(), torch.distributed.get_world_size()
-        if rank1 != 'same' and world_size < 2:
-            pytest.skip('needs a rank 1')
-        if rank1 == 'fast' and mode == '1':
-            pytest.skip('the same as rank1="same"')
         if rank == 1 and rank1 == 'fast':
-            monkeypatch.setenv('NVRX_FAST_METADATA_PICKLE', '1')
-            md_writer.fast_metadata_enabled.cache_clear()
-            md_writer._select_dumps.cache_clear()
+            set_fast_metadata('1')
         encode, decode_payloads = write_result_table.encode, state_dict_saver._decode_payloads
 
         def encode_or_fail(results):
@@ -377,33 +407,29 @@ class TestAsyncSave:
         model = FSDP(Model((1024, 1024), 8))
         state_dict = model.state_dict()
         planner = DefaultSavePlanner()
-        try:
-            with (
-                TempNamedDir(tmp_path_dist_ckpt / 'nvrx_metadata', sync=True) as async_ckpt_dir,
-                TempNamedDir(tmp_path_dist_ckpt / 'torch_metadata', sync=True) as sync_ckpt_dir,
-            ):
-                self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
-                self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
-                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
-                if rank == 0:  # whether each rank sent a table
-                    rank1_table = rank1 == 'fast' or (rank1 == 'same' and mode != '0')
-                    expected = [rank1_table if r == 1 else mode != '0' for r in range(world_size)]
-                    assert received == expected
+        with (
+            TempNamedDir(tmp_path_dist_ckpt / 'nvrx_metadata', sync=True) as async_ckpt_dir,
+            TempNamedDir(tmp_path_dist_ckpt / 'torch_metadata', sync=True) as sync_ckpt_dir,
+        ):
+            self.async_save_checkpoint(async_ckpt_dir, state_dict, planner, async_queue)
+            self.sync_save_checkpoint(sync_ckpt_dir, state_dict, planner)
+            async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+            if rank == 0:  # whether each rank sent a table
+                rank1_table = rank1 == 'fast' or (rank1 == 'same' and mode != '0')
+                expected = [rank1_table if r == 1 else mode != '0' for r in range(world_size)]
+                assert received == expected
 
-                nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
-                torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
-                for field in fields(torch_md):
-                    if field.name != 'storage_meta':  # holds the checkpoint path
-                        assert getattr(nvrx_md, field.name) == getattr(
-                            torch_md, field.name
-                        ), f'{field.name} differs from torch\'s'
+            nvrx_md = FileSystemReader(async_ckpt_dir).read_metadata()
+            torch_md = FileSystemReader(sync_ckpt_dir).read_metadata()
+            for field in fields(torch_md):
+                if field.name != 'storage_meta':  # holds the checkpoint path
+                    assert getattr(nvrx_md, field.name) == getattr(
+                        torch_md, field.name
+                    ), f'{field.name} differs from torch\'s'
 
-                loaded = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
-                for key, value in state_dict.items():
-                    assert torch.equal(loaded[key], value), f'Mismatch for key {key!r}'
-        finally:
-            md_writer.fast_metadata_enabled.cache_clear()
-            md_writer._select_dumps.cache_clear()
+            loaded = self.load_checkpoint(async_ckpt_dir, deepcopy(state_dict))
+            for key, value in state_dict.items():
+                assert torch.equal(loaded[key], value), f'Mismatch for key {key!r}'
 
     def test_errors_are_reported(self, tmp_path_dist_ckpt, async_queue):
         Utils.initialize_distributed()
@@ -803,6 +829,7 @@ class TestAsyncSave:
             with pytest.raises(CheckpointException):
                 self.save_and_finalize(ckpt_dir, rank_state_dict(), async_queue, None)
 
+    @pytest.mark.min_world_size(2)
     def test_a_wrong_fqn_list_fails_the_save_on_every_rank(
         self, tmp_path_dist_ckpt, async_queue, monkeypatch
     ):

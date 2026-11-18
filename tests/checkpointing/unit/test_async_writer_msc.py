@@ -14,6 +14,7 @@
 # limitations under the License.
 import filecmp
 
+import pytest
 import torch
 from torch.distributed.checkpoint import (
     DefaultLoadPlanner,
@@ -33,6 +34,8 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.state_dict_saver import (
 
 from . import TempNamedDir
 from .test_utilities import Model, Utils
+
+pytestmark = pytest.mark.distributed
 
 
 class TestAsyncSaveWithMSC:

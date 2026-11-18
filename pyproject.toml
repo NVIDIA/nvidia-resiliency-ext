@@ -69,6 +69,7 @@ protobuf = ">=4.22.0"
 [tool.poetry.group.test.dependencies]
 pytest = "*"
 hypothesis = "*"
+pytest-timeout = "*"
 
 [tool.poetry.extras]
 attribution = [
@@ -151,4 +152,13 @@ ignore = ["F841"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-markers = []
+# A hung test (a dead checkpoint worker, a rank missing from a collective) fails after 2 minutes
+# instead of blocking the run. The thread method ends the whole run, but unlike the signal method
+# it also stops a hang in C code, such as a collective.
+timeout = 120
+timeout_method = "thread"
+markers = [
+    "distributed: needs a torch.distributed process group; run it under torchrun",
+    "min_world_size(n): distributed test that needs at least n ranks",
+    "max_world_size(n): distributed test that needs at most n ranks",
+]
