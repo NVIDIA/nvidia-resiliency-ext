@@ -32,8 +32,9 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
 - **`AsyncCaller.schedule_async_call`, `is_current_async_call_done`, and
   `sync_all_async_calls` are deprecated**, as is `AsyncCallsQueue.persistent_caller`.
   They warn and will be removed in a future release. Schedule and finalize calls through
-  `AsyncCallsQueue`, whose methods are unchanged, or use the new `AsyncCaller.submit`,
-  which returns the submitted save.
+  `AsyncCallsQueue`, whose methods are unchanged, or use the new `AsyncCaller.submit`.
+  It returns the submitted save, which reports when the request is staged and when it is
+  finished; unlike `schedule_async_call`, `submit` doesn't wait for staging.
 
 ### Behavior changes
 
