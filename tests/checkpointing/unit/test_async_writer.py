@@ -197,7 +197,7 @@ class TestAsyncSave:
             metadata_cache=metadata_cache,
         )
         async_request = self.get_async_save_request(writer, pending, legacy=legacy)
-        async_queue.schedule_async_request(async_request)
+        return async_queue.schedule_async_request(async_request)
 
     def sync_save_checkpoint(self, checkpoint_dir, state_dict, planner):
         """Performs a synchronous model checkpoint save using FileSystemWriter."""
@@ -286,6 +286,48 @@ class TestAsyncSave:
             assert "save_state_dict_async_finalize(storage_writer" in messages
             loaded = self.load_checkpoint(ckpt_dir, deepcopy(state_dict))
             assert torch.equal(loaded[fqn], state_dict[fqn])
+
+    @pytest.mark.parametrize('thread_count', [1, 2, 4])
+    @pytest.mark.parametrize('persistent', [True, False])
+    def test_round_trip(self, tmp_path_dist_ckpt, persistent, thread_count):
+        """Every rank writes one file per thread, and every value loads back as saved."""
+        Utils.initialize_distributed()
+        rank = torch.distributed.get_rank()
+        g = torch.Generator(device='cuda').manual_seed(rank)
+        state_dict = {
+            f'rank{rank}.w{i}': torch.randn(rows, 256, device='cuda', generator=g)
+            for i, rows in enumerate([1024, 64, 512, 2048, 128])
+        }
+        state_dict[f'rank{rank}.half'] = torch.randn(300, device='cuda', generator=g).half()
+        state_dict[f'rank{rank}.cpu'] = torch.arange(1000) * (rank + 1)
+        state_dict[f'rank{rank}.note'] = f'saved by rank {rank}'  # not a tensor: a bytes item
+        async_queue = AsyncCallsQueue(persistent=persistent)
+        try:
+            with TempNamedDir(tmp_path_dist_ckpt / 'round_trip', sync=True) as ckpt_dir:
+                self.async_save_checkpoint(
+                    ckpt_dir, state_dict, DefaultSavePlanner(), async_queue, thread_count
+                )
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                files = [f.stat().st_size for f in ckpt_dir.glob(f'__{rank}_*.distcp')]
+                loaded = {
+                    k: torch.empty_like(v) if isinstance(v, torch.Tensor) else None
+                    for k, v in state_dict.items()
+                }
+                load(
+                    state_dict=loaded,
+                    storage_reader=FileSystemReader(ckpt_dir),
+                    planner=DefaultLoadPlanner(allow_partial_load=True),
+                )
+        finally:
+            async_queue.close()
+
+        # Asserted after the collectives, so a failure on one rank doesn't hang the others.
+        assert len(files) == thread_count and all(files), f'files written: {files}'
+        for key, value in state_dict.items():
+            same = (
+                torch.equal(loaded[key], value) if torch.is_tensor(value) else loaded[key] == value
+            )
+            assert same, f'{key!r} did not load back as saved'
 
     @pytest.mark.parametrize('rank1', ['same', 'unencodable', 'fast'])
     @pytest.mark.parametrize('mode', ['1', 'python', '0'])
@@ -591,6 +633,33 @@ class TestAsyncSave:
         )
         for key, value in state_dict.items():
             assert torch.equal(loaded[key], value), f'mismatch for {key!r}'
+
+    def test_call_idx_increments_per_save_and_finalize_returns_it(
+        self, tmp_path_dist_ckpt, async_queue
+    ):
+        """Each scheduled save gets the next call_idx, and finalize returns the call_idx of
+        every save it finalized, whether finalized alone or together with another."""
+        Utils.initialize_distributed()
+        state_dict = rank_state_dict()
+        with (
+            TempNamedDir(tmp_path_dist_ckpt / 'call_idx_0', sync=True) as first_dir,
+            TempNamedDir(tmp_path_dist_ckpt / 'call_idx_1', sync=True) as second_dir,
+            TempNamedDir(tmp_path_dist_ckpt / 'call_idx_2', sync=True) as third_dir,
+        ):
+            first = self.async_save_checkpoint(
+                first_dir, state_dict, DecentralizedSavePlanner(), async_queue
+            )
+            assert first == 0
+            assert async_queue.maybe_finalize_async_calls(blocking=True) == [0]
+
+            in_flight = [
+                self.async_save_checkpoint(
+                    ckpt_dir, state_dict, DecentralizedSavePlanner(), async_queue
+                )
+                for ckpt_dir in (second_dir, third_dir)
+            ]
+            assert in_flight == [1, 2]
+            assert async_queue.maybe_finalize_async_calls(blocking=True) == [1, 2]
 
     @pytest.mark.parametrize('cached', [True, False], ids=['cache', 'no-cache'])
     def test_fqns_are_sent_as_entries_once_every_rank_has_the_list(

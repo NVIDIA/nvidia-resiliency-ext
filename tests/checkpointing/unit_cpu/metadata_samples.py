@@ -15,8 +15,6 @@
 
 """Fixed DCP metadata samples and ways to make unusual metadata, shared by the .metadata tests."""
 
-from dataclasses import fields
-
 import pytest
 import torch
 import torch.distributed.checkpoint as dcp
@@ -31,13 +29,6 @@ from torch.distributed.checkpoint.metadata import (
 )
 
 from nvidia_resiliency_ext.checkpointing.async_ckpt._metadata_pickler import writer
-
-HAS_TRANSFORMS = "transform_descriptors" in {f.name for f in fields(_StorageInfo)}  # torch 2.8+
-
-
-# A Metadata field a test can set with with_fields: version where torch has it (2.9+), else
-# planner_data, which every version has.
-SETTABLE_FIELD = "version" if "version" in {f.name for f in fields(Metadata)} else "planner_data"
 
 
 def large_metadata() -> Metadata:

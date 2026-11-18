@@ -59,7 +59,9 @@ class TimeoutDumpConfig:
     enabled: bool = False
     tools: list[ToolCapture.Config] = field(default_factory=_default_tools)
     sections: list[str] = field(default_factory=lambda: ["step"])
-    local_root: str = "/tmp"
+    # A fixed path lets rank monitors and the collector find the same staging directory
+    # without passing a generated temporary-directory path between processes.
+    local_root: str = "/tmp"  # nosec B108
     capture_timeout: float = 30.0  # total for all tools
     max_capture_bytes: int = 1024 * 1024  # per tool, including header and footer
     poll_interval: float = 30.0

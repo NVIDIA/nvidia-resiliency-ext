@@ -30,7 +30,7 @@ from torch.distributed.checkpoint.metadata import (
     TensorStorageMetadata,
 )
 
-from .metadata_samples import HAS_TRANSFORMS, SubclassedTensor
+from .metadata_samples import SubclassedTensor
 
 # Strategies for Metadata the writers encode themselves. Integers stay within int64, which the
 # native writer is limited to; fqns and paths have no lone surrogates, which it cannot encode.
@@ -113,16 +113,8 @@ def metadatas(draw):
         offset=st.none() | sizes,
         index=st.none() | int64s,
     )
-    transforms = st.none()
-    if HAS_TRANSFORMS:
-        transforms = st.none() | st.lists(texts, min_size=1, max_size=2)
-
-    def storage_info(path, offset, length, transform_descriptors):
-        if transform_descriptors is None:
-            return _StorageInfo(path, offset, length)
-        return _StorageInfo(path, offset, length, transform_descriptors=transform_descriptors)
-
-    info = st.builds(storage_info, st.sampled_from(paths), int64s, int64s, transforms)
+    transforms = st.none() | st.lists(texts, min_size=1, max_size=2)
+    info = st.builds(_StorageInfo, st.sampled_from(paths), int64s, int64s, transforms)
     storage_data = draw(st.dictionaries(index, info, max_size=30))
     planner_data = draw(st.none() | st.dictionaries(texts, st.tuples(texts), max_size=3))
     return Metadata(
