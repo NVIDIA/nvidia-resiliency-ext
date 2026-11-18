@@ -74,6 +74,7 @@ except ImportError:
 from ..utils import _disable_gc
 from . import _metadata_pickler
 from ._metadata_template import MetadataTemplate
+from .core import worker_should_stop
 from .staging import (  # noqa: F401 (ConsistentDataIdentifier is re-exported)
     ConsistentDataIdentifier,
     IpcStager,
@@ -524,15 +525,23 @@ class FileSystemWriterAsync(FileSystemWriter):
             assert len(transform_list) <= 1
             write_fn = partial(_write_item, *transform_list)
 
+        def check_not_stopping():
+            # Stop between items if the worker is being stopped, rather than finishing a write
+            # that nobody will finalize while the worker holds its memory.
+            if worker_should_stop():
+                raise RuntimeError(f"Stopped writing {file_name}: the worker is stopping")
+
         local_results = []
         with open_file(file_name, "wb") as stream:
             for write_item, data in bytes_data:
+                check_not_stopping()
                 local_results.append(
                     write_fn(stream, data, write_item, storage_key, **extra_kwargs)
                 )
 
             for write_item, tensor in tensor_data:
                 assert tensor.is_cpu
+                check_not_stopping()
                 local_results.append(
                     write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
                 )

@@ -20,15 +20,18 @@ a checkpoint save process in the background.
 import functools
 import gc
 import logging
+import multiprocessing
 import os
 import shutil
 import signal
 import subprocess  # nosec B404
+import threading
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
 from itertools import count
 from multiprocessing.connection import Connection, wait
+from queue import Empty
 from time import time
 from typing import (
     Any,
@@ -256,6 +259,23 @@ class AsyncRequest(NamedTuple):
                     "That probably means not all ranks are participating in async finalization"
                 )
         return self.call_idx
+
+
+# Set in a persistent worker: its trainer's pid, and whether it has been told to stop.
+_trainer_pid: Optional[int] = None
+_stop_requested = threading.Event()
+
+
+def worker_should_stop() -> bool:
+    """Whether this persistent worker should stop: it got SIGTERM, or its trainer has died.
+
+    Long work in the worker, such as writing a checkpoint, checks this between items so that
+    the worker exits promptly instead of finishing work that nobody will finalize. Always False
+    outside a persistent worker.
+    """
+    if _trainer_pid is None:
+        return False
+    return _stop_requested.is_set() or os.getppid() != _trainer_pid
 
 
 # Ids of the processes that run async requests: each persistent worker, each forked process, and
@@ -881,18 +901,38 @@ class PersistentAsyncCaller(AsyncCaller):
         # Without this, SIGTERM (sent by close(abort=True)) bypasses Python cleanup,
         # leaving dangling CUDA IPC handles that cause a SIGSEGV in the parent at exit.
         def _handle_sigterm(signum, frame):
+            _stop_requested.set()  # so that a write in progress stops too
             raise SystemExit(128 + signum)
 
         signal.signal(signal.SIGTERM, _handle_sigterm)
+        # The pid of the process that spawned this worker, even if it has died since
+        global _trainer_pid
+        _trainer_pid = multiprocessing.parent_process().pid
 
         # Merged with resource attributes published by the parent process via
         # OTEL_RESOURCE_ATTRIBUTES.
         tel_handle = telemetry.setup_telemetry("nvrx.ckpt_worker")
 
+        def report(kind: str, call_idx: int) -> None:
+            # Keep reports small (well under PIPE_BUF). A small message reaches the pipe in a
+            # single write, whole or not at all, so if the worker is killed while sending, the
+            # trainer can't be left reading half a report.
+            try:
+                report_conn.send((kind, call_idx))
+            except OSError:  # nothing reads the reports: the trainer has died or let us go
+                raise SystemExit(0)
+
         # Start busy loop waiting for and executing checkpoint saves.
         try:
             while True:
-                item = queue.get()
+                try:
+                    item = queue.get(timeout=1.0)
+                except Empty:
+                    if worker_should_stop():  # the trainer has died
+                        if rank == 0:
+                            logger.warning("The trainer has exited; stopping its checkpoint worker")
+                        raise SystemExit(0)
+                    continue
                 if isinstance(item, str) and item == 'DONE':
                     queue.task_done()
                     break
@@ -910,7 +950,7 @@ class PersistentAsyncCaller(AsyncCaller):
                                 # the 2nd arg is state dict
                                 async_fn_args[1] = item.preload_fn()
                             logger.debug(f"{rank} has completed D2H of {item.call_idx}")
-                            report_conn.send(('staged', item.call_idx))
+                            report('staged', item.call_idx)
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
                             with telemetry.span(
@@ -918,10 +958,7 @@ class PersistentAsyncCaller(AsyncCaller):
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
-                        # Keep reports small (well under PIPE_BUF). A small message reaches the
-                        # pipe in a single write, whole or not at all, so if the worker is killed
-                        # while sending, the trainer can't be left reading half a report.
-                        report_conn.send(('finished', item.call_idx))
+                        report('finished', item.call_idx)
                         queue.task_done()
                         del async_fn_args
                 del item

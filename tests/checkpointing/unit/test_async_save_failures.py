@@ -339,3 +339,27 @@ class TestSavesAcrossWorkers:
         finally:
             abandoned_queue.close(abort=True)
             async_queue.close()
+
+    def test_aborting_the_worker_stops_its_write(self, tmp_path_dist_ckpt):
+        """An abort during a write returns once the worker has stopped, not when the write
+        would have ended: the worker stops between items."""
+        Utils.initialize_distributed()
+        # 64 tensors of 1 MiB: the write takes over 30 s
+        state_dict = {
+            f"param_{i}": torch.full((512, 512), float(i), device="cuda") for i in range(64)
+        }
+        async_queue = AsyncCallsQueue(persistent=True)
+        try:
+            with TempNamedDir(tmp_path_dist_ckpt / "aborted", sync=True) as ckpt_dir:
+                async_queue.schedule_async_request(
+                    self.plan(ckpt_dir, state_dict, open_file=_slow_write_open)
+                )
+                while not list(ckpt_dir.glob("*.distcp")):  # wait for the write to begin
+                    time.sleep(0.1)
+                time.sleep(1)  # the worker is in the middle of the write
+                start = time.perf_counter()
+                async_queue.close(abort=True)
+                took = time.perf_counter() - start
+        finally:
+            async_queue.close(abort=True)
+        assert took < 5, f"the abort took {took:.1f} s"
