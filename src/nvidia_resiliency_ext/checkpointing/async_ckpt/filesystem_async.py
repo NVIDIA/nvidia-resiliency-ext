@@ -130,6 +130,42 @@ def get_write_results_queue(mp_mode: str = 'spawn') -> mp.Queue:
 # Backward-compat alias for the former private name
 _get_write_results_queue = get_write_results_queue
 
+# Ids of this process's saves, which share the results queue
+_save_ids = count()
+
+# Write results read from the shared results queue while looking for another save's, by save id,
+# kept until their own save takes them.
+_results_by_save: Dict[int, Any] = {}
+
+
+class _SaveResults:
+    """The results queue as one save's writer sees it: each result put is tagged with the save.
+
+    Every save in a process shares one results queue, so a save whose results are never taken
+    (an aborted save, for example) would otherwise hand them to the next save's finalize.
+    """
+
+    def __init__(self, results_queue: mp.Queue, save_id: int):
+        self._results_queue = results_queue
+        self._save_id = save_id
+
+    def put(self, write_results_or_exc: Union[dict, Exception]) -> None:
+        self._results_queue.put((self._save_id, write_results_or_exc))
+
+
+def _take_write_results(results_queue: mp.Queue, save_id: int) -> Optional[Union[dict, Exception]]:
+    """Take the write results of save `save_id`, or None if its worker has not sent them.
+
+    Results of other saves read on the way are kept for them.
+    """
+    while True:
+        try:
+            other_save_id, write_results_or_exc = results_queue.get_nowait()
+        except queue.Empty:
+            break
+        _results_by_save[other_save_id] = write_results_or_exc
+    return _results_by_save.pop(save_id, None)
+
 
 class _WriteData(NamedTuple):
     """What the worker writes for one save.
@@ -141,6 +177,7 @@ class _WriteData(NamedTuple):
         byte_io: BytesIO items and their data, or None.
         thread_count: the number of threads or processes to write with.
         storage_plan: this rank's storage data from the plan, with the file prefix.
+        save_id: identifies the save's write results in the shared results queue.
     """
 
     checkpoint_dir: str
@@ -149,6 +186,7 @@ class _WriteData(NamedTuple):
     byte_io: Optional[Tuple[list, list]]
     thread_count: int
     storage_plan: Any
+    save_id: int
 
     def received_here(self) -> '_WriteData':
         """This write data with the kept tensors filled in, from this process's worker cache.
@@ -319,6 +357,7 @@ class FileSystemWriterAsync(FileSystemWriter):
             byte_io,
             self.thread_count,
             plan.storage_data,
+            next(_save_ids),
         )
         logger.debug(f"prepare_write_data, time: {time() - start}")
 
@@ -420,13 +459,14 @@ class FileSystemWriterAsync(FileSystemWriter):
             write_data (_WriteData): the save's write data, with tensors in host memory.
             global_results_queue (mp.Queue): queue to pass the write results to.
         """
+        results = _SaveResults(global_results_queue, write_data.save_id)
         try:
             write_buckets = _make_write_buckets(write_data)
         except Exception as e:  # reported to finalize like a failed write
             logger.error(f"Making the write buckets failed: {e}")
-            global_results_queue.put(e)
+            results.put(e)
             return
-        write_buckets_func(rank, write_buckets, global_results_queue)
+        write_buckets_func(rank, write_buckets, results)
 
     @staticmethod
     def _finalize_write_execution(
@@ -617,10 +657,11 @@ class FileSystemWriterAsync(FileSystemWriter):
         if self.results_queue is None:
             write_results_or_exc = {}
         else:
-            try:
-                write_results_or_exc = self.results_queue.get_nowait()
-            except queue.Empty:
-                return _wrap_exception_for_gather(RuntimeError('results_queue should not be empty'))
+            write_results_or_exc = _take_write_results(self.results_queue, self._write_data.save_id)
+            if write_results_or_exc is None:
+                return _wrap_exception_for_gather(
+                    RuntimeError('The worker sent no write results for this save')
+                )
 
         if isinstance(write_results_or_exc, Exception):
             # Worker failed — its data cache may have been lost (e.g. after a restart).

@@ -135,10 +135,11 @@ def test_a_save_that_cant_be_made_into_buckets_is_reported_as_failed(tmp_path):
     """The error reaches finalize like a failed write, rather than ending the worker."""
     # Only the key of tensors this process never received
     missing = StagedTensors(ConsistentDataIdentifier('never sent'), None, None)
-    write_data = _WriteData(str(tmp_path), None, missing, None, 1, None)
+    write_data = _WriteData(str(tmp_path), None, missing, None, 1, None, save_id=7)
     results, write_buckets = queue.Queue(), Mock()
 
     FileSystemWriterAsync.write_staged_data(write_buckets, 0, write_data, results)
 
-    assert isinstance(results.get_nowait(), RuntimeError)
+    save_id, error = results.get_nowait()
+    assert save_id == 7 and isinstance(error, RuntimeError)
     write_buckets.assert_not_called()
