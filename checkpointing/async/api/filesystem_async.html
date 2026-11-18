@@ -125,8 +125,8 @@ the entire data structure (which includes IPC handles) across process boundaries
 <ol class="arabic simple">
 <li><p>Call <cite>write_data</cite></p></li>
 <li><p>Externally start an async process with <cite>get_save_function_and_args</cite> and its arguments.</p></li>
-<li><p>The async function calls <cite>write_preloaded_data_multithread</cite> (threads) or
-<cite>write_preloaded_data_multiproc</cite> (processes) across multiple workers.</p></li>
+<li><p>The async function calls <cite>write_preloaded_data_multithread</cite>, which writes the buckets
+on worker threads.</p></li>
 <li><p>Once saving is finalized on all ranks, call <cite>super().finish</cite> with the results stored in <cite>self.writer_result</cite>.</p></li>
 </ol>
 <p><strong>Note:</strong> Step (3) can also be executed synchronously.</p>
@@ -406,40 +406,6 @@ an exception was raised during the writing process.</p>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multiproc">
-<span class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></span><span class="sig-name descname"><span class="pre">write_preloaded_data_multiproc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_msc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">open_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_buckets</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_results_queue</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data_multiproc"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multiproc" title="Link to this definition"></a></dt>
-<dd><p>Performs saving data to storage with multiple processes.</p>
-<p>Starts predefined number of processes and uses 2 queues to make sure the results
-are complete:
-- local_results_queue - to send the actual results
-- count_queue - small queue to mark worker as completed</p>
-<p>Using just one queue disallowed proper exception handling.</p>
-<p>This method is meant to be run in a forked subprocess.
-Triggering GC during execution leads to CUDA errors
-(cleaning up tensors owned by the parent process).
-To prevent this, we disable the GC explicitly for this function with _disable_gc.</p>
-<p>Note: requires is_daemon=False on the PersistentAsyncCaller, because daemon
-processes cannot spawn child processes.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>transform_list</strong> (<em>List</em><em>[</em><em>_StorageWriterTransforms</em><em>]</em>) – streaming transforms list</p></li>
-<li><p><strong>use_msc</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – flag to indicate use of multi storage client</p></li>
-<li><p><strong>open_file</strong> (<em>Callable</em>) – file open callable</p></li>
-<li><p><strong>rank</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – training rank</p></li>
-<li><p><strong>write_buckets</strong> (<em>List</em><em>[</em><em>WriteBucket</em><em>]</em>) – write plan</p></li>
-<li><p><strong>global_results_queue</strong> (<em>mp.Queue</em>) – mp.Queue to collect Dict[List[WriteResults]]
-(or an Exception) from parallel write processes to the main training process</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>None</p>
-</dd>
-</dl>
-<p>Returns: None</p>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multithread">
 <span class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></span><span class="sig-name descname"><span class="pre">write_preloaded_data_multithread</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_msc</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">open_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_buckets</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">global_results_queue</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data_multithread"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_multithread" title="Link to this definition"></a></dt>
 <dd><p>Performs saving data to storage with one thread per write bucket, all running concurrently.</p>
@@ -465,30 +431,6 @@ The worker threads run inside it, so GC stays disabled until they have all finis
 </dd>
 </dl>
 <p>Returns: None</p>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_proc">
-<span class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></span><span class="sig-name descname"><span class="pre">write_preloaded_data_proc</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">transform_list</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">open_file</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">local_proc_idx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">write_bucket</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">results_queue</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">count_queue</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_fsync</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../../../_modules/nvidia_resiliency_ext/checkpointing/async_ckpt/filesystem_async.html#FileSystemWriterAsync.write_preloaded_data_proc"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.write_preloaded_data_proc" title="Link to this definition"></a></dt>
-<dd><p>Performs actual data saving to storage (used by worker processes in multiproc mode).</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>local_proc_idx</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – index of a local process that performs writing</p></li>
-<li><p><strong>write_bucket</strong> (<em>WriteBucket</em>) – data to write to storage</p></li>
-<li><p><strong>results_queue</strong> (<em>mp.Queue</em>) – queue to return the write results
-to the proxy checkpoint process.</p></li>
-<li><p><strong>count_queue</strong> (<em>mp.JoinableQueue</em>) – queue to marks worker task as completed</p></li>
-<li><p><strong>use_fsync</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – if True, calls os.fsync at the end of saving</p></li>
-<li><p><strong>transform_list</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.List" title="(in Python v3.15)"><em>List</em></a><em>[</em><em>_StorageWriterTransforms</em><em>]</em>)</p></li>
-<li><p><strong>open_file</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Callable" title="(in Python v3.15)"><em>Callable</em></a>)</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>None</p>
-</dd>
-</dl>
-<p>Returns: None, the write results are put into the <cite>results_queue</cite></p>
 </dd></dl>
 
 </dd></dl>

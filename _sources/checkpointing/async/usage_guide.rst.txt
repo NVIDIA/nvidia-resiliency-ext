@@ -20,7 +20,7 @@ Implementation Changes and Evolution
 
 * :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncCallsQueue` is now initialized by default to use :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` instead of :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.TemporalAsyncCaller`.
 
-* :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` spawns a persistent process that runs in a separate CUDA context and forks processes optionally for intra-node parallelism.
+* :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` spawns a persistent process that runs in a separate CUDA context and writes checkpoint files on threads for intra-node parallelism.
 
 * Now, we don't need :py:func:`~nvidia_resiliency_ext.checkpointing.utils.wrap_for_async` anymore because :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` is safe to call garbage collection in the spawned process.
 
