@@ -66,7 +66,7 @@ def test_each_kind_is_read_separately_once():
         pb.NodeCycleEndReport(
             job_id="job1",
             cycle_number=3,
-            node_name=node,
+            node_id=node,
             end_reason=pb.CycleEndReasonWorkerCompleted,
             detected_timestamp=20_000,
         )

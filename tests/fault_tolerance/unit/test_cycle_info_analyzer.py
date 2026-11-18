@@ -70,7 +70,7 @@ def _end_report(cycle, node):
     return pb.NodeCycleEndReport(
         job_id="job1",
         cycle_number=cycle,
-        node_name=node,
+        node_id=node,
         end_reason=pb.CycleEndReasonWorkerFailed,
         detected_timestamp=20_000 + cycle,
     )
@@ -548,6 +548,19 @@ class TestWhenCyclesAreWritten:
         analyzer, reader, _ = self._analyzer()
         reader.starts = [_start(3, ("n0", "n1"))]
         reader.end_reports = [_end_report(3, "n0.cluster"), _end_report(3, "n1.cluster")]
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+    def test_launchers_sharing_a_host_complete_the_cycle_once_all_reported(self):
+        """Simulations run several launchers on a host: the start lists the host once, with
+        one active rank per launcher, and each launcher reports as "<host>_<pid>"."""
+        analyzer, reader, _ = self._analyzer()
+        reader.starts = [_start(3, ("n0", "n0", "n0"))]
+        reader.end_reports = [_end_report(3, "n0_100"), _end_report(3, "n0_101")]
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+
+        reader.end_reports = [_end_report(3, "n0_101"), _end_report(3, "n0_102")]  # 1 duplicate
         analyzer.process_received()
         assert self._written(analyzer) == [3]
 

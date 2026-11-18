@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Helpers for the cycle records: the messages of nvrx_interface.proto.
 
-The proto messages are the records themselves. The store host builds one `CycleInfo` per
+The proto messages are the records themselves. The store host builds one `NVRxCycleInfo` per
 cycle, when the rendezvous round that starts it closes, and an updated copy when the
 cycle ends. Each launcher builds one `NodeCycleEndReport` per cycle, when the cycle ends
 for it; end reports are local facts, so which node detected the end first is concluded
@@ -16,6 +16,7 @@ Messages are mutable: never modify one after publishing it; copy it instead.
 """
 
 import json
+import os
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Mapping, Optional, Sequence
@@ -25,6 +26,7 @@ from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 from ..cycle_info_writer import utc_iso
 from ..utils import (
     hostnames_to_slurm_nodelist,
+    parse_bool_env,
     range_str_to_ranks,
     ranks_to_range_str,
     slurm_nodelist_to_hostnames,
@@ -82,15 +84,15 @@ def build_cycle_info(
     active_nodes: Sequence[str] = (),
     active_ranks: Sequence[int] = (),
     standby_nodes: Sequence[str] = (),
-) -> pb.CycleInfo:
-    """The `CycleInfo` of a cycle that started at `started_at_ms` (milliseconds since the
+) -> pb.NVRxCycleInfo:
+    """The `NVRxCycleInfo` of a cycle that started at `started_at_ms` (milliseconds since the
     epoch), as the store host assigned it.
 
     `active_nodes` and `active_ranks` are aligned: the i-th rank is the i-th node's. The
     node lists are compressed into SLURM node lists (short host names, each once, sorted),
     and the ranks into a range string in that host order. `timestamp` is the start time.
     """
-    return pb.CycleInfo(
+    return pb.NVRxCycleInfo(
         job_id=job_id,
         attempt_index=attempt_index,
         cycle_number=cycle_number,
@@ -103,26 +105,46 @@ def build_cycle_info(
     )
 
 
-def ended_cycle_info(info: pb.CycleInfo, ended_at_ms: int) -> pb.CycleInfo:
+def ended_cycle_info(info: pb.NVRxCycleInfo, ended_at_ms: int) -> pb.NVRxCycleInfo:
     """A copy of `info` for the cycle that ended at `ended_at_ms` (milliseconds since the
     epoch): `cycle_end_time` set, and `timestamp` the end time."""
-    ended = pb.CycleInfo()
+    ended = pb.NVRxCycleInfo()
     ended.CopyFrom(info)
     ended.cycle_end_time = utc_iso(ended_at_ms / 1000)
     ended.timestamp = ended_at_ms
     return ended
 
 
-def active_hosts(info: pb.CycleInfo) -> List[str]:
+def active_hosts(info: pb.NVRxCycleInfo) -> List[str]:
     """The active nodes of `info`, expanded: short host names, each once, sorted."""
     return slurm_nodelist_to_hostnames(info.active_nodes)
+
+
+def active_launchers(info: pb.NVRxCycleInfo) -> int:
+    """How many launchers are active in `info`'s cycle: one per active rank. Several can
+    share a host, which active_nodes lists once."""
+    return len(range_str_to_ranks(info.active_ranks))
+
+
+# Set for simulations that run several launchers on one host (see
+# launcher._validate_slurm_single_launcher_per_node).
+MULTI_LAUNCHERS_PER_NODE_ENV = "NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE"
+
+
+def launcher_node_id(host: str, pid: Optional[int] = None) -> str:
+    """The node_id of a launcher on `host`: the host name, or "<host>_<pid>" (by default
+    this process's pid) when several launchers may share a host
+    (NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE)."""
+    if parse_bool_env(MULTI_LAUNCHERS_PER_NODE_ENV):
+        return f"{host}_{os.getpid() if pid is None else pid}"
+    return host
 
 
 def build_node_cycle_end_report(
     job_id: str,
     attempt_index: int,
     cycle: int,
-    node: str,
+    node_id: str,
     end_reason: int,
     workers: Sequence["Worker"],
     failures: Optional[Mapping[int, "ProcessFailure"]],
@@ -131,7 +153,7 @@ def build_node_cycle_end_report(
 ) -> pb.NodeCycleEndReport:
     """Describe how the cycle ended on this launcher, when it observed the end.
 
-    `end_reason` is a pb.EndReason value, and `detected_timestamp` in milliseconds since the
+    `node_id` identifies the launcher (launcher_node_id). `end_reason` is a pb.EndReason value, and `detected_timestamp` in milliseconds since the
     epoch (now_ms()). Workers in `failures` (keyed by global rank) exited; those also in
     `timeouts` (keyed by global rank) were stopped by their rank monitor, the others failed
     on their own. Each is listed in `exit_details`, as JSON: its global and local rank,
@@ -172,15 +194,15 @@ def build_node_cycle_end_report(
         job_id=job_id,
         attempt_index=attempt_index,
         cycle_number=cycle,
-        node_name=node,
+        node_id=node_id,
         end_reason=end_reason,
         detected_timestamp=detected_timestamp,
         exit_details=json.dumps(exited, separators=(",", ":")) if exited else "",
     )
 
 
-def check_cycle_info(info: pb.CycleInfo) -> None:
-    """Check a received `CycleInfo`: its times and node and rank lists must parse.
+def check_cycle_info(info: pb.NVRxCycleInfo) -> None:
+    """Check a received `NVRxCycleInfo`: its times and node and rank lists must parse.
 
     Raises:
         ValueError: A time or a list is malformed, or the start time is missing.

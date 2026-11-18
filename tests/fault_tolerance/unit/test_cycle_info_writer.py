@@ -43,8 +43,8 @@ def tmp_dir():
 
 
 def _file_info(job_id, cycle_number, **fields):
-    """A CycleInfo as the writer gets it: in its file format, named by its own fields."""
-    return pb.CycleInfo(
+    """An NVRxCycleInfo as the writer gets it: in its file format, named by its own fields."""
+    return pb.NVRxCycleInfo(
         job_id=job_id,
         attempt_index=0,
         cycle_number=cycle_number,
@@ -54,7 +54,7 @@ def _file_info(job_id, cycle_number, **fields):
 
 
 def _store_host_info(cycle_number=0, **kwargs):
-    """A CycleInfo as the store host publishes it, in its own (environment) namespace."""
+    """An NVRxCycleInfo as the store host publishes it, in its own (environment) namespace."""
     kwargs.setdefault("active_nodes", ["node002", "node001"])
     kwargs.setdefault("active_ranks", [1, 0])
     return build_cycle_info(
@@ -90,7 +90,7 @@ def test_cycle_info_writer_get_current_cycle_info_path(tmp_dir):
 
 
 def test_cycle_info_writer_write_cycle_start_creates_file_and_symlink(tmp_dir):
-    """write_cycle_start writes the CycleInfo as JSON and points the .current symlink at it."""
+    """write_cycle_start writes the NVRxCycleInfo as JSON and points the .current symlink at it."""
     writer = CycleInfoWriter(tmp_dir)
     job_id = "job1"
     attempt_index = 0
@@ -181,7 +181,7 @@ def _launcher_end_report(node, detected_timestamp):
     return pb.NodeCycleEndReport(
         job_id="job1",
         cycle_number=3,
-        node_name=node,
+        node_id=node,
         end_reason=pb.CycleEndReasonWorkerFailed,
         detected_timestamp=detected_timestamp,
     )
@@ -191,7 +191,7 @@ def _job_end_report(node, detected_timestamp):
     return pb.JobCycleEndReport(
         end_reason=pb.CycleEndReasonWorkerFailed,
         first_detected_timestamp="2024-01-01T00:00:59.000Z",
-        first_detected_nodes=[node],
+        first_detected_nodes=node,
         launcher_end_reports=[_launcher_end_report(node, detected_timestamp)],
     )
 
@@ -218,12 +218,12 @@ def test_cycle_info_writer_update_cycle_end_report(tmp_dir):
     assert "not_a_field" not in data
     end_report = data["end_report"]
     assert end_report["end_reason"] == "CycleEndReasonWorkerFailed"
-    assert end_report["first_detected_nodes"] == ["node002"]
+    assert end_report["first_detected_nodes"] == "node002"
     # Without the cycle's own job id, attempt index and cycle number; the end reason by
     # name and the detection time in ISO 8601 UTC.
     assert end_report["launcher_end_reports"] == [
         {
-            "node_name": "node002",
+            "node_id": "node002",
             "end_reason": "CycleEndReasonWorkerFailed",
             "detected_timestamp": "2023-12-31T23:59:59.000Z",
             "exit_details": "",

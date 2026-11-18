@@ -96,6 +96,7 @@ from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     build_node_cycle_end_report,
+    launcher_node_id,
     now_ms,
 )
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.transport import CycleInfoPublisher
@@ -861,7 +862,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 job_id=_cycle_info_job_id_from_env(),
                 attempt_index=_cycle_info_attempt_index_from_env(),
                 cycle=cycle,
-                node=self._node_id,
+                node_id=launcher_node_id(self._node_id),
                 end_reason=end_reason,
                 workers=self._worker_group.workers,
                 failures=failures,

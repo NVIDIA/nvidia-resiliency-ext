@@ -35,7 +35,7 @@ REPORT = pb.NodeCycleEndReport(
     job_id="job1",
     attempt_index=2,
     cycle_number=3,
-    node_name="node001.cluster",
+    node_id="node001.cluster",
     end_reason=pb.CycleEndReasonWorkerTerminatedByRankMonitor,
     detected_timestamp=1_700_000_099_123,
     exit_details='[{"rank":1}]',
@@ -182,7 +182,7 @@ def test_reader_rejects_a_record_failing_its_check(rpc):
         message.CopyFrom(REPORT)
         message.detected_timestamp = 0
     else:
-        message = pb.CycleInfo()
+        message = pb.NVRxCycleInfo()
         message.CopyFrom(START)
         message.cycle_start_time = "not a time"
     try:

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import time
 from types import SimpleNamespace
 
@@ -11,13 +12,16 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     MAX_EXIT_DETAILS_WORKERS,
     MAX_SECTION_NAME_LEN,
     MAX_TIMEOUT_SECTIONS,
+    MULTI_LAUNCHERS_PER_NODE_ENV,
     active_hosts,
+    active_launchers,
     build_cycle_info,
     build_node_cycle_end_report,
     check_cycle_info,
     check_node_cycle_end_report,
     ended_cycle_info,
     iso_to_seconds,
+    launcher_node_id,
     now_ms,
 )
 from nvidia_resiliency_ext.fault_tolerance.data import RankTimeout, TimeoutKind
@@ -94,7 +98,7 @@ class TestChecks:
         ],
     )
     def test_a_malformed_cycle_info_is_rejected(self, field, value):
-        info = pb.CycleInfo()
+        info = pb.NVRxCycleInfo()
         info.CopyFrom(START)
         setattr(info, field, value)
         with pytest.raises(ValueError):
@@ -127,7 +131,7 @@ def _build(end_reason, failures=None, timeouts=None, workers=WORKERS):
         job_id="job1",
         attempt_index=2,
         cycle=3,
-        node="node0",
+        node_id="node0",
         end_reason=end_reason,
         workers=workers,
         failures=failures,
@@ -148,7 +152,7 @@ class TestNodeCycleEndReport:
             job_id="job1",
             attempt_index=2,
             cycle_number=3,
-            node_name="node0",
+            node_id="node0",
             end_reason=pb.CycleEndReasonWorkerFailed,
             detected_timestamp=DETECTED,
             exit_details='[{"rank":5,"local_rank":1,"pid":101,"end":"failed","exitcode":1}]',
@@ -160,6 +164,7 @@ class TestNodeCycleEndReport:
             pb.CycleEndReasonWorkerCompleted,
             pb.CycleEndReasonWorkerTerminatedDueToPeer,
             pb.CycleEndReasonWorkerTerminatedByAttribution,
+            pb.CycleEndReasonWorkerTerminatedDueToNoProgress,
         ],
     )
     def test_no_failures_means_no_exit_details(self, end_reason):
@@ -201,6 +206,7 @@ class TestNodeCycleEndReport:
         [
             pb.CycleEndReasonWorkerTerminatedDueToPeer,
             pb.CycleEndReasonWorkerTerminatedByAttribution,
+            pb.CycleEndReasonWorkerTerminatedDueToNoProgress,
         ],
     )
     def test_only_failed_is_upgraded(self, end_reason):
@@ -237,6 +243,31 @@ class TestNodeCycleEndReport:
 
         assert [entry["rank"] for entry in entries[:-1]] == list(range(MAX_EXIT_DETAILS_WORKERS))
         assert entries[-1] == {"omitted": 3}
+
+
+class TestNodeId:
+    def test_one_launcher_per_host_is_its_host_name(self, monkeypatch):
+        monkeypatch.delenv(MULTI_LAUNCHERS_PER_NODE_ENV, raising=False)
+        assert launcher_node_id("node0.cluster", pid=1234) == "node0.cluster"
+        monkeypatch.setenv(MULTI_LAUNCHERS_PER_NODE_ENV, "0")
+        assert launcher_node_id("node0.cluster", pid=1234) == "node0.cluster"
+
+    def test_several_launchers_per_host_add_the_pid(self, monkeypatch):
+        monkeypatch.setenv(MULTI_LAUNCHERS_PER_NODE_ENV, "1")
+        assert launcher_node_id("node0.cluster", pid=1234) == "node0.cluster_1234"
+        assert launcher_node_id("node0") == f"node0_{os.getpid()}"
+
+
+def test_active_launchers_are_one_per_active_rank():
+    start = build_cycle_info(
+        job_id="job1",
+        attempt_index=0,
+        cycle_number=0,
+        started_at_ms=1_000,
+        active_nodes=("n0", "n0", "n1"),
+        active_ranks=(0, 1, 2),
+    )
+    assert (active_hosts(start), active_launchers(start)) == (["n0", "n1"], 3)
 
 
 def test_now_ms_is_integer_milliseconds():

@@ -55,13 +55,13 @@ class GrpcCycleInfoPublisher(CycleInfoPublisher):
         self._data_record_stub = data_record_stub
         self._rpc_timeout = rpc_timeout
 
-    def publish_cycle_info(self, info: pb.CycleInfo) -> bool:
+    def publish_cycle_info(self, info: pb.NVRxCycleInfo) -> bool:
         what = f"start of cycle {info.cycle_number}"
         stub = self._cycle_info_stub
         rpc = stub.PublishCycleInfo if stub is not None else None
         return self._publish(rpc, lambda: info, what)
 
-    def update_cycle_info(self, info: pb.CycleInfo) -> bool:
+    def update_cycle_info(self, info: pb.NVRxCycleInfo) -> bool:
         what = f"end of cycle {info.cycle_number}"
         stub = self._cycle_info_stub
         rpc = stub.UpdateCycleInfo if stub is not None else None
@@ -170,10 +170,10 @@ class GrpcCycleInfoReader(CycleInfoReader):
         self.port = self._server.add_insecure_port(address)
         self._server.start()
 
-    def read_cycle_infos(self) -> List[pb.CycleInfo]:
+    def read_cycle_infos(self) -> List[pb.NVRxCycleInfo]:
         return _drain(self._cycle_infos)
 
-    def read_cycle_info_updates(self) -> List[pb.CycleInfo]:
+    def read_cycle_info_updates(self) -> List[pb.NVRxCycleInfo]:
         return _drain(self._cycle_info_updates)
 
     def read_end_reports(self) -> List[pb.NodeCycleEndReport]:

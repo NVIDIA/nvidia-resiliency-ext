@@ -65,7 +65,7 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
 )
 from nvidia_resiliency_ext.fault_tolerance.segment_health_check import SegmentHealthCheck
 from nvidia_resiliency_ext.fault_tolerance.utils import range_str_to_ranks
-from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import CycleInfo
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import NVRxCycleInfo
 
 # Test timeout configuration - use short timeouts to make tests run faster
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
@@ -1630,7 +1630,7 @@ class GroupRankAssignmentTest(TestCase):
 
         publisher.publish_cycle_info.assert_called_once()
         info = publisher.publish_cycle_info.call_args.args[0]
-        self.assertIsInstance(info, CycleInfo)
+        self.assertIsInstance(info, NVRxCycleInfo)
         # The node and rank lists are compressed by the store host.
         self.assertEqual(
             (info.cycle_number, active_hosts(info), info.standby_nodes),
@@ -1671,7 +1671,7 @@ class GroupRankAssignmentTest(TestCase):
         self.assertIsNot(end, start)
         self.assertEqual(start.cycle_end_time, "")  # the published start is not modified
         # The start with its end time and a later timestamp.
-        start_with_end = CycleInfo()
+        start_with_end = NVRxCycleInfo()
         start_with_end.CopyFrom(start)
         start_with_end.cycle_end_time = end.cycle_end_time
         start_with_end.timestamp = end.timestamp

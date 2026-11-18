@@ -2232,13 +2232,19 @@ class TestRecordCycleEndReport:
             launcher._cycle_info_job_id_from_env(),
             2,
         )
-        assert (report.cycle_number, report.node_name, report.end_reason) == (
+        assert (report.cycle_number, report.node_id, report.end_reason) == (
             3,
             "node0",
             pb.CycleEndReasonWorkerCompleted,
         )
         assert (report.detected_timestamp, report.exit_details) == (1_700_000_000_123, "")
         agent._collect_rank_monitor_timeouts.assert_not_called()
+
+    def test_launchers_that_may_share_a_host_report_with_their_pid(self, monkeypatch):
+        monkeypatch.setenv("NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE", "1")
+        agent = _end_report_agent()
+        agent._record_cycle_end_report(pb.CycleEndReasonWorkerCompleted)
+        assert agent._cycle_end_report.node_id == f"node0_{os.getpid()}"
 
     def test_failures_are_described_with_monitor_timeouts(self):
         agent = _end_report_agent()

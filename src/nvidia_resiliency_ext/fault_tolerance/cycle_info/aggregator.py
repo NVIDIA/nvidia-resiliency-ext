@@ -6,33 +6,31 @@ Pure functions of the records: no I/O and no clock, so the CycleAnalyzer decides
 aggregate and where the result goes.
 """
 
-from collections import Counter
 from typing import Optional, Sequence
 
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
 from ..cycle_info_writer import utc_iso_ms
-from .messages import active_hosts
+from ..utils import hostnames_to_slurm_nodelist
+from .messages import active_launchers
 
 # Launchers that saw the cycle end themselves, rather than following a peer's restart:
-# their workers failed or were stopped on a timeout, or a no-restart decision stopped them.
+# their workers failed or were stopped on a timeout, or a no-restart decision (attribution,
+# or no training progress across restarts) stopped them.
 _OBSERVED_ENDS = (
     pb.CycleEndReasonWorkerFailed,
     pb.CycleEndReasonWorkerTerminatedByRankMonitor,
     pb.CycleEndReasonWorkerTerminatedByAttribution,
+    pb.CycleEndReasonWorkerTerminatedDueToNoProgress,
 )
-
-
-def _short_host(name: str) -> str:
-    """The host name without its domain, as the cycle info's node lists carry it."""
-    return name.split(".")[0]
 
 
 class CycleEndReportAggregator:
     """Builds the JobCycleEndReport of a cycle from the launchers' end reports.
 
-    Stateless; override a step to change one conclusion. `missing_nodes` also needs the
-    cycle info: the CycleAnalyzer uses it to tell when every active launcher reported.
+    Stateless; override a step to change one conclusion. `is_complete` and
+    `missing_launchers` also need the cycle info: the CycleAnalyzer uses them to tell when
+    every active launcher reported.
     """
 
     def aggregate(
@@ -54,7 +52,7 @@ class CycleEndReportAggregator:
             first_detected_timestamp=(
                 utc_iso_ms(first_detected_timestamp) if first_detected_timestamp is not None else ""
             ),
-            first_detected_nodes=[report.node_name for report in first],
+            first_detected_nodes=hostnames_to_slurm_nodelist([report.node_id for report in first]),
             launcher_end_reports=self.listed_end_reports(end_reports),
         )
 
@@ -62,30 +60,31 @@ class CycleEndReportAggregator:
     def deduplicate(
         end_reports: Sequence[pb.NodeCycleEndReport],
     ) -> tuple[pb.NodeCycleEndReport, ...]:
-        """One end report per launcher, the first received.
-
-        TODO: launchers are told apart by node name only, so launchers sharing a host
-        count as one.
-        """
+        """One end report per launcher (node_id), the first received."""
         unique = {}
         for report in end_reports:
-            unique.setdefault(report.node_name, report)
+            unique.setdefault(report.node_id, report)
         return tuple(unique.values())
 
-    @staticmethod
-    def missing_nodes(
-        start: Optional[pb.CycleInfo], end_reports: Sequence[pb.NodeCycleEndReport]
-    ) -> tuple[str, ...]:
-        """Active hosts of the cycle with no end report; empty when the start is unknown.
+    @classmethod
+    def is_complete(
+        cls, start: Optional[pb.NVRxCycleInfo], end_reports: Sequence[pb.NodeCycleEndReport]
+    ) -> bool:
+        """Whether every active launcher of the cycle reported: as many launchers (distinct
+        node_ids) as active launchers. False when the start is unknown."""
+        return start is not None and not cls.missing_launchers(start, end_reports)
 
-        Compared by short host name: the cycle info's node lists carry each host once,
-        without its domain.
-        """
+    @staticmethod
+    def missing_launchers(
+        start: Optional[pb.NVRxCycleInfo], end_reports: Sequence[pb.NodeCycleEndReport]
+    ) -> int:
+        """How many active launchers of the cycle sent no end report: active launchers
+        (active_launchers) less those that reported (distinct node_ids); 0 when the start is
+        unknown."""
         if start is None:
-            return ()
-        reported = Counter(_short_host(report.node_name) for report in end_reports)
-        missing = Counter(_short_host(node) for node in active_hosts(start)) - reported
-        return tuple(sorted(missing.elements()))
+            return 0
+        reported = len({report.node_id for report in end_reports})
+        return max(0, active_launchers(start) - reported)
 
     @staticmethod
     def first_detected(
@@ -124,14 +123,14 @@ class CycleEndReportAggregator:
         end_reports: Sequence[pb.NodeCycleEndReport],
     ) -> list[pb.NodeCycleEndReport]:
         """The end reports listed in the JobCycleEndReport: all but those of launchers that
-        only followed a peer's restart, sorted by detection time (then node name)."""
+        only followed a peer's restart, sorted by detection time (then node_id)."""
         return sorted(
             (
                 report
                 for report in end_reports
                 if report.end_reason != pb.CycleEndReasonWorkerTerminatedDueToPeer
             ),
-            key=lambda report: (report.detected_timestamp, report.node_name),
+            key=lambda report: (report.detected_timestamp, report.node_id),
         )
 
     @staticmethod

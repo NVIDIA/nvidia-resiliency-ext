@@ -14,9 +14,9 @@
 # limitations under the License.
 
 """
-NVRx cycle info writer: writes CycleInfo as JSON to Lustre (or local).
+NVRx cycle info writer: writes NVRxCycleInfo as JSON to Lustre (or local).
 
-Uses the CycleInfo protobuf and protobuf JSON serialization. A dedicated background
+Uses the NVRxCycleInfo protobuf and protobuf JSON serialization. A dedicated background
 thread performs file I/O so the main launcher thread is not blocked. Writes are
 atomic (temp file + os.replace) for updates.
 """
@@ -59,7 +59,7 @@ def cycle_log_file(base_log_file: str, cycle_index: int) -> str:
 _FILE_OMITTED_END_REPORT_FIELDS = ("job_id", "attempt_index", "cycle_number")
 
 
-def _cycle_info_to_json(msg: nvrx_interface_pb2.CycleInfo) -> str:
+def _cycle_info_to_json(msg: nvrx_interface_pb2.NVRxCycleInfo) -> str:
     """The cycle info file's JSON of `msg`: every field by its proto name, except the
     internal `timestamp` (for the CycleAnalyzer's checks only). The end report is {} until
     the cycle's end reports are written, and stays {} when none were received. Its
@@ -83,8 +83,8 @@ def _cycle_info_to_json(msg: nvrx_interface_pb2.CycleInfo) -> str:
     return json.dumps(data, indent=2)
 
 
-def _cycle_info_from_json(text: str) -> nvrx_interface_pb2.CycleInfo:
-    """The CycleInfo of a cycle info file written by _cycle_info_to_json. The omitted fields of
+def _cycle_info_from_json(text: str) -> nvrx_interface_pb2.NVRxCycleInfo:
+    """The NVRxCycleInfo of a cycle info file written by _cycle_info_to_json. The omitted fields of
     the launchers' end reports come back unset.
 
     Raises:
@@ -96,7 +96,7 @@ def _cycle_info_from_json(text: str) -> nvrx_interface_pb2.CycleInfo:
         detected = entry.get("detected_timestamp")
         if isinstance(detected, str) and "T" in detected:
             entry["detected_timestamp"] = utc_iso_to_ms(detected)
-    return json_format.ParseDict(data, nvrx_interface_pb2.CycleInfo())
+    return json_format.ParseDict(data, nvrx_interface_pb2.NVRxCycleInfo())
 
 
 def _cycle_info_job_id_from_env() -> str:
@@ -157,7 +157,7 @@ class CycleInfoWriter:
         self._thread.start()
         logger.debug("CycleInfoWriter started with cycle_info_dir=%s", self._nvrx_dir)
 
-    def write_cycle_start(self, info: nvrx_interface_pb2.CycleInfo) -> None:
+    def write_cycle_start(self, info: nvrx_interface_pb2.NVRxCycleInfo) -> None:
         """Enqueue writing `info` as a new cycle info file (generation 0) and updating the
         .current symlink. The file is named by the job id, attempt index and cycle number
         of `info`. The writer takes ownership of `info`: it sets its generation on the
@@ -283,7 +283,7 @@ class CycleInfoWriter:
             except Exception as e:
                 logger.exception("CycleInfoWriter task failed: %s", e)
 
-    def _do_create(self, msg: nvrx_interface_pb2.CycleInfo) -> None:
+    def _do_create(self, msg: nvrx_interface_pb2.NVRxCycleInfo) -> None:
         """Write `msg` as a new cycle info file, at generation 0."""
         msg.generation = 0
         job_id = msg.job_id
@@ -410,7 +410,7 @@ class CycleInfoReporter:
             _current_symlink_name(job_id),
         )
 
-    def report_cycle_start(self, info: nvrx_interface_pb2.CycleInfo) -> bool:
+    def report_cycle_start(self, info: nvrx_interface_pb2.NVRxCycleInfo) -> bool:
         """Write the cycle info file of the cycle `info` starts, as the store host built it.
 
         A copy of `info` is written, with this reporter's file namespace (job id and
@@ -428,7 +428,7 @@ class CycleInfoReporter:
         if self._current_cycle is not None and self._end_previous_on_start:
             self.report_cycle_end()
 
-        msg = nvrx_interface_pb2.CycleInfo()
+        msg = nvrx_interface_pb2.NVRxCycleInfo()
         msg.CopyFrom(info)
         msg.job_id = job_id
         msg.attempt_index = attempt_index
@@ -446,7 +446,7 @@ class CycleInfoReporter:
 
         Args:
             cycle_number: The cycle to end; any started cycle, not only the open one.
-            cycle_end_time: When it ended, in ISO 8601 UTC (as CycleInfo.cycle_end_time);
+            cycle_end_time: When it ended, in ISO 8601 UTC (as NVRxCycleInfo.cycle_end_time);
                 None stamps the time of reporting.
         """
         if self._shutdown:

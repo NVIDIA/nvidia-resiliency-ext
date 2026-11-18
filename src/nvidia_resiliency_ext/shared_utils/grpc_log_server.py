@@ -181,7 +181,7 @@ class _EndReportForwarder:
         except queue.Full:
             self._logger.warning(
                 f"Dropping the end report of cycle {report.cycle_number} from "
-                f"{report.node_name}: {self._queue.maxsize} reports already wait for the "
+                f"{report.node_id}: {self._queue.maxsize} reports already wait for the "
                 f"CycleAnalyzer at {self.address}"
             )
             return False
@@ -194,7 +194,7 @@ class _EndReportForwarder:
             self._send(report)
 
     def _send(self, report: nvrx_interface_pb2.NodeCycleEndReport) -> None:
-        what = f"end report of cycle {report.cycle_number} from {report.node_name}"
+        what = f"end report of cycle {report.cycle_number} from {report.node_id}"
         try:
             self._stub.PublishNodeCycleEndReport(report, timeout=self._rpc_timeout)
             self.forwarded += 1

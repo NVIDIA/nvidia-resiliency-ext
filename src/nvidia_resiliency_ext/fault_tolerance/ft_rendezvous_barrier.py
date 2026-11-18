@@ -67,7 +67,7 @@ from ..shared_utils.profiling import (
     record_profiling_event,
     set_profiling_cycle,
 )
-from ..shared_utils.proto.nvrx_interface_pb2 import CycleInfo
+from ..shared_utils.proto.nvrx_interface_pb2 import NVRxCycleInfo
 from ..shared_utils.telemetry import span
 from .cycle_info.messages import build_cycle_info, ended_cycle_info, now_ms
 from .cycle_info.transport import CycleInfoPublisher
@@ -646,7 +646,7 @@ class _RendezvousBarrierState:
         # again when that cycle ends.
         self._cycle_info_publisher: Optional[CycleInfoPublisher] = None
         # The cycle info last published as started and not yet as ended; None once ended.
-        self._open_cycle_info: Optional[CycleInfo] = None
+        self._open_cycle_info: Optional[NVRxCycleInfo] = None
         self._cycle_log_prefix = cycle_log_prefix
 
         # Reference to agent (set via set_agent() method in handler)

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Transport of the cycle records to the CycleAnalyzer.
 
-The store host publishes a `CycleInfo` per cycle when it starts, and updates it when the
+The store host publishes an `NVRxCycleInfo` per cycle when it starts, and updates it when the
 cycle ends; each launcher publishes its `NodeCycleEndReport` per cycle. They go through a
 `CycleInfoPublisher`; the CycleAnalyzer, the only writer of the cycle info files,
 receives them through a `CycleInfoReader`. The records are the messages of
@@ -18,8 +18,8 @@ from abc import ABC, abstractmethod
 from typing import List
 
 from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import (
-    CycleInfo,
     NodeCycleEndReport,
+    NVRxCycleInfo,
 )
 
 
@@ -32,7 +32,7 @@ class CycleInfoPublisher(ABC):
     """
 
     @abstractmethod
-    def publish_cycle_info(self, info: CycleInfo) -> bool:
+    def publish_cycle_info(self, info: NVRxCycleInfo) -> bool:
         """Publish a cycle that started; called by the store host only.
 
         Returns:
@@ -40,7 +40,7 @@ class CycleInfoPublisher(ABC):
         """
 
     @abstractmethod
-    def update_cycle_info(self, info: CycleInfo) -> bool:
+    def update_cycle_info(self, info: NVRxCycleInfo) -> bool:
         """Publish a cycle that ended (`info.cycle_end_time` set); called by the store host
         only.
 
@@ -68,11 +68,11 @@ class CycleInfoReader(ABC):
     """
 
     @abstractmethod
-    def read_cycle_infos(self) -> List[CycleInfo]:
+    def read_cycle_infos(self) -> List[NVRxCycleInfo]:
         """Return the published cycle infos (cycle starts) received since the previous call."""
 
     @abstractmethod
-    def read_cycle_info_updates(self) -> List[CycleInfo]:
+    def read_cycle_info_updates(self) -> List[NVRxCycleInfo]:
         """Return the updated cycle infos (cycle ends) received since the previous call."""
 
     @abstractmethod

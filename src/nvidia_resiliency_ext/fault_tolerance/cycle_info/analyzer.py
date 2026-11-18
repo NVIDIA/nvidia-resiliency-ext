@@ -71,16 +71,15 @@ class CycleAnalyzer:
         self._poll_interval = poll_interval
         self._next_start_grace = next_start_grace
         self._end_report_quiet_period = end_report_quiet_period
-        # The store host's latest CycleInfo of each cycle, as received: its start, replaced
+        # The store host's latest NVRxCycleInfo of each cycle, as received: its start, replaced
         # by its update once the cycle ended (cycle_end_time set). With the end reports
         # received so far, by cycle; both dropped once the cycle's end reports are written
         # (update_cycle_end_reports).
-        self._cycle_infos: Dict[int, pb.CycleInfo] = {}
+        self._cycle_infos: Dict[int, pb.NVRxCycleInfo] = {}
         self._end_reports: Dict[int, List[pb.NodeCycleEndReport]] = defaultdict(list)
-        # Launchers that reported, by cycle, to detect duplicates in O(1). TODO: keyed by
-        # node name, as end reports do not tell launchers of one host apart.
+        # Launchers (node_id) that reported, by cycle, to detect duplicates in O(1).
         self._reported: Dict[int, Set[str]] = defaultdict(set)
-        # Latest cycle opened at the reporter, from the store host's CycleInfo.
+        # Latest cycle opened at the reporter, from the store host's NVRxCycleInfo.
         self._started_cycle: Optional[int] = None
         # Cycle the launchers are currently sending end reports for: the latest cycle any
         # end report was received for.
@@ -92,7 +91,7 @@ class CycleAnalyzer:
         self._written: Set[int] = set()
         # The store host's start of each written cycle whose end has not arrived yet, so
         # that end is still written when it arrives (report_cycle_info_update). Dropped then.
-        self._awaiting_end: Dict[int, pb.CycleInfo] = {}
+        self._awaiting_end: Dict[int, pb.NVRxCycleInfo] = {}
 
     def run(self, stop_event) -> None:
         """Process the received records until `stop_event` is set, then finish."""
@@ -127,9 +126,9 @@ class CycleAnalyzer:
         for cycle in sorted(self._open_cycles()):
             self.update_cycle_end_reports(cycle)
 
-    def report_cycle_start(self, info: pb.CycleInfo) -> bool:
-        """Open the cycle `info.cycle_number` at the reporter, from the store host's CycleInfo,
-        passed as received.
+    def report_cycle_start(self, info: pb.NVRxCycleInfo) -> bool:
+        """Open the cycle `info.cycle_number` at the reporter, from the store host's
+        NVRxCycleInfo, passed as received.
 
         A start is ignored, with a warning, if its cycle was already started (still open,
         or already written) or is older than the latest started cycle: the store host
@@ -160,8 +159,9 @@ class CycleAnalyzer:
             logger.debug("Opened the cycle info of cycle %s", cycle)
         return started
 
-    def report_cycle_info_update(self, info: pb.CycleInfo) -> bool:
-        """End cycle `info.cycle_number` at the reporter, from the store host's updated CycleInfo.
+    def report_cycle_info_update(self, info: pb.NVRxCycleInfo) -> bool:
+        """End cycle `info.cycle_number` at the reporter, from the store host's updated
+        NVRxCycleInfo.
 
         The end is accepted even when the cycle's end reports were already written: the
         store host's end can arrive after them, e.g. for the final cycle.
@@ -172,7 +172,7 @@ class CycleAnalyzer:
           store host, so comparable);
         - it has no end time, or one not after the start time.
         Otherwise the end time is written. For an open cycle, the update replaces the
-        cycle's CycleInfo, which marks the cycle ended; a written cycle is then forgotten.
+        cycle's NVRxCycleInfo, which marks the cycle ended; a written cycle is then forgotten.
 
         Returns:
             False if the update was ignored.
@@ -229,13 +229,13 @@ class CycleAnalyzer:
         - its cycle was never started: it is older than the latest started cycle and was
           not started itself, and starts arrive in order. A report of a later cycle is
           kept, as its start may still be on its way;
-        - its launcher already reported for the cycle (a duplicate); the first report is
-          kept. TODO: launchers are told apart by node name only.
+        - its launcher (node_id) already reported for the cycle (a duplicate); the first
+          report is kept.
 
         Returns:
             False if the end report was ignored.
         """
-        cycle, node = report.cycle_number, report.node_name
+        cycle, node = report.cycle_number, report.node_id
         if cycle in self._written:
             logger.warning(
                 "Ignoring the end report of cycle %s from %s: the cycle is already written",
@@ -273,8 +273,8 @@ class CycleAnalyzer:
         """Write the end reports of `cycle` to its cycle info, then forget the cycle."""
         end_report = self.create_job_end_report(cycle)
         reported = self._aggregator.deduplicate(self._end_reports.get(cycle, ()))
-        missing = self._aggregator.missing_nodes(self._cycle_infos.get(cycle), reported)
-        missing_text = f", missing {', '.join(missing)}" if missing else ""
+        missing = self._aggregator.missing_launchers(self._cycle_infos.get(cycle), reported)
+        missing_text = f", {missing} launchers missing" if missing else ""
         if end_report is None:
             # No end report received: nothing to write; the file keeps no end_report.
             logger.info("Cycle %s ended: no launcher reported%s", cycle, missing_text)
@@ -287,7 +287,7 @@ class CycleAnalyzer:
                 cycle,
                 pb.EndReason.Name(end_report.end_reason),
                 end_report.first_detected_timestamp or "unknown",
-                ", ".join(end_report.first_detected_nodes) or "none",
+                end_report.first_detected_nodes or "none",
                 len(reported),
                 missing_text,
             )
@@ -316,13 +316,10 @@ class CycleAnalyzer:
     def _due_cycles(self, updated: Set[int], now: float) -> List[int]:
         """The open cycles to write now, oldest first."""
         due = set()
-        # Complete: every active node of the start has reported. Checked only for the
+        # Complete: every active launcher of the start has reported. Checked only for the
         # cycles that just received end reports.
         for cycle in updated:
-            start = self._cycle_infos.get(cycle)
-            if start is not None and not self._aggregator.missing_nodes(
-                start, self._aggregator.deduplicate(self._end_reports[cycle])
-            ):
+            if self._aggregator.is_complete(self._cycle_infos.get(cycle), self._end_reports[cycle]):
                 due.add(cycle)
         # check older cycles for which deadline has passed
         due.update(cycle for cycle, at in self._write_deadlines.items() if now >= at)
