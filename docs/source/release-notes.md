@@ -27,6 +27,14 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   are no longer supported. `--standalone` uses local logging without gRPC
   aggregation, including when `--ft-enable-log-server` is set.
 
+### Deprecations
+
+- **`AsyncCaller.schedule_async_call`, `is_current_async_call_done`, and
+  `sync_all_async_calls` are deprecated**, as is `AsyncCallsQueue.persistent_caller`.
+  They warn and will be removed in a future release. Schedule and finalize calls through
+  `AsyncCallsQueue`, whose methods are unchanged, or use the new `AsyncCaller.submit`,
+  which returns the submitted save.
+
 ## NVIDIA Resiliency Extension v0.7.1 (Unreleased)
 
 These notes describe the changes selected for the 0.7.1 release candidate relative
