@@ -187,7 +187,7 @@ to 0.7.0. Final release validation is ongoing.</p>
 <li><p><strong>Python &gt;=3.11 and PyTorch &gt;=2.9.0 are required.</strong> Python 3.10 is no longer supported. The PyTorch floor reflects the distributed-checkpoint storage interfaces used by the metadata writer and cached reader (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/492">#492</a>).</p></li>
 <li><p><strong>The async-save planning API returns <code class="docutils literal notranslate"><span class="pre">PendingSave</span></code>.</strong> Pass the value returned by <code class="docutils literal notranslate"><span class="pre">save_state_dict_async_plan(...)</span></code> directly to <code class="docutils literal notranslate"><span class="pre">save_state_dict_async_finalize(pending)</span></code>. Tuple unpacking and the legacy three-argument finalize form remain supported but are deprecated. <code class="docutils literal notranslate"><span class="pre">CheckpointMetadataCache.set_cache_metadata</span></code>, <code class="docutils literal notranslate"><span class="pre">prepare_save_state_dict_ret</span></code>, and <code class="docutils literal notranslate"><span class="pre">get_cache_metadata</span></code>, along with the old public cache fields, have been removed; integrations using them must migrate. <code class="docutils literal notranslate"><span class="pre">set_cached_global_metadata(...)</span></code> remains the entry point for metadata from a loaded checkpoint (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438">#438</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/454">#454</a>).</p></li>
 <li><p><strong>Metadata caching requires a stable checkpoint structure.</strong> With <code class="docutils literal notranslate"><span class="pre">enable_cache=True</span></code>, later saves check local plans and raise if the structure changes; the coordinator must stay the same while reusing its cached metadata. Disable caching when those assumptions do not hold.</p></li>
-<li><p><strong>The 0.7.1 telemetry extra requires Lens <code class="docutils literal notranslate"><span class="pre">0.2.0+7bcc03c</span></code>.</strong> Install Lens from its <code class="docutils literal notranslate"><span class="pre">v0.3.0</span></code> source tag before installing <code class="docutils literal notranslate"><span class="pre">[otel]</span></code>, as shown below. That tag points to commit <code class="docutils literal notranslate"><span class="pre">7bcc03ce3565d2be6858b819b049bcc4c3ec05b4</span></code> and produces the package version required by NVRx. Published NVRx metadata uses a version-only requirement; Poetry locks the exact Git source. Core installation does not require Lens (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/499">#499</a>).</p></li>
+<li><p><strong>Telemetry uses NeMo Lens.</strong> Install <code class="docutils literal notranslate"><span class="pre">nemo-lens[sdk]</span></code> alongside NVRx to enable telemetry, as shown below. This release was tested with Lens at the <code class="docutils literal notranslate"><span class="pre">v0.3.0</span></code> Git tag (commit <code class="docutils literal notranslate"><span class="pre">7bcc03ce3565d2be6858b819b049bcc4c3ec05b4</span></code>). Core installation does not require Lens.</p></li>
 </ul>
 </section>
 <section id="deprecations-removals">
@@ -221,13 +221,15 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvid
 <span class="c1"># Optional MCP and Slack attribution integrations</span>
 pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext[attribution]==0.7.1'</span>
 
-<span class="c1"># Optional telemetry: install Lens from source first</span>
-pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nemo-lens[sdk] @ git+https://github.com/NVIDIA-NeMo/Lens.git@v0.3.0'</span>
-pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext[otel]==0.7.1'</span>
+<span class="c1"># Optional telemetry, once NeMo Lens 0.3.0 is published to PyPI</span>
+pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext==0.7.1'</span><span class="w"> </span><span class="s1">'nemo-lens[sdk]==0.3.0'</span>
+
+<span class="c1"># Optional telemetry, from the Lens v0.3.0 Git tag</span>
+pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext==0.7.1'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span><span class="s1">'nemo-lens[sdk] @ git+https://github.com/NVIDIA-NeMo/Lens.git@v0.3.0'</span>
 </pre></div>
 </div>
-<p>Source-checkout users using Poetry resolve Lens from the pinned Git commit.
-These installation requirements are specific to the 0.7.1 release branch.</p>
+<p>These installation requirements are specific to the 0.7.1 release branch.</p>
 </section>
 <section id="known-issues-limitations">
 <h3>Known Issues &amp; Limitations<a class="headerlink" href="#known-issues-limitations" title="Link to this heading"></a></h3>
