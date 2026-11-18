@@ -54,10 +54,13 @@
 <li class="toctree-l2"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Multinode deployment</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#launch-shape-and-fixed-training-world">Launch shape and fixed training world</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#launch-shape">Launch shape</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#control-host-process-ownership">Control-host process ownership</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#external-cpu-control-host">External CPU control host</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#fixed-training-world">Fixed training world</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#replacement-groups-and-rank-assignment">Replacement groups and rank assignment</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#hot-spares-and-nvlink-segments">Hot spares and NVLink segments</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#scheduler-continuation-and-external-control">Scheduler continuation and external control</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#scheduler-continuation">Scheduler continuation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#numa-binding">NUMA binding</a></li>
 </ul>
 </li>
@@ -101,13 +104,164 @@
              
   <section id="multinode-deployment">
 <h1>Multinode deployment<a class="headerlink" href="#multinode-deployment" title="Link to this heading"></a></h1>
-<section id="launch-shape-and-fixed-training-world">
-<h2>Launch shape and fixed training world<a class="headerlink" href="#launch-shape-and-fixed-training-world" title="Link to this heading"></a></h2>
+<section id="launch-shape">
+<h2>Launch shape<a class="headerlink" href="#launch-shape" title="Link to this heading"></a></h2>
 <p>Start one <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> per node and let it spawn the local GPU workers.
 Under Slurm use <code class="docutils literal notranslate"><span class="pre">srun</span> <span class="pre">--ntasks=&lt;nodes&gt;</span> <span class="pre">--ntasks-per-node=1</span></code>; a task per GPU
 would start multiple launchers on each node and is rejected by the launcher.
 All nodes need the same reachable endpoint, run ID, environment, checkpoint
 path, and active training shape. <code class="docutils literal notranslate"><span class="pre">localhost:0</span></code> is for single-node runs only.</p>
+<p>FT options that take a boolean value accept <code class="docutils literal notranslate"><span class="pre">true</span></code> / <code class="docutils literal notranslate"><span class="pre">false</span></code>, <code class="docutils literal notranslate"><span class="pre">1</span></code> / <code class="docutils literal notranslate"><span class="pre">0</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">yes</span></code> / <code class="docutils literal notranslate"><span class="pre">no</span></code> (case-insensitive). Invalid values fail argument parsing before
+services start. Omitting an option preserves its existing configuration default.</p>
+</section>
+<section id="control-host-process-ownership">
+<h2>Control-host process ownership<a class="headerlink" href="#control-host-process-ownership" title="Link to this heading"></a></h2>
+<p>The public command remains <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> on every node. Existing <code class="docutils literal notranslate"><span class="pre">sbatch</span></code> /
+<code class="docutils literal notranslate"><span class="pre">srun</span></code> commands do not need a wrapper or another task. On the rendezvous host,
+<code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> supervises separate control and compute processes:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Control host                          Other nodes
+ft_launcher (supervisor)              ft_launcher (runs the node agent directly)
++-- job-controller                    +-- training workers
++-- node-agent                        +-- rank monitors / local helpers
+|   +-- training workers
+|   +-- rank monitors / local helpers
++-- gRPC root / leaves (if enabled)
++-- managed attribution (if enabled)
+</pre></div>
+</div>
+<p>The host is selected from the rendezvous endpoint, honoring the existing
+<code class="docutils literal notranslate"><span class="pre">is_host</span></code> override; it is not selected from the training rank. The control-host
+agent joins the same compute rendezvous as agents on the other nodes. <code class="docutils literal notranslate"><span class="pre">job-controller</span></code>
+owns the TCPStore, rendezvous rounds, membership decisions, attribution client,
+and existing cycle-info reporter. The agent owns worker restart cycles and
+node-local helpers. Both roles use the effective <code class="docutils literal notranslate"><span class="pre">--ft-segment</span></code> setting.
+Other nodes retain their existing process and logging path.</p>
+<p>The job-controller initializes its own optional telemetry provider using inherited
+resource attributes and a distinct controller identity. Its attribution poller
+uses the control host’s node identity. The poller stops before bounded telemetry
+shutdown. Rank monitors and logging services retain their ordinary log output.</p>
+<p>The supervisor starts its children without a readiness handshake. Agents wait
+for the configured TCPStore endpoint and log clients retry their connections.
+In a colocated deployment, both <code class="docutils literal notranslate"><span class="pre">job-controller</span></code> and <code class="docutils literal notranslate"><span class="pre">node-agent</span></code> must exit
+zero for successful completion; either may finish first. The supervisor keeps
+monitoring until both finish, a child fails, or cancellation is requested.
+A failure in either child, including an unhealthy-node
+exception, fails the supervisor. Node/rack loss remains a critical
+colocated-control failure.</p>
+<p>Until service auto-restart is implemented, any auxiliary service that exits
+unexpectedly also fails the supervisor, including an unexpected zero exit from
+a continuously running service. The supervisor returns the first observed
+failure’s exit code; a signal termination maps to <code class="docutils literal notranslate"><span class="pre">128</span> <span class="pre">+</span> <span class="pre">signal</span></code>. A signal
+exception reaching a launcher’s top-level handler uses this same mapping on
+both control and compute hosts (for example, SIGTERM returns <code class="docutils literal notranslate"><span class="pre">143</span></code>). The controller
+returns the configured <code class="docutils literal notranslate"><span class="pre">--ft-no-restart-exit-code</span></code> (default <code class="docutils literal notranslate"><span class="pre">93</span></code>) for a
+no-restart decision. These results flow to the existing <code class="docutils literal notranslate"><span class="pre">srun</span></code> task and caller’s
+generation-cleanup logic. Ordinary training-worker restarts remain inside the
+node agent. The intended singleton policy is to cancel only the current array
+when the control host exits. Queued singleton successors remain eligible to
+start after <code class="docutils literal notranslate"><span class="pre">0</span></code>, <code class="docutils literal notranslate"><span class="pre">93</span></code>, or another exit code. The launcher does not cancel
+those successors. The example script currently adds chain cancellation through
+<code class="docutils literal notranslate"><span class="pre">control/no_restart</span></code>; correcting that existing example policy is outside this
+control-host refactor.</p>
+<p>On SIGTERM, SIGINT, SIGHUP, or SIGQUIT, the supervisor disables restarts and signals
+its critical children with SIGTERM. It waits for their cleanup, stops managed
+attribution, then stops the gRPC aggregation funnel and finally closes the local
+control log. The aggregators
+remain alive while the node agent drains its final logs. Children exceeding
+their shutdown deadline receive SIGKILL. The supervisor allows the node-agent
+<code class="docutils literal notranslate"><span class="pre">--term-timeout</span></code> plus 15 seconds for monitor cleanup and log draining. The
+additional allowance is best effort and must fit within the scheduler’s
+termination window, together with aggregator and control-log shutdown.
+The final child wait is also bounded;
+survivors are logged and cleanup continues. Descendant discovery uses one local
+PID/parent snapshot with a best-effort time budget, followed by an in-memory
+walk; it does not repeatedly scan process trees. These checks cannot interrupt a
+kernel call that itself stalls. If the supervisor itself receives
+SIGKILL, it cannot perform cleanup; Slurm must terminate the remaining job-step
+processes, including descendants that created new sessions.</p>
+<p>Two differences from the previous colocated launcher are accepted:</p>
+<ul class="simple">
+<li><p><strong>Peer exit codes can differ.</strong> The job-controller keeps TCPStore alive for a
+three-second grace after its rendezvous loop ends. A delayed peer can lose its
+store connection and exit <code class="docutils literal notranslate"><span class="pre">1</span></code> even when the control host returns <code class="docutils literal notranslate"><span class="pre">93</span></code>.
+This does not change the intended singleton-generation handoff. Future per-cycle
+<code class="docutils literal notranslate"><span class="pre">end_reason</span></code> reporting will consolidate these outcomes; matching exit codes
+from every node are not required.</p></li>
+<li><p><strong>Attribution STOP remains active during successful completion.</strong> The
+job-controller enforces a STOP until graceful rendezvous shutdown is recorded.
+A node-agent whose local workers have succeeded still waits in the existing
+exit barrier before recording that shutdown. A STOP during this interval can
+end the generation with <code class="docutils literal notranslate"><span class="pre">93</span></code>, even if the local agent would otherwise finish
+successfully, and can stop peers that are still finishing. The previous
+colocated launcher stopped checking attribution after detecting local success.
+This is an accepted policy change; no additional completion marker is used.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">--standalone</span></code> is a single-node development mode with embedded control and
+local logging. It does not start a supervisor or gRPC aggregators, even if
+<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code> is set; configured application and launcher logs are
+written locally. The supervised deployment requires a fixed,
+nonzero rendezvous port. No lifecycle/status IPC or additional public launcher
+command is required. The job-controller is an internal supervisor-owned child;
+external control uses the same supervisor through <code class="docutils literal notranslate"><span class="pre">--ft-control-only</span></code>. Service auto-restart, reconnection, and state recovery
+remain separate work; a separate cycle-analyzer process is not started here.</p>
+</section>
+<section id="external-cpu-control-host">
+<h2>External CPU control host<a class="headerlink" href="#external-cpu-control-host" title="Link to this heading"></a></h2>
+<p>Run <code class="docutils literal notranslate"><span class="pre">ft_launcher</span> <span class="pre">--ft-control-only</span></code> on the external CPU host. It starts the
+same supervisor, job-controller, configured gRPC aggregators, and managed
+attribution service, without a node-agent, training workers, or rank monitors.
+No training command is required. <code class="docutils literal notranslate"><span class="pre">--nnodes</span></code> counts only compute nodes; the
+control host does not participate in the compute rendezvous. Compute nodes
+continue to run <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> with the control endpoint and <code class="docutils literal notranslate"><span class="pre">is_host=false</span></code>.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>External CPU host                     Compute nodes
+ft_launcher (supervisor)               ft_launcher (node agent)
++-- job-controller                    +-- training workers
++-- gRPC root / leaves (if enabled)    +-- rank monitors / local helpers
++-- managed attribution (if enabled)
+</pre></div>
+</div>
+<p>For example, with training job ID <code class="docutils literal notranslate"><span class="pre">12345</span></code> and a reachable CPU host named
+<code class="docutils literal notranslate"><span class="pre">cpu-control</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># On the CPU control host; no training command or GPU worker configuration.</span>
+ft_launcher<span class="w"> </span>--ft-control-only<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">64</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--rdzv-endpoint<span class="o">=</span>cpu-control:29500<span class="w"> </span>--rdzv-id<span class="o">=</span>training-12345<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--rdzv-conf<span class="o">=</span><span class="nv">is_host</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-nvrx-logfile<span class="o">=</span>/lustre/job/nvrx.log<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-per-cycle-applog-prefix<span class="o">=</span>/lustre/job/train.log<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-cycle-info-dir<span class="o">=</span>/lustre/job/cycle-info<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-cycle-info-job-id<span class="o">=</span><span class="m">12345</span>
+
+<span class="c1"># On each compute node, using its existing scheduler launch arrangement.</span>
+ft_launcher<span class="w"> </span>--nnodes<span class="o">=</span><span class="m">64</span><span class="w"> </span>--nproc-per-node<span class="o">=</span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--rdzv-endpoint<span class="o">=</span>cpu-control:29500<span class="w"> </span>--rdzv-id<span class="o">=</span>training-12345<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--rdzv-conf<span class="o">=</span><span class="nv">is_host</span><span class="o">=</span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-nvrx-logfile<span class="o">=</span>/lustre/job/nvrx.log<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-per-cycle-applog-prefix<span class="o">=</span>/lustre/job/train.log<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--ft-cycle-info-dir<span class="o">=</span>/lustre/job/cycle-info<span class="w"> </span>train.py
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--ft-control-only</span></code> requires a configured endpoint owned by that invocation,
+and cannot be combined with <code class="docutils literal notranslate"><span class="pre">--standalone</span></code> or a training command. No separate
+controller CLI or service-startup branch is used. Successful completion requires
+only the job-controller to exit zero; auxiliary-service failures remain fatal.</p>
+<p>When cycle-info output is enabled, <code class="docutils literal notranslate"><span class="pre">--ft-cycle-info-job-id</span></code> is required on the
+control-only invocation. Supply the compute allocation’s effective job ID
+(<code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code> when present, otherwise <code class="docutils literal notranslate"><span class="pre">SLURM_JOB_ID</span></code>), which compute
+agents use for <code class="docutils literal notranslate"><span class="pre">NVRX_CURRENT_CYCLE_INFO</span></code>. The external controller preserves the
+previous attempt-index convention of <code class="docutils literal notranslate"><span class="pre">0</span></code>, regardless of the CPU allocation’s
+<code class="docutils literal notranslate"><span class="pre">SLURM_RESTART_COUNT</span></code>. Matching rendezvous IDs alone does not align these file
+names. Colocated deployment continues to derive job and attempt identity from
+its environment.</p>
+<p>The CPU host may belong to the same Slurm job as the compute nodes or a separate
+allocation. The enclosing batch script or orchestrator remains responsible for
+observing the supervisor’s exit status and ending the training generation when
+control fails. This launcher does not cancel a separate allocation automatically.
+The existing shutdown grace allows remote compute logs to drain through the
+aggregators before they stop. Existing colocated launch commands are unchanged.</p>
+</section>
+<section id="fixed-training-world">
+<h2>Fixed training world<a class="headerlink" href="#fixed-training-world" title="Link to this heading"></a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">--nnodes</span> <span class="pre">MIN:MAX</span></code> selects an active training world of <code class="docutils literal notranslate"><span class="pre">MIN</span></code> nodes and
 admits additional joined nodes as standbys, up to <code class="docutils literal notranslate"><span class="pre">MAX</span></code>. With eight GPUs per
 node, <code class="docutils literal notranslate"><span class="pre">6:8</span></code> means 48 active workers, not a variable 48-to-64-worker model.
@@ -170,8 +324,8 @@ timeouts, and checkpoint restoration as in <a class="reference internal" href="e
 The number of usable spares depends on complete segments/replacement groups,
 not just the count of physically healthy nodes.</p>
 </section>
-<section id="scheduler-continuation-and-external-control">
-<h2>Scheduler continuation and external control<a class="headerlink" href="#scheduler-continuation-and-external-control" title="Link to this heading"></a></h2>
+<section id="scheduler-continuation">
+<h2>Scheduler continuation<a class="headerlink" href="#scheduler-continuation" title="Link to this heading"></a></h2>
 <p>The colocated design loses its rendezvous service when the store host dies.
 The <a class="reference internal" href="examples/singleton_deployment.html"><span class="doc">Singleton job-array deployment (SLURM)</span></a> script chains independent Slurm array
 generations, each with a new host. A singleton dependency serializes generations;
@@ -179,13 +333,6 @@ it does not reserve resources or promise immediate scheduling. The array throttl
 is a concurrency ceiling, not all-or-none initial admission. Failed array units
 can be released for repair while other units continue; a normal fixed allocation
 does not provide the same independently releasable replacement behavior.</p>
-<p>The experimental <code class="docutils literal notranslate"><span class="pre">nvrx-control</span></code> command can run the long-lived TCPStore and
-control services outside compute launchers. Compute nodes connect to its endpoint
-with rendezvous <code class="docutils literal notranslate"><span class="pre">is_host=false</span></code>. The control process owns the service lifetime
-and must survive compute failures. This changes the store-host failure boundary;
-it does not make the control service itself highly available. This deployment
-path is not yet QA-qualified and APIs may change. Keep it separate from the
-recommended colocated walkthrough until qualified in your environment.</p>
 </section>
 <section id="numa-binding">
 <h2>NUMA binding<a class="headerlink" href="#numa-binding" title="Link to this heading"></a></h2>

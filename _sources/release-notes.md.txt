@@ -2,6 +2,31 @@
 
 NVIDIA Resiliency Extension is a Python package for framework developers and users to implement fault-tolerant features. It improves effective training time by minimizing downtime due to failures and interruptions.
 
+## Unreleased
+
+### InJob control-host processes
+
+- On the control host, `ft_launcher` now supervises a separate job-controller,
+  node-agent, and enabled service processes. Existing colocated launch commands
+  remain unchanged. Control-process logs use the exact `--ft-nvrx-logfile` path;
+  node-agent and rank-monitor logs from every node use a derived `*_agent.log`
+  through the existing gRPC aggregation path. Update tools that read agent logs
+  from the configured path to use the derived agent file. See the
+  [deployment guide](fault_tolerance/deployment.rst) for ownership, shutdown,
+  and accepted exit-handling differences.
+
+### Removals
+
+- Replaced the experimental `nvrx-control` command with
+  `ft_launcher --ft-control-only` for external CPU control hosts. When cycle-info
+  output is enabled, pass the compute job's ID with `--ft-cycle-info-job-id`.
+
+- Removed `--ft-log-server-log-prefix` and its underscore alias. The control
+  supervisor captures gRPC root/leaf process logs directly at the configured
+  `--ft-nvrx-logfile` path or original console; separate aggregator process log files
+  are no longer supported. `--standalone` uses local logging without gRPC
+  aggregation, including when `--ft-enable-log-server` is set.
+
 ## NVIDIA Resiliency Extension v0.7.1 (Unreleased)
 
 These notes describe the changes selected for the 0.7.1 release candidate relative

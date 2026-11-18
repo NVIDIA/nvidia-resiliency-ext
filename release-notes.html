@@ -48,6 +48,11 @@
               <p class="caption" role="heading"><span class="caption-text">Documentation contents:</span></p>
 <ul class="current">
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Release Notes</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#unreleased">Unreleased</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#injob-control-host-processes">InJob control-host processes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#removals">Removals</a></li>
+</ul>
+</li>
 <li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-7-1-unreleased">NVIDIA Resiliency Extension v0.7.1 (Unreleased)</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#highlights">Highlights</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#requirements-integration-changes">Requirements &amp; Integration Changes</a></li>
@@ -141,6 +146,35 @@
   <section id="release-notes">
 <h1>Release Notes<a class="headerlink" href="#release-notes" title="Link to this heading"></a></h1>
 <p>NVIDIA Resiliency Extension is a Python package for framework developers and users to implement fault-tolerant features. It improves effective training time by minimizing downtime due to failures and interruptions.</p>
+<section id="unreleased">
+<h2>Unreleased<a class="headerlink" href="#unreleased" title="Link to this heading"></a></h2>
+<section id="injob-control-host-processes">
+<h3>InJob control-host processes<a class="headerlink" href="#injob-control-host-processes" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>On the control host, <code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> now supervises a separate job-controller,
+node-agent, and enabled service processes. Existing colocated launch commands
+remain unchanged. Control-process logs use the exact <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> path;
+node-agent and rank-monitor logs from every node use a derived <code class="docutils literal notranslate"><span class="pre">*_agent.log</span></code>
+through the existing gRPC aggregation path. Update tools that read agent logs
+from the configured path to use the derived agent file. See the
+<a class="reference internal" href="fault_tolerance/deployment.html"><span class="std std-doc">deployment guide</span></a> for ownership, shutdown,
+and accepted exit-handling differences.</p></li>
+</ul>
+</section>
+<section id="removals">
+<h3>Removals<a class="headerlink" href="#removals" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Replaced the experimental <code class="docutils literal notranslate"><span class="pre">nvrx-control</span></code> command with
+<code class="docutils literal notranslate"><span class="pre">ft_launcher</span> <span class="pre">--ft-control-only</span></code> for external CPU control hosts. When cycle-info
+output is enabled, pass the compute job’s ID with <code class="docutils literal notranslate"><span class="pre">--ft-cycle-info-job-id</span></code>.</p></li>
+<li><p>Removed <code class="docutils literal notranslate"><span class="pre">--ft-log-server-log-prefix</span></code> and its underscore alias. The control
+supervisor captures gRPC root/leaf process logs directly at the configured
+<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> path or original console; separate aggregator process log files
+are no longer supported. <code class="docutils literal notranslate"><span class="pre">--standalone</span></code> uses local logging without gRPC
+aggregation, including when <code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code> is set.</p></li>
+</ul>
+</section>
+</section>
 <section id="nvidia-resiliency-extension-v0-7-1-unreleased">
 <h2>NVIDIA Resiliency Extension v0.7.1 (Unreleased)<a class="headerlink" href="#nvidia-resiliency-extension-v0-7-1-unreleased" title="Link to this heading"></a></h2>
 <p>These notes describe the changes selected for the 0.7.1 release candidate relative

@@ -162,7 +162,8 @@ an absolute <code class="docutils literal notranslate"><span class="pre">--ft-nv
 <p>Deployment scripts choose <code class="docutils literal notranslate"><span class="pre">&lt;work-dir&gt;/nvrx/&lt;job-id&gt;</span></code> for ordinary jobs and
 <code class="docutils literal notranslate"><span class="pre">&lt;work-dir&gt;/nvrx/&lt;array-parent-id&gt;</span></code> for job arrays. Diagnostics reuse that
 namespace without reconstructing Slurm IDs. A root must distinguish launch
-attempts whose cycle numbers restart at zero.</p>
+attempts whose cycle numbers restart at zero. The derived <code class="docutils literal notranslate"><span class="pre">*_agent.log</span></code> uses
+the same log directory, so its suffix does not change the diagnostics destination.</p>
 <p>Successful startup validation logs one summary of the resolved tools (executable,
 CUDA-GDB mode, and command files) only from node0 at DEBUG (<code class="docutils literal notranslate"><span class="pre">NVRX_LOG_DEBUG=1</span></code>).
 Node0 uses the launcher’s infrastructure rank with hostname/topology-derived IDs

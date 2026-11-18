@@ -199,7 +199,8 @@ checkpoint completes, and the intended final iteration is reached.</p></li>
 <li><p>The run finishes successfully without repeated injection or a no-progress stop.</p></li>
 </ol>
 <p>Application logs are <code class="docutils literal notranslate"><span class="pre">logs/train_cycle&lt;N&gt;.log</span></code>; launcher/monitor logs are
-routed through <code class="docutils literal notranslate"><span class="pre">logs/launcher.log</span></code>. Aggregation is best effort, so use cycle
+routed through <code class="docutils literal notranslate"><span class="pre">logs/launcher_agent.log</span></code>; <code class="docutils literal notranslate"><span class="pre">logs/launcher.log</span></code> contains the
+control-process logs. Aggregation is best effort, so use cycle
 records and checkpoint state together. Measure failure-to-first-committed-step
 latency separately from failure detection and process startup.</p>
 </section>

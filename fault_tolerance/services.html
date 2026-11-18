@@ -266,9 +266,10 @@ a launcher-managed attribution service:</p>
 </ul>
 <p>The managed attribution app-log directory is derived from
 <code class="docutils literal notranslate"><span class="pre">dirname(realpath(--ft-per-cycle-applog-prefix))</span></code>. When <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code> is set, the
-managed service stdout/stderr log is derived from it as <code class="docutils literal notranslate"><span class="pre">*_attribution.log</span></code> and written
-beside it. Without <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code>, the log is named from the application prefix and
-written under an <code class="docutils literal notranslate"><span class="pre">nvrx/</span></code> subdirectory of the application-log directory. The managed service
+managed service stdout/stderr joins the supervisor’s log at that exact path.
+Without <code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code>, these logs go to the original console stream.
+<code class="docutils literal notranslate"><span class="pre">--standalone</span></code> retains the embedded-control path and its separate <code class="docutils literal notranslate"><span class="pre">*_attribution.log</span></code>.
+See <a class="reference internal" href="operations.html"><span class="doc">Operations and troubleshooting</span></a> for the control and compute log paths. The managed service
 listens on <code class="docutils literal notranslate"><span class="pre">127.0.0.1:50050</span></code> and is exposed to the InJob client as
 <code class="docutils literal notranslate"><span class="pre">http://localhost:50050</span></code>.</p>
 <p>The managed attribution API key must come from <code class="docutils literal notranslate"><span class="pre">--ft-attribution-llm-api-key-file</span></code> or inherited
@@ -294,21 +295,23 @@ before it can finish, which would otherwise leave the job with no verdict at all
 <p><strong>Acting on a STOP verdict is opt-in.</strong> With the default
 <code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">log</span></code>, attribution runs in full and every verdict is
 polled, logged and recorded, but a STOP never terminates anything. Set
-<code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">no-restart</span></code> to make a STOP end the job.</p>
+<code class="docutils literal notranslate"><span class="pre">--ft-attribution-stop-action</span> <span class="pre">no-restart</span></code> to make a STOP end the current generation.</p>
 <p>The default is deliberate because the two kinds of attribution mistake are not equally
 expensive. A missed STOP is bounded: the job crash-loops until <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> runs
 out, and the progress tracker independently catches the stuck case. An enforced false
-STOP is not bounded: the job ends with the no-restart exit code and stays down until a
-human resubmits it. Run in <code class="docutils literal notranslate"><span class="pre">log</span></code> mode first, review the recorded verdicts against what
-actually happened on your workloads, and enable <code class="docutils literal notranslate"><span class="pre">no-restart</span></code> once you trust the
-precision.</p>
+STOP ends the current generation with the no-restart exit code and can discard
+progress since the last checkpoint. Queued singleton successors remain eligible
+to start and restore a checkpoint. Run in <code class="docutils literal notranslate"><span class="pre">log</span></code> mode first, review the verdicts
+against what actually happened on your workloads, and enable <code class="docutils literal notranslate"><span class="pre">no-restart</span></code> once
+you trust the precision.</p>
 <p>In <code class="docutils literal notranslate"><span class="pre">log</span></code> mode every failed cycle is analyzed, not just the first one that produces a
 STOP, so the verdicts accumulate over the life of the job. Each unenforced STOP is logged
 at <code class="docutils literal notranslate"><span class="pre">ERROR</span></code>, says explicitly that it is not being enforced, and carries a running count
 of how many STOP verdicts have been seen so far. Comparing that count against the number
 of failed cycles is the measurement that tells you whether to enable <code class="docutils literal notranslate"><span class="pre">no-restart</span></code>.</p>
-<p>When enforcement is on, every launcher in the job exits with the no-restart exit code
-rather than the generic failure code <code class="docutils literal notranslate"><span class="pre">1</span></code>. See <a class="reference internal" href="operations.html#ft-no-restart"><span class="std std-ref">No restart: telling “do not requeue” apart from a failure</span></a>.</p>
+<p>When enforcement is on, launchers that observe the terminal verdict use the
+no-restart exit code rather than the generic failure code <code class="docutils literal notranslate"><span class="pre">1</span></code>. A delayed peer
+may lose its TCPStore connection and exit <code class="docutils literal notranslate"><span class="pre">1</span></code> instead. See <a class="reference internal" href="operations.html#ft-no-restart"><span class="std std-ref">No restart: distinguishing a terminal decision from a failure</span></a>.</p>
 <p><code class="docutils literal notranslate"><span class="pre">ft_launcher</span></code> sends job metadata with each attribution submission: <code class="docutils literal notranslate"><span class="pre">user</span></code> is read from
 <code class="docutils literal notranslate"><span class="pre">SLURM_JOB_USER</span></code> or <code class="docutils literal notranslate"><span class="pre">USER</span></code>, and <code class="docutils literal notranslate"><span class="pre">job_id</span></code> is read from <code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code> or
 <code class="docutils literal notranslate"><span class="pre">SLURM_JOB_ID</span></code>. If no corresponding environment variable is set, that field is omitted from
