@@ -16,12 +16,14 @@
 """nvbug 6439229 regression tests for async CPU tensor snapshots."""
 
 import queue
+import weakref
 from unittest.mock import Mock
 
 import torch
 from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
 
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import PersistentAsyncCaller
 from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
     FileSystemWriterAsync,
     _WriteData,
@@ -29,9 +31,12 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
 from nvidia_resiliency_ext.checkpointing.async_ckpt.staging import (
     ConsistentDataIdentifier,
     PerSaveShmBuffers,
+    PersistentIpcHandles,
     PersistentShmBuffers,
     ShmStager,
     StagedTensors,
+    make_stager,
+    receive,
 )
 
 
@@ -97,33 +102,21 @@ class TestFileSystemWriterPrepareSnapshot:
 
         source.fill_(2.0)
         assert torch.equal(first_snapshot, torch.tensor(1.0))
+        first_writer._write_data.for_worker(0)  # as the persistent caller sends it to worker 0
 
         second_writer = self._prepare_writer(tmp_path, [source], stager=stager)
 
         assert second_writer._write_data.tensors.uncached is None
         assert second_writer._write_data.tensors.cached is None
-        (cached_snapshots,) = buffers._buffers.values()
+        ((_, cached_snapshots),) = (holding.data for holding in buffers._holdings.values())
         (reused_snapshot,) = cached_snapshots
         assert reused_snapshot.data_ptr() == first_snapshot.data_ptr()
         assert torch.equal(reused_snapshot, torch.tensor(2.0))
+        # A worker that doesn't hold the buffers gets them with the save.
+        _, (sent,) = second_writer._write_data.for_worker(1).tensors.cached
+        assert sent.data_ptr() == first_snapshot.data_ptr()
         drain.assert_called_once_with()
         cuda_synchronize.assert_not_called()
-
-    def test_cpu_shm_resends_tensors_when_the_drain_finds_the_worker_dead(self, tmp_path):
-        """A drain that finds the worker dead clears the buffers, so the save that ran it must
-        send the next worker new shm tensors instead of relying on the dead one's."""
-        buffers = PersistentShmBuffers()
-        buffers.drain = Mock(side_effect=buffers.clear)
-        stager = ShmStager(buffers)
-        source = torch.tensor(1.0)
-
-        self._prepare_writer(tmp_path, [source], stager=stager)
-        source.fill_(2.0)
-        writer = self._prepare_writer(tmp_path, [source], stager=stager)
-
-        buffers.drain.assert_called_once_with()
-        _, (sent,) = writer._write_data.tensors.cached
-        assert torch.equal(sent, torch.tensor(2.0))
 
     def test_a_given_stager_uses_the_registered_drain(self, tmp_path):
         """Buffers a writer is given drain like the default ones before they are reused."""
@@ -159,3 +152,28 @@ def test_a_save_that_cant_be_made_into_buckets_is_reported_as_failed(tmp_path):
     save_id, error = results.get_nowait()
     assert save_id == 7 and isinstance(error, RuntimeError)
     write_buckets.assert_not_called()
+
+
+def test_two_stagers_of_the_same_items_send_a_worker_their_own_tensors(monkeypatch):
+    """A worker keeps each stager's tensors under its own key."""
+    monkeypatch.setattr(PersistentAsyncCaller, "_worker_data_cache", {})
+    items = _tensor_write_items(1)
+    first, second = make_stager(cpu_shm=True, persistent=True), make_stager(True, True)
+    receive(first.stage(items, [torch.tensor(1.0)]).for_worker(0))
+    receive(second.stage(items, [torch.tensor(2.0)]).for_worker(0))
+
+    _, (received,) = receive(first.stage(items, [torch.tensor(1.0)]).for_worker(0))
+
+    assert torch.equal(received, torch.tensor(1.0))
+
+
+def test_ipc_handles_dont_keep_a_sent_saves_tensors_alive():
+    """Once the save is bound to a worker, the training process may free its tensors."""
+    handles = PersistentIpcHandles()
+    items, tensor = _tensor_write_items(1), torch.tensor(1.0)
+    identifier, _ = handles.acquire("key", items, [tensor])
+    StagedTensors(identifier, (items, [tensor]), None).for_worker(0)
+
+    alive = weakref.ref(tensor)
+    del tensor
+    assert alive() is None

@@ -27,6 +27,7 @@ import subprocess  # nosec B404
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
+from itertools import count
 from multiprocessing.connection import Connection, wait
 from time import time
 from typing import (
@@ -191,15 +192,17 @@ class AsyncRequest(NamedTuple):
 
         This logic is equivalent to what should happen in case of the async call.
         """
+        # This process may not hold what an earlier save sent to a worker.
+        request = _for_worker(self, next(_worker_ids))
         # preload tensors.
-        async_fn_args = list(self.async_fn_args)
-        if self.preload_fn:
+        async_fn_args = list(request.async_fn_args)
+        if request.preload_fn:
             # the 2nd arg is state dict
-            async_fn_args[1] = self.preload_fn()
+            async_fn_args[1] = request.preload_fn()
         # persist the state
-        if self.async_fn is not None:
-            async_fn_kwargs = dict(self.async_fn_kwargs or {})
-            self.async_fn(*async_fn_args, **async_fn_kwargs)
+        if request.async_fn is not None:
+            async_fn_kwargs = dict(request.async_fn_kwargs or {})
+            request.async_fn(*async_fn_args, **async_fn_kwargs)
         # This utility implements a sync cp save. Hence the barrier.
         torch.distributed.barrier()
         # Finalize the CP state
@@ -253,6 +256,56 @@ class AsyncRequest(NamedTuple):
                     "That probably means not all ranks are participating in async finalization"
                 )
         return self.call_idx
+
+
+# Ids of the processes that run async requests: each persistent worker, each forked process, and
+# each synchronous run. A request is completed for the one it is sent to; see `_for_worker`.
+_worker_ids = count()
+
+
+@runtime_checkable
+class WorkerBound(Protocol):
+    """An argument of an `AsyncRequest` whose content depends on what the worker holds.
+
+    For example, the write data of `FileSystemWriterAsync`, which leaves out tensors that a
+    worker kept from an earlier save.
+    """
+
+    def for_worker(self, worker_id: int) -> Any:
+        """This argument as worker `worker_id` must receive it."""
+
+
+def _for_worker(async_req: AsyncRequest, worker_id: int) -> AsyncRequest:
+    """`async_req` as worker `worker_id` must receive it.
+
+    Replaces each `WorkerBound` argument, in `async_fn_args`, `async_fn_kwargs` and a
+    `functools.partial` preload_fn, by its version for the worker. An argument that appears in both is replaced by
+    the same object in both, so that it is sent once.
+    """
+    bound: Dict[int, Any] = {}
+
+    def bind(arg: Any) -> Any:
+        if not isinstance(arg, WorkerBound):
+            return arg
+        if id(arg) not in bound:
+            bound[id(arg)] = arg.for_worker(worker_id)
+        return bound[id(arg)]
+
+    preload_fn = async_req.preload_fn
+    if isinstance(preload_fn, functools.partial):
+        preload_fn = functools.partial(
+            preload_fn.func,
+            *map(bind, preload_fn.args),
+            **{name: bind(arg) for name, arg in preload_fn.keywords.items()},
+        )
+    async_fn_kwargs = async_req.async_fn_kwargs
+    if async_fn_kwargs:
+        async_fn_kwargs = {name: bind(arg) for name, arg in async_fn_kwargs.items()}
+    return async_req._replace(
+        async_fn_args=tuple(map(bind, async_req.async_fn_args)),
+        async_fn_kwargs=async_fn_kwargs,
+        preload_fn=preload_fn,
+    )
 
 
 class ObjectTracker(type):
@@ -395,18 +448,6 @@ class _ForkedSave(_SubmittedSave):
         return True
 
 
-@runtime_checkable
-class _KeptByWorker(Protocol):
-    """An argument of an `AsyncRequest` that leaves out what a worker keeps between saves.
-
-    For example, the write data of `FileSystemWriterAsync`, which sends a persistent worker
-    only the key of tensors it received with an earlier save.
-    """
-
-    def received_here(self) -> Any:
-        """This argument with what the worker keeps filled in, as this process holds it."""
-
-
 class TemporalAsyncCaller(AsyncCaller):
     """Runs each async request in a newly forked process."""
 
@@ -425,14 +466,8 @@ class TemporalAsyncCaller(AsyncCaller):
         """
         if async_req.async_fn is None:
             return _EmptySave()
-        # Each forked process is a new worker, which keeps nothing between saves. This process
-        # keeps it for them instead, and they inherit it when forked.
-        async_req = async_req._replace(
-            async_fn_args=tuple(
-                arg.received_here() if isinstance(arg, _KeptByWorker) else arg
-                for arg in async_req.async_fn_args
-            )
-        )
+        # Each forked process is a new worker, which holds nothing from earlier saves.
+        async_req = _for_worker(async_req, next(_worker_ids))
 
         async_fn_args = list(async_req.async_fn_args)
         preloaded = None
@@ -513,9 +548,7 @@ class PersistentAsyncCaller(AsyncCaller):
     # This cache contains IPC handles and must be cleaned up properly.
     _worker_data_cache: Dict = {}
 
-    # Callbacks invoked in the training process whenever a fresh worker is spawned, and when
-    # a worker is found dead. Used by FileSystemWriterAsync to invalidate training-side shm
-    # caches so the next checkpoint re-sends actual tensor data to the new worker.
+    # Callbacks invoked in the training process whenever a fresh worker is spawned.
     _worker_restart_callbacks: ClassVar[List[Callable]] = []
 
     @classmethod
@@ -533,6 +566,8 @@ class PersistentAsyncCaller(AsyncCaller):
     ):
         super().__init__()
         self.process: mp.Process = None
+        # Id of the worker process, from _worker_ids; a new worker gets a new id.
+        self.worker_id: Optional[int] = None
         self.start_time: Optional[float] = None
         self.sigterm_timeout = sigterm_timeout
         # Each worker gets its own channels, made when it starts:
@@ -561,6 +596,7 @@ class PersistentAsyncCaller(AsyncCaller):
             rank (int): the rank of the current trainer process.
         """
         ctx = mp.get_context('spawn')
+        self.worker_id = next(_worker_ids)
         self.queue = ctx.JoinableQueue()
         self._report_conn, report_send = ctx.Pipe(duplex=False)
         if rank == 0:
@@ -635,8 +671,12 @@ class PersistentAsyncCaller(AsyncCaller):
             self.rank = torch.distributed.get_rank()
 
         self.start_time = time()
+        if self.process is not None and not self.process.is_alive():
+            self._worker_died()
         if self.process is None:
             self._start_worker(self.rank)
+        # The save may have been planned for a worker that has since stopped, or for another one.
+        async_req = _for_worker(async_req, self.worker_id)
 
         self.queue.put(async_req)
         logger.debug(f"rank: {self.rank}, put {async_req.call_idx}")
@@ -732,10 +772,6 @@ class PersistentAsyncCaller(AsyncCaller):
             f"{self.process.exitcode}"
         )
         self._release_worker()
-        # The training-side caches describe data that only this worker had. Clear them now,
-        # before the next save decides what to send, rather than when the next worker starts.
-        for cb in PersistentAsyncCaller._worker_restart_callbacks:
-            cb()
 
     def _release_worker(self) -> None:
         """Forget the worker, which has exited: no more reports will come.

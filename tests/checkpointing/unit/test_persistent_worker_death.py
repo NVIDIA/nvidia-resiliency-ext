@@ -30,14 +30,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt import core
 
 
 @pytest.fixture
-def restart_callback():
-    callback = mock.Mock()
-    with mock.patch.object(core.PersistentAsyncCaller, "_worker_restart_callbacks", [callback]):
-        yield callback
-
-
-@pytest.fixture
-def caller(restart_callback):
+def caller():
     caller = core.PersistentAsyncCaller(cpu_shm_mode=True)
     caller.rank = 0
     yield caller
@@ -56,11 +49,8 @@ def test_a_worker_dying_while_preloading_does_not_block_staging(caller):
     assert save.finished(blocking=True)
 
 
-def test_a_new_worker_takes_over_from_a_dead_one(caller, restart_callback):
+def test_a_new_worker_takes_over_from_a_dead_one(caller):
     assert caller.submit(_request(0, os._exit, 1)).finished(blocking=True)
-    # Once at the first start, and again when the worker is found dead, so the training-side
-    # caches are cleared before the next save is prepared.
-    assert restart_callback.call_count == 2
 
     assert caller.submit(_request(1, abs, 0)).finished(blocking=True)
     assert caller._debug_is_async_process_running()

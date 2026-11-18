@@ -200,6 +200,84 @@ class TestSavesAcrossWorkers:
             f"{mismatched=}"
         )
 
+    def test_the_second_save_reuses_the_lazily_started_workers_shm_buffers(
+        self, tmp_path_dist_ckpt
+    ):
+        Utils.initialize_distributed()
+        FileSystemWriterAsync.cleanup_tensor_caches()
+        state_dict = self.state_dict()
+        async_queue = AsyncCallsQueue(persistent=True)  # no warmup: the first save starts it
+        try:
+            with TempNamedDir(tmp_path_dist_ckpt / "first", sync=True) as ckpt_dir:
+                self.save(async_queue, ckpt_dir, state_dict, cpu_shm=True, kept=True)
+            with (
+                TempNamedDir(tmp_path_dist_ckpt / "second", sync=True) as ckpt_dir,
+                mock.patch.object(
+                    torch.Tensor,
+                    "share_memory_",
+                    autospec=True,
+                    side_effect=torch.Tensor.share_memory_,
+                ) as share_memory,
+            ):
+                request = self.plan(ckpt_dir, state_dict, cpu_shm=True, kept=True)
+                assert share_memory.call_count == 0, "the second save allocated new shm buffers"
+                async_queue.schedule_async_request(request)
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                self.assert_loads(ckpt_dir, state_dict)
+        finally:
+            async_queue.close()
+
+    @pytest.mark.parametrize("cpu_shm", [True, False], ids=["shm", "ipc"])
+    def test_a_save_after_an_abort_reaches_the_new_worker(self, tmp_path_dist_ckpt, cpu_shm):
+        """The aborted worker held the save's tensors; the new worker gets them with it."""
+        Utils.initialize_distributed()
+        FileSystemWriterAsync.cleanup_tensor_caches()
+        state_dict = self.state_dict()
+        aborted_queue = AsyncCallsQueue(persistent=True)
+        try:
+            for i in range(2):  # the second save is to a worker that has started already
+                with TempNamedDir(tmp_path_dist_ckpt / f"before_{i}", sync=True) as ckpt_dir:
+                    self.save(aborted_queue, ckpt_dir, state_dict, cpu_shm=cpu_shm, kept=True)
+        finally:
+            aborted_queue.close(abort=True)
+
+        for tensor in state_dict.values():
+            tensor.add_(10)  # values that neither the old buffers nor the checkpoint have
+        async_queue = AsyncCallsQueue(persistent=True)
+        try:
+            with TempNamedDir(tmp_path_dist_ckpt / "after", sync=True) as ckpt_dir:
+                self.save(async_queue, ckpt_dir, state_dict, cpu_shm=cpu_shm, kept=True)
+                self.assert_loads(ckpt_dir, state_dict)
+        finally:
+            async_queue.close()
+
+    @pytest.mark.parametrize("cpu_shm", [True, False], ids=["shm", "ipc"])
+    def test_a_save_planned_for_a_worker_that_then_died_reaches_the_new_worker(
+        self, tmp_path_dist_ckpt, cpu_shm
+    ):
+        """The worker dies after the save is planned and before it is sent."""
+        Utils.initialize_distributed()
+        FileSystemWriterAsync.cleanup_tensor_caches()
+        state_dict = self.state_dict()
+        async_queue = AsyncCallsQueue(persistent=True)
+        try:
+            for i in range(2):  # the second save is to a worker that has started already
+                with TempNamedDir(tmp_path_dist_ckpt / f"first_{i}", sync=True) as ckpt_dir:
+                    self.save(async_queue, ckpt_dir, state_dict, cpu_shm=cpu_shm, kept=True)
+
+            for tensor in state_dict.values():
+                tensor.add_(10)  # values that neither the old buffers nor the checkpoint have
+            with TempNamedDir(tmp_path_dist_ckpt / "second", sync=True) as ckpt_dir:
+                request = self.plan(ckpt_dir, state_dict, cpu_shm=cpu_shm, kept=True)
+                worker = _worker(async_queue)
+                worker.kill()
+                worker.join()
+                async_queue.schedule_async_request(request)
+                async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                self.assert_loads(ckpt_dir, state_dict)
+        finally:
+            async_queue.close()
+
     @pytest.mark.min_world_size(2)
     def test_a_worker_killed_mid_save_fails_the_save_on_every_rank(self, tmp_path_dist_ckpt):
         """Every rank raises CheckpointException for the save, also when the next save is planned

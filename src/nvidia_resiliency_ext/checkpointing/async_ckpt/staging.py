@@ -27,8 +27,10 @@ the same write items need not send them again.
 
 import hashlib
 import logging
+import weakref
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple
+from itertools import count
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
 
 import torch
 from torch.distributed.checkpoint.planner import WriteItem
@@ -130,6 +132,50 @@ class StagedTensors(NamedTuple):
     cached: Optional[ItemsAndData]
     uncached: Optional[ItemsAndData]
 
+    def for_worker(self, worker_id: int) -> 'StagedTensors':
+        """The tensors to send to worker `worker_id`: with the cached ones if it doesn't hold them.
+
+        Called on the request as it is sent, when the worker that receives it is known: a save
+        is planned to send only the key if some worker holds its tensors, and that worker may
+        have stopped, or the save may go to another one.
+        """
+        holding = _holdings.get(self.identifier.key) if self.identifier is not None else None
+        if holding is None:
+            return self
+        data = holding.data
+        if not holding.keeps_data:
+            holding.data = None  # this save's own data, which a later save replaces
+        if worker_id in holding.workers or data is None:
+            return self
+        holding.workers.add(worker_id)
+        return self if self.cached is not None else self._replace(cached=data)
+
+
+class _Holding:
+    """What a persistent stager keeps for one key: data it can send, and who holds it.
+
+    Args:
+        data: the write items and the tensors the worker keeps under the key.
+        keeps_data: whether `data` outlives the save that set it. If not, it is dropped once
+            that save's request is bound to a worker, so that the holding doesn't keep tensors
+            alive that the training process has freed.
+    """
+
+    def __init__(self, data: ItemsAndData, keeps_data: bool = True):
+        self.data: Optional[ItemsAndData] = data
+        self.keeps_data = keeps_data
+        # Ids of the workers that have received `data`
+        self.workers: Set[int] = set()
+
+
+# Every persistent stager's holdings by key, so that a request can be completed for the worker it
+# is sent to. A holding lasts as long as the stager that owns it.
+_holdings: 'weakref.WeakValueDictionary[str, _Holding]' = weakref.WeakValueDictionary()
+
+# Serials of the persistent buffers and handles, which prefix their keys: two stagers may stage
+# the same write items, and a worker must keep their tensors apart.
+_holder_serials = count()
+
 
 class Stager(ABC):
     """Stages the tensors resolved for a rank's write items, after planning."""
@@ -180,7 +226,7 @@ class Stager(ABC):
 
     @abstractmethod
     def clear(self) -> None:
-        """Forget everything the worker holds. Called when a new worker starts."""
+        """Forget everything staged, so that the next saves send everything again."""
 
 
 # The drain for shared-memory buffers that weren't given their own: a blocking call that waits
@@ -207,13 +253,13 @@ class ShmBuffers(ABC):
 
     @abstractmethod
     def acquire(
-        self, key: str, tensors: List[torch.Tensor]
+        self, key: str, items: List[WriteItem], tensors: List[torch.Tensor]
     ) -> Tuple[List[torch.Tensor], Optional[ConsistentDataIdentifier], bool]:
         """Buffers to copy `tensors` into, once no write is still reading them.
 
         Returns:
-            (buffers, identifier, worker_has_them): the buffers, the key the worker keeps them
-                under (None if it doesn't keep them), and whether it already has them.
+            (buffers, identifier, a_worker_has_them): the buffers, the key a worker keeps them
+                under (None if it doesn't keep them), and whether some worker already has them.
         """
 
     def forget(self, key: str) -> None:
@@ -236,7 +282,7 @@ class PerSaveShmBuffers(ShmBuffers):
     buffers, and shared memory would grow without bound.
     """
 
-    def acquire(self, key, tensors):
+    def acquire(self, key, items, tensors):
         self._drain()
         return _allocate_shm(tensors), None, False
 
@@ -244,39 +290,42 @@ class PerSaveShmBuffers(ShmBuffers):
 class PersistentShmBuffers(ShmBuffers):
     """Buffers allocated once per write-item structure and reused by later saves.
 
-    The first save sends the buffers to the worker, which keeps references to them, so later
-    saves send only the key. Before buffers are reused, `drain` waits for any write still
-    reading them.
+    A worker that has received the buffers keeps references to them, so later saves send only
+    the key; see `StagedTensors.for_worker`. Before buffers are reused, `drain` waits for any
+    write still reading them.
     """
 
     def __init__(self, drain: Optional[Callable[[], None]] = None):
         super().__init__(drain)
-        # The buffers the worker holds, allocated by an earlier save.
-        # Key: SHA-256 of the tensor write items (same as ConsistentDataIdentifier).
-        # Value: one managed share_memory_() tensor per write item.
-        self._buffers: Dict[str, List[torch.Tensor]] = {}
+        # The buffers allocated by earlier saves, as the write items and one managed
+        # share_memory_() tensor per item.
+        # Key: this object's serial and the SHA-256 of the tensor write items, as in the
+        # ConsistentDataIdentifier.
+        self._holdings: Dict[str, _Holding] = {}
+        self._serial = next(_holder_serials)
 
-    def acquire(self, key, tensors):
-        if key in self._buffers:
+    def acquire(self, key, items, tensors):
+        key = f"{self._serial}-{key}"
+        holding = self._holdings.get(key)
+        if holding is None:
+            holding = self._holdings[key] = _holdings[key] = _Holding(
+                (items, _allocate_shm(tensors))
+            )
+            logger.debug(f"Allocated {len(tensors)} shm tensors (key={key})")
+        else:
             # The worker for checkpoint N may still be reading these buffers while we are
-            # about to overwrite them with checkpoint N+1 values. Drain before looking them
-            # up, because a drain that finds the worker dead clears them.
+            # about to overwrite them with checkpoint N+1 values.
             self._drain()
-        buffers = self._buffers.get(key)
-        if buffers is None:
-            buffers = self._buffers[key] = _allocate_shm(tensors)
-            logger.debug(f"Allocated {len(buffers)} shm tensors (key={key})")
-            return buffers, ConsistentDataIdentifier(key), False
-        return buffers, ConsistentDataIdentifier(key), True
+        return holding.data[1], ConsistentDataIdentifier(key), bool(holding.workers)
 
     def forget(self, key):
-        # The next save allocates new buffers and sends them.
-        self._buffers.pop(key, None)
+        if key in self._holdings:
+            self._holdings[key].workers.clear()
 
     def clear(self):
-        if self._buffers:
-            logger.info(f"Clearing shm tensor cache ({len(self._buffers)} entries)")
-        self._buffers.clear()
+        if self._holdings:
+            logger.info(f"Clearing shm tensor cache ({len(self._holdings)} entries)")
+        self._holdings.clear()
 
 
 class ShmStager(Stager):
@@ -292,7 +341,7 @@ class ShmStager(Stager):
 
     def _stage(self, items, tensors, dequantized):
         key = _compute_data_structure_key_from_plan(items)
-        shm_tensors, identifier, worker_has_them = self.buffers.acquire(key, tensors)
+        shm_tensors, identifier, worker_has_them = self.buffers.acquire(key, items, tensors)
         with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
             pending_cuda_copies = 0
             for shm_t, source_t in zip(shm_tensors, tensors):
@@ -306,7 +355,7 @@ class ShmStager(Stager):
             if pending_cuda_copies:
                 torch.cuda.synchronize()
         logger.debug(f"Copied {len(shm_tensors)} tensors into shm (key={key})")
-        # Send the buffers unless the worker kept them from an earlier save: their values are
+        # Send the buffers unless a worker kept them from an earlier save: their values are
         # fresh after the copy above.
         cached = None if worker_has_them else (items, shm_tensors)
         return StagedTensors(identifier, cached, None)
@@ -325,7 +374,7 @@ class IpcHandles(ABC):
     def acquire(
         self, key: str, items: List[WriteItem], tensors: List[torch.Tensor]
     ) -> Tuple[Optional[ConsistentDataIdentifier], bool]:
-        """The key the worker keeps the tensors' handles under, and whether it has them."""
+        """The key a worker keeps the tensors' handles under, and whether some worker has them."""
 
     def forget(self, key: str) -> None:
         pass
@@ -342,24 +391,41 @@ class PerSaveIpcHandles(IpcHandles):
 
 
 class PersistentIpcHandles(IpcHandles):
-    """The worker keeps the handles, and they are sent again only if the storage has moved."""
+    """Workers keep the handles, which are sent again only if the storage has moved.
+
+    A worker that has received the handles keeps them, so later saves send only the key; see
+    `StagedTensors.for_worker`.
+    """
 
     def __init__(self):
-        # The data/storage pointer fingerprint of the GPU tensors whose handles the worker
-        # holds. Key: SHA-256 of the tensor write items (same as ConsistentDataIdentifier).
-        self._sent_data_ptrs: Dict[str, Tuple[Tuple, ...]] = {}
+        # Who holds the handles of the latest save's GPU tensors, and the tensors' data/storage
+        # pointer fingerprint. The tensors themselves are kept only until the save is bound.
+        # Key: this object's serial and the SHA-256 of the tensor write items, as in the
+        # ConsistentDataIdentifier.
+        self._holdings: Dict[str, _Holding] = {}
+        self._data_ptrs: Dict[str, Tuple[Tuple, ...]] = {}
+        self._serial = next(_holder_serials)
 
     def acquire(self, key, items, tensors):
+        key = f"{self._serial}-{key}"
         data_ptrs = _compute_tensor_data_ptrs(items, tensors)
-        worker_has_them = self._sent_data_ptrs.get(key) == data_ptrs
-        self._sent_data_ptrs[key] = data_ptrs
-        return ConsistentDataIdentifier(key), worker_has_them
+        holding = self._holdings.get(key)
+        if holding is None or self._data_ptrs[key] != data_ptrs:
+            # New tensors, or the storage moved: no worker has handles to them yet.
+            holding = _Holding((items, tensors), keeps_data=False)
+            self._holdings[key] = _holdings[key] = holding
+            self._data_ptrs[key] = data_ptrs
+        else:
+            holding.data = (items, tensors)  # the same storage, as this save resolved it
+        return ConsistentDataIdentifier(key), bool(holding.workers)
 
     def forget(self, key):
-        self._sent_data_ptrs.pop(key, None)
+        if key in self._holdings:
+            self._holdings[key].workers.clear()
 
     def clear(self):
-        self._sent_data_ptrs.clear()
+        self._holdings.clear()
+        self._data_ptrs.clear()
 
 
 class IpcStager(Stager):
@@ -460,10 +526,7 @@ def default_stager(cpu_shm: bool, persistent: bool) -> Stager:
 
 
 def clear_default_stagers() -> None:
-    """Make the default stagers send everything again. Called when a new worker starts.
-
-    A fresh worker has an empty ``_worker_data_cache``.
-    """
+    """Forget what the default stagers have staged, so that their next saves send everything."""
     for stager in _default_stagers.values():
         stager.clear()
 
