@@ -793,7 +793,129 @@ def format_summary(
     return "\n".join(lines)
 
 
-def format_details(identity: AnalysisIdentity, result: AttrSvcResult) -> str:
+def _clock(iso: Any) -> str:
+    """The wall-clock time out of an ISO-8601 stamp, for a one-glance read.
+
+    The date is dropped: an alert is read beside the job it is about, where the
+    day is never in question and a full stamp only crowds the line.
+    """
+    text = str(iso or "")
+    return text[11:19] if len(text) >= 19 else ""
+
+
+def _compact_duration(seconds: Any) -> str:
+    """Size up a span: ``42.1s``, ``3m20s``, ``3h0m``."""
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        return ""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m{int(seconds % 60)}s"
+    return f"{int(seconds // 3600)}h{int((seconds % 3600) // 60)}m"
+
+
+def format_timing(timing: Optional[Mapping[str, Any]]) -> str:
+    """How long the verdict took, as the thread reply's closing block.
+
+    Two spans, not one running total. The cycle's own length is hours and the
+    verdict's is seconds, so collapsing them would present the training run's
+    duration as though it were how long this service took to answer.
+
+    Under the verdict, where that time actually went. Storage sync is broken
+    out because it is waiting for the log to finish landing on shared storage
+    rather than work this service is doing, and on a slow filesystem it can
+    dominate everything else. It runs at the front of the same window the
+    signature pass is measured in, so the signature figure has it subtracted
+    out; left in, the two would double-count and a reader adding them up would
+    overshoot the verdict.
+    """
+    if not isinstance(timing, Mapping):
+        return ""
+
+    def number(key: str) -> float | None:
+        value = timing.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    bullets: list[str] = []
+
+    cycle_from = _clock(timing.get("cycle_started_at"))
+    cycle_to = _clock(timing.get("analysis_started_at"))
+    cycle_len = _compact_duration(number("cycle_to_analysis_s"))
+    if cycle_from and cycle_to:
+        suffix = f"  _({cycle_len})_" if cycle_len else ""
+        bullets.append(f"  • cycle      `{cycle_from}` → `{cycle_to}`{suffix}")
+    elif cycle_from:
+        bullets.append(f"  • cycle      `{cycle_from}`")
+
+    verdict_to = _clock(timing.get("l4_answer_at"))
+    verdict_s = number("analysis_to_l4_answer_s")
+    verdict_len = _compact_duration(verdict_s)
+    if cycle_to and verdict_to:
+        suffix = f"  _({verdict_len})_" if verdict_len else ""
+        bullets.append(f"  • verdict    `{cycle_to}` → `{verdict_to}`{suffix}")
+    elif verdict_to:
+        bullets.append(f"  • verdict    `{verdict_to}`")
+
+    breakdown: list[str] = []
+
+    def share(seconds: float | None) -> str:
+        """What fraction of the verdict this step took.
+
+        The three shares do not add to 100: grounding, attempt history and
+        policy run between the model call and the answer and are not broken
+        out. The remainder is real time, not rounding.
+        """
+        if seconds is None or verdict_s is None or verdict_s <= 0:
+            return ""
+        return f"  _({seconds / verdict_s * 100:.0f}%)_"
+
+    drain_s = number("drain_wall_clock_s")
+    drain = _compact_duration(drain_s)
+    if drain:
+        breakdown.append(f"      · storage sync    `{drain}`{share(drain_s)}")
+
+    # Measured from the terminal mark, so it contains the drain. The two phases
+    # are strictly serial - the drain returns before the analysis call that
+    # carries the ready callback is made - so taking the drain back out leaves
+    # the interval from the log settling to this stage finishing. Reported as
+    # measured, the two lines would double-count and a reader adding the
+    # breakdown up would overshoot the verdict.
+    l0_s = number("analysis_to_l0_answer_s")
+    if l0_s is not None and drain_s is not None:
+        l0_s = l0_s - drain_s if l0_s >= drain_s else None
+    regex_s = _compact_duration(l0_s)
+    if regex_s:
+        breakdown.append(f"      · regex analysis  `{regex_s}`{share(l0_s)}")
+
+    llm_s = number("llm_api_wall_clock_s")
+    llm = _compact_duration(llm_s)
+    if llm:
+        line = f"      · model call      `{llm}`"
+        # Unlike the two above, this one can be a sum of overlapping intervals:
+        # routes run concurrently, so two 30s calls inside a 40s verdict would
+        # read as 150% - time the verdict never spent. With more than one
+        # contributor, say what the number is instead of what fraction it is.
+        routes = timing.get("llm_api_call_routes")
+        concurrent = isinstance(routes, int) and not isinstance(routes, bool) and routes > 1
+        if concurrent:
+            line += f"  _(total across {routes} routes)_"
+        else:
+            line += share(llm_s)
+        breakdown.append(line)
+
+    bullets.extend(breakdown)
+    if not bullets:
+        return ""
+    return "*Analysis timing:*\n" + "\n".join(bullets)
+
+
+def format_details(
+    identity: AnalysisIdentity,
+    result: AttrSvcResult,
+    timing: Optional[Mapping[str, Any]] = None,
+) -> str:
     """The thread reply: why this decision, and the evidence behind it."""
     fields = attribution_fields(result) or AttributionFields()
 
@@ -828,6 +950,10 @@ def format_details(identity: AnalysisIdentity, result: AttrSvcResult) -> str:
         if fields.missing_evidence:
             missing = "\n".join(f"  • {m}" for m in fields.missing_evidence)
             sections.append(f"*Missing evidence:*\n{missing}")
+    # Last: how long it took is context for the verdict, never ahead of it.
+    elapsed = format_timing(timing)
+    if elapsed:
+        sections.append(elapsed)
     return "\n".join(sections)
 
 
@@ -884,7 +1010,12 @@ class SlackNotifier:
         """Whether a recommendation action is in the configured notify set."""
         return normalize_recommendation_action(action) in self.config.notify_actions
 
-    def notify(self, identity: AnalysisIdentity, result: AttrSvcResult) -> bool:
+    def notify(
+        self,
+        identity: AnalysisIdentity,
+        result: AttrSvcResult,
+        timing: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
         """Send a notification for ``result`` if it is configured to page.
 
         Returns ``True`` only when a message was delivered.
@@ -898,7 +1029,7 @@ class SlackNotifier:
         summary = format_summary(identity, result, self.config.cluster)
         summary += self._mention(identity.user)
 
-        details = format_details(identity, result)
+        details = format_details(identity, result, timing)
 
         # One top-level message per cycle per channel. Each failure is its own
         # event and stands on its own in the channel; the detail hangs off it so
