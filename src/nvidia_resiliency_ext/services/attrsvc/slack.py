@@ -860,35 +860,49 @@ def format_timing(timing: Optional[Mapping[str, Any]]) -> str:
 
     breakdown: list[str] = []
 
+    def share(seconds: float | None) -> str:
+        """What fraction of the verdict this step took.
+
+        The three shares do not add to 100: grounding, attempt history and
+        policy run between the model call and the answer and are not broken
+        out. The remainder is real time, not rounding.
+        """
+        if seconds is None or verdict_s is None or verdict_s <= 0:
+            return ""
+        return f"  _({seconds / verdict_s * 100:.0f}%)_"
+
     drain_s = number("drain_wall_clock_s")
     drain = _compact_duration(drain_s)
     if drain:
-        breakdown.append(f"      · storage sync  `{drain}`")
+        breakdown.append(f"      · storage sync    `{drain}`{share(drain_s)}")
 
-    # The signature pass is timed from the same mark the drain starts at, so
-    # take the drain back out rather than reporting the window twice.
+    # Measured from the terminal mark, so it contains the drain. The two phases
+    # are strictly serial - the drain returns before the analysis call that
+    # carries the ready callback is made - so taking the drain back out leaves
+    # the interval from the log settling to this stage finishing. Reported as
+    # measured, the two lines would double-count and a reader adding the
+    # breakdown up would overshoot the verdict.
     l0_s = number("analysis_to_l0_answer_s")
     if l0_s is not None and drain_s is not None:
         l0_s = l0_s - drain_s if l0_s >= drain_s else None
-    signatures = _compact_duration(l0_s)
-    if signatures:
-        breakdown.append(f"      · signatures    `{signatures}`")
+    regex_s = _compact_duration(l0_s)
+    if regex_s:
+        breakdown.append(f"      · regex analysis  `{regex_s}`{share(l0_s)}")
 
     llm_s = number("llm_api_wall_clock_s")
     llm = _compact_duration(llm_s)
     if llm:
-        line = f"      · model call    `{llm}`"
-        # The share is elapsed waiting time only while one route contributed.
-        # Routes run concurrently, so summing two overlapping calls and
-        # dividing by elapsed can read past 100% - a figure that invites an
-        # operator to go looking for time the verdict never spent. With more
-        # than one, say what the number is instead of what fraction it is.
+        line = f"      · model call      `{llm}`"
+        # Unlike the two above, this one can be a sum of overlapping intervals:
+        # routes run concurrently, so two 30s calls inside a 40s verdict would
+        # read as 150% - time the verdict never spent. With more than one
+        # contributor, say what the number is instead of what fraction it is.
         routes = timing.get("llm_api_call_routes")
         concurrent = isinstance(routes, int) and not isinstance(routes, bool) and routes > 1
         if concurrent:
             line += f"  _(total across {routes} routes)_"
-        elif verdict_s is not None and verdict_s > 0:
-            line += f"  _({llm_s / verdict_s * 100:.0f}%)_"
+        else:
+            line += share(llm_s)
         breakdown.append(line)
 
     bullets.extend(breakdown)

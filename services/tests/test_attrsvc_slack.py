@@ -1502,8 +1502,8 @@ def test_timing_block_reports_two_spans_and_where_the_verdict_went():
     # verdict is seconds, and a reader must not take the first for the second.
     assert "`12:18:44` \u2192 `15:18:44`" in text and "(3h0m)" in text
     assert "`15:18:44` \u2192 `15:19:26`" in text and "(42.1s)" in text
-    assert "storage sync  `8.0s`" in text
-    assert "model call    `26.8s`" in text and "(64%)" in text
+    assert "storage sync    `8.0s`" in text and "(19%)" in text
+    assert "model call      `26.8s`" in text and "(64%)" in text
 
 
 def test_storage_sync_is_taken_back_out_of_the_signature_figure():
@@ -1513,7 +1513,7 @@ def test_storage_sync_is_taken_back_out_of_the_signature_figure():
 
     text = format_timing(_timing(analysis_to_l0_answer_s=14.2, drain_wall_clock_s=8.0))
 
-    assert "signatures    `6.2s`" in text, "14.2s measured minus 8.0s of waiting"
+    assert "regex analysis  `6.2s`" in text, "14.2s measured minus 8.0s of waiting"
     assert "`14.2s`" not in text
 
 
@@ -1522,8 +1522,8 @@ def test_the_signature_figure_is_dropped_rather_than_shown_negative():
 
     text = format_timing(_timing(analysis_to_l0_answer_s=3.0, drain_wall_clock_s=8.0))
 
-    assert "signatures" not in text
-    assert "storage sync  `8.0s`" in text
+    assert "regex analysis" not in text
+    assert "storage sync    `8.0s`" in text and "(19%)" in text
 
 
 def test_a_cycle_without_a_recorded_drain_still_reports_its_spans():
@@ -1534,7 +1534,7 @@ def test_a_cycle_without_a_recorded_drain_still_reports_its_spans():
 
     assert "storage sync" not in text
     assert "(42.1s)" in text
-    assert "signatures    `14.2s`" in text, "with no drain to subtract, L0 stands as measured"
+    assert "regex analysis  `14.2s`" in text, "with no drain to subtract, L0 stands as measured"
 
 
 def test_the_llm_share_is_a_share_only_while_one_route_contributed():
@@ -1547,13 +1547,16 @@ def test_the_llm_share_is_a_share_only_while_one_route_contributed():
     """
 
     single = format_timing(_timing(llm_api_wall_clock_s=26.8, llm_api_call_routes=1))
-    assert "model call    `26.8s`" in single and "(64%)" in single
+    assert "model call      `26.8s`" in single and "(64%)" in single
 
     # Two 25s calls overlapping inside a 42.1s verdict: 50s of 42.1s is 119%.
     concurrent = format_timing(_timing(llm_api_wall_clock_s=50.0, llm_api_call_routes=2))
-    assert "model call    `50.0s`" in concurrent
+    assert "model call      `50.0s`" in concurrent
     assert "total across 2 routes" in concurrent
-    assert "%" not in concurrent, "a sum of overlapping calls is not a share of elapsed time"
+    model_line = next(line for line in concurrent.splitlines() if "model call" in line)
+    assert "%" not in model_line, "a sum of overlapping calls is not a share of elapsed time"
+    # The other two are single measured intervals, so their shares still stand.
+    assert "storage sync" in concurrent and "%" in concurrent
 
 
 def test_the_share_survives_an_attempt_that_recorded_no_route_count():
