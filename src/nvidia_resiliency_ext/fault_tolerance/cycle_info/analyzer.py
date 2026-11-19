@@ -2,16 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """The CycleAnalyzer: builds the job-wide cycle info from the cycle records.
 
-It is the only writer of the cycle info files. It runs in its own process, started by
-nvrx-control next to the gRPC log servers, so its work never competes with the
+It is the only writer of the cycle info files. It runs in its own process, started by the
+control supervisor next to the gRPC log servers, so its work never competes with the
 rendezvous for a GIL.
 """
 
+import argparse
 import contextlib
 import logging
-import multiprocessing
 import os
 import signal
+import subprocess  # nosec B404 - only for the type of the supervisor's child
 import tempfile
 import time
 from collections import defaultdict
@@ -20,6 +21,7 @@ from typing import Dict, List, Optional, Set
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
+from ..child_process import read_child_args, spawn_child, wait_or_kill_child
 from ..cycle_info_writer import CycleInfoReporter
 from .aggregator import CycleEndReportAggregator
 from .messages import iso_to_seconds
@@ -339,21 +341,22 @@ class CycleAnalyzer:
 
 
 class _StopRequest:
-    """Set by the parent's event or by a signal.
+    """Set by SIGTERM or SIGINT, the way the supervisor stops its children.
 
-    The signal handler only sets a flag: setting the event takes a lock that the
-    interrupted thread may be holding.
+    The signal handler only sets a flag, so `wait` sleeps rather than waiting on an event:
+    setting an event takes a lock that the interrupted thread may be holding.
     """
 
-    def __init__(self, parent_event):
-        self._parent_event = parent_event
+    def __init__(self):
         self.signalled = False
 
     def is_set(self) -> bool:
-        return self.signalled or self._parent_event.is_set()
+        return self.signalled
 
     def wait(self, timeout: float) -> bool:
-        return self._parent_event.wait(timeout) or self.signalled
+        if not self.signalled:
+            time.sleep(timeout)
+        return self.signalled
 
 
 def _run_cycle_analyzer(
@@ -361,14 +364,13 @@ def _run_cycle_analyzer(
     cycle_info_job_id: Optional[str],
     cycle_log_prefix: Optional[str],
     address: str,
-    ready_event,
-    stop_event,
 ) -> None:
-    """Entry point of the CycleAnalyzer process; receives the records on `address`."""
+    """Body of the CycleAnalyzer process; receives the records on `address` until SIGTERM."""
     setup_logger(force_reset=True, node_local_tmp_prefix="cycleanalyzer")
-    # The parent stops this process through stop_event; a signal sent to the whole process
-    # group (e.g. by Slurm) stops it the same way, so the reporter can finish its writes.
-    stop_request = _StopRequest(stop_event)
+    # The supervisor stops this process with SIGTERM; a signal sent to the whole process
+    # group (e.g. by Slurm) stops it the same way. Either way the reporter finishes its
+    # writes.
+    stop_request = _StopRequest()
 
     def _on_signal(signum, frame):
         stop_request.signalled = True
@@ -400,7 +402,6 @@ def _run_cycle_analyzer(
         if socket_path is not None and os.path.exists(socket_path):
             os.unlink(socket_path)  # left behind by an earlier run
         reader = GrpcCycleInfoReader(address)
-        ready_event.set()
         logger.info("CycleAnalyzer receiving cycle records on %s", address)
         CycleAnalyzer(reader, reporter).run(stop_request)
     finally:
@@ -414,9 +415,11 @@ def _run_cycle_analyzer(
 
 
 class CycleAnalyzerProcess:
-    """Runs a CycleAnalyzer in a spawned process that receives the records on `address`.
+    """Runs a CycleAnalyzer in a child process that receives the records on `address`.
 
-    The gRPC log root, on the same node, forwards the records there.
+    A supervisor child like the others: a fresh interpreter (spawn_child), stopped with
+    SIGTERM and killed past STOP_TIMEOUT (wait_or_kill_child). The gRPC log root, on the
+    same node, forwards the records there.
 
     Args:
         cycle_info_dir: Directory of the cycle info files.
@@ -430,6 +433,8 @@ class CycleAnalyzerProcess:
 
     START_TIMEOUT = 120.0
     STOP_TIMEOUT = 10.0
+    READY_CHECK_TIMEOUT = 0.5
+    MODULE = "nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer"
 
     def __init__(
         self,
@@ -441,54 +446,74 @@ class CycleAnalyzerProcess:
         self.address = address or (
             f"unix:{tempfile.gettempdir()}/nvrx_cycle_analyzer_{os.getpid()}.sock"
         )
-        self._kwargs = dict(
+        self._args = argparse.Namespace(
             cycle_info_dir=cycle_info_dir,
             cycle_info_job_id=cycle_info_job_id,
             cycle_log_prefix=cycle_log_prefix,
             address=self.address,
         )
-        self._ctx = multiprocessing.get_context("spawn")
-        self._stop_event = self._ctx.Event()
-        self._process = None
+        self.process: Optional[subprocess.Popen] = None
 
-    def start(self) -> None:
-        """Start the process and wait until it receives records on `address`.
+    def start(self, **popen_kwargs) -> None:
+        """Start the process; returns at once (see wait_until_ready).
+
+        Args:
+            popen_kwargs: For subprocess.Popen, e.g. stdout.
+        """
+        self.process = spawn_child(self.MODULE, self._args, **popen_kwargs)
+
+    def wait_until_ready(self) -> None:
+        """Wait until the process receives records on `address`.
 
         Raises:
-            RuntimeError: The process exited or was not ready within START_TIMEOUT.
+            RuntimeError: The process exited, or was not ready within START_TIMEOUT.
         """
-        ready_event = self._ctx.Event()
-        self._process = self._ctx.Process(
-            target=_run_cycle_analyzer,
-            kwargs=dict(self._kwargs, ready_event=ready_event, stop_event=self._stop_event),
-            name="CycleAnalyzer",
-            daemon=True,
-        )
-        self._process.start()
         deadline = time.monotonic() + self.START_TIMEOUT
-        while not ready_event.wait(timeout=0.5):
-            if not self._process.is_alive():
-                raise RuntimeError(
-                    f"CycleAnalyzer exited during startup (exit code {self._process.exitcode})"
-                )
+        while not self._accepts_connections():
+            code = self.process.poll()
+            if code is not None:
+                raise RuntimeError(f"CycleAnalyzer exited during startup (exit code {code})")
             if time.monotonic() > deadline:
-                self.stop()
                 raise RuntimeError(f"CycleAnalyzer not ready after {self.START_TIMEOUT}s")
-        logger.info("Started CycleAnalyzer (PID=%s) on %s", self._process.pid, self.address)
+        logger.info("Started CycleAnalyzer (PID=%s) on %s", self.process.pid, self.address)
+
+    def _accepts_connections(self) -> bool:
+        import grpc  # only for this check in the supervisor
+
+        # A new channel for each check: a channel that failed to connect waits out a
+        # reconnect backoff before it tries again.
+        with grpc.insecure_channel(self.address) as channel:
+            try:
+                grpc.channel_ready_future(channel).result(timeout=self.READY_CHECK_TIMEOUT)
+                return True
+            except grpc.FutureTimeoutError:
+                return False
 
     @property
     def pid(self) -> Optional[int]:
-        """PID of the running process; None before start() and after stop()."""
-        return self._process.pid if self._process is not None else None
+        """PID of the process; None before start() and after stop()."""
+        return self.process.pid if self.process is not None else None
 
     def stop(self) -> None:
-        """Ask the process to stop, then force it if it does not exit within STOP_TIMEOUT."""
-        if self._process is None:
+        """Send SIGTERM, then SIGKILL if the process does not exit within STOP_TIMEOUT."""
+        if self.process is None:
             return
-        self._stop_event.set()
-        self._process.join(timeout=self.STOP_TIMEOUT)
-        if self._process.is_alive():
-            logger.warning("CycleAnalyzer did not stop within %ss; killing it", self.STOP_TIMEOUT)
-            self._process.kill()
-            self._process.join(timeout=2.0)
-        self._process = None
+        if self.process.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                self.process.terminate()
+        wait_or_kill_child(self.process, self.STOP_TIMEOUT)
+        self.process = None
+
+
+def main() -> None:
+    """Entry point of the process that CycleAnalyzerProcess starts."""
+    args = read_child_args()
+    if args is None:
+        raise RuntimeError("The CycleAnalyzer must be started by ft_launcher")
+    _run_cycle_analyzer(
+        args.cycle_info_dir, args.cycle_info_job_id, args.cycle_log_prefix, args.address
+    )
+
+
+if __name__ == "__main__":
+    main()

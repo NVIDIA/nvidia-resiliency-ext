@@ -82,8 +82,9 @@ def _job_controller_args(args):
     return argparse.Namespace(**values)
 
 
-def _start_cycle_analyzer(args, ft_cfg):
-    """Start the CycleAnalyzer, the only writer of the cycle info files.
+def _start_cycle_analyzer(args, ft_cfg, capture):
+    """Start the CycleAnalyzer, the only writer of the cycle info files, with its output in
+    the control log (`capture`).
 
     Best effort: cycle info is diagnostics, so a failure is logged and control continues
     without it.
@@ -98,9 +99,12 @@ def _start_cycle_analyzer(args, ft_cfg):
         cycle_log_prefix=args.ft_per_cycle_applog_prefix,
     )
     try:
-        analyzer.start()
+        analyzer.start(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        capture.attach(analyzer.process.stdout)
+        analyzer.wait_until_ready()
     except Exception as e:
         logger.error("Cycle info will not be written: failed to start the CycleAnalyzer: %s", e)
+        analyzer.stop()
         return None
     return analyzer
 
@@ -168,7 +172,7 @@ class ControlSupervisor:
 
         # Before the log servers: the root forwards the end reports to it.
         if ft_cfg.cycle_info_dir:
-            self.cycle_analyzer = _start_cycle_analyzer(args, ft_cfg)
+            self.cycle_analyzer = _start_cycle_analyzer(args, ft_cfg, self.capture)
 
         ports = None
         if args.ft_enable_log_server and (args.ft_per_cycle_applog_prefix or args.ft_nvrx_logfile):

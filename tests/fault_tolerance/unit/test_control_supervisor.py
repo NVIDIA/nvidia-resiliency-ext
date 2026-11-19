@@ -605,7 +605,7 @@ def test_cycle_analyzer_starts_before_the_log_servers_and_its_address_reaches_th
     owner = control_supervisor.ControlSupervisor(args)
     events = []
     analyzer = Mock(address="unix:/tmp/analyzer.sock")
-    analyzer.start.side_effect = lambda: events.append("analyzer-start")
+    analyzer.wait_until_ready.side_effect = lambda: events.append("analyzer-ready")
 
     def start_grpc(*_, **__):
         events.append("grpc-start")
@@ -620,7 +620,7 @@ def test_cycle_analyzer_starts_before_the_log_servers_and_its_address_reaches_th
     monkeypatch.setattr(control_supervisor, "_start_grpc_log_servers", start_grpc_servers)
     monkeypatch.setattr(control_supervisor, "spawn_child", spawn)
     owner._start()
-    assert events == ["analyzer-start", "grpc-start"]
+    assert events == ["analyzer-ready", "grpc-start"]
     assert owner.cycle_analyzer is analyzer
     # The log root forwards the end reports to it; the job-controller publishes the cycle infos.
     assert start_grpc_servers.call_args.kwargs["cycle_analyzer_address"] == analyzer.address
@@ -638,9 +638,10 @@ def test_cycle_analyzer_job_identity(monkeypatch, tmp_path, control_only):
         ft_per_cycle_applog_prefix=None,
     )
     analyzer_class = Mock()
+    capture = Mock()
     monkeypatch.setattr(control_supervisor, "CycleAnalyzerProcess", analyzer_class)
     analyzer = control_supervisor._start_cycle_analyzer(
-        args, SimpleNamespace(cycle_info_dir=str(tmp_path / "cycles"))
+        args, SimpleNamespace(cycle_info_dir=str(tmp_path / "cycles")), capture
     )
     assert analyzer is analyzer_class.return_value
     analyzer_class.assert_called_once_with(
@@ -648,25 +649,32 @@ def test_cycle_analyzer_job_identity(monkeypatch, tmp_path, control_only):
         cycle_info_job_id="training-job" if control_only else None,
         cycle_log_prefix=None,
     )
-    analyzer.start.assert_called_once_with()
+    # A supervisor child like the job-controller: its output goes to the control log.
+    analyzer.start.assert_called_once_with(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    capture.attach.assert_called_once_with(analyzer.process.stdout)
+    analyzer.wait_until_ready.assert_called_once_with()
 
 
-def test_cycle_analyzer_start_failure_is_logged_and_control_continues(monkeypatch, tmp_path):
+@pytest.mark.parametrize("failing", ["start", "wait_until_ready"])
+def test_cycle_analyzer_start_failure_is_logged_and_control_continues(
+    monkeypatch, tmp_path, failing
+):
     args = SimpleNamespace(
         ft_control_only=True, ft_cycle_info_job_id="job-a", ft_per_cycle_applog_prefix=None
     )
     analyzer = Mock()
-    analyzer.start.side_effect = RuntimeError("exited during startup")
+    getattr(analyzer, failing).side_effect = RuntimeError("exited during startup")
     error = Mock()
     monkeypatch.setattr(control_supervisor, "CycleAnalyzerProcess", Mock(return_value=analyzer))
     monkeypatch.setattr(control_supervisor.logger, "error", error)
     assert (
         control_supervisor._start_cycle_analyzer(
-            args, SimpleNamespace(cycle_info_dir=str(tmp_path / "cycles"))
+            args, SimpleNamespace(cycle_info_dir=str(tmp_path / "cycles")), Mock()
         )
         is None
     )
     error.assert_called_once()
+    analyzer.stop.assert_called_once_with()  # no process is left behind
 
 
 def test_child_shutdown_waits_without_killing_a_finished_child():

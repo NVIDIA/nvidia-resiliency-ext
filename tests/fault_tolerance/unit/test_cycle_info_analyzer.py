@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import subprocess
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer import (
     CycleAnalyzerProcess,
     _StopRequest,
 )
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoReader
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     build_cycle_info,
     ended_cycle_info,
@@ -156,43 +158,81 @@ def test_a_failing_record_is_logged_and_the_loop_continues():
     assert reader.read_cycle_infos.call_count == 3  # two loop passes and the final one
 
 
-def test_stop_request_is_set_by_the_parent_or_a_signal():
-    parent = threading.Event()
-    stop = _StopRequest(parent)
-    assert not stop.is_set()
+def test_stop_request_is_set_by_a_signal():
+    stop = _StopRequest()
+    assert not stop.is_set() and not stop.wait(0)
     stop.signalled = True
-    assert stop.is_set() and stop.wait(0)
-
-    stop = _StopRequest(parent)
-    parent.set()
     assert stop.is_set() and stop.wait(0)
 
 
 class TestCycleAnalyzerProcess:
-    def _process(self, ready, alive=True):
-        ctx = MagicMock()
-        ctx.Event.return_value.wait.return_value = ready
-        ctx.Process.return_value.is_alive.return_value = alive
-        with patch.object(analyzer_module.multiprocessing, "get_context", return_value=ctx):
-            process = CycleAnalyzerProcess(
-                "/nvrx", "job-a", "/logs/train.log", address="unix:/tmp/a.sock"
-            )
-        return process, ctx
+    def test_start_spawns_the_analyzer_module_as_a_supervisor_child(self):
+        process = CycleAnalyzerProcess(
+            "/nvrx", "job-a", "/logs/train.log", address="unix:/tmp/a.sock"
+        )
+        with patch.object(analyzer_module, "spawn_child") as spawn:
+            process.start(stdout=subprocess.PIPE)
 
-    def test_start_spawns_the_analyzer_and_waits_until_ready(self):
-        process, ctx = self._process(ready=True)
+        (module, args), kwargs = spawn.call_args
+        assert module == "nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer"
+        assert vars(args) == dict(
+            cycle_info_dir="/nvrx",
+            cycle_info_job_id="job-a",
+            cycle_log_prefix="/logs/train.log",
+            address="unix:/tmp/a.sock",
+        )
+        assert kwargs == dict(stdout=subprocess.PIPE)
+        assert process.process is spawn.return_value
+        assert process.pid == spawn.return_value.pid
 
-        process.start()
+    def test_wait_until_ready_returns_once_the_analyzer_receives(self):
+        reader = GrpcCycleInfoReader("127.0.0.1:0")
+        try:
+            process = CycleAnalyzerProcess("/nvrx", address=f"127.0.0.1:{reader.port}")
+            process.process = MagicMock()
+            process.process.poll.return_value = None
+            process.wait_until_ready()
+        finally:
+            reader.close()
 
-        kwargs = ctx.Process.call_args.kwargs["kwargs"]
-        assert ctx.Process.call_args.kwargs["target"] is analyzer_module._run_cycle_analyzer
-        assert (
-            kwargs["cycle_info_dir"],
-            kwargs["cycle_info_job_id"],
-            kwargs["cycle_log_prefix"],
-            kwargs["address"],
-        ) == ("/nvrx", "job-a", "/logs/train.log", "unix:/tmp/a.sock")
-        ctx.Process.return_value.start.assert_called_once_with()
+    def test_wait_until_ready_fails_when_the_process_exits(self):
+        process = CycleAnalyzerProcess("/nvrx", address="unix:/tmp/a.sock")
+        process.process = MagicMock()
+        process.process.poll.return_value = 3
+        with (
+            patch.object(process, "_accepts_connections", return_value=False),
+            pytest.raises(RuntimeError, match=r"exited during startup \(exit code 3\)"),
+        ):
+            process.wait_until_ready()
+
+    def test_wait_until_ready_gives_up_after_the_start_timeout(self):
+        process = CycleAnalyzerProcess("/nvrx", address="unix:/tmp/a.sock")
+        process.process = MagicMock()
+        process.process.poll.return_value = None
+        with (
+            patch.object(process, "_accepts_connections", return_value=False),
+            patch.object(analyzer_module.time, "monotonic", side_effect=[0.0, 200.0]),
+            pytest.raises(RuntimeError, match="not ready"),
+        ):
+            process.wait_until_ready()
+
+    def test_stop_sends_sigterm_then_waits_or_kills(self):
+        process = CycleAnalyzerProcess("/nvrx", address="unix:/tmp/a.sock")
+        child = process.process = MagicMock()
+        child.poll.return_value = None
+        with patch.object(analyzer_module, "wait_or_kill_child") as wait_or_kill:
+            process.stop()
+            process.stop()  # a second stop does nothing
+        child.terminate.assert_called_once_with()
+        wait_or_kill.assert_called_once_with(child, CycleAnalyzerProcess.STOP_TIMEOUT)
+        assert process.process is None and process.pid is None
+
+    def test_main_requires_the_supervisor(self):
+        with (
+            patch.object(analyzer_module, "read_child_args", return_value=None),
+            pytest.raises(RuntimeError, match="started by ft_launcher"),
+        ):
+            analyzer_module.main()
 
     def test_default_address_is_a_unix_socket(self):
         address = CycleAnalyzerProcess("/nvrx", "job-a").address
@@ -222,27 +262,9 @@ class TestCycleAnalyzerProcess:
             patch.object(grpc_transport, "GrpcCycleInfoReader"),
             patch.object(analyzer_module, "CycleAnalyzer"),
         ):
-            analyzer_module._run_cycle_analyzer(
-                str(tmp_path), job_id, None, "127.0.0.1:0", MagicMock(), MagicMock()
-            )
+            analyzer_module._run_cycle_analyzer(str(tmp_path), job_id, None, "127.0.0.1:0")
         (reporter,) = reporters
         assert reporter._resolve_file_namespace() == expected
-
-    def test_start_fails_when_the_process_exits(self):
-        process, ctx = self._process(ready=False, alive=False)
-        with pytest.raises(RuntimeError, match="exited during startup"):
-            process.start()
-
-    def test_stop_asks_first_then_kills(self):
-        process, ctx = self._process(ready=True)
-        process.start()
-        child = ctx.Process.return_value
-
-        process.stop()
-
-        ctx.Event.return_value.set.assert_called()  # the stop event
-        child.join.assert_called()
-        child.kill.assert_called_once_with()  # still alive after the join, in this mock
 
 
 class TestUpdateCycleEndReports:
