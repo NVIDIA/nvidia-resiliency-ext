@@ -83,6 +83,53 @@ class TestAsyncSaveWithMSC:
         )
         return state_dict
 
+    def test_writer_options_require_msc(self, tmp_path_dist_ckpt):
+        with pytest.raises(ValueError, match='use_msc'):
+            FileSystemWriterAsync(tmp_path_dist_ckpt, writer_options=object())
+
+    def test_writer_options_require_streaming_msc(self, tmp_path_dist_ckpt, monkeypatch):
+        msc = pytest.importorskip('multistorageclient')
+        monkeypatch.delattr(msc, 'StreamingWriterOptions', raising=False)
+        with pytest.raises(ValueError, match='StreamingWriterOptions'):
+            FileSystemWriterAsync(tmp_path_dist_ckpt, use_msc=True, writer_options=object())
+
+    def test_writer_options_reach_msc_open(self, tmp_path_dist_ckpt, monkeypatch):
+        """Verifies that shard files are opened through msc.open with the writer options."""
+        msc = pytest.importorskip('multistorageclient')
+        Utils.initialize_distributed()
+        # Same values on every rank: DCP saves each replicated tensor from one rank only.
+        torch.manual_seed(0)
+        model = Model((1024, 1024), 10)
+        options = object()
+        opened = []
+        msc_open = msc.open
+
+        def recording_open(path, mode, writer_options=None, **kwargs):
+            opened.append((str(path), mode, writer_options))
+            return msc_open(path, mode, **kwargs)
+
+        monkeypatch.setattr(msc, 'open', recording_open)
+        # Lets the test run on MSC releases that predate StreamingWriterOptions.
+        monkeypatch.setattr(msc, 'StreamingWriterOptions', object, raising=False)
+        with TempNamedDir(tmp_path_dist_ckpt / 'writer_options', sync=True) as ckpt_dir:
+            writer = FileSystemWriterAsync(ckpt_dir, use_msc=True, writer_options=options)
+            pending = save_state_dict_async_plan(
+                model.state_dict(), writer, None, 0, planner=DefaultSavePlanner()
+            )
+            save_fn, preload_fn, (rank, _, results_queue) = writer.get_save_function_and_args()
+            buckets = preload_fn()
+            torch.cuda.synchronize()
+            save_fn(rank, buckets, results_queue)
+            save_state_dict_async_finalize(pending)
+            torch.distributed.barrier()
+
+            shards = [entry for entry in opened if entry[0].endswith('.distcp')]
+            assert shards and all(entry[1:] == ('wb', options) for entry in shards)
+            empty = {key: torch.zeros_like(tensor) for key, tensor in model.state_dict().items()}
+            loaded = self.load_checkpoint(ckpt_dir, empty)
+            for key, tensor in model.state_dict().items():
+                assert torch.equal(loaded[key], tensor), key
+
     def test_async_is_equivalent_to_sync(self, tmp_path_dist_ckpt, async_queue):
         """Verifies that async checkpointing produces the same results as sync checkpointing."""
         Utils.initialize_distributed()
