@@ -182,12 +182,24 @@ def shutdown(handle: TelemetryHandle | _NoOpHandle, timeout_s: float = 2.0) -> N
 
 
 def flush(timeout_ms: int = 1500) -> None:
-    """Export what is buffered, for a point where this process may be killed next."""
+    """Export what is buffered, for a point where this process may be killed next.
+
+    The export runs on a worker thread. The SDK and the OTLP exporter catch ``Exception``
+    around the request, so an exception raised by a signal handler while the caller was
+    exporting (torch elastic raises ``SignalException`` on SIGTERM) would be swallowed. While
+    the caller waits in ``join()`` it reaches the caller instead. The wait is also bounded,
+    which the SDK's ``force_flush`` does not do.
+    """
     if not _AVAILABLE:
         return
     provider = _otel_trace.get_tracer_provider()
-    if hasattr(provider, "force_flush"):
-        provider.force_flush(timeout_millis=timeout_ms)
+    if not hasattr(provider, "force_flush"):
+        return
+    worker = threading.Thread(
+        target=provider.force_flush, kwargs={"timeout_millis": timeout_ms}, daemon=True
+    )
+    worker.start()
+    worker.join(timeout_ms / 1000)
 
 
 def get_inherited_resource_attributes() -> str:
