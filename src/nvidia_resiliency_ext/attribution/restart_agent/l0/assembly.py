@@ -200,6 +200,21 @@ _WATCHDOG_EXCEPTION_RE = re.compile(
     r"(?P<message>.*\b(?:CUDA|NCCL|c10)\s+error:.*)$",
     re.I,
 )
+# argparse writes "usage: ..." then "<prog>: error: ..." and exits; it raises
+# nothing, so a launcher rejected for a bad flag reaches the end of the log with
+# no traceback and no exception class anywhere in it. Only the three argparse
+# phrases are matched, not a bare "error:", which opens a great deal of ordinary
+# output that is not the failure.
+_ARGPARSE_ERROR_RE = re.compile(
+    r"\berror:\s+(?:unrecognized arguments\b"
+    r"|argument\s+-{1,2}[^\s:]+"
+    r"|the following arguments are required\b)",
+    re.I,
+)
+
+# A fabric error the driver reports in prose rather than as a Python exception.
+# Like the argparse case, the log can otherwise carry no exception at all.
+_NVLINK_ERROR_RE = re.compile(r"\bNVLink error detected\b", re.I)
 _CUDA_RUNTIME_STATUS_RE = re.compile(r"\bcudaError[A-Za-z0-9_]*:", re.I)
 _TRACEBACK_RE = re.compile(r"\bTraceback \(most recent call last\):", re.I)
 _TERMINAL_OPERATION_TIMEOUT_RE = re.compile(
@@ -4005,6 +4020,13 @@ def _terminal_episode_priority(text: str) -> int:
         return 94
     if _CUDA_RUNTIME_STATUS_RE.search(text):
         return 94
+    # Below the typed surfaces above and above the timeout: both of these name
+    # a specific, terminal condition, but an exception elsewhere in the log is
+    # the better anchor when there is one.
+    if _ARGPARSE_ERROR_RE.search(text):
+        return 92
+    if _NVLINK_ERROR_RE.search(text):
+        return 92
     if _BARE_PROCESS_KILLED_RE.search(text):
         return 90
     if _TERMINAL_OPERATION_TIMEOUT_RE.search(text):
