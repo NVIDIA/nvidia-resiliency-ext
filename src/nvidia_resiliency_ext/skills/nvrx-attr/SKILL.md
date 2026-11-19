@@ -4,7 +4,7 @@ description: >
   Orchestration layer over nvidia_resiliency_ext attribution modules. Provides
   log-analysis, fr-analysis, and a Megatron-LM-oriented fault-injection feedback
   loop for benchmarking attribution quality on SLURM workloads.
-compatibility: Requires Python 3.10+, NVRx attribution support, and LLM_API_KEY (env var, LLM_API_KEY_FILE, or ~/.llm_api_key) for L1 restart-agent enrichment. The fault-injection loop has only been validated with Megatron-LM workloads.
+compatibility: Requires Python 3.11+, NVRx attribution support, and LLM_API_KEY (env var, LLM_API_KEY_FILE, or ~/.llm_api_key) for L1 restart-agent enrichment. The fault-injection loop has only been validated with Megatron-LM workloads.
 metadata:
   author: nvidia
 ---

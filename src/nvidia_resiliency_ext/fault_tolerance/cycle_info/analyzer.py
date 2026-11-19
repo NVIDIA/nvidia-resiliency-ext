@@ -358,7 +358,7 @@ class _StopRequest:
 
 def _run_cycle_analyzer(
     cycle_info_dir: str,
-    cycle_info_job_id: str,
+    cycle_info_job_id: Optional[str],
     cycle_log_prefix: Optional[str],
     address: str,
     ready_event,
@@ -376,11 +376,17 @@ def _run_cycle_analyzer(
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, _on_signal)
 
+    # An explicit job id (external control) comes with attempt 0; without one, the reporter
+    # takes both from this process's environment, i.e. the training job's (colocated).
+    identity = (
+        {"cycle_info_job_id": cycle_info_job_id, "attempt_index": 0}
+        if cycle_info_job_id is not None
+        else {}
+    )
     reporter = CycleInfoReporter(
         cycle_info_dir,
         cycle_log_prefix=cycle_log_prefix,
-        cycle_info_job_id=cycle_info_job_id,
-        attempt_index=0,
+        **identity,
         # Cycle ends come from the store host's updates and the end reports
         # (update_cycle_end_reports), not from the next cycle's start.
         end_previous_on_start=False,
@@ -414,7 +420,9 @@ class CycleAnalyzerProcess:
 
     Args:
         cycle_info_dir: Directory of the cycle info files.
-        cycle_info_job_id: Job id in the cycle info file names.
+        cycle_info_job_id: Job id in the cycle info file names, with attempt index 0 (external
+            control). None takes the job id and the attempt index (SLURM_RESTART_COUNT) from
+            the environment (colocated control).
         cycle_log_prefix: Prefix of the per-cycle application logs, if any.
         address: gRPC listen address; by default a Unix domain socket private to this
             process (``unix:<tmpdir>/nvrx_cycle_analyzer_<pid>.sock``).
@@ -426,7 +434,7 @@ class CycleAnalyzerProcess:
     def __init__(
         self,
         cycle_info_dir: str,
-        cycle_info_job_id: str,
+        cycle_info_job_id: Optional[str] = None,
         cycle_log_prefix: Optional[str] = None,
         address: Optional[str] = None,
     ):
@@ -467,6 +475,11 @@ class CycleAnalyzerProcess:
                 self.stop()
                 raise RuntimeError(f"CycleAnalyzer not ready after {self.START_TIMEOUT}s")
         logger.info("Started CycleAnalyzer (PID=%s) on %s", self._process.pid, self.address)
+
+    @property
+    def pid(self) -> Optional[int]:
+        """PID of the running process; None before start() and after stop()."""
+        return self._process.pid if self._process is not None else None
 
     def stop(self) -> None:
         """Ask the process to stop, then force it if it does not exit within STOP_TIMEOUT."""

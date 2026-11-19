@@ -232,7 +232,7 @@ def test_nccl_rdma_port_lifecycle_parser_rejects_generic_rdma_mentions(line):
     (
         # NCCL reports device exhaustion in its own words; the PyTorch
         # allocator wording that cuda_oom matches never appears for it.
-        "nvl72d214-T18:1941407 [2] include/alloc.h:334 (ncclCuMemAlloc) "
+        "node001-T18:1234567 [2] include/alloc.h:334 (ncclCuMemAlloc) "
         "NCCL WARN Cuda failure 2 'out of memory'",
         "include/alloc.h:548 (ncclCudaCallocAsyncDebug) "
         "NCCL WARN Failed to CUDA calloc async 38912 bytes",

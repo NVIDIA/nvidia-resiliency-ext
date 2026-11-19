@@ -69,12 +69,19 @@ logger = logging.getLogger(__name__)
 #: Cache layout version. A mismatch is ignored rather than guessed at.
 _CACHE_SCHEMA = "restart_agent_cache.v1"
 
+# Two vocabularies, deliberately separate. The internal one records how an
+# attempt executed; the public one is the request lifecycle a client sees, and
+# is the set ``_ATTRSVC_LIFECYCLE_STATUSES`` validates against on the far side.
+# They are not interchangeable even where the strings coincide: an analysis
+# that failed is a request that completed.
 _STATUS_REGISTERED = "registered"
 _STATUS_ANALYZING = "analyzing"
 _STATUS_COMPLETED = "completed"
 _STATUS_FAILED = "failed"
+
 _PUBLIC_PENDING = "pending"
 _PUBLIC_IN_FLIGHT = "in_flight"
+_PUBLIC_COMPLETED = "completed"
 _ELIGIBLE_NVRX_USES = frozenset({"eligible", "eligible_degraded"})
 
 
@@ -183,6 +190,44 @@ class _AttemptExecution:
     # appended to, and pairing an old verdict with the file's later identity
     # would make a stale result look byte-for-byte current on restore.
     source_identity: dict[str, Any] = field(default_factory=dict)
+
+
+def _slack_status(notifier: SlackNotifier) -> dict[str, Any]:
+    """Where alerts go, and whether any have landed.
+
+    ``channels`` is a list even when one channel is configured. A deployment
+    can name more than one, and a reader comparing this against what they set
+    should not have to tell a single value apart from a list of one.
+    """
+    config = notifier.config
+    # Read the plural form when it exists and fall back to the single channel.
+    # Both shapes are in flight across open branches, and a status endpoint is
+    # the wrong place to raise over which one it got.
+    channels = getattr(config, "channels", None)
+    if not channels:
+        single = getattr(config, "channel", "") or ""
+        channels = (single,) if single else ()
+    return {
+        "enabled": notifier.enabled,
+        "channels": list(channels),
+        "notify_actions": sorted(config.notify_actions),
+        "token": "present" if config.token else "missing",
+        "counters": notifier.stats.as_dict(),
+    }
+
+
+def _enriched_source(result: ModelAnalysisResult) -> str:
+    """Name the route and the model that answered.
+
+    The route id is whatever the deployment called the route, so it says
+    nothing about which model ran unless someone happened to name it after
+    one. A route built from the environment is always called "nvrx-default",
+    which left no way to tell what produced a verdict without host access.
+    """
+    label = f"l1_enriched:{result.route_id}"
+    if result.model and result.model != result.route_id:
+        label += f" ({result.model})"
+    return label
 
 
 class RestartAgentServiceBackend:
@@ -608,6 +653,10 @@ class RestartAgentServiceBackend:
                     "bytes_ingested": sum(state.bytes_ingested for state in accumulator_states),
                     "bytes_reread": sum(state.bytes_reread for state in accumulator_states),
                 },
+                # SlackStats counted every attempt and nothing ever read them
+                # back, so a notification that silently stopped landing looked
+                # identical to a quiet period.
+                "slack": _slack_status(self._slack_notifier),
             },
         }
 
@@ -668,7 +717,22 @@ class RestartAgentServiceBackend:
                 "config_version": self._config.config_version,
                 "config_fingerprint": self._config.config_fingerprint,
                 "attempts": counts,
+                # Which model answers is otherwise invisible from outside the
+                # host: a route built from the environment is always called
+                # "nvrx-default", and no message or endpoint named the model.
+                "model_routes": [
+                    {
+                        "route_id": spec.route_id,
+                        "model": spec.model,
+                        "endpoint": spec.endpoint,
+                    }
+                    for spec in self._config.model_route_specs
+                ],
             },
+            # Where alerts go is set per deployment and was only ever written to
+            # the startup log, so confirming a channel change meant finding that
+            # log on the host. Reporting it here makes it answerable by request.
+            "slack": _slack_status(self._slack_notifier),
         }
 
     def _register(
@@ -862,7 +926,7 @@ class RestartAgentServiceBackend:
                         return
                     current.best_result = result.analysis_result
                     current.best_source = (
-                        f"{candidate_kind}:{result.route_id}"
+                        _enriched_source(result)
                         if candidate_kind == "l1_enriched"
                         else candidate_kind
                     )
@@ -1082,14 +1146,16 @@ class RestartAgentServiceBackend:
             candidate_source = entry.candidate_source
             error = entry.error
             cycle_id = entry.cycle_id
+        # Internal status on the left, public status on the right. Every value
+        # is from the public vocabulary, so this reads as the translation it is
+        # rather than a mix of the two.
         public_status = {
             _STATUS_REGISTERED: _PUBLIC_PENDING,
             _STATUS_ANALYZING: _PUBLIC_IN_FLIGHT,
-            _STATUS_COMPLETED: _STATUS_COMPLETED,
-            # ``status`` is the public request lifecycle. A terminal analysis
-            # failure is complete even though its internal execution outcome
-            # remains failed for diagnostics and metrics.
-            _STATUS_FAILED: _STATUS_COMPLETED,
+            _STATUS_COMPLETED: _PUBLIC_COMPLETED,
+            # A terminal analysis failure is a completed request; the execution
+            # outcome stays "failed" in the payload, for diagnostics and metrics.
+            _STATUS_FAILED: _PUBLIC_COMPLETED,
         }[status]
         if status == _STATUS_FAILED:
             payload = {"analysis_outcome": _STATUS_FAILED}

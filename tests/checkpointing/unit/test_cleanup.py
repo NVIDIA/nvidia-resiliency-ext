@@ -16,7 +16,6 @@
 import logging
 import re
 import time
-from pathlib import Path
 
 import pytest
 
@@ -26,6 +25,8 @@ from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager impor
 
 from . import TempNamedDir
 from .test_utilities import SimpleTensorAwareStateDict, Utils
+
+pytestmark = pytest.mark.distributed
 
 
 class TestLocalCheckpointing:
@@ -43,9 +44,11 @@ class TestLocalCheckpointing:
 
     @pytest.mark.parametrize(('use_ramdisk'), [False, True])
     @pytest.mark.parametrize(('async_save'), [True])
-    def test_basic_save_load_scenarios(self, tmp_path_dist_ckpt, use_ramdisk, async_save, caplog):
+    def test_basic_save_load_scenarios(
+        self, tmp_path_dist_ckpt, shm_path_dist_ckpt, use_ramdisk, async_save, caplog
+    ):
         if use_ramdisk:
-            tmp_path_dist_ckpt = Path("/dev/shm")
+            tmp_path_dist_ckpt = shm_path_dist_ckpt
         with (
             TempNamedDir(tmp_path_dist_ckpt / "test_save_load") as local_ckpt_dir,
             caplog.at_level(logging.DEBUG),

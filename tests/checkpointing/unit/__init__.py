@@ -24,8 +24,6 @@ import torch.distributed as dist
 
 from .test_utilities import Utils
 
-rank = int(os.environ['LOCAL_RANK'])
-
 
 def empty_dir(path: Path):
     if Utils.rank > 0:

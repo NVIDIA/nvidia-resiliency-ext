@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from nvidia_resiliency_ext.fault_tolerance.cycle_info import analyzer as analyzer_module
+from nvidia_resiliency_ext.fault_tolerance.cycle_info import grpc_transport
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer import (
     CycleAnalyzer,
     CycleAnalyzerProcess,
@@ -17,7 +18,7 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     ended_cycle_info,
 )
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.transport import CycleInfoReader
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import utc_iso
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter, utc_iso
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
 
@@ -196,6 +197,36 @@ class TestCycleAnalyzerProcess:
     def test_default_address_is_a_unix_socket(self):
         address = CycleAnalyzerProcess("/nvrx", "job-a").address
         assert address.startswith("unix:") and address.endswith(".sock")
+
+    @pytest.mark.parametrize(
+        "job_id,expected",
+        [("training-job", ("training-job", 0)), (None, ("slurm-job", 3))],
+        ids=["external", "colocated"],
+    )
+    def test_file_namespace(self, monkeypatch, tmp_path, job_id, expected):
+        """An explicit job id comes with attempt 0; without one, both come from the
+        environment, so a requeued (colocated) job writes a new attempt."""
+        monkeypatch.delenv("SLURM_ARRAY_JOB_ID", raising=False)
+        monkeypatch.setenv("SLURM_JOB_ID", "slurm-job")
+        monkeypatch.setenv("SLURM_RESTART_COUNT", "3")
+        reporters = []
+
+        def make_reporter(*args, **kwargs):
+            reporters.append(CycleInfoReporter(*args, **kwargs))
+            return reporters[-1]
+
+        with (
+            patch.object(analyzer_module, "CycleInfoReporter", side_effect=make_reporter),
+            patch.object(analyzer_module, "setup_logger"),
+            patch.object(analyzer_module.signal, "signal"),
+            patch.object(grpc_transport, "GrpcCycleInfoReader"),
+            patch.object(analyzer_module, "CycleAnalyzer"),
+        ):
+            analyzer_module._run_cycle_analyzer(
+                str(tmp_path), job_id, None, "127.0.0.1:0", MagicMock(), MagicMock()
+            )
+        (reporter,) = reporters
+        assert reporter._resolve_file_namespace() == expected
 
     def test_start_fails_when_the_process_exits(self):
         process, ctx = self._process(ready=False, alive=False)

@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import http.client
 import threading
+import urllib.error
 from types import SimpleNamespace
 
 import pytest
 
 from nvidia_resiliency_ext.attribution.orchestration.client_response import parse_attrsvc_response
+from nvidia_resiliency_ext.attribution.postprocessing.slack import SlackApiError
 from nvidia_resiliency_ext.services.attrsvc import slack as slack_mod
 from nvidia_resiliency_ext.services.attrsvc.slack import (
     DEFAULT_NOTIFY_ACTIONS,
@@ -16,12 +19,13 @@ from nvidia_resiliency_ext.services.attrsvc.slack import (
     format_details,
     format_summary,
     latest_result_item,
+    parse_channels,
     parse_notify_actions,
     run_name_from_log_path,
 )
 
 
-def _job(job_id="123", name="nemotron_pretrain", user="alice"):
+def _job(job_id="123", name="trainjob_pretrain", user="alice"):
     return AnalysisIdentity(job_id=job_id, run_name=name, user=user)
 
 
@@ -88,7 +92,8 @@ def summary_ts(client):
 def _notifier(monkeypatch, client=None, **config_kwargs):
     """Build an enabled notifier backed by a stub Slack client."""
     monkeypatch.setattr(slack_mod, "HAS_SLACK", True)
-    config = SlackConfig(token="xoxb-test", channel="#trng-alerts", **config_kwargs)
+    config_kwargs.setdefault("channels", ("#trng-alerts",))
+    config = SlackConfig(token="xoxb-test", **config_kwargs)
     notifier = SlackNotifier(config)
     notifier._client = client if client is not None else _StubClient()
     return notifier
@@ -136,7 +141,7 @@ def test_config_is_not_configured_without_channel(monkeypatch):
 
 def test_notifier_disabled_without_slack_sdk(monkeypatch):
     monkeypatch.setattr(slack_mod, "HAS_SLACK", False)
-    notifier = SlackNotifier(SlackConfig(token="xoxb-test", channel="#alerts"))
+    notifier = SlackNotifier(SlackConfig(token="xoxb-test", channels=("#alerts",)))
 
     assert notifier.enabled is False
     assert "slack-sdk" in notifier.describe()
@@ -176,7 +181,7 @@ def test_notification_carries_job_label_and_log_path():
     text = format_summary(_job(), _parsed()) + format_details(_job(), _parsed())
 
     assert "*Job ID:* `123`" in text
-    assert "*Job Name:* `nemotron_pretrain`" in text
+    assert "*Job Name:* `trainjob_pretrain`" in text
     assert "/lustre/logs/job.log" in text
 
 
@@ -199,7 +204,7 @@ def test_notify_posts_message_with_action_reason_and_details(monkeypatch):
     # The channel line stays scannable: decision, job, log path, nothing else.
     assert "*NVRx attribution:* `STOP`" in summary["text"]
     assert "*Job ID:* `123`" in summary["text"]
-    assert "*Job Name:* `nemotron_pretrain`" in summary["text"]
+    assert "*Job Name:* `trainjob_pretrain`" in summary["text"]
     assert "/lustre/logs/job.log" in summary["text"]
     assert "checkpoint corrupted" not in summary["text"]
 
@@ -283,13 +288,60 @@ def test_notify_sends_for_configured_non_default_action(monkeypatch):
 
 
 def test_notify_counts_failures_without_raising(monkeypatch):
-    monkeypatch.setattr(slack_mod, "SlackApiError", RuntimeError)
-    notifier = _notifier(monkeypatch, client=_StubClient(error=RuntimeError("channel_not_found")))
+    notifier = _notifier(
+        monkeypatch, client=_StubClient(error=SlackApiError("channel_not_found", response=None))
+    )
 
     assert notifier.notify(_job(), _parsed()) is False
     assert notifier.stats.attempts == 1
     assert notifier.stats.failed == 1
     assert notifier.stats.sent == 0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        SlackApiError("channel_not_found", response=None),
+        TimeoutError("timed out"),
+        ConnectionResetError("peer reset"),
+        urllib.error.URLError("name resolution failed"),
+        http.client.RemoteDisconnected("closed without response"),
+    ],
+    ids=["api_error", "timeout", "conn_reset", "url_error", "disconnected"],
+)
+def test_one_channel_failing_still_delivers_the_rest(monkeypatch, failure):
+    """The point of fanning out is that channels do not share a fate.
+
+    Only the first of these is an API error. The rest come from the HTTP layer
+    under WebClient, and an earlier revision let them escape the loop, so a
+    timeout on the first channel cost every later channel its alert.
+    """
+
+    class _FirstChannelFails(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#first":
+                raise failure
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _FirstChannelFails()
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    assert [m["channel"] for m in client.summaries] == ["#second"]
+    assert notifier.stats.channel_failures == 1
+    assert notifier.stats.sent == 1
+    assert notifier.stats.failed == 0
+
+
+def test_a_programming_error_is_not_swallowed_as_a_delivery_failure(monkeypatch):
+    """A narrow catch, so a bug here surfaces instead of being logged once per
+    channel and counted as Slack being unreachable."""
+
+    client = _StubClient(error=AttributeError("notifier bug"))
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    with pytest.raises(AttributeError):
+        notifier.notify(_job(), _parsed())
 
 
 def test_stats_as_dict_exposes_all_counters(monkeypatch):
@@ -302,6 +354,7 @@ def test_stats_as_dict_exposes_all_counters(monkeypatch):
         "sent": 1,
         "failed": 0,
         "skipped_action": 1,
+        "channel_failures": 0,
     }
 
 
@@ -583,7 +636,7 @@ def _ledgers(**overrides):
 
 
 def test_rationale_names_the_guard_that_exhausted_not_the_rule_budget():
-    # Job 4125659: the same-root ceiling had budget to spare; what stopped the
+    # Job 2201300: the same-root ceiling had budget to spare; what stopped the
     # job was the unverifiable-progress guard, which ignores the root cause.
     payload = _policy_payload(
         retry_budget_exhausted=True,
@@ -757,9 +810,9 @@ def test_message_omits_the_why_section_without_policy_data(monkeypatch):
     "path,job_id,expected",
     [
         (
-            "/x/logs/nemotron4_derisking_nano_21t_phase1_3901259_date_26-09-21_time_10-45-42_cycle0.log",
-            "3901259_26",
-            "nemotron4_derisking_nano_21t_phase1",
+            "/x/logs/trainjob_variant_tierC_s1_phase1_2200900_date_26-09-21_time_10-45-42_cycle0.log",
+            "2200900_26",
+            "trainjob_variant_tierC_s1_phase1",
         ),
         # The parent job ID is what the filename embeds, so array tasks agree.
         ("/x/logs/run_777_date_x.log", "777_3", "run"),
@@ -773,7 +826,7 @@ def test_run_name_recovered_from_log_filename(path, job_id, expected):
 @pytest.mark.parametrize(
     "path,job_id",
     [
-        ("/x/slurm_out/slurm-813606.out", "813606"),  # wrapper, no run prefix
+        ("/x/slurm_out/slurm-661300.out", "661300"),  # wrapper, no run prefix
         ("/x/logs/anything.log", ""),  # no job id to anchor on
         ("", "777"),
     ],
@@ -826,9 +879,9 @@ def test_backend_notifies_on_terminal_completion(monkeypatch):
             return True
 
     entry = SimpleNamespace(
-        job_id="3901259_26",
-        user="dnarayanan",
-        log_path="/x/logs/nemotron4_derisking_nano_21t_phase1_3901259_date_x_cycle0.log",
+        job_id="2200900_26",
+        user="alice",
+        log_path="/x/logs/trainjob_variant_tierC_s1_phase1_2200900_date_x_cycle0.log",
         cycle_id=0,
     )
     public = SimpleNamespace(
@@ -847,10 +900,10 @@ def test_backend_notifies_on_terminal_completion(monkeypatch):
 
     assert len(sent) == 1
     identity, result = sent[0]
-    assert identity.job_id == "3901259_26"
-    assert identity.user == "dnarayanan"
+    assert identity.job_id == "2200900_26"
+    assert identity.user == "alice"
     # attrsvc never sees the SLURM job name; it is recovered from the log path.
-    assert identity.run_name == "nemotron4_derisking_nano_21t_phase1"
+    assert identity.run_name == "trainjob_variant_tierC_s1_phase1"
     assert result.recommendation.action == "STOP"
 
 
@@ -900,11 +953,11 @@ def test_backend_skips_notification_when_slack_is_disabled():
 
 def test_message_names_the_cluster(monkeypatch):
     client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client, cluster="oci-aga-slurm-1")
+    notifier = _notifier(monkeypatch, client=client, cluster="clusterA-slurm-1")
 
     notifier.notify(_job(), _parsed())
 
-    assert "on *oci-aga-slurm-1*" in client.alert_text
+    assert "on *clusterA-slurm-1*" in client.alert_text
 
 
 def test_message_omits_the_cluster_when_unset(monkeypatch):
@@ -919,9 +972,9 @@ def test_message_omits_the_cluster_when_unset(monkeypatch):
 def test_config_from_settings_reads_the_cluster_name(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     settings = SimpleNamespace(
-        SLACK_BOT_TOKEN="xoxb-x", SLACK_CHANNEL="C1", CLUSTER_NAME=" aws-cmh-slurm-1 "
+        SLACK_BOT_TOKEN="xoxb-x", SLACK_CHANNEL="C1", CLUSTER_NAME=" clusterB-slurm-1 "
     )
-    assert SlackConfig.from_settings(settings).cluster == "aws-cmh-slurm-1"
+    assert SlackConfig.from_settings(settings).cluster == "clusterB-slurm-1"
 
 
 # ─── "none of the categories matched" is an answer, not an absence ───
@@ -1019,7 +1072,7 @@ def test_message_omits_the_excerpt_when_the_log_is_unreadable(monkeypatch):
 
 def test_summary_is_four_fields(monkeypatch):
     client = _StubClient()
-    notifier = _notifier(monkeypatch, client=client, cluster="aws-cmh-slurm-1")
+    notifier = _notifier(monkeypatch, client=client, cluster="clusterB-slurm-1")
 
     notifier.notify(_job(), _parsed())
     lines = client.summaries[0]["text"].splitlines()
@@ -1103,10 +1156,9 @@ def test_a_failed_reply_does_not_fail_the_alert(monkeypatch):
     class _ReplyFails(_StubClient):
         def chat_postMessage(self, channel, text, thread_ts=None):
             if thread_ts is not None:
-                raise RuntimeError("thread_not_found")
+                raise SlackApiError("thread_not_found", response=None)
             return super().chat_postMessage(channel, text)
 
-    monkeypatch.setattr(slack_mod, "SlackApiError", RuntimeError)
     client = _ReplyFails()
     notifier = _notifier(monkeypatch, client=client)
 
@@ -1139,14 +1191,14 @@ def test_no_reply_when_there_is_no_detail(monkeypatch):
 
 
 def test_job_line_shows_the_cycle_when_there_is_one():
-    ident = AnalysisIdentity(job_id="4103814_0", run_name="ultra_60t", cycle_id=3)
-    assert ident.label == "4103814_0 (ultra_60t) cycle 3"
+    ident = AnalysisIdentity(job_id="2200300_0", run_name="tierA_s4", cycle_id=3)
+    assert ident.label == "2200300_0 (tierA_s4) cycle 3"
 
 
 def test_job_line_omits_the_cycle_when_there_is_none():
     # Logs without _cycle<N> have no attempt ordering, so there is nothing to show.
-    ident = AnalysisIdentity(job_id="4103814_0", run_name="ultra_60t")
-    assert ident.label == "4103814_0 (ultra_60t)"
+    ident = AnalysisIdentity(job_id="2200300_0", run_name="tierA_s4")
+    assert ident.label == "2200300_0 (tierA_s4)"
 
 
 def test_cycle_zero_is_shown_not_treated_as_absent():
@@ -1160,7 +1212,7 @@ def test_cycle_shows_without_a_run_name():
 def test_summary_carries_the_cycle(monkeypatch):
     client = _StubClient()
     notifier = _notifier(monkeypatch, client=client)
-    ident = AnalysisIdentity(job_id="4103814_0", user="alice", run_name="ultra_60t", cycle_id=4)
+    ident = AnalysisIdentity(job_id="2200300_0", user="alice", run_name="tierA_s4", cycle_id=4)
 
     notifier.notify(ident, _parsed())
 
@@ -1174,9 +1226,9 @@ def test_backend_passes_the_cycle_to_the_alert():
 
     sent = []
     entry = SimpleNamespace(
-        job_id="4103814_0",
+        job_id="2200300_0",
         user="u",
-        log_path="/x/logs/run_4103814_date_x_cycle2.log",
+        log_path="/x/logs/run_2200300_date_x_cycle2.log",
         cycle_id=2,
     )
     backend = SimpleNamespace(
@@ -1200,7 +1252,7 @@ def test_backend_passes_the_cycle_to_the_alert():
 
 
 def test_headline_names_the_guard_over_the_category():
-    # Live case 4234179: L1 picked a category that said RESTART and a job guard
+    # Live case 2201600: L1 picked a category that said RESTART and a job guard
     # forced STOP anyway. The channel line has to show what actually decided.
     payload = _policy_payload(
         retry_budget_exhausted=True,
@@ -1251,10 +1303,10 @@ def test_headline_is_empty_without_a_decision():
 
 def test_job_line_names_the_owner():
     line = slack_mod.AnalysisIdentity(
-        job_id="4234179", user="dnarayanan", run_name="rollback_34k", cycle_id=3
+        job_id="2201600", user="alice", run_name="rollback_r1", cycle_id=3
     ).as_line()
 
-    assert "*Owner:* `dnarayanan`" in line
+    assert "*Owner:* `alice`" in line
     assert "<@" not in line  # named, not tagged
 
 
@@ -1319,7 +1371,7 @@ class _Settings:
     def __init__(self, **kw):
         self.SLACK_BOT_TOKEN = kw.get("token", "xoxb-from-settings")
         self.SLACK_CHANNEL = kw.get("channel", "#from-settings")
-        self.CLUSTER_NAME = kw.get("cluster", "aws-cmh")
+        self.CLUSTER_NAME = kw.get("cluster", "clusterB")
         self.SLACK_NOTIFY_ACTIONS = kw.get("actions", "")
         self.SLACK_EMAIL_DOMAIN = kw.get("domain", "")
 
@@ -1420,3 +1472,160 @@ def test_identity_fields_from_the_wire_are_escaped():
 
 
 # ─── one run opens exactly one thread ───
+
+
+def test_channels_parse_from_comma_or_space():
+    """One name or several, in either separator, with repeats dropped."""
+    assert parse_channels("#a") == ("#a",)
+    assert parse_channels("#a,#b") == ("#a", "#b")
+    assert parse_channels("#a #b") == ("#a", "#b")
+    assert parse_channels(" #a , #b ") == ("#a", "#b")
+    # Configured order decides which channel roots the thread first.
+    assert parse_channels("#b,#a") == ("#b", "#a")
+    # Naming a channel twice must not post the same alert to it twice.
+    assert parse_channels("#a,#a") == ("#a",)
+    assert parse_channels("") == ()
+    assert parse_channels(None) == ()
+
+
+def test_alert_fans_out_to_every_configured_channel(monkeypatch):
+    client = _StubClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#one", "#two"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+
+    assert [m["channel"] for m in client.summaries] == ["#one", "#two"]
+    assert [m["channel"] for m in client.replies] == ["#one", "#two"]
+    # A thread timestamp belongs to the channel that produced it. The stub
+    # numbers each ts by message order, so these two values differing is what
+    # proves the second reply did not thread onto the first channel's message.
+    assert [m["thread_ts"] for m in client.replies] == [
+        "171000000.000001",
+        "171000000.000003",
+    ]
+    # One alert, not one per channel.
+    assert notifier.stats.attempts == 1
+    assert notifier.stats.sent == 1
+    assert notifier.stats.channel_failures == 0
+
+
+def test_one_dead_channel_does_not_cost_the_other(monkeypatch):
+    """A fan-out that reaches one channel is still a delivered alert."""
+
+    class _HalfDeadClient(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#dead":
+                raise SlackApiError("channel_not_found", {"error": "channel_not_found"})
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _HalfDeadClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#dead", "#live"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    assert [m["channel"] for m in client.summaries] == ["#live"]
+    assert notifier.stats.sent == 1
+    assert notifier.stats.failed == 0
+    # Without this counter the partial failure would look like a clean send.
+    assert notifier.stats.channel_failures == 1
+
+
+def test_a_transport_failure_on_one_channel_does_not_cost_the_rest(monkeypatch):
+    """A timeout is not a SlackApiError, and must not escape the loop.
+
+    Letting one escape would hand every later channel nothing, and lose the
+    delivery the earlier channel did receive.
+    """
+
+    class _TimingOutReplyClient(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#first" and thread_ts is not None:
+                raise TimeoutError("read timed out")
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _TimingOutReplyClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    # The first channel kept its summary; only its threaded detail was lost.
+    assert [m["channel"] for m in client.summaries] == ["#first", "#second"]
+    assert [m["channel"] for m in client.replies] == ["#second"]
+    assert notifier.stats.sent == 1
+    assert notifier.stats.failed == 0
+
+
+def test_a_transport_failure_on_a_summary_still_reaches_later_channels(monkeypatch):
+    class _TimingOutSummaryClient(_StubClient):
+        def chat_postMessage(self, channel, text, thread_ts=None):
+            if channel == "#first":
+                raise TimeoutError("connection timed out")
+            return super().chat_postMessage(channel, text, thread_ts)
+
+    client = _TimingOutSummaryClient()
+    notifier = _notifier(monkeypatch, client=client, channels=("#first", "#second"))
+
+    assert notifier.notify(_job(), _parsed()) is True
+    assert [m["channel"] for m in client.summaries] == ["#second"]
+    assert notifier.stats.sent == 1
+    assert notifier.stats.channel_failures == 1
+
+
+def test_alert_fails_only_when_no_channel_took_it(monkeypatch):
+    client = _StubClient(error=SlackApiError("nope", {"error": "nope"}))
+    notifier = _notifier(monkeypatch, client=client, channels=("#one", "#two"))
+
+    assert notifier.notify(_job(), _parsed()) is False
+    assert notifier.stats.failed == 1
+    assert notifier.stats.sent == 0
+    assert notifier.stats.channel_failures == 2
+
+
+def test_describe_names_every_channel(monkeypatch):
+    one = _notifier(monkeypatch, channels=("#only",))
+    assert "channel: #only" in one.describe()
+    many = _notifier(monkeypatch, channels=("#one", "#two"))
+    assert "channels: #one, #two" in many.describe()
+
+
+def test_healthz_names_the_channels_alerts_go_to(monkeypatch):
+    """Where alerts go was only ever in the startup log, on the host."""
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import _slack_status
+
+    notifier = _notifier(monkeypatch)
+    status = _slack_status(notifier)
+
+    assert status["enabled"] is True
+    # A list even for one channel, so a reader comparing against what they set
+    # does not have to tell a single value apart from a list of one.
+    assert status["channels"] == ["#trng-alerts"]
+    assert status["notify_actions"] == ["STOP"]
+    # The token is reported as present/missing, never echoed.
+    assert status["token"] == "present"
+    assert "xoxb" not in repr(status)
+
+
+def test_healthz_reports_a_disabled_notifier_without_inventing_a_channel(monkeypatch):
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import _slack_status
+
+    monkeypatch.setattr(slack_mod, "HAS_SLACK", True)
+    # Named neither field: an empty config is disabled under both the
+    # single-channel and the multi-channel shape.
+    notifier = SlackNotifier(SlackConfig(token=""))
+    status = _slack_status(notifier)
+
+    assert status["enabled"] is False
+    assert status["channels"] == []
+    assert status["token"] == "missing"
+
+
+def test_slack_counters_are_readable_instead_of_dead(monkeypatch):
+    """They were incremented and never read, so a silent stop looked like quiet."""
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import _slack_status
+
+    notifier = _notifier(monkeypatch)
+    notifier.notify(_job(), _parsed())
+    notifier.notify(_job(), _parsed(action="CONTINUE"))
+
+    counters = _slack_status(notifier)["counters"]
+    assert counters["sent"] == 1
+    assert counters["skipped_action"] == 1
+    assert counters["failed"] == 0

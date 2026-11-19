@@ -28,6 +28,8 @@ from nvidia_resiliency_ext.checkpointing.local.ckpt_managers.local_manager impor
 from . import TempNamedDir
 from .test_utilities import SimpleTensorAwareStateDict, Utils
 
+pytestmark = pytest.mark.distributed
+
 
 class TestLocalCheckpointing:
     def setup_method(self, method):
@@ -44,9 +46,11 @@ class TestLocalCheckpointing:
 
     @pytest.mark.parametrize(('use_ramdisk'), [True, False])
     @pytest.mark.parametrize(('async_save'), [True, False])
-    def test_basic_save_load_scenarios(self, tmp_path_dist_ckpt, use_ramdisk, async_save):
+    def test_basic_save_load_scenarios(
+        self, tmp_path_dist_ckpt, shm_path_dist_ckpt, use_ramdisk, async_save
+    ):
         if use_ramdisk:
-            tmp_path_dist_ckpt = Path("/dev/shm")
+            tmp_path_dist_ckpt = shm_path_dist_ckpt
         with TempNamedDir(tmp_path_dist_ckpt / "test_save_load") as local_ckpt_dir:
             local_ckpt_dir = local_ckpt_dir / "subdir"  # Test handling of non-existent directories
 
@@ -118,11 +122,9 @@ class TestLocalCheckpointing:
 
             yield checkpoint_manager, ckpt_files
 
+    @pytest.mark.min_world_size(2)
     @pytest.mark.parametrize(('extra_suffix'), ["", "some_suffix", "some suffix with spaces"])
     def test_find_latest_repl_disable(self, tmp_path_dist_ckpt, extra_suffix):
-        assert (
-            dist.get_world_size() >= 2
-        ), f"This test needs world_size >= 2, got {dist.get_world_size()}"
         with self.find_latest_skeleton(tmp_path_dist_ckpt, extra_suffix, repl_strategy=None) as (
             checkpoint_manager,
             ckpt_files,

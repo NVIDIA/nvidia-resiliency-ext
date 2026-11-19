@@ -35,7 +35,7 @@ import pytest
 from torch.distributed.elastic.agent.server.api import RunResult, WorkerState
 from torch.distributed.elastic.rendezvous.api import RendezvousGracefulExitError
 
-from nvidia_resiliency_ext.fault_tolerance import launcher
+from nvidia_resiliency_ext.fault_tolerance import launcher, log_funnel
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.data import (
     LauncherChannelMsg,
@@ -205,9 +205,8 @@ def test_ranks_exit_gracefully(tmp_dir):
 
 
 def test_launcher_sigterm_graceful_exit(tmp_dir):
-    # Simulated preemption:
-    # Launcher get SIGTERM, ranks exit gracefully with code 0.
-    # No error should be returned by the launcher.
+    # The control-host agent receives SIGTERM and workers exit zero. This does
+    # not prove training completed, so the supervisor must fail the generation.
     cmd_to_run = f"{_get_util_script_path()} --scenario={_get_func_name()} --term_handler=return0"
     launcher_cmd = (
         f"ft_launcher --monitor-interval=1 {FT_ARGS} --nproc-per-node={WORLD_SIZE} {cmd_to_run}"
@@ -216,7 +215,7 @@ def test_launcher_sigterm_graceful_exit(tmp_dir):
     assert "ALL RANKS STARTED" in output
     assert "SIGTERM SENT TO LAUNCHER" in output
     assert "RANK GOT SIGTERM: RETURN0" in output
-    assert ret_code == 0
+    assert ret_code == 128 + signal.SIGTERM
 
 
 def test_launcher_sigterm_ignored(tmp_dir):
@@ -229,7 +228,7 @@ def test_launcher_sigterm_ignored(tmp_dir):
     assert "ALL RANKS STARTED" in output
     assert "SIGTERM SENT TO LAUNCHER" in output
     assert "RANK GOT SIGTERM: IGNORED" in output
-    assert ret_code == 1
+    assert ret_code == 128 + signal.SIGTERM
 
 
 def test_ranks_restart(tmp_dir):
@@ -757,6 +756,30 @@ class TestCycleEndReportPublishedBeforeTheJobEnds(unittest.TestCase):
         order = self._run(agent, WorkerState.FAILED)
         self.assertEqual(order, ["publish", "signal", "_stop_workers"])
 
+    def test_no_progress_stop_publishes_its_end_reason_with_what_was_detected(self):
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = True
+
+        def record(end_reason, failures=None):
+            agent._cycle_end_report = pb.NodeCycleEndReport(
+                end_reason=end_reason, detected_timestamp=123, exit_details='[{"rank":5}]'
+            )
+
+        published = []
+        self._run(
+            agent,
+            WorkerState.FAILED,
+            _record_cycle_end_report=record,
+            # A copy: the report as it was when published.
+            _publish_cycle_end_report=lambda wait=False: published.append(
+                pb.NodeCycleEndReport.FromString(agent._cycle_end_report.SerializeToString())
+            ),
+        )
+        (report,) = published
+        self.assertEqual(report.end_reason, pb.CycleEndReasonWorkerTerminatedDueToNoProgress)
+        self.assertEqual((report.detected_timestamp, report.exit_details), (123, '[{"rank":5}]'))
+
     def test_exhausted_restarts_publish_before_stopping_the_workers(self):
         """launch_agent writes the shutdown key after this returns."""
         agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
@@ -948,7 +971,7 @@ class TestNoRestartTermination(unittest.TestCase):
 
 
 def test_no_restart_exit_code_default_is_outside_reserved_ranges():
-    """Downstream tooling keys on this code to tell "do not requeue" from a failure."""
+    """Distinguish a terminal decision for this generation from an ordinary failure."""
     assert DEFAULT_NO_RESTART_EXIT_CODE == 93
     assert DEFAULT_NO_RESTART_EXIT_CODE not in (0, 1, 2, 255)
     assert not 64 <= DEFAULT_NO_RESTART_EXIT_CODE <= 78
@@ -1115,38 +1138,20 @@ def test_log_funnel_ports_from_launcher_args_rejects_negative():
         )
 
 
-def test_grpc_log_server_log_prefix_resolution(tmp_path):
-    from types import SimpleNamespace
-
-    from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_server_log_prefix
-
-    assert _resolve_grpc_log_server_log_prefix(
-        SimpleNamespace(
-            ft_log_server_log_prefix=str(tmp_path / "explicit"),
-            ft_nvrx_logfile=str(tmp_path / "nvrx.log"),
-            ft_per_cycle_applog_prefix=str(tmp_path / "app.log"),
-        )
-    ) == str(tmp_path / "explicit")
-    assert _resolve_grpc_log_server_log_prefix(
-        SimpleNamespace(
-            ft_log_server_log_prefix=None,
-            ft_nvrx_logfile=str(tmp_path / "nvrx.log"),
-            ft_per_cycle_applog_prefix=str(tmp_path / "app.log"),
-        )
-    ) == str(tmp_path / "nvrx_grpc")
-    assert _resolve_grpc_log_server_log_prefix(
-        SimpleNamespace(
-            ft_log_server_log_prefix=None,
-            ft_nvrx_logfile=None,
-            ft_per_cycle_applog_prefix=str(tmp_path / "app.log"),
-        )
-    ) == str(tmp_path / "app_grpc")
-
-
-def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
-    from types import SimpleNamespace
-
+@pytest.mark.parametrize("option", ["--ft-log-server-log-prefix", "--ft_log_server_log_prefix"])
+def test_removed_grpc_process_log_prefix_is_rejected(option, tmp_path):
     from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    with pytest.raises(SystemExit) as exc:
+        launcher.parse_args([f"{option}={tmp_path}/grpc", "train.py"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("levels", [1, 2])
+def test_start_grpc_log_servers_captures_root_and_leaf_pipes(tmp_path, levels):
+    from types import SimpleNamespace
+
+    from nvidia_resiliency_ext.fault_tolerance import log_funnel
 
     class FakePopen:
         next_pid = 1000
@@ -1156,6 +1161,7 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
             self.kwargs = kwargs
             self.pid = FakePopen.next_pid
             FakePopen.next_pid += 1
+            self.stdout = object()
 
         def kill(self):
             pass
@@ -1171,24 +1177,23 @@ def test_start_grpc_log_servers_uses_prefix_for_root_and_leaf_logs(tmp_path):
         ft_log_leaf_max_queue_chunks=-1,
         ft_per_cycle_applog_prefix=str(applog_dir / "train.log"),
         ft_nvrx_logfile=None,
-        ft_log_server_log_prefix=None,
     )
-    log_dir = tmp_path / "missing" / "logs"
-    log_prefix = str(log_dir / "grpc_diag")
-    ports = launcher.LogFunnelPorts(base_port=50051, first_level_count=2)
+    ports = log_funnel.LogFunnelPorts(base_port=50051, first_level_count=levels)
+    capture = MagicMock()
 
-    with patch.object(launcher.subprocess, "Popen", FakePopen):
-        procs = launcher._start_grpc_log_servers(args, log_prefix, ports)
+    with patch.object(log_funnel.subprocess, "Popen", FakePopen):
+        procs = log_funnel._start_grpc_log_servers(args, ports, capture=capture)
 
-    assert len(procs) == 3
-    assert log_dir.is_dir()
-    assert (log_dir / "grpc_diag_root.log").is_file()
-    assert (log_dir / "grpc_diag_leaf_0.log").is_file()
-    assert (log_dir / "grpc_diag_leaf_1.log").is_file()
+    assert len(procs) == (1 if levels == 1 else 3)
+    assert [call.args[0] for call in capture.attach.call_args_list] == [p.stdout for p in procs]
+    assert not list(tmp_path.rglob("*_root.log"))
+    assert not list(tmp_path.rglob("*_leaf_*.log"))
 
     # Every spawned server must be confined to the configured log directory: these bind
     # unauthenticated ports and write to a path chosen by the client on each chunk.
     for proc in procs:
+        assert proc.kwargs["stdout"] == subprocess.PIPE
+        assert proc.kwargs["stderr"] == subprocess.STDOUT
         cmd = proc.args[0]
         roots = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--allowed-root"]
         assert roots == [os.path.realpath(str(applog_dir))], cmd
@@ -1202,7 +1207,7 @@ def test_start_grpc_log_servers_gives_the_analyzer_address_to_the_root_only(
 ):
     from types import SimpleNamespace
 
-    from nvidia_resiliency_ext.fault_tolerance import launcher
+    from nvidia_resiliency_ext.fault_tolerance import log_funnel
 
     applog_dir = tmp_path / "applogs"
     applog_dir.mkdir()
@@ -1212,13 +1217,12 @@ def test_start_grpc_log_servers_gives_the_analyzer_address_to_the_root_only(
         ft_log_leaf_max_queue_chunks=-1,
         ft_per_cycle_applog_prefix=str(applog_dir / "train.log"),
         ft_nvrx_logfile=None,
-        ft_log_server_log_prefix=None,
     )
-    ports = launcher.LogFunnelPorts(base_port=50051, first_level_count=first_level_count)
+    ports = log_funnel.LogFunnelPorts(base_port=50051, first_level_count=first_level_count)
 
-    with patch.object(launcher.subprocess, "Popen") as popen:
-        launcher._start_grpc_log_servers(
-            args, str(tmp_path / "grpc_diag"), ports, cycle_analyzer_address="unix:/tmp/a.sock"
+    with patch.object(log_funnel.subprocess, "Popen") as popen:
+        log_funnel._start_grpc_log_servers(
+            args, ports, capture=MagicMock(), cycle_analyzer_address="unix:/tmp/a.sock"
         )
 
     commands = [c.args[0] for c in popen.call_args_list]
@@ -1234,7 +1238,7 @@ def test_start_grpc_log_servers_requires_resolvable_allowed_roots(tmp_path):
     """Refuse to start unconfined rather than accept client-chosen write destinations."""
     from types import SimpleNamespace
 
-    from nvidia_resiliency_ext.fault_tolerance import launcher
+    from nvidia_resiliency_ext.fault_tolerance import log_funnel
 
     class FakePopen:
         def __init__(self, *args, **kwargs):
@@ -1246,14 +1250,11 @@ def test_start_grpc_log_servers_requires_resolvable_allowed_roots(tmp_path):
         ft_log_leaf_max_queue_chunks=-1,
         ft_per_cycle_applog_prefix=None,
         ft_nvrx_logfile=None,
-        ft_log_server_log_prefix=None,
     )
-    ports = launcher.LogFunnelPorts(base_port=50051, first_level_count=1)
+    ports = log_funnel.LogFunnelPorts(base_port=50051, first_level_count=1)
 
-    with patch.object(launcher.subprocess, "Popen", FakePopen):
-        # Failure is reported by returning no processes; the caller then disables gRPC
-        # log aggregation and falls back to direct file writing.
-        assert launcher._start_grpc_log_servers(args, str(tmp_path / "grpc_diag"), ports) == []
+    with patch.object(log_funnel.subprocess, "Popen", FakePopen):
+        assert log_funnel._start_grpc_log_servers(args, ports, capture=MagicMock()) == []
 
 
 def test_managed_attribution_listen_port_rejects_log_funnel_overlap():
@@ -1308,7 +1309,7 @@ def test_non_host_launcher_routes_logs_to_rendezvous_host_and_skips_host_service
         patch.object(launcher, "PipeBasedLogsSpecs", FakePipeBasedLogsSpecs),
         patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
         patch.object(
-            launcher,
+            log_funnel,
             "_start_grpc_log_servers",
             side_effect=AssertionError("compute launcher must not start gRPC servers"),
         ),
@@ -1365,7 +1366,7 @@ def test_same_node_external_control_honors_is_host_false(tmp_path):
         patch.object(launcher, "PipeBasedLogsSpecs", FakePipeBasedLogsSpecs),
         patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
         patch.object(
-            launcher,
+            log_funnel,
             "_start_grpc_log_servers",
             side_effect=AssertionError("compute launcher must not start gRPC servers"),
         ),
@@ -1384,7 +1385,8 @@ def test_same_node_external_control_honors_is_host_false(tmp_path):
     assert config.logs_specs.grpc_server_address == "127.0.0.1:50051"
 
 
-def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
+@pytest.mark.parametrize("is_control_host_agent", [False, True])
+def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path, is_control_host_agent):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     class FakePipeBasedLogsSpecs:
@@ -1397,6 +1399,7 @@ def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
             node_id=None,
         ):
             self.grpc_server_address = grpc_server_address
+            self.launcher_log_file = launcher_log_file
 
     parser = launcher.get_args_parser()
     args = parser.parse_args(
@@ -1412,6 +1415,7 @@ def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
             "train.py",
         ]
     )
+    args._is_control_host_agent = is_control_host_agent
     assert args.ft_enable_log_server is None
 
     with (
@@ -1419,7 +1423,7 @@ def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
         patch.object(launcher, "PipeBasedLogsSpecs", FakePipeBasedLogsSpecs),
         patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
         patch.object(
-            launcher,
+            log_funnel,
             "_start_grpc_log_servers",
             side_effect=AssertionError("compute launcher must not start gRPC servers"),
         ),
@@ -1428,6 +1432,8 @@ def test_nvrx_logfile_auto_enables_grpc_routing_to_rendezvous_host(tmp_path):
 
     assert args.ft_enable_log_server is True
     assert config.logs_specs.grpc_server_address == "control.host:50051"
+    assert config.logs_specs.launcher_log_file == str(tmp_path / "nvrx_agent.log")
+    assert args.ft_nvrx_logfile == str(tmp_path / "nvrx.log")
 
 
 def _managed_attribution_args(launcher, tmp_path):
@@ -1452,7 +1458,7 @@ def _managed_attribution_args(launcher, tmp_path):
     )
 
 
-def test_store_host_writes_attribution_startup_failure_to_nvrx_log(tmp_path):
+def test_store_host_writes_attribution_startup_failure_to_agent_log(tmp_path):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     args = _managed_attribution_args(launcher, tmp_path)
@@ -1461,11 +1467,12 @@ def test_store_host_writes_attribution_startup_failure_to_nvrx_log(tmp_path):
         patch.object(launcher, "_matches_machine_hostname", return_value=True),
         pytest.raises(ValueError, match="is not a file"),
     ):
-        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+        launcher.config_from_args(args)
 
-    record = (tmp_path / "nvrx.log").read_text(encoding="utf-8")
+    record = (tmp_path / "nvrx_agent.log").read_text(encoding="utf-8")
     assert "managed attribution service LLM API key file is not a file" in record
     assert "Agent's exit code = 1" in record
+    assert not (tmp_path / "nvrx.log").exists()
 
 
 def test_non_store_host_does_not_write_attribution_startup_failure(tmp_path):
@@ -1481,9 +1488,10 @@ def test_non_store_host_does_not_write_attribution_startup_failure(tmp_path):
         ),
         pytest.raises(ValueError, match="bad attribution config"),
     ):
-        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+        launcher.config_from_args(args)
 
     assert not (tmp_path / "nvrx.log").exists()
+    assert not (tmp_path / "nvrx_agent.log").exists()
 
 
 def test_attribution_startup_log_failure_does_not_mask_original_error(tmp_path):
@@ -1502,7 +1510,7 @@ def test_attribution_startup_log_failure_does_not_mask_original_error(tmp_path):
         patch("builtins.open", side_effect=OSError("network filesystem unavailable")),
         pytest.raises(ValueError) as exc_info,
     ):
-        launcher.config_from_args(args, launcher_log_file=args.ft_nvrx_logfile)
+        launcher.config_from_args(args)
 
     assert exc_info.value is original_error
 
@@ -1545,17 +1553,24 @@ def _pipe_logs_specs():
 
 
 @pytest.mark.parametrize(
-    ("cycle_info_dir", "log_server_address", "pipe_logs"),
-    [(None, "localhost:50051", True), ("/nvrx", None, True), ("/nvrx", "localhost:50051", False)],
-    ids=["no_cycle_info_dir", "no_log_server", "no_pipe_based_logs"],
+    ("cycle_info_dir", "end_reports", "log_server_address", "pipe_logs"),
+    [
+        (None, True, "localhost:50051", True),
+        ("/nvrx", False, "localhost:50051", True),
+        ("/nvrx", True, None, True),
+        ("/nvrx", True, "localhost:50051", False),
+    ],
+    ids=["no_cycle_info_dir", "no_end_reports", "no_log_server", "no_pipe_based_logs"],
 )
-def test_no_cycle_info_publisher_without_cycle_info_and_the_log_stream(
-    cycle_info_dir, log_server_address, pipe_logs
+def test_no_cycle_info_publisher_without_end_reports_and_the_log_stream(
+    cycle_info_dir, end_reports, log_server_address, pipe_logs
 ):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
     config = _make_launch_agent_config(
-        fault_tol_cfg=FaultToleranceConfig(cycle_info_dir=cycle_info_dir),
+        fault_tol_cfg=FaultToleranceConfig(
+            cycle_info_dir=cycle_info_dir, cycle_info_end_reports=end_reports
+        ),
         log_server_address=log_server_address,
     )
     if pipe_logs:
@@ -1570,7 +1585,11 @@ def test_cycle_info_publisher_publishes_on_the_log_stream():
     logs_specs = _pipe_logs_specs()
     logs_specs.publish_record.return_value = True
     logs_specs.wait_for_records.return_value = True
-    config = _make_launch_agent_config(log_server_address="head:50051", logs_specs=logs_specs)
+    config = _make_launch_agent_config(
+        fault_tol_cfg=FaultToleranceConfig(cycle_info_dir="/nvrx", cycle_info_end_reports=True),
+        log_server_address="head:50051",
+        logs_specs=logs_specs,
+    )
 
     publisher = launcher._create_cycle_info_publisher(config)
 
@@ -1862,7 +1881,8 @@ def test_launch_agent_failed_result_shuts_down_when_event_recording_fails():
     rdzv_handler.shutdown.assert_not_called()
 
 
-def test_launch_agent_signal_exception_without_rank_failure_exits_normally():
+@pytest.mark.parametrize("is_control_host_agent", [False, True])
+def test_launch_agent_signal_exception_without_rank_failure(is_control_host_agent):
     from types import SimpleNamespace
 
     from torch.distributed.elastic.multiprocessing import SignalException
@@ -1880,7 +1900,9 @@ def test_launch_agent_signal_exception_without_rank_failure_exits_normally():
     agent._rdzv_handler = rdzv_handler
     agent.any_rank_failed.return_value = False
 
-    config = _make_launch_agent_config(fault_tol_cfg=FaultToleranceConfig())
+    config = _make_launch_agent_config(
+        fault_tol_cfg=FaultToleranceConfig(), is_control_host_agent=is_control_host_agent
+    )
 
     with (
         patch.object(launcher, "_get_addr_and_port", return_value=("host", 29500)),
@@ -1891,10 +1913,15 @@ def test_launch_agent_signal_exception_without_rank_failure_exits_normally():
         patch.object(launcher.metrics, "initialize_metrics"),
         patch.object(launcher.events, "record") as record_event,
     ):
-        result = launcher.launch_agent(config, "train.py", [])
+        if is_control_host_agent:
+            with pytest.raises(SignalException):
+                launcher.launch_agent(config, "train.py", [])
+        else:
+            result = launcher.launch_agent(config, "train.py", [])
+            assert result is None
 
-    assert result is None
-    agent.any_rank_failed.assert_called_once_with()
+    if not is_control_host_agent:
+        agent.any_rank_failed.assert_called_once_with()
     record_event.assert_called_once_with(agent.get_event_failed.return_value)
     rdzv_handler.shutdown.assert_not_called()
     rdzv_handler.shutdown_due_to_failure.assert_not_called()
@@ -1947,7 +1974,6 @@ class TestLauncherAllowedRoots:
         base = dict(
             ft_per_cycle_applog_prefix=None,
             ft_nvrx_logfile=None,
-            ft_log_server_log_prefix=None,
         )
         base.update(kwargs)
         return Namespace(**base)
@@ -2010,10 +2036,7 @@ class TestLauncherAllowedRoots:
         cycle_log = str(logdir / "train_cycle0.log")
         assert resolve_under_allowed_roots(cycle_log, [roots]) == cycle_log
 
-    def test_server_own_log_dir_is_not_an_allowed_root(self, tmp_path):
-        """`_root.log`/`_leaf_N.log` are written by the launcher redirecting each
-        subprocess's stdout/stderr, never through a LogChunk, so that directory must not
-        be exposed to gRPC clients."""
+    def test_unrelated_directory_is_not_an_allowed_root(self, tmp_path):
         from nvidia_resiliency_ext.fault_tolerance.launcher import _resolve_grpc_log_allowed_roots
 
         applog_dir = tmp_path / "applogs"
@@ -2021,7 +2044,6 @@ class TestLauncherAllowedRoots:
         roots = _resolve_grpc_log_allowed_roots(
             self._args(
                 ft_per_cycle_applog_prefix=str(applog_dir / "train.log"),
-                ft_log_server_log_prefix=str(srv_dir / "grpc"),
             )
         )
         assert roots == [os.path.realpath(str(applog_dir))]

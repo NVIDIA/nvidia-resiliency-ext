@@ -68,6 +68,28 @@ pytest -s -vvv tests/straggler/unit/ -k "test_all_gather_object_calls_num or tes
 
 Functional tests (`func/`) require a multi-GPU/SLURM environment and are not run in standard CI.
 
+### Checkpointing GPU tests (`tests/checkpointing/unit/`)
+
+Tests marked `distributed`, `min_world_size(n)` or `max_world_size(n)` need a process group and
+run under torchrun; plain `pytest` skips them. Other tests are standalone: plain `pytest` runs
+them, and torchrun runs them on rank 0 only. Run both a 1-rank and a multi-rank launch to cover
+every test; each skips the tests whose world-size range excludes it.
+
+```bash
+torchrun --nproc_per_node=1 -m pytest -s tests/checkpointing/unit/
+torchrun --nproc_per_node=2 -m pytest -s tests/checkpointing/unit/
+```
+
+- A test that runs on every rank marks itself (or its module, with `pytestmark`) `distributed`,
+  and uses `min_world_size`/`max_world_size` when it needs a number of ranks; it doesn't skip
+  itself in its body.
+- Distributed tests put checkpoints in `tmp_path_dist_ckpt` or `shm_path_dist_ckpt`, a new
+  directory per test, shared by the ranks. Standalone tests use pytest's `tmp_path`; using the
+  shared directories fails.
+- Every test times out after 120 s (`pytest-timeout`, set in `pyproject.toml`), which ends the
+  run with a stack dump of each thread. Override it for one test with
+  `@pytest.mark.timeout(seconds)`.
+
 ## Architecture
 
 Source lives in `src/nvidia_resiliency_ext/`. Key modules:
