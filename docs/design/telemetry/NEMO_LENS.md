@@ -184,3 +184,9 @@ Missing dependencies or import failures leave NVRx span instrumentation inert. S
 The checkpoint worker converts SIGTERM to `SystemExit`, allowing cleanup to run. NVRx waits up to two seconds for background telemetry shutdown. The launcher also flushes after recording a detected fault, before restart handling.
 
 Shutdown and flush are best effort. Ending a span does not guarantee export; buffered anchors and child spans can be lost on exit. If a phase never closes, it has no duration summary.
+
+## Random number generators
+
+Lens draws span and trace IDs from its own generator, so creating spans leaves Python's global `random` state unchanged. The OTLP exporters that Lens configures do not. As of OpenTelemetry 1.45.2, they draw retry jitter from the global `random` module: the HTTP exporters on every export, and the gRPC exporters when an export fails. Exports run on the batch processor's thread, or on the caller's thread during a flush, at times that vary between runs. With telemetry enabled, the global `random` sequence is therefore not reproducible, even if a checkpoint saves and restores its state.
+
+Training code that needs reproducible randomness should draw from its own generator, such as `random.Random(seed)`, `numpy.random.Generator` or `torch.Generator`. The exporters do not use NumPy or PyTorch generators.
