@@ -370,6 +370,35 @@ class TestFlushAndShutdown(unittest.TestCase):
             sender.join()
             signal.signal(signal.SIGUSR1, previous)
 
+    def test_flush_returns_while_provider_is_blocked(self):
+        class SlowProvider:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
+                self.finished = threading.Event()
+
+            def force_flush(self, timeout_millis):
+                self.entered.set()
+                self.release.wait(5)
+                self.finished.set()
+
+        slow = SlowProvider()
+        provider = Mock(get_tracer_provider=Mock(return_value=slow))
+        try:
+            with (
+                patch.object(telemetry, "_AVAILABLE", True),
+                patch.object(telemetry, "_otel_trace", provider, create=True),
+            ):
+                started = time.monotonic()
+                telemetry.flush(timeout_ms=200)
+                elapsed = time.monotonic() - started
+            self.assertTrue(slow.entered.wait(1), "force_flush() was never called")
+            self.assertLess(elapsed, 2, "flush was not bounded")
+            self.assertFalse(slow.finished.is_set())
+        finally:
+            slow.release.set()
+            self.assertTrue(slow.finished.wait(1), "flush thread did not finish")
+
     def test_shutdown_returns_while_handle_is_blocked(self):
         class SlowHandle:
             def __init__(self):
