@@ -570,3 +570,89 @@ def test_shutdown_during_health_check_still_drains_queued_logs(monkeypatch):
     assert write_queue.empty()
     assert not writer.forwarding_ready.is_set()
     channel.close.assert_called_once_with()
+
+
+def _end_report_record(cycle):
+    from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2
+    from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
+
+    return log_aggregation_pb2.DataRecord(
+        node_cycle_end_report=pb.NodeCycleEndReport(cycle_number=cycle, node_id="node0")
+    )
+
+
+def _run_one_stream(monkeypatch, writer, on_record=None):
+    """Run the writer for one stream; shutdown is requested as the stream starts, so the
+    generator drains what is queued. Returns the DataRecords sent, in order."""
+    sent = []
+
+    def stream(records):
+        writer.shutdown_requested = True
+        for record in records:
+            sent.append(record)
+            if on_record is not None:
+                on_record(record)
+        return MagicMock()
+
+    stub = MagicMock()
+    stub.StreamDataRecords.side_effect = stream
+    monkeypatch.setattr(writer, "_wait_for_server_ready", lambda: MagicMock())
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub",
+        lambda channel: stub,
+    )
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.per_cycle_logs.time.sleep", lambda _: None
+    )
+    monkeypatch.setattr(
+        "nvidia_resiliency_ext.fault_tolerance.per_cycle_logs._WRITE_QUEUE_GET_TIMEOUT_SEC", 0.01
+    )
+    writer.run()
+    return sent
+
+
+def test_records_are_sent_ahead_of_the_queued_log_chunks(monkeypatch):
+    write_queue = queue.Queue()
+    write_queue.put(("/tmp/train.log", "line 1\n"))
+    write_queue.put(("/tmp/train.log", "line 2\n"))
+    writer = GrpcWriterThread(write_queue, "unused:1234", "test", MagicMock())
+    writer.put_record(_end_report_record(3))
+
+    sent = _run_one_stream(monkeypatch, writer)
+
+    assert [record.WhichOneof("record") for record in sent] == [
+        "node_cycle_end_report",
+        "log_chunk",
+        "log_chunk",
+    ]
+    assert (writer.total_records_sent, writer.total_chunks_sent) == (1, 2)
+
+
+def test_shutdown_drains_the_queued_records(monkeypatch):
+    writer = GrpcWriterThread(queue.Queue(), "unused:1234", "test", MagicMock())
+    for cycle in (3, 4):
+        writer.put_record(_end_report_record(cycle))
+
+    sent = _run_one_stream(monkeypatch, writer)
+
+    assert [record.node_cycle_end_report.cycle_number for record in sent] == [3, 4]
+    assert writer.wait_for_records(0)
+
+
+def test_wait_for_records_waits_until_they_are_handed_to_the_stream(monkeypatch):
+    writer = GrpcWriterThread(queue.Queue(), "unused:1234", "test", MagicMock())
+    assert writer.wait_for_records(0)  # nothing queued
+    writer.put_record(_end_report_record(3))
+    # No stream yet: the record waits for one.
+    assert not writer.wait_for_records(0.01)
+
+    pending_while_sending = []
+    _run_one_stream(
+        monkeypatch,
+        writer,
+        on_record=lambda record: pending_while_sending.append(writer._records_pending),
+    )
+
+    # Pending until gRPC asked for the next message, then handed over.
+    assert pending_while_sending == [1]
+    assert writer.wait_for_records(0)

@@ -1537,13 +1537,20 @@ def _make_launch_agent_config(**overrides):
     return SimpleNamespace(**values)
 
 
+def _pipe_logs_specs():
+    """A PipeBasedLogsSpecs stand-in: only the methods the end report publisher uses."""
+    from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import PipeBasedLogsSpecs
+
+    return MagicMock(spec=PipeBasedLogsSpecs)
+
+
 @pytest.mark.parametrize(
-    ("cycle_info_dir", "log_server_address"),
-    [(None, "localhost:50051"), ("/nvrx", None)],
-    ids=["no_cycle_info_dir", "no_log_server"],
+    ("cycle_info_dir", "log_server_address", "pipe_logs"),
+    [(None, "localhost:50051", True), ("/nvrx", None, True), ("/nvrx", "localhost:50051", False)],
+    ids=["no_cycle_info_dir", "no_log_server", "no_pipe_based_logs"],
 )
-def test_no_cycle_info_publisher_without_cycle_info_and_log_server(
-    cycle_info_dir, log_server_address
+def test_no_cycle_info_publisher_without_cycle_info_and_the_log_stream(
+    cycle_info_dir, log_server_address, pipe_logs
 ):
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
@@ -1551,47 +1558,29 @@ def test_no_cycle_info_publisher_without_cycle_info_and_log_server(
         fault_tol_cfg=FaultToleranceConfig(cycle_info_dir=cycle_info_dir),
         log_server_address=log_server_address,
     )
-    assert launcher._create_cycle_info_publisher(config) == (None, None)
+    if pipe_logs:
+        config.logs_specs = _pipe_logs_specs()
+    assert launcher._create_cycle_info_publisher(config) is None
 
 
-def test_cycle_info_publisher_uses_its_own_channel_to_the_log_server():
+def test_cycle_info_publisher_publishes_on_the_log_stream():
+    """No channel of its own: the end reports are records of the launcher's log stream."""
     from nvidia_resiliency_ext.fault_tolerance import launcher
 
-    config = _make_launch_agent_config(log_server_address="head:50051")
-    with patch.object(launcher.grpc, "insecure_channel") as insecure_channel:
-        publisher, channel = launcher._create_cycle_info_publisher(config)
+    logs_specs = _pipe_logs_specs()
+    logs_specs.publish_record.return_value = True
+    logs_specs.wait_for_records.return_value = True
+    config = _make_launch_agent_config(log_server_address="head:50051", logs_specs=logs_specs)
 
-    insecure_channel.assert_called_once_with("head:50051")
-    assert channel is insecure_channel.return_value
-    assert isinstance(publisher, launcher.GrpcCycleInfoPublisher)
+    publisher = launcher._create_cycle_info_publisher(config)
 
-    publisher.close = MagicMock()
-    launcher._close_cycle_info_publisher(publisher, channel)
-    publisher.close.assert_called_once_with()
-    channel.close.assert_called_once_with()
-
-
-def test_cycle_info_publisher_creation_failure_is_logged():
-    from nvidia_resiliency_ext.fault_tolerance import launcher
-
-    config = _make_launch_agent_config(log_server_address="head:50051")
-    with (
-        patch.object(launcher.grpc, "insecure_channel", side_effect=ValueError("bad address")),
-        patch.object(launcher, "logger") as logger,
-    ):
-        assert launcher._create_cycle_info_publisher(config) == (None, None)
-    logger.warning.assert_called_once()
-
-
-def test_closing_the_cycle_info_publisher_does_not_raise():
-    from nvidia_resiliency_ext.fault_tolerance import launcher
-
-    publisher = MagicMock()
-    publisher.close.side_effect = RuntimeError("boom")
-    with patch.object(launcher, "logger") as logger:
-        launcher._close_cycle_info_publisher(publisher, MagicMock())
-        launcher._close_cycle_info_publisher(None, None)
-    logger.warning.assert_called_once()
+    assert isinstance(publisher, launcher.LogStreamEndReportPublisher)
+    report = pb.NodeCycleEndReport(cycle_number=3, node_id="node0")
+    assert publisher.publish_end_report(report)
+    (record,) = logs_specs.publish_record.call_args.args
+    assert record.node_cycle_end_report == report
+    assert publisher.flush(1.5)
+    logs_specs.wait_for_records.assert_called_once_with(1.5)
 
 
 def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
@@ -2445,44 +2434,40 @@ class TestRankMonitorListener:
 
 
 class TestPublishCycleEndReport:
-    """The main thread queues the end report; the publisher thread publishes it."""
+    """The main thread queues the end report on the log stream; it waits only when asked."""
 
     @pytest.fixture
     def agent(self):
         agent = _end_report_agent()
         agent._cycle_info_publisher = MagicMock()
-        agent._start_end_report_publisher()
+        agent._cycle_info_publisher.publish_end_report.return_value = True
+        agent._cycle_info_publisher.flush.return_value = True
         agent._record_cycle_end_report(pb.CycleEndReasonWorkerFailed, {5: MagicMock(exitcode=1)})
-        yield agent
-        agent.stop_end_report_publisher()
+        return agent
 
-    def test_end_report_is_published_on_the_publisher_thread(self, agent):
-        publish = agent._cycle_info_publisher.publish_end_report
-        threads = []
-        publish.side_effect = lambda report: threads.append(threading.current_thread())
-        agent._publish_cycle_end_report(wait=True)
-        publish.assert_called_once_with(agent._cycle_end_report)
-        assert threads == [agent._end_report_publisher_thread]
-
-    def test_publish_does_not_wait_unless_asked(self, agent):
-        release = threading.Event()
-        agent._cycle_info_publisher.publish_end_report.side_effect = lambda _: release.wait(5)
-        start = time.monotonic()
+    def test_end_report_is_queued_without_waiting(self, agent):
         agent._publish_cycle_end_report()  # the restart path
-        assert time.monotonic() - start < 1.0
-        release.set()
-        assert agent._wait_for_end_reports_published(5)
+        agent._cycle_info_publisher.publish_end_report.assert_called_once_with(
+            agent._cycle_end_report
+        )
+        agent._cycle_info_publisher.flush.assert_not_called()
 
-    def test_wait_is_bounded(self, agent):
-        release = threading.Event()
-        agent._cycle_info_publisher.publish_end_report.side_effect = lambda _: release.wait(5)
-        with (
-            patch.object(launcher, "CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT", 0.05),
-            patch.object(launcher, "logger") as logger,
-        ):
+    def test_wait_flushes_with_a_bound(self, agent):
+        agent._publish_cycle_end_report(wait=True)
+        agent._cycle_info_publisher.flush.assert_called_once_with(
+            launcher.CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT
+        )
+
+    def test_report_not_sent_in_time_is_logged(self, agent):
+        agent._cycle_info_publisher.flush.return_value = False
+        with patch.object(launcher, "logger") as logger:
             agent._publish_cycle_end_report(wait=True)
         logger.warning.assert_called_once()
-        release.set()
+
+    def test_no_wait_for_a_report_that_was_not_queued(self, agent):
+        agent._cycle_info_publisher.publish_end_report.return_value = False
+        agent._publish_cycle_end_report(wait=True)
+        agent._cycle_info_publisher.flush.assert_not_called()
 
     def test_nothing_is_published_without_an_end_report_of_this_cycle(self, agent):
         agent._get_global_cycle_number.return_value = 4  # recorded report is of cycle 3
@@ -2494,26 +2479,8 @@ class TestPublishCycleEndReport:
     def test_nothing_is_published_without_a_publisher(self):
         agent = _end_report_agent()
         agent._cycle_info_publisher = None
-        agent._start_end_report_publisher()
         agent._record_cycle_end_report(pb.CycleEndReasonWorkerFailed, {5: MagicMock(exitcode=1)})
         agent._publish_cycle_end_report(wait=True)  # must not raise
-        assert agent._end_report_publisher_thread is None
-        agent.stop_end_report_publisher()  # nothing to stop
-
-    def test_publisher_failure_is_logged_and_the_thread_keeps_publishing(self, agent):
-        publish = agent._cycle_info_publisher.publish_end_report
-        publish.side_effect = [RuntimeError("unavailable"), None]
-        with patch.object(launcher, "logger") as logger:
-            agent._publish_cycle_end_report(wait=True)
-            agent._publish_cycle_end_report(wait=True)
-        logger.warning.assert_called_once()
-        assert publish.call_count == 2
-
-    def test_stop_ends_the_publisher_thread(self, agent):
-        thread = agent._end_report_publisher_thread
-        agent.stop_end_report_publisher()
-        assert not thread.is_alive()
-        assert agent._end_report_publisher_thread is None
 
     @pytest.mark.parametrize("open_rendezvous", [True, False], ids=["failed", "peer_restart"])
     def test_restart_publishes_after_opening_the_round_and_before_rejoining(self, open_rendezvous):

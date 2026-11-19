@@ -758,7 +758,7 @@ def _end_report(cycle=3, node="node0"):
     return nvrx_interface_pb2.NodeCycleEndReport(
         job_id="job1",
         cycle_number=cycle,
-        node_name=node,
+        node_id=node,
         end_reason=nvrx_interface_pb2.CycleEndReasonWorkerFailed,
         detected_timestamp=1_700_000_000_000,
     )

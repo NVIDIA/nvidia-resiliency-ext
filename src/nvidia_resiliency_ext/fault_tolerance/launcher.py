@@ -27,7 +27,6 @@ import importlib.metadata as metadata
 import json
 import logging
 import os
-import queue
 import re
 import signal
 import socket
@@ -45,7 +44,6 @@ from dataclasses import dataclass, field
 from string import Template
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Type, Union
 
-import grpc
 import torch
 from torch.distributed.argparse_util import check_env, env
 from torch.distributed.elastic import events, metrics, timer
@@ -93,7 +91,9 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
     add_rendezvous_args,
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import (
+    LogStreamEndReportPublisher,
+)
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     build_node_cycle_end_report,
     launcher_node_id,
@@ -144,9 +144,6 @@ from nvidia_resiliency_ext.shared_utils.profiling import (
     get_profiling_cycle,
     record_profiling_event,
 )
-from nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc import (
-    DataRecordAggregationServiceStub,
-)
 from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import (
     CycleEndReasonWorkerCompleted,
     CycleEndReasonWorkerFailed,
@@ -172,8 +169,8 @@ CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
 # Bound on joining the rank monitor listener thread at shutdown.
 RANK_MONITOR_LISTENER_JOIN_TIMEOUT = 2.0
 
-# Bound on waiting for the queued cycle end reports to be published before the job ends; above
-# the publish RPC's own 5 s timeout, so a slow RPC still completes.
+# Bound on waiting for a queued cycle end report to be handed to the gRPC log stream before
+# the job ends.
 CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT = 6.0
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
@@ -551,68 +548,11 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._run_phase = telemetry.Phase()
         # How the latest cycle ended on this launcher, recorded when the end is observed.
         self._cycle_end_report: Optional[NodeCycleEndReport] = None
-        # Sends the end reports towards the CycleAnalyzer; None publishes nothing.
+        # Sends the end reports towards the CycleAnalyzer, on this launcher's gRPC log stream
+        # (it only queues them); None publishes nothing.
         self._cycle_info_publisher = cycle_info_publisher
-        self._start_end_report_publisher()
 
     DEFAULT_ROLE = "default"  # FIXME
-
-    def _start_end_report_publisher(self) -> None:
-        """Start the background thread that publishes the end reports the main thread queues.
-
-        Publishing is a blocking RPC; on this thread it stays off the restart path.
-        """
-        self._end_report_queue: "queue.Queue[Optional[NodeCycleEndReport]]" = queue.Queue()
-        # End reports queued and not yet published, guarded by _end_report_published.
-        self._end_reports_unpublished = 0
-        self._end_report_published = threading.Condition()
-        self._end_report_publisher_thread: Optional[threading.Thread] = None
-        if self._cycle_info_publisher is None:
-            return
-        self._end_report_publisher_thread = threading.Thread(
-            target=self._run_end_report_publisher, name="CycleEndReportPublisher", daemon=True
-        )
-        self._end_report_publisher_thread.start()
-
-    def _run_end_report_publisher(self) -> None:
-        """Body of the publisher thread: publish the queued end reports until None is queued."""
-        while True:
-            report = self._end_report_queue.get()
-            if report is None:
-                return
-            try:
-                self._cycle_info_publisher.publish_end_report(report)
-            except Exception as e:
-                logger.warning(
-                    f"Failed to publish the end report of cycle {report.cycle_number}: {e}"
-                )
-            finally:
-                with self._end_report_published:
-                    self._end_reports_unpublished -= 1
-                    self._end_report_published.notify_all()
-
-    def _wait_for_end_reports_published(self, timeout: float) -> bool:
-        """Wait up to `timeout` until every queued end report was published (or failed)."""
-        with self._end_report_published:
-            return self._end_report_published.wait_for(
-                lambda: self._end_reports_unpublished == 0, timeout
-            )
-
-    def stop_end_report_publisher(self) -> None:
-        """Give the queued end reports a bounded time to be published, then stop the thread.
-
-        Call before closing the publisher's channel.
-        """
-        thread = self._end_report_publisher_thread
-        if thread is None:
-            return
-        if not self._wait_for_end_reports_published(CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT):
-            logger.warning(
-                "Stopping the end report publisher with end reports not yet published"
-            )
-        self._end_report_queue.put(None)
-        thread.join(timeout=CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT)
-        self._end_report_publisher_thread = None
 
     def open_telemetry_cycle(self, attributes: dict[str, Any]) -> None:
         self._cycle_phase.open(
@@ -878,27 +818,24 @@ class LocalElasticAgent(SimpleElasticAgent):
             logger.warning(f"Failed to record the cycle end report: {e}")
 
     def _publish_cycle_end_report(self, wait: bool = False) -> None:
-        """Queue the end report of the cycle that just ended for the publisher thread.
+        """Publish the end report of the cycle that just ended: queue it on the gRPC log
+        stream, ahead of the queued logs.
 
-        Returns without waiting for the publish, unless `wait`: then it waits, for a bounded
-        time, until the end report was published. Wait before anything that ends the job,
-        as the shutdown key ends the CycleAnalyzer. Best effort: a failure is logged.
+        Returns at once, unless `wait`: then it waits, for a bounded time, until the end
+        report was handed to the stream. Wait before anything that ends the job, as the
+        shutdown key ends the CycleAnalyzer. Best effort: a failure is logged.
         """
         report = self._cycle_end_report
         # Nothing recorded for this cycle: end reports are disabled or recording failed.
         # Checked here, as the cycle number moves on once the next rendezvous completes.
         if report is None or report.cycle_number != self._get_global_cycle_number():
             return
-        if self._end_report_publisher_thread is None:
+        publisher = self._cycle_info_publisher
+        if publisher is None or not publisher.publish_end_report(report):
             return
-        with self._end_report_published:
-            self._end_reports_unpublished += 1
-        self._end_report_queue.put(report)
-        if wait and not self._wait_for_end_reports_published(
-            CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT
-        ):
+        if wait and not publisher.flush(CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT):
             logger.warning(
-                f"The end report of cycle {report.cycle_number} was not published in time"
+                f"The end report of cycle {report.cycle_number} was not sent in time"
             )
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
@@ -2105,42 +2042,22 @@ def _is_store_host(params: RendezvousParameters) -> bool:
     return _is_store_host_from_config(host, params.config)
 
 
-def _create_cycle_info_publisher(
-    config: LaunchConfig,
-) -> Tuple[Optional[CycleInfoPublisher], Optional[grpc.Channel]]:
-    """Create the publisher of this launcher's end reports, on its own channel to the gRPC
-    log server it streams logs to (StreamDataRecords).
+def _create_cycle_info_publisher(config: LaunchConfig) -> Optional[CycleInfoPublisher]:
+    """Create the publisher of this launcher's end reports: on its gRPC log stream to the
+    log server (StreamDataRecords), so no other channel or call is needed.
 
     Returns:
-        The publisher and its channel; both None when cycle info or the gRPC log server
-        is not configured, or when creating them failed.
+        None when cycle info is not configured, or logs are not forwarded over gRPC.
     """
-    if not config.fault_tol_cfg.cycle_info_dir or not config.log_server_address:
-        return None, None
-    try:
-        # The channel connects lazily, on the first publish.
-        channel = grpc.insecure_channel(config.log_server_address)
-        publisher = GrpcCycleInfoPublisher(
-            data_record_stub=DataRecordAggregationServiceStub(channel)
-        )
-    except Exception as e:
-        logger.warning(f"Cycle records will not be published: {e}")
-        return None, None
-    logger.debug("Publishing cycle records to %s", config.log_server_address)
-    return publisher, channel
-
-
-def _close_cycle_info_publisher(
-    publisher: Optional[CycleInfoPublisher], channel: Optional[grpc.Channel]
-) -> None:
-    """Give pending cycle records a short time to be delivered, then close the channel."""
-    try:
-        if publisher is not None:
-            publisher.close()
-        if channel is not None:
-            channel.close()
-    except Exception as e:
-        logger.warning(f"Failed to close the cycle record publisher: {e}")
+    logs_specs = config.logs_specs
+    if (
+        not config.fault_tol_cfg.cycle_info_dir
+        or not config.log_server_address
+        or not isinstance(logs_specs, PipeBasedLogsSpecs)
+    ):
+        return None
+    logger.debug("Publishing the cycle end reports on the log stream to %s", config.log_server_address)
+    return LogStreamEndReportPublisher(logs_specs.publish_record, logs_specs.wait_for_records)
 
 
 def launch_agent(
@@ -2221,8 +2138,8 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
-    # The publisher of this launcher's end reports, through the gRPC log server.
-    cycle_info_publisher, cycle_info_channel = _create_cycle_info_publisher(config)
+    # The publisher of this launcher's end reports, on its gRPC log stream.
+    cycle_info_publisher = _create_cycle_info_publisher(config)
 
     agent = LocalElasticAgent(
         spec=spec,
@@ -2334,9 +2251,8 @@ def launch_agent(
                 agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
         _stop_diagnostic_collector()
-        # Before the publisher's channel closes under it.
-        agent.stop_end_report_publisher()
-        _close_cycle_info_publisher(cycle_info_publisher, cycle_info_channel)
+        # The queued end reports are sent with the last logs: logs_specs.cleanup() drains
+        # the log stream.
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
         # ends. Wait a short grace period so other nodes can read final state (e.g. permanent close key,

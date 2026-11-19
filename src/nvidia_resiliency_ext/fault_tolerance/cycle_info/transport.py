@@ -28,7 +28,9 @@ class CycleInfoPublisher(ABC):
 
     The publish methods may wait for delivery, but only for a bounded time, and must not
     raise on transport failures: a record that cannot be delivered is dropped. They do not
-    modify the record; the caller must not modify it after publishing either.
+    modify the record; the caller must not modify it after publishing either. A publisher
+    may only queue the records, sending them in the background: its publish methods then
+    return True once queued, and flush() waits for them to be sent.
     """
 
     @abstractmethod
@@ -55,6 +57,11 @@ class CycleInfoPublisher(ABC):
         Returns:
             True if the record was delivered.
         """
+
+    def flush(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds until the records queued so far were sent. Returns
+        True if none is left pending; at once for a publisher that does not queue."""
+        return True
 
     def close(self) -> None:
         """Stop publishing; records not yet delivered may be dropped."""

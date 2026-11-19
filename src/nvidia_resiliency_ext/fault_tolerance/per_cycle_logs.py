@@ -319,10 +319,17 @@ class GrpcWriterThread(threading.Thread):
         self.shutdown_requested = False
         # Last known server readiness, not an acknowledgement of log delivery.
         self.forwarding_ready = threading.Event()
+        # Records other than log chunks (e.g. cycle end reports), sent on the same stream
+        # ahead of the queued log chunks (put_record). Those queued and not yet handed to
+        # gRPC are counted, guarded by _records_handed_over.
+        self._records: "queue.SimpleQueue[log_aggregation_pb2.DataRecord]" = queue.SimpleQueue()
+        self._records_pending = 0
+        self._records_handed_over = threading.Condition()
 
         # Statistics
         self.total_bytes_sent = 0
         self.total_chunks_sent = 0
+        self.total_records_sent = 0
         self.connection_errors = 0
 
     def _wait_for_server_ready(self) -> Optional['grpc.Channel']:
@@ -489,6 +496,22 @@ class GrpcWriterThread(threading.Thread):
             _empty_poll_count = 0
 
             while True:
+                # Queued records go first, ahead of the queued log chunks.
+                try:
+                    record = self._records.get_nowait()
+                except queue.Empty:
+                    record = None
+                if record is not None:
+                    _empty_poll_count = 0
+                    try:
+                        yield record
+                        self.total_records_sent += 1
+                    finally:
+                        # Handed to gRPC, or dropped as the stream ended: no longer pending.
+                        with self._records_handed_over:
+                            self._records_pending -= 1
+                            self._records_handed_over.notify_all()
+                    continue
                 try:
                     log_file_path, data = self.write_queue.get(timeout=_WRITE_QUEUE_GET_TIMEOUT_SEC)
                     _empty_poll_count = 0
@@ -513,6 +536,7 @@ class GrpcWriterThread(threading.Thread):
                         if (
                             _empty_poll_count >= _GRPC_STABLE_EMPTY_POLLS_NEEDED
                             and self.write_queue.empty()
+                            and self._records.empty()
                         ):
                             return
                     continue
@@ -545,13 +569,30 @@ class GrpcWriterThread(threading.Thread):
             # Connection lost or server error - will be caught by caller for retry
             raise
 
+    def put_record(self, record: 'log_aggregation_pb2.DataRecord') -> None:
+        """Queue `record` to be sent on the log stream, ahead of the queued log chunks.
+
+        Thread-safe; never blocks. While the stream is down (e.g. reconnecting), the record
+        waits for the next one. Best effort, like a log chunk: lost if the stream breaks after
+        the record was handed to gRPC, or if the writer is already shut down.
+        """
+        with self._records_handed_over:
+            self._records_pending += 1
+        self._records.put(record)
+
+    def wait_for_records(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds until every queued record was handed to the stream
+        (not delivered: gRPC sends it). Returns True if none is left pending."""
+        with self._records_handed_over:
+            return self._records_handed_over.wait_for(lambda: self._records_pending == 0, timeout)
+
     def shutdown(self):
         """Request graceful shutdown of writer thread."""
         self.shutdown_requested = True
         self.forwarding_ready.clear()
         self.logger.info(
             f"Shutting down gRPC writer. Sent {self.total_chunks_sent} chunks, "
-            f"{self.total_bytes_sent / 1024 / 1024:.2f} MB"
+            f"{self.total_bytes_sent / 1024 / 1024:.2f} MB, {self.total_records_sent} records"
         )
 
 
@@ -1185,6 +1226,21 @@ class MultiplexingReaderThread(threading.Thread):
                         "shutdown. Connection may be aborted."
                     )
 
+    def put_record(self, record: 'log_aggregation_pb2.DataRecord') -> bool:
+        """Queue `record` on the gRPC log stream (GrpcWriterThread.put_record). Returns
+        False, with nothing queued, when logs are written locally rather than over gRPC."""
+        if not isinstance(self._writer_thread, GrpcWriterThread):
+            return False
+        self._writer_thread.put_record(record)
+        return True
+
+    def wait_for_records(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds until the queued records were handed to the gRPC log
+        stream (GrpcWriterThread.wait_for_records); True at once without a gRPC writer."""
+        if not isinstance(self._writer_thread, GrpcWriterThread):
+            return True
+        return self._writer_thread.wait_for_records(timeout)
+
     def update_pipes(
         self,
         new_pipes: dict[int, int],
@@ -1420,6 +1476,17 @@ class PipeBasedLogsSpecs(LogsSpecs):
         """Whether launcher logs can currently enter the gRPC forwarding path."""
         reader = self._reader_thread
         return reader._accepting_launcher_logs and reader._grpc_ready.is_set()
+
+    def publish_record(self, record: 'log_aggregation_pb2.DataRecord') -> bool:
+        """Send `record` (e.g. a cycle end report) on this launcher's gRPC log stream, ahead
+        of the queued log chunks. Only queues it: returns True once queued, False when logs
+        are not forwarded over gRPC. Best effort, like the log chunks."""
+        return self._reader_thread.put_record(record)
+
+    def wait_for_records(self, timeout: float) -> bool:
+        """Wait up to `timeout` seconds until the records published so far were handed to the
+        gRPC log stream; True if none is left pending."""
+        return self._reader_thread.wait_for_records(timeout)
 
     @property
     def root_log_dir(self) -> str:

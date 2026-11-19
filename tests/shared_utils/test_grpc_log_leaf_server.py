@@ -56,7 +56,7 @@ def _end_report_record(node: str = "node0", cycle: int = 3) -> log_aggregation_p
         node_cycle_end_report=nvrx_interface_pb2.NodeCycleEndReport(
             job_id="job1",
             cycle_number=cycle,
-            node_name=node,
+            node_id=node,
             end_reason=nvrx_interface_pb2.CycleEndReasonWorkerFailed,
             detected_timestamp=1_700_000_000_000,
         )

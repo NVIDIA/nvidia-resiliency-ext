@@ -1,17 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """gRPC transport of the cycle records: cycle infos over CycleInfoService (nvrx_interface.proto),
-end reports over DataRecordAggregationService (log_aggregation.proto)."""
+end reports as records of the launchers' log streams (DataRecordAggregationService,
+log_aggregation.proto)."""
 
 import logging
 import queue
 from concurrent import futures
-from typing import Iterator, List, Optional
+from typing import Callable, List, Optional
 
 import grpc
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
-from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
+from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2_grpc as pb_grpc
 
@@ -21,38 +22,23 @@ from .transport import CycleInfoPublisher, CycleInfoReader
 logger = logging.getLogger(LogConfig.name)
 
 
-def _end_report_stream(report: pb.NodeCycleEndReport) -> Iterator[log_aggregation_pb2.DataRecord]:
-    """`report` as a StreamDataRecords request: a stream of one DataRecord (holding a copy
-    of `report`)."""
-    return iter([log_aggregation_pb2.DataRecord(node_cycle_end_report=report)])
-
-
 class GrpcCycleInfoPublisher(CycleInfoPublisher):
-    """Publishes each record with a blocking call, on the stub of its destination.
+    """Publishes the cycle infos with a blocking call to the CycleAnalyzer's CycleInfoService
+    (`cycle_info_stub`): the store host publishes them directly to the analyzer.
 
-    - Cycle infos go to the CycleAnalyzer's CycleInfoService (`cycle_info_stub`): the
-      store host publishes them directly to the analyzer.
-    - End reports go to a log server's DataRecordAggregationService (`data_record_stub`):
-      launchers publish them to the server they stream logs to, as a one-record stream.
-      The call returns once that server queued the report, not once the analyzer has it.
-
-    Pass the stub of each record the caller publishes; publishing a record without its
-    stub is logged and dropped. A publish returns once the record was accepted, or after
-    `rpc_timeout`; failures are logged and the record dropped, never raised. The caller
-    owns the stubs' channels.
+    A publish returns once the analyzer accepted the record, or after `rpc_timeout`;
+    failures are logged and the record dropped, never raised. The caller owns the stub's
+    channel. End reports are not published here: launchers send them on their log stream
+    (LogStreamEndReportPublisher).
     """
 
     def __init__(
         self,
         *,
         cycle_info_stub: Optional[pb_grpc.CycleInfoServiceStub] = None,
-        data_record_stub: Optional[
-            log_aggregation_pb2_grpc.DataRecordAggregationServiceStub
-        ] = None,
         rpc_timeout: float = 5.0,
     ):
         self._cycle_info_stub = cycle_info_stub
-        self._data_record_stub = data_record_stub
         self._rpc_timeout = rpc_timeout
 
     def publish_cycle_info(self, info: pb.NVRxCycleInfo) -> bool:
@@ -68,10 +54,11 @@ class GrpcCycleInfoPublisher(CycleInfoPublisher):
         return self._publish(rpc, lambda: info, what)
 
     def publish_end_report(self, report: pb.NodeCycleEndReport) -> bool:
-        what = f"end report of cycle {report.cycle_number}"
-        stub = self._data_record_stub
-        rpc = stub.StreamDataRecords if stub is not None else None
-        return self._publish(rpc, lambda: _end_report_stream(report), what)
+        logger.warning(
+            f"Cannot publish the end report of cycle {report.cycle_number}: end reports are "
+            "sent on the launchers' log streams"
+        )
+        return False
 
     def close(self) -> None:
         """Nothing to release: calls complete before a publish returns."""
@@ -98,6 +85,61 @@ class GrpcCycleInfoPublisher(CycleInfoPublisher):
         except Exception as e:  # e.g. the caller closed the channel
             logger.warning(f"Failed to publish the {what}: {e!r}")
         return False
+
+
+class LogStreamEndReportPublisher(CycleInfoPublisher):
+    """Publishes a launcher's end reports as records of its gRPC log stream
+    (StreamDataRecords to its leaf or root log server, which forward them to the analyzer).
+
+    No call per report, so no server thread per report: the record is queued and sent
+    ahead of the queued log chunks, by the thread that streams the logs. A publish only
+    queues and never blocks; flush() waits until the queued reports were handed to the
+    stream. Best effort, like the log chunks: a report is lost if the stream breaks after it
+    was handed to gRPC; while the stream is down it waits for the next one.
+
+    Args:
+        put_record: Queues a DataRecord on the log stream; False when it cannot (logs are
+            not forwarded over gRPC). E.g. PipeBasedLogsSpecs.publish_record.
+        wait_for_records: Waits up to a timeout until the queued records were handed to the
+            stream; True if none is left. E.g. PipeBasedLogsSpecs.wait_for_records.
+    """
+
+    def __init__(
+        self,
+        put_record: Callable[[log_aggregation_pb2.DataRecord], bool],
+        wait_for_records: Callable[[float], bool],
+    ):
+        self._put_record = put_record
+        self._wait_for_records = wait_for_records
+
+    def publish_cycle_info(self, info: pb.NVRxCycleInfo) -> bool:
+        logger.debug(f"Not publishing the start of cycle {info.cycle_number}: not a store host")
+        return False
+
+    def update_cycle_info(self, info: pb.NVRxCycleInfo) -> bool:
+        logger.debug(f"Not publishing the end of cycle {info.cycle_number}: not a store host")
+        return False
+
+    def publish_end_report(self, report: pb.NodeCycleEndReport) -> bool:
+        try:
+            if self._put_record(log_aggregation_pb2.DataRecord(node_cycle_end_report=report)):
+                return True
+            logger.warning(
+                f"Cannot publish the end report of cycle {report.cycle_number}: logs are not "
+                "forwarded over gRPC"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to publish the end report of cycle {report.cycle_number}: {e!r}"
+            )
+        return False
+
+    def flush(self, timeout: float) -> bool:
+        try:
+            return self._wait_for_records(timeout)
+        except Exception as e:
+            logger.warning(f"Failed to wait for the end reports to be sent: {e!r}")
+            return False
 
 
 def _drain(records: queue.SimpleQueue) -> List:

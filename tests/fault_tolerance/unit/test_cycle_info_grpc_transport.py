@@ -1,21 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import queue
 from concurrent import futures
 from unittest.mock import MagicMock, patch
 
 import grpc
 import pytest
 
+from nvidia_resiliency_ext.fault_tolerance import per_cycle_logs
 from nvidia_resiliency_ext.fault_tolerance.cycle_info import grpc_transport
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import (
     GrpcCycleInfoPublisher,
     GrpcCycleInfoReader,
+    LogStreamEndReportPublisher,
 )
 from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     build_cycle_info,
     ended_cycle_info,
 )
+from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import GrpcWriterThread
 from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2_grpc as pb_grpc
@@ -69,24 +73,18 @@ class TestPublisher:
         stub.UpdateCycleInfo.assert_called_once_with(END, timeout=2.0)
         assert stub.PublishCycleInfo.call_args.args[0] is START
 
-    def test_end_report_is_a_one_record_stream(self):
+    def test_end_reports_are_not_published_here(self):
+        """Launchers send them on their log stream (LogStreamEndReportPublisher)."""
         stub = MagicMock()
-        publisher = GrpcCycleInfoPublisher(data_record_stub=stub, rpc_timeout=2.0)
+        with patch.object(grpc_transport, "logger") as logger:
+            assert GrpcCycleInfoPublisher(cycle_info_stub=stub).publish_end_report(REPORT) is False
+        logger.warning.assert_called_once()
+        assert not stub.mock_calls
 
-        assert publisher.publish_end_report(REPORT) is True
-
-        (requests,), kwargs = stub.StreamDataRecords.call_args
-        assert kwargs == {"timeout": 2.0}
-        assert list(requests) == [log_aggregation_pb2.DataRecord(node_cycle_end_report=REPORT)]
-
-    @pytest.mark.parametrize("kind", ["cycle_info", "end_report"])
-    def test_publish_without_the_stub_is_dropped(self, kind):
+    def test_publish_without_the_stub_is_dropped(self):
         publisher = GrpcCycleInfoPublisher()
         with patch.object(grpc_transport, "logger") as logger:
-            if kind == "cycle_info":
-                assert publisher.publish_cycle_info(START) is False
-            else:
-                assert publisher.publish_end_report(REPORT) is False
+            assert publisher.publish_cycle_info(START) is False
         logger.warning.assert_called_once()
 
     def test_failed_call_logs_the_grpc_core_debug_string_without_raising(self):
@@ -100,22 +98,56 @@ class TestPublisher:
         assert "CANCELLED" in message
         assert "Received RST_STREAM with error code 8" in message
 
-    def test_unexpected_error_is_logged_without_raising(self):
-        stub = MagicMock()
-        stub.StreamDataRecords.side_effect = ValueError("Cannot invoke RPC on closed channel!")
+
+class TestLogStreamEndReportPublisher:
+    """End reports are queued as records of the launcher's log stream."""
+
+    @staticmethod
+    def _publisher(put_result=True, wait_result=True):
+        put_record, wait_for_records = MagicMock(return_value=put_result), MagicMock(
+            return_value=wait_result
+        )
+        return LogStreamEndReportPublisher(put_record, wait_for_records), put_record
+
+    def test_end_report_is_queued_as_a_data_record(self):
+        publisher, put_record = self._publisher()
+        assert publisher.publish_end_report(REPORT) is True
+        put_record.assert_called_once_with(
+            log_aggregation_pb2.DataRecord(node_cycle_end_report=REPORT)
+        )
+
+    def test_end_report_without_a_grpc_log_stream_is_dropped(self):
+        publisher, _ = self._publisher(put_result=False)
         with patch.object(grpc_transport, "logger") as logger:
-            publisher = GrpcCycleInfoPublisher(data_record_stub=stub)
             assert publisher.publish_end_report(REPORT) is False
         logger.warning.assert_called_once()
 
-    def test_record_failing_to_build_its_request_is_logged_without_raising(self):
-        stub = MagicMock()
-        publisher = GrpcCycleInfoPublisher(data_record_stub=stub)
+    def test_failure_is_logged_without_raising(self):
+        publisher, put_record = self._publisher()
+        put_record.side_effect = RuntimeError("boom")
+        with patch.object(grpc_transport, "logger") as logger:
+            assert publisher.publish_end_report(REPORT) is False
+        logger.warning.assert_called_once()
+
+    def test_a_record_that_is_not_an_end_report_is_dropped(self):
+        publisher, put_record = self._publisher()
         with patch.object(grpc_transport, "logger") as logger:
             # A cycle info where an end report is expected cannot go into a DataRecord.
             assert publisher.publish_end_report(START) is False
         logger.warning.assert_called_once()
-        stub.StreamDataRecords.assert_not_called()
+        put_record.assert_not_called()
+
+    def test_flush_waits_for_the_queued_records(self):
+        for wait_result in (True, False):
+            publisher, _ = self._publisher(wait_result=wait_result)
+            assert publisher.flush(2.0) is wait_result
+            publisher._wait_for_records.assert_called_once_with(2.0)
+
+    def test_cycle_infos_are_not_published(self):
+        publisher, put_record = self._publisher()
+        assert publisher.publish_cycle_info(START) is False
+        assert publisher.update_cycle_info(END) is False
+        put_record.assert_not_called()
 
 
 class _DataRecordReceiver(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
@@ -126,23 +158,40 @@ class _DataRecordReceiver(log_aggregation_pb2_grpc.DataRecordAggregationServiceS
         self.records.extend(request_iterator)
         return log_aggregation_pb2.StreamResponse(status="OK")
 
+    def HealthCheck(self, request, context):
+        return log_aggregation_pb2.HealthResponse(healthy=True)
 
-def test_end_report_reaches_a_log_server():
+
+def test_end_report_reaches_a_log_server_on_the_log_stream_ahead_of_queued_logs():
     receiver = _DataRecordReceiver()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(receiver, server)
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
-    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+    write_queue = queue.Queue()
+    for line in range(3):
+        write_queue.put(("/logs/train_cycle3.log", f"line {line}\n"))
+    writer = GrpcWriterThread(write_queue, f"127.0.0.1:{port}", "node001", MagicMock())
+    publisher = LogStreamEndReportPublisher(
+        lambda record: writer.put_record(record) or True, writer.wait_for_records
+    )
     try:
-        stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
-        assert GrpcCycleInfoPublisher(data_record_stub=stub).publish_end_report(REPORT)
+        # No initial stagger, so the test does not wait for it.
+        with patch.object(per_cycle_logs.random, "uniform", return_value=0.0):
+            assert publisher.publish_end_report(REPORT)
+            writer.start()
+            assert publisher.flush(10)
+            writer.shutdown()
+            writer.join(10)
+        assert not writer.is_alive()
 
-        # The publish returned once the server had the record.
-        (record,) = receiver.records
-        assert record.node_cycle_end_report == REPORT
+        # One stream: the end report first, then the logs queued before it.
+        kinds = [record.WhichOneof("record") for record in receiver.records]
+        assert kinds == ["node_cycle_end_report", "log_chunk", "log_chunk", "log_chunk"]
+        assert receiver.records[0].node_cycle_end_report == REPORT
+        assert writer.total_records_sent == 1
     finally:
-        channel.close()
+        writer.shutdown()
         server.stop(grace=None)
 
 
