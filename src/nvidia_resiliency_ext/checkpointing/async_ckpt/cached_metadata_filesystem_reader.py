@@ -15,7 +15,7 @@
 
 """ FS Reader with metadata cached support. """
 
-import dataclasses
+import copy
 import functools
 import os
 import warnings
@@ -73,8 +73,12 @@ class CachedMetadataFileSystemReader(FileSystemReader):
         if not self._cache_metadata:
             return super().read_metadata(*args, **kwargs)
         metadata = self._read_cached_metadata(os.path.abspath(self.path), *args, **kwargs)
-        storage_meta = dataclasses.replace(metadata.storage_meta, load_id=self.load_id)
-        return dataclasses.replace(metadata, storage_meta=storage_meta)
+        # Copy by attribute: metadata unpickled from a checkpoint written by an older torch
+        # lacks the fields torch has added since, which dataclasses.replace would read.
+        metadata = copy.copy(metadata)
+        metadata.storage_meta = copy.copy(metadata.storage_meta)
+        metadata.storage_meta.load_id = self.load_id
+        return metadata
 
     @classmethod
     def clear_metadata_cache(cls, path: Union[str, os.PathLike, None] = None) -> None:

@@ -19,6 +19,7 @@ The cache shows by overwriting a checkpoint on disk: a cached read returns the o
 """
 
 import os
+import pickle
 
 import pytest
 import torch
@@ -101,3 +102,21 @@ def test_dcp_load(checkpoints):
     state = {"y": torch.zeros(2)}
     dcp.load(state, checkpoint_id=b, storage_reader=reader)
     assert torch.equal(state["y"], torch.ones(2))
+
+
+def test_metadata_from_older_torch(checkpoints):
+    """Metadata pickled before torch added StorageMeta.modules lacks that attribute."""
+    a, _ = checkpoints
+    path = os.path.join(a, ".metadata")
+    with open(path, "rb") as f:
+        metadata = pickle.load(f)
+    del metadata.storage_meta.modules
+    with open(path, "wb") as f:
+        pickle.dump(metadata, f)
+
+    first, second = Reader(a), Reader(a)
+    assert first.read_metadata().storage_meta.load_id == first.load_id
+    assert second.read_metadata().storage_meta.load_id == second.load_id
+    state = {"x": torch.zeros(4)}
+    dcp.load(state, storage_reader=Reader(a))
+    assert torch.equal(state["x"], torch.arange(4.0))
