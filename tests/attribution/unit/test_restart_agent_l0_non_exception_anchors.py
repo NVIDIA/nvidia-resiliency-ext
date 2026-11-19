@@ -45,12 +45,51 @@ def test_ordinary_output_still_scores_zero(line):
     assert _terminal_episode_priority(line) == 0
 
 
-def test_a_typed_exception_still_outranks_them(tmp_path):
-    """These sit below the typed surfaces: an exception elsewhere in the log is
-    the better anchor whenever there is one."""
-    assert _terminal_episode_priority("RuntimeError: boom") > _terminal_episode_priority(
-        "train.py: error: unrecognized arguments: --x"
-    )
+def _primary_quote(tmp_path, lines: list[str]) -> str:
+    log = tmp_path / "run_2200100_date_x_cycle0.log"
+    log.write_text("".join(lines))
+    primary = build_l0_bundle(str(log)).deterministic_primary_candidate
+    assert primary is not None
+    return primary.quote or ""
+
+
+_ARGPARSE = "0: pretrain.py: error: unrecognized arguments: --save-main-grads-interval 1\n"
+_EXCEPTION = "0: RuntimeError: boom\n"
+
+
+@pytest.mark.parametrize(
+    "lines, expected",
+    [
+        pytest.param([_ARGPARSE, _EXCEPTION], "RuntimeError", id="argparse_then_exception"),
+        pytest.param([_EXCEPTION, _ARGPARSE], "RuntimeError", id="exception_then_argparse"),
+    ],
+)
+def test_a_typed_exception_outranks_them_inside_one_episode(tmp_path, lines, expected):
+    """Within a single episode the typed surface is the better anchor, whichever
+    order the two lines appear in.
+
+    Asserted through build_l0_bundle rather than by comparing priorities.
+    ``_terminal_episode_priority`` is a gate: callers only ever test it against
+    zero, so two scores being ordered says nothing about which line is chosen.
+    """
+
+    assert expected in _primary_quote(tmp_path, lines)
+
+
+def test_across_episodes_the_earlier_failure_anchors_instead(tmp_path):
+    """The preference above does not reach across the log.
+
+    Separated by more than UNRANKED_TRACEBACK_SCAN_LINES the two stop being one
+    episode, and primary selection orders episodes by source position rather
+    than by priority. A launcher rejected at startup is then the anchor and the
+    exception that follows is downstream of it - which is the right answer
+    here, and the reason the preference is scoped to one episode rather than
+    stated as a global rule.
+    """
+
+    distant = [_ARGPARSE, *[f"0: iteration {i}/1000 | loss 1.5\n" for i in range(130)], _EXCEPTION]
+
+    assert "unrecognized arguments" in _primary_quote(tmp_path, distant)
 
 
 def test_an_argparse_rejection_produces_a_primary(tmp_path):
