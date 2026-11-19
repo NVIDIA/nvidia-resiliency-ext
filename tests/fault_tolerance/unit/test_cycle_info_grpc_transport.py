@@ -20,7 +20,10 @@ from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
     ended_cycle_info,
 )
 from nvidia_resiliency_ext.fault_tolerance.per_cycle_logs import GrpcWriterThread
-from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
+from nvidia_resiliency_ext.shared_utils.proto import (
+    data_records_aggregation_pb2,
+    data_records_aggregation_pb2_grpc,
+)
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2_grpc as pb_grpc
 
@@ -113,7 +116,7 @@ class TestLogStreamEndReportPublisher:
         publisher, put_record = self._publisher()
         assert publisher.publish_end_report(REPORT) is True
         put_record.assert_called_once_with(
-            log_aggregation_pb2.DataRecord(node_cycle_end_report=REPORT)
+            data_records_aggregation_pb2.DataRecord(node_cycle_end_report=REPORT)
         )
 
     def test_end_report_without_a_grpc_log_stream_is_dropped(self):
@@ -150,22 +153,24 @@ class TestLogStreamEndReportPublisher:
         put_record.assert_not_called()
 
 
-class _DataRecordReceiver(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
+class _DataRecordReceiver(data_records_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
     def __init__(self):
         self.records = []
 
     def StreamDataRecords(self, request_iterator, context):
         self.records.extend(request_iterator)
-        return log_aggregation_pb2.StreamResponse(status="OK")
+        return data_records_aggregation_pb2.StreamResponse(status="OK")
 
     def HealthCheck(self, request, context):
-        return log_aggregation_pb2.HealthResponse(healthy=True)
+        return data_records_aggregation_pb2.HealthResponse(healthy=True)
 
 
 def test_end_report_reaches_a_log_server_on_the_log_stream_ahead_of_queued_logs():
     receiver = _DataRecordReceiver()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(receiver, server)
+    data_records_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(
+        receiver, server
+    )
     port = server.add_insecure_port("127.0.0.1:0")
     server.start()
     write_queue = queue.Queue()

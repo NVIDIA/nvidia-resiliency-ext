@@ -21,7 +21,10 @@ import time
 import grpc
 import pytest
 
-from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2, log_aggregation_pb2_grpc
+from nvidia_resiliency_ext.shared_utils.proto import (
+    data_records_aggregation_pb2,
+    data_records_aggregation_pb2_grpc,
+)
 
 WORLD_SIZE = 2
 DEFAULT_TIMEOUT = 30
@@ -133,10 +136,10 @@ def test_grpc_server_health_check(tmp_dir):
 
         # Try health check
         channel = grpc.insecure_channel(f'localhost:{port}')
-        stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
+        stub = data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
 
         # Send health check
-        response = stub.HealthCheck(log_aggregation_pb2.HealthRequest(), timeout=5.0)
+        response = stub.HealthCheck(data_records_aggregation_pb2.HealthRequest(), timeout=5.0)
 
         assert response.healthy is True, "Server should report as healthy"
         assert response.connected_clients == 0, "Should have 0 connected clients initially"
@@ -152,11 +155,13 @@ def _wait_for_grpc_server_ready(port, timeout=10.0, poll_interval=0.2):
     """Wait until gRPC server responds to health check or timeout."""
     channel = grpc.insecure_channel(f'localhost:{port}')
     try:
-        stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
+        stub = data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                response = stub.HealthCheck(log_aggregation_pb2.HealthRequest(), timeout=2.0)
+                response = stub.HealthCheck(
+                    data_records_aggregation_pb2.HealthRequest(), timeout=2.0
+                )
                 if response.healthy:
                     return
             except grpc.RpcError:

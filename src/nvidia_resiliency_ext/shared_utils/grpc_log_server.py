@@ -92,8 +92,8 @@ from nvidia_resiliency_ext.shared_utils.os_utils import (
 # Note: Proto files are in shared_utils/proto/ and compiled during build (build.py)
 try:
     from nvidia_resiliency_ext.shared_utils.proto import (
-        log_aggregation_pb2,
-        log_aggregation_pb2_grpc,
+        data_records_aggregation_pb2,
+        data_records_aggregation_pb2_grpc,
         nvrx_interface_pb2,
         nvrx_interface_pb2_grpc,
     )
@@ -104,8 +104,8 @@ except ImportError:
 
     # Add shared_utils/proto to path
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_utils', 'proto'))
-    import log_aggregation_pb2
-    import log_aggregation_pb2_grpc
+    import data_records_aggregation_pb2
+    import data_records_aggregation_pb2_grpc
     import nvrx_interface_pb2
     import nvrx_interface_pb2_grpc
 
@@ -229,7 +229,9 @@ class _EndReportForwarder:
         self._channel.close()
 
 
-class LogAggregationServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
+class LogAggregationServicer(
+    data_records_aggregation_pb2_grpc.DataRecordAggregationServiceServicer
+):
     """
     gRPC servicer that receives log streams from multiple clients.
 
@@ -523,7 +525,9 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.DataRecordAggregationServi
             # This avoids severe lock contention when many clients (e.g., 768 clients
             # writing to 2 files) disconnect simultaneously during shutdown.
 
-            return log_aggregation_pb2.StreamResponse(status="OK", bytes_received=client_bytes)
+            return data_records_aggregation_pb2.StreamResponse(
+                status="OK", bytes_received=client_bytes
+            )
 
         except (OSError, IOError) as e:
             src = (
@@ -586,7 +590,7 @@ class LogAggregationServicer(log_aggregation_pb2_grpc.DataRecordAggregationServi
         with self.clients_lock:
             clients = self.connected_clients
 
-        return log_aggregation_pb2.HealthResponse(healthy=True, connected_clients=clients)
+        return data_records_aggregation_pb2.HealthResponse(healthy=True, connected_clients=clients)
 
     def _flush_file_buffer_locked(self, file_path: str, file_state: Dict[str, Any]):
         """
@@ -928,7 +932,9 @@ def serve(
     )
 
     # Add servicer to server
-    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
+    data_records_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(
+        servicer, server
+    )
 
     # Bind to address
     server_address = f'{host}:{port}'

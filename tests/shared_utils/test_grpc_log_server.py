@@ -18,7 +18,7 @@ import pytest
 from nvidia_resiliency_ext.shared_utils import grpc_log_server
 from nvidia_resiliency_ext.shared_utils.grpc_log_server import LogAggregationServicer, serve
 from nvidia_resiliency_ext.shared_utils.proto import (
-    log_aggregation_pb2,
+    data_records_aggregation_pb2,
     nvrx_interface_pb2,
     nvrx_interface_pb2_grpc,
 )
@@ -31,7 +31,7 @@ _TEST_ROOTS = ["/tmp", tempfile.gettempdir()]
 def _records(chunks):
     """`chunks` as the DataRecord stream StreamDataRecords receives."""
     for chunk in chunks:
-        yield log_aggregation_pb2.DataRecord(log_chunk=chunk)
+        yield data_records_aggregation_pb2.DataRecord(log_chunk=chunk)
 
 
 class TestLogAggregationServicer:
@@ -55,13 +55,13 @@ class TestLogAggregationServicer:
 
         # Create mock chunks for different files
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data for file1\n", file_path=file1
             ),
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"More data for file1\n", file_path=file1
             ),
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data for file2\n", file_path=file2
             ),
         ]
@@ -102,7 +102,7 @@ class TestLogAggregationServicer:
         chunks = []
         for i in range(5):
             chunks.append(
-                log_aggregation_pb2.LogChunk(
+                data_records_aggregation_pb2.LogChunk(
                     node_id="node_1",
                     data=f"Line {i}: {'X' * 30}\n".encode('utf-8'),  # ~40 bytes each
                     file_path=log_file,
@@ -128,7 +128,7 @@ class TestLogAggregationServicer:
         log_file = os.path.join(temp_log_dir, "disconnect.log")
 
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Log before disconnect\n", file_path=log_file
             ),
         ]
@@ -153,19 +153,19 @@ class TestLogAggregationServicer:
 
         # Simulate 3 clients
         client1_chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Client 1 log\n", file_path=log_file
             ),
         ]
 
         client2_chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_2", data=b"Client 2 log\n", file_path=log_file
             ),
         ]
 
         client3_chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_3", data=b"Client 3 log\n", file_path=log_file
             ),
         ]
@@ -190,7 +190,7 @@ class TestLogAggregationServicer:
     def test_invalid_file_path_raises_value_error(self, servicer):
         """Test that empty file_path raises ValueError."""
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data\n", file_path=""  # Empty file_path
             ),
         ]
@@ -212,7 +212,7 @@ class TestLogAggregationServicer:
         mock_context = MagicMock()
 
         # Call HealthCheck
-        response = servicer.HealthCheck(log_aggregation_pb2.HealthRequest(), mock_context)
+        response = servicer.HealthCheck(data_records_aggregation_pb2.HealthRequest(), mock_context)
 
         # Should return healthy
         assert response.healthy is True
@@ -224,10 +224,10 @@ class TestLogAggregationServicer:
 
         # Write to multiple files without exceeding buffer
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Pending data file1\n", file_path=file1
             ),
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Pending data file2\n", file_path=file2
             ),
         ]
@@ -252,7 +252,7 @@ class TestLogAggregationServicer:
         # Stream 1000 chunks
         def chunk_generator():
             for i in range(1000):
-                yield log_aggregation_pb2.LogChunk(
+                yield data_records_aggregation_pb2.LogChunk(
                     node_id="node_1", data=f"Line {i}\n".encode('utf-8'), file_path=log_file
                 )
 
@@ -277,7 +277,9 @@ class TestLogAggregationServicer:
         binary_data = b'\x00\x01\x02\xff\xfe\n'
 
         chunks = [
-            log_aggregation_pb2.LogChunk(node_id="node_1", data=binary_data, file_path=log_file),
+            data_records_aggregation_pb2.LogChunk(
+                node_id="node_1", data=binary_data, file_path=log_file
+            ),
         ]
 
         mock_context = MagicMock()
@@ -297,7 +299,7 @@ class TestLogAggregationServicer:
         servicer = LogAggregationServicer(allowed_roots=_TEST_ROOTS)
 
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data in nested dir\n", file_path=nested_file
             ),
         ]
@@ -329,7 +331,7 @@ class TestPeriodicFlush:
 
         # Write small amount of data (won't trigger buffer flush)
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Small data\n", file_path=str(log_file)
             ),
         ]
@@ -375,7 +377,7 @@ class TestHeuristicCycleLogCompletion:
         servicer.StreamDataRecords(
             _records(
                 [
-                    log_aggregation_pb2.LogChunk(
+                    data_records_aggregation_pb2.LogChunk(
                         node_id="node_1",
                         data=data,
                         file_path=str(log_file),
@@ -460,7 +462,7 @@ class TestHeuristicCycleLogCompletion:
                 servicer.StreamDataRecords(
                     _records(
                         [
-                            log_aggregation_pb2.LogChunk(
+                            data_records_aggregation_pb2.LogChunk(
                                 node_id="node_1",
                                 data=b"regular data\n",
                                 file_path=str(log_file),
@@ -593,7 +595,7 @@ class TestGracefulShutdown:
 
         # Write data
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data before graceful shutdown\n", file_path=str(log_file)
             ),
         ]
@@ -612,7 +614,7 @@ class TestGracefulShutdown:
 
 
 def _chunk(file_path, data=b"payload\n", node_id="evil"):
-    return log_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
+    return data_records_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
 
 
 @pytest.fixture
@@ -806,14 +808,14 @@ class TestEndReportForwarding:
         )
         log_file = str(tmp_path / "train.log")
         records = [
-            log_aggregation_pb2.DataRecord(
-                log_chunk=log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.DataRecord(
+                log_chunk=data_records_aggregation_pb2.LogChunk(
                     node_id="n0", data=b"hello\n", file_path=log_file
                 )
             ),
-            log_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node="n0")),
-            log_aggregation_pb2.DataRecord(),  # empty: skipped
-            log_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node="n1")),
+            data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node="n0")),
+            data_records_aggregation_pb2.DataRecord(),  # empty: skipped
+            data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node="n1")),
         ]
 
         response = servicer.StreamDataRecords(iter(records), MagicMock())
@@ -827,7 +829,7 @@ class TestEndReportForwarding:
 
     def test_without_an_analyzer_end_reports_are_dropped_with_one_warning(self, tmp_path, caplog):
         servicer = LogAggregationServicer(allowed_roots=[str(tmp_path)])
-        records = [log_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report())] * 3
+        records = [data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report())] * 3
 
         with caplog.at_level(logging.WARNING, logger="LogAggregationServer"):
             response = servicer.StreamDataRecords(iter(records), MagicMock())
@@ -842,7 +844,7 @@ class TestEndReportForwarding:
             allowed_roots=[str(tmp_path)], cycle_analyzer_address=analyzer.address
         )
         records = [
-            log_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node=f"n{i}"))
+            data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node=f"n{i}"))
             for i in range(20)
         ]
         servicer.StreamDataRecords(iter(records), MagicMock())
@@ -856,7 +858,7 @@ class TestEndReportForwarding:
         servicer = LogAggregationServicer(
             allowed_roots=[str(tmp_path)], cycle_analyzer_address="127.0.0.1:1"
         )
-        record = log_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report())
+        record = data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report())
 
         with caplog.at_level(logging.WARNING, logger="LogAggregationServer"):
             response = servicer.StreamDataRecords(iter([record]), MagicMock())

@@ -23,8 +23,8 @@ from nvidia_resiliency_ext.shared_utils.grpc_log_leaf_server import (
 )
 from nvidia_resiliency_ext.shared_utils.grpc_log_server import LogAggregationServicer
 from nvidia_resiliency_ext.shared_utils.proto import (
-    log_aggregation_pb2,
-    log_aggregation_pb2_grpc,
+    data_records_aggregation_pb2,
+    data_records_aggregation_pb2_grpc,
     nvrx_interface_pb2,
 )
 
@@ -37,12 +37,16 @@ _TEST_ROOTS = ["/tmp", tempfile.gettempdir()]
 # ---------------------------------------------------------------------------
 
 
-def _chunk(data: bytes, file_path: str, node_id: str = "node_0") -> log_aggregation_pb2.LogChunk:
-    return log_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
+def _chunk(
+    data: bytes, file_path: str, node_id: str = "node_0"
+) -> data_records_aggregation_pb2.LogChunk:
+    return data_records_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
 
 
-def _record(chunk: log_aggregation_pb2.LogChunk) -> log_aggregation_pb2.DataRecord:
-    return log_aggregation_pb2.DataRecord(log_chunk=chunk)
+def _record(
+    chunk: data_records_aggregation_pb2.LogChunk,
+) -> data_records_aggregation_pb2.DataRecord:
+    return data_records_aggregation_pb2.DataRecord(log_chunk=chunk)
 
 
 def _records(chunks):
@@ -51,8 +55,10 @@ def _records(chunks):
         yield _record(chunk)
 
 
-def _end_report_record(node: str = "node0", cycle: int = 3) -> log_aggregation_pb2.DataRecord:
-    return log_aggregation_pb2.DataRecord(
+def _end_report_record(
+    node: str = "node0", cycle: int = 3
+) -> data_records_aggregation_pb2.DataRecord:
+    return data_records_aggregation_pb2.DataRecord(
         node_cycle_end_report=nvrx_interface_pb2.NodeCycleEndReport(
             job_id="job1",
             cycle_number=cycle,
@@ -66,7 +72,9 @@ def _end_report_record(node: str = "node0", cycle: int = 3) -> log_aggregation_p
 def _start_root_server(servicer, host: str = "127.0.0.1"):
     """Bind a gRPC root server on an ephemeral port; return (server, port)."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
+    data_records_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(
+        servicer, server
+    )
     port = server.add_insecure_port(f"{host}:0")
     server.start()
     return server, port
@@ -91,7 +99,9 @@ def _start_leaf_stack(upstream_addr: str, host: str = "127.0.0.1"):
         chunk_q, reject_ev, forwarder.upstream_ready, allowed_roots=_TEST_ROOTS
     )
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
+    data_records_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(
+        servicer, server
+    )
     leaf_port = server.add_insecure_port(f"{host}:0")
     server.start()
     return server, leaf_port, forwarder, servicer, chunk_q, stop_ev, reject_ev
@@ -112,7 +122,7 @@ def _stop_leaf_stack(server, forwarder, chunk_q, stop_ev):
 def _stream_to_addr(addr: str, chunks):
     """Open a client channel to addr and stream chunks."""
     ch = grpc.insecure_channel(addr)
-    stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(ch)
+    stub = data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub(ch)
     stub.StreamDataRecords(_records(chunks))
     ch.close()
 
@@ -198,19 +208,19 @@ class TestLeafLogServicer:
 
     def test_health_unhealthy_when_upstream_not_ready(self):
         svc, *_ = self._make(upstream_set=False)
-        resp = svc.HealthCheck(log_aggregation_pb2.HealthRequest(), MagicMock())
+        resp = svc.HealthCheck(data_records_aggregation_pb2.HealthRequest(), MagicMock())
         assert resp.healthy is False
 
     def test_health_healthy_when_upstream_ready(self):
         svc, *_ = self._make(upstream_set=True)
-        resp = svc.HealthCheck(log_aggregation_pb2.HealthRequest(), MagicMock())
+        resp = svc.HealthCheck(data_records_aggregation_pb2.HealthRequest(), MagicMock())
         assert resp.healthy is True
 
     def test_health_reports_connected_clients(self):
         svc, *_ = self._make(upstream_set=True)
         with svc.clients_lock:
             svc.connected_clients = 5
-        resp = svc.HealthCheck(log_aggregation_pb2.HealthRequest(), MagicMock())
+        resp = svc.HealthCheck(data_records_aggregation_pb2.HealthRequest(), MagicMock())
         assert resp.connected_clients == 5
 
     # --- StreamDataRecords ---------------------------------------------------
@@ -311,7 +321,7 @@ class TestTwoLevelLogAggregation:
             chunk_q, threading.Event(), forwarder.upstream_ready, allowed_roots=_TEST_ROOTS
         )
 
-        resp = svc.HealthCheck(log_aggregation_pb2.HealthRequest(), MagicMock())
+        resp = svc.HealthCheck(data_records_aggregation_pb2.HealthRequest(), MagicMock())
         assert resp.healthy is False
 
         stop_ev.set()
@@ -327,7 +337,7 @@ class TestTwoLevelLogAggregation:
         )
         try:
             assert forwarder.upstream_ready.wait(timeout=5.0)
-            resp = svc.HealthCheck(log_aggregation_pb2.HealthRequest(), MagicMock())
+            resp = svc.HealthCheck(data_records_aggregation_pb2.HealthRequest(), MagicMock())
             assert resp.healthy is True
         finally:
             _stop_leaf_stack(server, forwarder, chunk_q, stop_ev)
@@ -647,21 +657,23 @@ class TestLeafEndReports:
 
     def test_empty_records_are_skipped(self):
         servicer, chunk_q = self._servicer()
-        resp = servicer.StreamDataRecords(iter([log_aggregation_pb2.DataRecord()]), MagicMock())
+        resp = servicer.StreamDataRecords(
+            iter([data_records_aggregation_pb2.DataRecord()]), MagicMock()
+        )
         assert resp.status == "OK"
         assert chunk_q.qsize() == 0
 
     def test_end_reports_reach_the_root_through_the_leaf(self, tmp_path):
-        class _Root(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
+        class _Root(data_records_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
             def __init__(self):
                 self.records = []
 
             def StreamDataRecords(self, request_iterator, context):
                 self.records.extend(request_iterator)
-                return log_aggregation_pb2.StreamResponse(status="OK")
+                return data_records_aggregation_pb2.StreamResponse(status="OK")
 
             def HealthCheck(self, request, context):
-                return log_aggregation_pb2.HealthResponse(healthy=True)
+                return data_records_aggregation_pb2.HealthResponse(healthy=True)
 
         root = _Root()
         root_server, root_port = _start_root_server(root)
@@ -671,7 +683,7 @@ class TestLeafEndReports:
         try:
             assert forwarder.upstream_ready.wait(timeout=5.0), "leaf did not connect to root"
             channel = grpc.insecure_channel(f"127.0.0.1:{leaf_port}")
-            stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
+            stub = data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub(channel)
             chunk = _chunk(b"line\n", str(tmp_path / "x.log"))
             stub.StreamDataRecords(iter([_record(chunk), _end_report_record()]), timeout=5)
             channel.close()

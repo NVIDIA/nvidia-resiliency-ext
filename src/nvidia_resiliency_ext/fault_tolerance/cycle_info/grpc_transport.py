@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """gRPC transport of the cycle records: cycle infos over CycleInfoService (nvrx_interface.proto),
 end reports as records of the launchers' log streams (DataRecordAggregationService,
-log_aggregation.proto)."""
+data_records_aggregation.proto)."""
 
 import logging
 import queue
@@ -12,7 +12,7 @@ from typing import Callable, List, Optional
 import grpc
 
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig
-from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2
+from nvidia_resiliency_ext.shared_utils.proto import data_records_aggregation_pb2
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2_grpc as pb_grpc
 
@@ -106,7 +106,7 @@ class LogStreamEndReportPublisher(CycleInfoPublisher):
 
     def __init__(
         self,
-        put_record: Callable[[log_aggregation_pb2.DataRecord], bool],
+        put_record: Callable[[data_records_aggregation_pb2.DataRecord], bool],
         wait_for_records: Callable[[float], bool],
     ):
         self._put_record = put_record
@@ -122,7 +122,9 @@ class LogStreamEndReportPublisher(CycleInfoPublisher):
 
     def publish_end_report(self, report: pb.NodeCycleEndReport) -> bool:
         try:
-            if self._put_record(log_aggregation_pb2.DataRecord(node_cycle_end_report=report)):
+            if self._put_record(
+                data_records_aggregation_pb2.DataRecord(node_cycle_end_report=report)
+            ):
                 return True
             logger.warning(
                 f"Cannot publish the end report of cycle {report.cycle_number}: logs are not "

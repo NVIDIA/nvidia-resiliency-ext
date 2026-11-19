@@ -48,15 +48,15 @@ from nvidia_resiliency_ext.shared_utils.os_utils import (
 
 try:
     from nvidia_resiliency_ext.shared_utils.proto import (
-        log_aggregation_pb2,
-        log_aggregation_pb2_grpc,
+        data_records_aggregation_pb2,
+        data_records_aggregation_pb2_grpc,
     )
 except ImportError:
     import os
 
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'shared_utils', 'proto'))
-    import log_aggregation_pb2
-    import log_aggregation_pb2_grpc
+    import data_records_aggregation_pb2
+    import data_records_aggregation_pb2_grpc
 
 logger = logging.getLogger("LogLeafServer")
 
@@ -105,14 +105,14 @@ _GRPC_OPTS = [
 
 
 def _copy_chunk(
-    chunk: log_aggregation_pb2.LogChunk, file_path: Optional[str] = None
-) -> log_aggregation_pb2.LogChunk:
+    chunk: data_records_aggregation_pb2.LogChunk, file_path: Optional[str] = None
+) -> data_records_aggregation_pb2.LogChunk:
     """Copy ``chunk``, optionally substituting an already-validated ``file_path``.
 
     Forwarding the resolved path means the root does not have to re-resolve a string that
     could resolve differently later.
     """
-    return log_aggregation_pb2.LogChunk(
+    return data_records_aggregation_pb2.LogChunk(
         node_id=chunk.node_id,
         data=chunk.data,
         file_path=chunk.file_path if file_path is None else file_path,
@@ -145,12 +145,14 @@ class _LeafChunkQueue:
     def put_stop(self, timeout: float) -> None:
         self._q.put(_STOP, timeout=timeout)
 
-    def get_upstream(self, timeout: float) -> Union[log_aggregation_pb2.DataRecord, object]:
+    def get_upstream(
+        self, timeout: float
+    ) -> Union[data_records_aggregation_pb2.DataRecord, object]:
         return self._q.get(timeout=timeout)
 
     def put_record(
         self,
-        record: log_aggregation_pb2.DataRecord,
+        record: data_records_aggregation_pb2.DataRecord,
         reject: threading.Event,
         *,
         peer: str,
@@ -218,7 +220,7 @@ class _UpstreamForwarder:
     def _wait_root_ready(self, stub: Any) -> bool:
         while not self._stop.is_set():
             try:
-                r = stub.HealthCheck(log_aggregation_pb2.HealthRequest(), timeout=2.0)
+                r = stub.HealthCheck(data_records_aggregation_pb2.HealthRequest(), timeout=2.0)
                 if r.healthy:
                     return True
             except grpc.RpcError:
@@ -238,11 +240,11 @@ class _UpstreamForwarder:
                         ('grpc.keepalive_timeout_ms', 20000),
                     ],
                 )
-                stub = log_aggregation_pb2_grpc.DataRecordAggregationServiceStub(ch)
+                stub = data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub(ch)
                 if not self._wait_root_ready(stub):
                     break
 
-                def gen() -> Iterator[log_aggregation_pb2.DataRecord]:
+                def gen() -> Iterator[data_records_aggregation_pb2.DataRecord]:
                     while True:
                         try:
                             item = self._q.get_upstream(timeout=_UPSTREAM_QUEUE_GET_TIMEOUT_S)
@@ -282,7 +284,7 @@ class _UpstreamForwarder:
         logger.info("Upstream forwarder stopped")
 
 
-class LeafLogServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
+class LeafLogServicer(data_records_aggregation_pb2_grpc.DataRecordAggregationServiceServicer):
     def __init__(
         self,
         chunk_queue: _LeafChunkQueue,
@@ -349,7 +351,9 @@ class LeafLogServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServi
         if self._reject.is_set():
             context.abort(grpc.StatusCode.UNAVAILABLE, "leaf server is shutting down")
             # abort() may return without raising on older grpcio; do not fall through.
-            return log_aggregation_pb2.StreamResponse(status="UNAVAILABLE", bytes_received=0)
+            return data_records_aggregation_pb2.StreamResponse(
+                status="UNAVAILABLE", bytes_received=0
+            )
         with self.clients_lock:
             self.connected_clients += 1
         peer = _format_grpc_peer(context.peer())
@@ -387,7 +391,7 @@ class LeafLogServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServi
                     msg = f"peer={peer} node_id={chunk.node_id!r} sent chunk without file_path"
                     logger.error(f"Protocol error in leaf StreamDataRecords: {msg}")
                     context.abort(grpc.StatusCode.INVALID_ARGUMENT, msg)
-                    return log_aggregation_pb2.StreamResponse(
+                    return data_records_aggregation_pb2.StreamResponse(
                         status="INVALID_ARGUMENT", bytes_received=total
                     )
                 try:
@@ -398,12 +402,12 @@ class LeafLogServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServi
                         f"source_node_id={source_node_id}: {e}"
                     )
                     context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
-                    return log_aggregation_pb2.StreamResponse(
+                    return data_records_aggregation_pb2.StreamResponse(
                         status="INVALID_ARGUMENT", bytes_received=total
                     )
                 copied = _copy_chunk(chunk, file_path=target_path)
                 if not self._chunkq.put_record(
-                    log_aggregation_pb2.DataRecord(log_chunk=copied),
+                    data_records_aggregation_pb2.DataRecord(log_chunk=copied),
                     self._reject,
                     peer=peer,
                     source_node_id=source_node_id or 'n/a',
@@ -411,7 +415,7 @@ class LeafLogServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServi
                     break
                 total += len(chunk.data)
                 nchunks += 1
-            return log_aggregation_pb2.StreamResponse(status="OK", bytes_received=total)
+            return data_records_aggregation_pb2.StreamResponse(status="OK", bytes_received=total)
         finally:
             end_src = (
                 f"source_node_id={source_node_id}"
@@ -429,7 +433,7 @@ class LeafLogServicer(log_aggregation_pb2_grpc.DataRecordAggregationServiceServi
         with self.clients_lock:
             n = self.connected_clients
         ok = self._upstream_ready.is_set()
-        return log_aggregation_pb2.HealthResponse(healthy=ok, connected_clients=n)
+        return data_records_aggregation_pb2.HealthResponse(healthy=ok, connected_clients=n)
 
 
 def serve(
@@ -497,7 +501,9 @@ def serve(
         futures.ThreadPoolExecutor(max_workers=max_workers),
         options=_GRPC_OPTS,
     )
-    log_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(servicer, server)
+    data_records_aggregation_pb2_grpc.add_DataRecordAggregationServiceServicer_to_server(
+        servicer, server
+    )
     server.add_insecure_port(addr)
     server.start()
     logger.info(

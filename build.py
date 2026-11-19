@@ -101,7 +101,7 @@ def _compile_protos(proto_dir, proto_filenames):
 
     Args:
         proto_dir: Directory containing the .proto files and where output will be generated
-        proto_filenames: List of .proto file names (e.g., ['nvhcd.proto', 'log_aggregation.proto'])
+        proto_filenames: List of .proto file names (e.g., ['nvhcd.proto', 'nvrx_interface.proto'])
 
     Returns:
         list: Names of proto files that were successfully compiled
@@ -169,7 +169,7 @@ def build(setup_kwargs):
     proto_dir = os.path.join("src", "nvidia_resiliency_ext", "shared_utils", "proto")
     proto_files = [
         "nvhcd.proto",  # Health check service
-        "log_aggregation.proto",  # gRPC logging service
+        "data_records_aggregation.proto",  # gRPC data record (log chunk, end report) streams
         "nvrx_interface.proto",  # NVRx cycle info and the CycleAnalyzer's service
     ]
 

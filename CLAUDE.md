@@ -20,7 +20,7 @@ poetry build -f wheel
 STRAGGLER_DET_SKIP_CUPTI_EXT_BUILD=1 pip install .
 ```
 
-The build process (`build.py`) compiles three proto files (`nvhcd.proto`, `log_aggregation.proto`, `nvrx_interface.proto`) and optionally builds a pybind11 CUPTI extension for straggler detection. Generated `*_pb2.py` / `*_pb2_grpc.py` files are gitignored and regenerated at build time.
+The build process (`build.py`) compiles three proto files (`nvhcd.proto`, `data_records_aggregation.proto`, `nvrx_interface.proto`) and optionally builds a pybind11 CUPTI extension for straggler detection. Generated `*_pb2.py` / `*_pb2_grpc.py` files are gitignored and regenerated at build time.
 
 Built wheels intentionally exclude source-only legacy LogSage code under
 `src/nvidia_resiliency_ext/attribution/legacy_logsage/`. Use a source checkout
@@ -114,7 +114,7 @@ Deployment assets for standalone services: `attrsvc/` (FastAPI server for LLM lo
 
 Three proto files define services:
 - `nvhcd.proto` — Rank monitor heartbeat/health check service
-- `log_aggregation.proto` — Centralized log collection
+- `data_records_aggregation.proto` — Centralized log collection, and the launchers' cycle end reports on the same streams
 - `nvrx_interface.proto` — NVRx cycle info
 
 Generated stubs are gitignored. If you modify `.proto` files, rebuild with `pip install .` or run `build.py` directly.

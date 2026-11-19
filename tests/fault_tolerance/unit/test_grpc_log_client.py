@@ -97,7 +97,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -143,7 +143,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -190,7 +190,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.side_effect = health_check_side_effect
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -221,7 +221,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.side_effect = grpc.RpcError("Server unavailable")
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -278,7 +278,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -323,7 +323,7 @@ class TestGrpcWriterThread:
             mock_stub.HealthCheck.return_value = MagicMock(healthy=True, connected_clients=0)
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -378,7 +378,7 @@ class TestGrpcWriterThread:
             mock_stub.StreamDataRecords.side_effect = capture_chunks
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -424,7 +424,7 @@ class TestGrpcWriterThread:
             mock_stub.StreamDataRecords.side_effect = stream_logs_effect
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -484,7 +484,7 @@ class TestGrpcWriterThread:
             mock_stub.StreamDataRecords.side_effect = capture_chunks
 
             with patch(
-                'nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
+                'nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub',
                 return_value=mock_stub,
             ):
 
@@ -555,7 +555,7 @@ def test_shutdown_during_health_check_still_drains_queued_logs(monkeypatch):
     )
     monkeypatch.setattr(writer, "_wait_for_server_ready", wait_for_server)
     monkeypatch.setattr(
-        "nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub",
+        "nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub",
         lambda channel: stub,
     )
     monkeypatch.setattr(
@@ -573,10 +573,10 @@ def test_shutdown_during_health_check_still_drains_queued_logs(monkeypatch):
 
 
 def _end_report_record(cycle):
-    from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2
+    from nvidia_resiliency_ext.shared_utils.proto import data_records_aggregation_pb2
     from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
-    return log_aggregation_pb2.DataRecord(
+    return data_records_aggregation_pb2.DataRecord(
         node_cycle_end_report=pb.NodeCycleEndReport(cycle_number=cycle, node_id="node0")
     )
 
@@ -598,7 +598,7 @@ def _run_one_stream(monkeypatch, writer, on_record=None):
     stub.StreamDataRecords.side_effect = stream
     monkeypatch.setattr(writer, "_wait_for_server_ready", lambda: MagicMock())
     monkeypatch.setattr(
-        "nvidia_resiliency_ext.shared_utils.proto.log_aggregation_pb2_grpc.DataRecordAggregationServiceStub",
+        "nvidia_resiliency_ext.shared_utils.proto.data_records_aggregation_pb2_grpc.DataRecordAggregationServiceStub",
         lambda channel: stub,
     )
     monkeypatch.setattr(
