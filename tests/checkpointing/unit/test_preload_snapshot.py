@@ -19,6 +19,7 @@ import queue
 import weakref
 from unittest.mock import Mock
 
+import pytest
 import torch
 from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
@@ -171,9 +172,47 @@ def test_ipc_handles_dont_keep_a_sent_saves_tensors_alive():
     """Once the save is bound to a worker, the training process may free its tensors."""
     handles = PersistentIpcHandles()
     items, tensor = _tensor_write_items(1), torch.tensor(1.0)
-    identifier, _ = handles.acquire("key", items, [tensor])
-    StagedTensors(identifier, (items, [tensor]), None).for_worker(0)
+    identifier, planned = handles.acquire("key", items, [tensor])
+    StagedTensors(identifier, (items, [tensor]), None, planned).for_worker(0)
 
     alive = weakref.ref(tensor)
-    del tensor
+    del tensor, planned  # the save's request, which the caller drops once it is sent
     assert alive() is None
+
+
+requires_cuda = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="the IPC stager keeps the handles of GPU tensors"
+)
+
+
+@requires_cuda
+def test_a_save_sends_the_tensors_it_was_planned_with_after_a_later_save_moved_them():
+    """A save planned to send only the key goes to a worker that doesn't hold the tensors, after
+    a later save was planned with tensors whose storage moved."""
+    stager = make_stager(cpu_shm=False, persistent=True)
+    items = _tensor_write_items(1)
+    first = torch.full((4,), 1.0, device="cuda")
+    stager.stage(items, [first]).for_worker(0)
+    earlier = stager.stage(items, [first])
+    assert earlier.cached is None  # worker 0 holds them
+    stager.stage(items, [torch.full((4,), 2.0, device="cuda")])  # planned, not sent
+
+    _, (sent,) = earlier.for_worker(1).cached
+
+    assert sent.data_ptr() == first.data_ptr()
+
+
+@requires_cuda
+def test_a_worker_sent_an_earlier_saves_tensors_is_sent_the_current_ones_again():
+    """The earlier save replaced the later tensors in the worker's cache."""
+    stager = make_stager(cpu_shm=False, persistent=True)
+    items = _tensor_write_items(1)
+    first, moved = torch.full((4,), 1.0, device="cuda"), torch.full((4,), 2.0, device="cuda")
+    stager.stage(items, [first]).for_worker(0)
+    earlier = stager.stage(items, [first])
+    stager.stage(items, [moved]).for_worker(1)
+    earlier.for_worker(1)
+
+    _, (sent,) = stager.stage(items, [moved]).for_worker(1).cached
+
+    assert sent.data_ptr() == moved.data_ptr()
