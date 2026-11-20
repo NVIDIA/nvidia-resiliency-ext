@@ -109,6 +109,22 @@ class TestFileSystemWriterPrepareSnapshot:
         drain.assert_called_once_with()
         cuda_synchronize.assert_not_called()
 
+    def test_cpu_shm_resends_tensors_when_the_drain_finds_the_worker_dead(self, tmp_path):
+        """A drain that finds the worker dead clears the buffers, so the save that ran it must
+        send the next worker new shm tensors instead of relying on the dead one's."""
+        buffers = PersistentShmBuffers()
+        buffers.drain = Mock(side_effect=buffers.clear)
+        stager = ShmStager(buffers)
+        source = torch.tensor(1.0)
+
+        self._prepare_writer(tmp_path, [source], stager=stager)
+        source.fill_(2.0)
+        writer = self._prepare_writer(tmp_path, [source], stager=stager)
+
+        buffers.drain.assert_called_once_with()
+        _, (sent,) = writer._write_data.tensors.cached
+        assert torch.equal(sent, torch.tensor(2.0))
+
     def test_a_given_stager_uses_the_registered_drain(self, tmp_path):
         """Buffers a writer is given drain like the default ones before they are reused."""
         drain = Mock()
@@ -135,10 +151,11 @@ def test_a_save_that_cant_be_made_into_buckets_is_reported_as_failed(tmp_path):
     """The error reaches finalize like a failed write, rather than ending the worker."""
     # Only the key of tensors this process never received
     missing = StagedTensors(ConsistentDataIdentifier('never sent'), None, None)
-    write_data = _WriteData(str(tmp_path), None, missing, None, 1, None)
+    write_data = _WriteData(str(tmp_path), None, missing, None, 1, None, save_id=7)
     results, write_buckets = queue.Queue(), Mock()
 
     FileSystemWriterAsync.write_staged_data(write_buckets, 0, write_data, results)
 
-    assert isinstance(results.get_nowait(), RuntimeError)
+    save_id, error = results.get_nowait()
+    assert save_id == 7 and isinstance(error, RuntimeError)
     write_buckets.assert_not_called()

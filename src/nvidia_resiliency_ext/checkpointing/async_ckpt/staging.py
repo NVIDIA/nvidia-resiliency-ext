@@ -257,14 +257,16 @@ class PersistentShmBuffers(ShmBuffers):
         self._buffers: Dict[str, List[torch.Tensor]] = {}
 
     def acquire(self, key, tensors):
+        if key in self._buffers:
+            # The worker for checkpoint N may still be reading these buffers while we are
+            # about to overwrite them with checkpoint N+1 values. Drain before looking them
+            # up, because a drain that finds the worker dead clears them.
+            self._drain()
         buffers = self._buffers.get(key)
         if buffers is None:
             buffers = self._buffers[key] = _allocate_shm(tensors)
             logger.debug(f"Allocated {len(buffers)} shm tensors (key={key})")
             return buffers, ConsistentDataIdentifier(key), False
-        # The worker for checkpoint N may still be reading these buffers while we are about to
-        # overwrite them with checkpoint N+1 values.
-        self._drain()
         return buffers, ConsistentDataIdentifier(key), True
 
     def forget(self, key):

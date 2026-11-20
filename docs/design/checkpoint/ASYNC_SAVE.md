@@ -337,7 +337,7 @@ After finalizing the checkpoint, the coordinator broadcasts a failure flag to al
 
 `enable_cache` promises that the checkpoint structure doesn't change between saves, so the previous save's plans and metadata are reused without any communication during planning. Each rank still creates its local plan and compares it with the previous one, so a broken promise raises an error instead of writing a checkpoint whose `.metadata` doesn't match its data.
 
-Staging copies the new values into the same SHM tensors. If the previous checkpoint hasn't been finalized yet, its worker may still be reading them, so it is finalized first (`maybe_finalize_async_calls(blocking=True, no_dist=True)`, registered by `AsyncCallsQueue`). All ranks reach this point in the same save, so the finalization's collectives match. Every rank holds the coordinator's fqn list, so the ranks send index tables.
+Staging copies the new values into the same SHM tensors. If the previous checkpoint hasn't been finalized yet, its worker may still be reading them, so staging first waits until this rank's worker has finished writing (the drain, registered by `AsyncCallsQueue`). The drain only waits: it doesn't finalize, because finalizing is collective and ranks don't necessarily drain in the same save, for example when one rank reuses its SHM tensors and another allocates new ones. The previous checkpoint is finalized by the next `maybe_finalize_async_calls`, which every rank calls at the same point. Every rank holds the coordinator's fqn list, so the ranks send index tables.
 
 ```mermaid
 sequenceDiagram
@@ -356,8 +356,7 @@ sequenceDiagram
     else plan unchanged
         R->>R: cached global plan, finish_plan
         opt previous checkpoint not finalized yet (drain)
-            W-->>R: wait for this rank's worker to finish writing
-            R<<->>C: finalize the previous checkpoint: the collectives of Finalize below
+            W-->>R: wait for this rank's worker to finish writing, without finalizing
         end
         R->>R: ShmStager.stage: copy GPU to the cached SHM tensors
         Note over R,C: Cached: the coordinator's state dict table, reused as it is
