@@ -20,6 +20,8 @@ These cover optional instrumentation, span lifecycles, and recovery from
 telemetry setup failures. They run with or without nemo-lens installed.
 """
 
+import os
+import signal
 import threading
 import time
 import unittest
@@ -327,6 +329,75 @@ class TestFlushAndShutdown(unittest.TestCase):
         # Tolerate an unconfigured provider without force_flush.
         telemetry.flush()
         telemetry.flush(timeout_ms=1)
+
+    def test_signal_during_flush_reaches_the_caller(self):
+        # The launcher learns about SIGTERM from the exception its signal handler raises.
+        class Interrupted(Exception):
+            pass
+
+        def raise_interrupted(signum, frame):
+            raise Interrupted
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SwallowingProvider:
+            # Like the SDK and the OTLP exporter, which catch Exception around the request.
+            def force_flush(self, timeout_millis):
+                entered.set()
+                try:
+                    release.wait(5)
+                except Exception:
+                    pass
+
+        def send_signal():
+            if entered.wait(5):
+                os.kill(os.getpid(), signal.SIGUSR1)
+
+        provider = Mock(get_tracer_provider=Mock(return_value=SwallowingProvider()))
+        previous = signal.signal(signal.SIGUSR1, raise_interrupted)
+        sender = threading.Thread(target=send_signal)
+        try:
+            with (
+                patch.object(telemetry, "_AVAILABLE", True),
+                patch.object(telemetry, "_otel_trace", provider, create=True),
+            ):
+                sender.start()
+                with self.assertRaises(Interrupted, msg="flush() swallowed the signal"):
+                    telemetry.flush(timeout_ms=5000)
+        finally:
+            release.set()
+            sender.join()
+            signal.signal(signal.SIGUSR1, previous)
+
+    def test_flush_returns_while_provider_is_blocked(self):
+        class SlowProvider:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.release = threading.Event()
+                self.finished = threading.Event()
+
+            def force_flush(self, timeout_millis):
+                self.entered.set()
+                self.release.wait(5)
+                self.finished.set()
+
+        slow = SlowProvider()
+        provider = Mock(get_tracer_provider=Mock(return_value=slow))
+        try:
+            with (
+                patch.object(telemetry, "_AVAILABLE", True),
+                patch.object(telemetry, "_otel_trace", provider, create=True),
+            ):
+                started = time.monotonic()
+                telemetry.flush(timeout_ms=200)
+                elapsed = time.monotonic() - started
+            self.assertTrue(slow.entered.wait(1), "force_flush() was never called")
+            self.assertLess(elapsed, 2, "flush was not bounded")
+            self.assertFalse(slow.finished.is_set())
+        finally:
+            slow.release.set()
+            self.assertTrue(slow.finished.wait(1), "flush thread did not finish")
 
     def test_shutdown_returns_while_handle_is_blocked(self):
         class SlowHandle:
