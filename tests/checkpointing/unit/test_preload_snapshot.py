@@ -168,15 +168,17 @@ def test_two_stagers_of_the_same_items_send_a_worker_their_own_tensors(monkeypat
     assert torch.equal(received, torch.tensor(1.0))
 
 
-def test_ipc_handles_dont_keep_a_sent_saves_tensors_alive():
-    """Once the save is bound to a worker, the training process may free its tensors."""
+def test_a_sent_save_keeps_no_ipc_tensors_alive():
+    """Once a save planned to send only the key is bound to a worker, the training process may
+    free its tensors, although the queue and the writer keep the request until finalize."""
     handles = PersistentIpcHandles()
     items, tensor = _tensor_write_items(1), torch.tensor(1.0)
     identifier, planned = handles.acquire("key", items, [tensor])
-    StagedTensors(identifier, (items, [tensor]), None, planned).for_worker(0)
+    kept = StagedTensors(identifier, None, None, planned)
+    kept.for_worker(0)
 
     alive = weakref.ref(tensor)
-    del tensor, planned  # the save's request, which the caller drops once it is sent
+    del tensor, planned
     assert alive() is None
 
 

@@ -145,6 +145,9 @@ class StagedTensors(NamedTuple):
         if planned is None:
             return self
         sent = self._replace(planned=None)
+        # Every copy of the request shares `planned`, and the queue and the writer keep theirs
+        # until the save is finalized: release the tensors from all of them.
+        data, planned.data = planned.data, None
         holding = planned.holding
         if planned.version == holding.version:
             if worker_id in holding.workers:
@@ -154,7 +157,7 @@ class StagedTensors(NamedTuple):
             # A later save changed the tensors under the key. The worker will hold this save's,
             # which are no longer the current ones.
             holding.workers.discard(worker_id)
-        return sent if sent.cached is not None else sent._replace(cached=planned.data)
+        return sent if sent.cached is not None else sent._replace(cached=data)
 
 
 class _Holding:
@@ -176,12 +179,19 @@ class _Holding:
         return _Planned(self, self.version, data)
 
 
-class _Planned(NamedTuple):
-    """A save's kept tensors as it was planned, until its request is bound to a worker."""
+class _Planned:
+    """A save's kept tensors as it was planned, until its request is bound to a worker.
 
-    holding: _Holding
-    version: int
-    data: ItemsAndData
+    Args:
+        holding: the record of which workers hold the key's tensors.
+        version: the version of the key's tensors that this save planned with.
+        data: the save's kept tensors, released when the request is bound.
+    """
+
+    def __init__(self, holding: _Holding, version: int, data: ItemsAndData):
+        self.holding = holding
+        self.version = version
+        self.data: Optional[ItemsAndData] = data
 
     def held_by_a_worker(self) -> bool:
         """Whether some worker holds these tensors, so that the save may send only the key."""
