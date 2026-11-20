@@ -992,6 +992,17 @@ class LocalElasticAgent(SimpleElasticAgent):
                     self._record_cycle_end_report(CycleEndReasonWorkerTerminatedDueToPeer)
                     no_restart = rdzv_handler.no_restart_reason()
                     if no_restart is not None:
+                        # An attribution STOP stopped these workers. Under supervised
+                        # control the job-controller latches it and no launcher can, so
+                        # carry the cause into this launcher's end report. The detection
+                        # time recorded with it is kept.
+                        if (
+                            no_restart == RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP
+                            and self._cycle_end_report is not None
+                        ):
+                            self._cycle_end_report.end_reason = (
+                                CycleEndReasonWorkerTerminatedByAttribution
+                            )
                         logger.error(
                             "[%s] Another launcher reported a no-restart decision (%s); "
                             "terminating workers.",

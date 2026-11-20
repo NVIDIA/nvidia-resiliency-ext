@@ -110,11 +110,12 @@ class CycleAnalyzer:
     def process_received(self) -> None:
         """Handle the records received since the previous call, then write the cycles due."""
         now = time.monotonic()
+        # Starts and ends in arrival order, so a cycle's start is handled before its end.
         for info in self._reader.read_cycle_infos():
-            if self.report_cycle_start(info):
+            if info.cycle_end_time:  # an end: the store host's update
+                self.report_cycle_info_update(info)
+            elif self.report_cycle_start(info):
                 self._schedule_earlier_cycles(info.cycle_number, now)
-        for info in self._reader.read_cycle_info_updates():
-            self.report_cycle_info_update(info)
         updated = set()
         for report in self._reader.read_end_reports():
             if self.add_end_report(report):

@@ -805,6 +805,50 @@ class TestCycleEndReportPublishedBeforeTheJobEnds(unittest.TestCase):
         order = self._run(agent, WorkerState.HEALTHY)
         self.assertEqual(order, ["publish", "_stop_workers"])
 
+    def _published_end_reason(self, no_restart_reason):
+        """The end reason of the end report a healthy launcher publishes when a peer, or
+        the job-controller, opened the next round with `no_restart_reason`."""
+        agent = _healthy_agent(
+            self.fault_tol_cfg,
+            self.logs_specs,
+            is_next_round_open=True,
+            no_restart_reason=no_restart_reason,
+        )
+
+        def record(end_reason, failures=None):
+            agent._cycle_end_report = pb.NodeCycleEndReport(
+                end_reason=end_reason, detected_timestamp=123
+            )
+
+        published = []
+        self._run(
+            agent,
+            WorkerState.HEALTHY,
+            _record_cycle_end_report=record,
+            # A copy: the report as it was when published.
+            _publish_cycle_end_report=lambda wait=False: published.append(
+                pb.NodeCycleEndReport.FromString(agent._cycle_end_report.SerializeToString())
+            ),
+        )
+        (report,) = published
+        self.assertEqual(report.detected_timestamp, 123)  # kept from the recording
+        return report.end_reason
+
+    def test_an_attribution_stop_is_published_as_its_cause(self):
+        """Under supervised control the job-controller latches the STOP, so no launcher
+        records it itself: the launchers that follow it report the cause."""
+        self.assertEqual(
+            self._published_end_reason(RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP),
+            pb.CycleEndReasonWorkerTerminatedByAttribution,
+        )
+
+    def test_a_peer_no_progress_stop_is_published_as_following_the_peer(self):
+        """The launcher that found no progress reports it; the others follow it."""
+        self.assertEqual(
+            self._published_end_reason(RDZV_SHUTDOWN_REASON_NO_PROGRESS),
+            pb.CycleEndReasonWorkerTerminatedDueToPeer,
+        )
+
 
 class TestNoRestartTermination(unittest.TestCase):
     """The monitor loop consumes a latched STOP verdict and ends the job."""

@@ -141,11 +141,11 @@ enum EndReason {
   CycleEndReasonWorkerCompleted = 1;
   // A local worker failed
   CycleEndReasonWorkerFailed = 2;
-  // Stopped to follow another launcher's restart or no-restart decision
+  // Stopped to follow another launcher's restart, or its no-progress decision
   CycleEndReasonWorkerTerminatedDueToPeer = 3;
   // A rank monitor stopped a local worker on a timeout
   CycleEndReasonWorkerTerminatedByRankMonitor = 4;
-  // Stopped by an attribution STOP verdict (no restart)
+  // Stopped by an attribution STOP verdict (no restart), whichever node latched it
   CycleEndReasonWorkerTerminatedByAttribution = 5;
   // Stopped for no training progress across restarts (no restart)
   CycleEndReasonWorkerTerminatedDueToNoProgress = 6;

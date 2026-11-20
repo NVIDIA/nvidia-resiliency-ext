@@ -214,11 +214,10 @@ def test_reader_receives_each_kind_once(tmp_path, transport):
         # End reports reach the analyzer from the log root, directly over this RPC.
         stub.PublishNodeCycleEndReport(REPORT, timeout=5)
 
-        assert reader.read_cycle_infos() == [START]
-        assert reader.read_cycle_info_updates() == [END]
+        # A cycle's start and end are read together, in the order they were published.
+        assert reader.read_cycle_infos() == [START, END]
         assert reader.read_end_reports() == [REPORT]
         assert reader.read_cycle_infos() == []  # each record is read once
-        assert reader.read_cycle_info_updates() == []
         assert reader.read_end_reports() == []
     finally:
         channel.close()
@@ -244,7 +243,6 @@ def test_reader_rejects_a_record_failing_its_check(rpc):
             getattr(pb_grpc.CycleInfoServiceStub(channel), rpc)(message, timeout=5)
         assert error.value.code() == grpc.StatusCode.INVALID_ARGUMENT
         assert reader.read_cycle_infos() == []
-        assert reader.read_cycle_info_updates() == []
         assert reader.read_end_reports() == []
     finally:
         channel.close()

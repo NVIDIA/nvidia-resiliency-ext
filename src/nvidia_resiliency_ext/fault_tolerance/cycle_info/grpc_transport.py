@@ -156,21 +156,15 @@ def _drain(records: queue.SimpleQueue) -> List:
 class _ReaderServicer(pb_grpc.CycleInfoServiceServicer):
     """Checks each received record on the server's threads and queues it for reading."""
 
-    def __init__(
-        self,
-        cycle_infos: queue.SimpleQueue,
-        cycle_info_updates: queue.SimpleQueue,
-        end_reports: queue.SimpleQueue,
-    ):
+    def __init__(self, cycle_infos: queue.SimpleQueue, end_reports: queue.SimpleQueue):
         self._cycle_infos = cycle_infos
-        self._cycle_info_updates = cycle_info_updates
         self._end_reports = end_reports
 
     def PublishCycleInfo(self, request, context):
         return self._accept(check_cycle_info, request, self._cycle_infos, context)
 
     def UpdateCycleInfo(self, request, context):
-        return self._accept(check_cycle_info, request, self._cycle_info_updates, context)
+        return self._accept(check_cycle_info, request, self._cycle_infos, context)
 
     def PublishNodeCycleEndReport(self, request, context):
         return self._accept(check_node_cycle_end_report, request, self._end_reports, context)
@@ -204,21 +198,16 @@ class GrpcCycleInfoReader(CycleInfoReader):
 
     def __init__(self, address: str, max_workers: int = 4):
         self._cycle_infos: queue.SimpleQueue = queue.SimpleQueue()
-        self._cycle_info_updates: queue.SimpleQueue = queue.SimpleQueue()
         self._end_reports: queue.SimpleQueue = queue.SimpleQueue()
         self._server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
         pb_grpc.add_CycleInfoServiceServicer_to_server(
-            _ReaderServicer(self._cycle_infos, self._cycle_info_updates, self._end_reports),
-            self._server,
+            _ReaderServicer(self._cycle_infos, self._end_reports), self._server
         )
         self.port = self._server.add_insecure_port(address)
         self._server.start()
 
     def read_cycle_infos(self) -> List[pb.NVRxCycleInfo]:
         return _drain(self._cycle_infos)
-
-    def read_cycle_info_updates(self) -> List[pb.NVRxCycleInfo]:
-        return _drain(self._cycle_info_updates)
 
     def read_end_reports(self) -> List[pb.NodeCycleEndReport]:
         return _drain(self._end_reports)

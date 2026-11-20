@@ -26,17 +26,12 @@ from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
 class _ListReader(CycleInfoReader):
     def __init__(self):
-        self.starts = []
-        self.updates = []
+        self.infos = []  # cycle starts and ends, in arrival order
         self.end_reports = []
 
     def read_cycle_infos(self):
-        starts, self.starts = self.starts, []
-        return starts
-
-    def read_cycle_info_updates(self):
-        updates, self.updates = self.updates, []
-        return updates
+        infos, self.infos = self.infos, []
+        return infos
 
     def read_end_reports(self):
         end_reports, self.end_reports = self.end_reports, []
@@ -88,7 +83,7 @@ def _analyzer(reader):
 def test_cycle_starts_are_reported_in_arrival_order():
     reader = _ListReader()
     analyzer = _analyzer(reader)
-    reader.starts = [_start(0), _start(1)]
+    reader.infos = [_start(0), _start(1)]
 
     analyzer.process_received()
 
@@ -109,15 +104,21 @@ def test_end_reports_are_kept_by_cycle():
     }
 
 
-def test_cycle_info_updates_are_processed():
+def test_a_start_and_its_end_read_together_are_both_handled():
+    """A cycle's start and end can arrive between two reads; read in arrival order, the
+    start is handled before the end, so the end is not dropped as for an unknown cycle."""
     reader = _ListReader()
-    analyzer = CycleAnalyzer(reader, MagicMock())
-    reader.starts = [_start(3, ("n0", "n1"))]
-    reader.updates = [_end(3, ("n0", "n1"))]
+    reporter = MagicMock()
+    analyzer = CycleAnalyzer(reader, reporter)
+    reader.infos = [_start(3, ("n0", "n1")), _end(3, ("n0", "n1"))]
 
-    analyzer.process_received()
+    with patch.object(analyzer_module, "logger") as logger:
+        analyzer.process_received()
 
     assert analyzer._cycle_infos == {3: _end(3, ("n0", "n1"))}
+    reporter.report_cycle_start.assert_called_once()
+    reporter.report_cycle_end.assert_called_once()
+    logger.warning.assert_not_called()
 
 
 def test_run_processes_records_until_stopped_then_writes_the_open_cycles():
@@ -131,7 +132,7 @@ def test_run_processes_records_until_stopped_then_writes_the_open_cycles():
         stop_event.set()
 
     analyzer.report_cycle_start.side_effect = stop_after_first_records
-    reader.starts = [_start(0)]
+    reader.infos = [_start(0)]
     thread = threading.Thread(target=analyzer.run, args=(stop_event,))
     thread.start()
     thread.join(timeout=5)
@@ -144,7 +145,6 @@ def test_run_processes_records_until_stopped_then_writes_the_open_cycles():
 def test_a_failing_record_is_logged_and_the_loop_continues():
     reader = MagicMock()
     reader.read_cycle_infos.side_effect = [RuntimeError("boom"), [], []]
-    reader.read_cycle_info_updates.return_value = []
     reader.read_end_reports.return_value = []
     analyzer = CycleAnalyzer(reader, MagicMock(), poll_interval=0.01)
     stop_event = MagicMock()
@@ -376,12 +376,12 @@ class TestReportCycleStart:
     def test_an_ignored_start_does_not_schedule_earlier_cycles(self):
         reader = _ListReader()
         analyzer = CycleAnalyzer(reader, MagicMock())
-        reader.starts = [_start(4)]
+        reader.infos = [_start(4)]
         analyzer.process_received()
         reader.end_reports = [_end_report(2, "node0")]  # an open earlier cycle
         analyzer.process_received()
 
-        reader.starts = [_start(3)]  # older than 4: ignored
+        reader.infos = [_start(3)]  # older than 4: ignored
         analyzer.process_received()
 
         assert 2 not in analyzer._write_deadlines
@@ -587,7 +587,7 @@ class TestWhenCyclesAreWritten:
 
     def test_when_every_active_launcher_reported(self):
         analyzer, reader, _ = self._analyzer()
-        reader.starts = [_start(3, ("n0", "n1"))]
+        reader.infos = [_start(3, ("n0", "n1"))]
         reader.end_reports = [_end_report(3, "n0")]
         analyzer.process_received()
         assert self._written(analyzer) == []
@@ -599,7 +599,7 @@ class TestWhenCyclesAreWritten:
     def test_launchers_reporting_their_fqdn_complete_the_cycle(self):
         """The start's node lists carry short host names; end reports may carry the FQDN."""
         analyzer, reader, _ = self._analyzer()
-        reader.starts = [_start(3, ("n0", "n1"))]
+        reader.infos = [_start(3, ("n0", "n1"))]
         reader.end_reports = [_end_report(3, "n0.cluster"), _end_report(3, "n1.cluster")]
         analyzer.process_received()
         assert self._written(analyzer) == [3]
@@ -608,7 +608,7 @@ class TestWhenCyclesAreWritten:
         """Simulations run several launchers on a host: the start lists the host once, with
         one active rank per launcher, and each launcher reports as "<host>_<pid>"."""
         analyzer, reader, _ = self._analyzer()
-        reader.starts = [_start(3, ("n0", "n0", "n0"))]
+        reader.infos = [_start(3, ("n0", "n0", "n0"))]
         reader.end_reports = [_end_report(3, "n0_100"), _end_report(3, "n0_101")]
         analyzer.process_received()
         assert self._written(analyzer) == []
@@ -619,10 +619,10 @@ class TestWhenCyclesAreWritten:
 
     def test_after_the_grace_period_of_the_next_start(self):
         analyzer, reader, clock = self._analyzer()
-        reader.starts = [_start(3, ("n0", "n1"))]
+        reader.infos = [_start(3, ("n0", "n1"))]
         reader.end_reports = [_end_report(3, "n0")]  # n1 never reports
         analyzer.process_received()
-        reader.starts = [_start(4, ("n0", "n1"))]
+        reader.infos = [_start(4, ("n0", "n1"))]
         analyzer.process_received()
 
         clock.now += 9.9
@@ -634,7 +634,7 @@ class TestWhenCyclesAreWritten:
 
     def test_after_a_quiet_period_without_end_reports(self):
         analyzer, reader, clock = self._analyzer()
-        reader.starts = [_start(3, ("n0", "n1"))]
+        reader.infos = [_start(3, ("n0", "n1"))]
         reader.end_reports = [_end_report(3, "n0")]
         analyzer.process_received()
 
@@ -647,14 +647,13 @@ class TestWhenCyclesAreWritten:
 
     def test_the_end_update_alone_does_not_write_the_cycle(self):
         analyzer, reader, _ = self._analyzer()
-        reader.starts = [_start(3, ("n0", "n1"))]
-        reader.updates = [_end(3, ("n0", "n1"))]
+        reader.infos = [_start(3, ("n0", "n1")), _end(3, ("n0", "n1"))]
         analyzer.process_received()
         assert self._written(analyzer) == []
 
     def test_every_open_cycle_when_finishing(self):
         analyzer, reader, _ = self._analyzer()
-        reader.starts = [_start(3), _start(4)]
+        reader.infos = [_start(3), _start(4)]
         analyzer.process_received()
 
         analyzer.finish()
@@ -663,7 +662,7 @@ class TestWhenCyclesAreWritten:
 
     def test_a_cycle_is_written_once_and_late_end_reports_are_ignored(self):
         analyzer, reader, clock = self._analyzer()
-        reader.starts = [_start(3, ("n0",))]
+        reader.infos = [_start(3, ("n0",))]
         reader.end_reports = [_end_report(3, "n0")]
         analyzer.process_received()
         assert self._written(analyzer) == [3]

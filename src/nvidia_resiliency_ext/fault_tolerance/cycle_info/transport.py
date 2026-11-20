@@ -76,11 +76,9 @@ class CycleInfoReader(ABC):
 
     @abstractmethod
     def read_cycle_infos(self) -> List[NVRxCycleInfo]:
-        """Return the published cycle infos (cycle starts) received since the previous call."""
-
-    @abstractmethod
-    def read_cycle_info_updates(self) -> List[NVRxCycleInfo]:
-        """Return the updated cycle infos (cycle ends) received since the previous call."""
+        """Return the cycle infos received since the previous call: the published ones
+        (cycle starts) and the updated ones (cycle ends, with cycle_end_time), together in
+        arrival order, so a cycle's start always comes before its end."""
 
     @abstractmethod
     def read_end_reports(self) -> List[NodeCycleEndReport]:

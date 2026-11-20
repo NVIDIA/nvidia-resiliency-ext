@@ -112,9 +112,11 @@ example policy is separate from this control-host refactor.
 The specific cause is recorded in the rendezvous store shutdown key as ``attribution_stop``
 or ``no_progress``, and is named in the launcher logs, so the two remain distinguishable
 for diagnosis without complicating the scheduler contract. With cycle end reports
-enabled, the last cycle's record also names it: the deciding launchers report
-``CycleEndReasonWorkerTerminatedByAttribution`` or
-``CycleEndReasonWorkerTerminatedDueToNoProgress``.
+enabled, the last cycle's record also names it. After an attribution stop, every
+launcher reports ``CycleEndReasonWorkerTerminatedByAttribution``, including when the
+job-controller latched the verdict. After a no-progress stop, the launchers that
+found no progress report ``CycleEndReasonWorkerTerminatedDueToNoProgress`` and the
+others ``CycleEndReasonWorkerTerminatedDueToPeer``.
 
 Running out of restarts is deliberately *not* one of these cases. Exhausting
 ``--max-restarts`` means this launcher used up its retry budget, not that the job is

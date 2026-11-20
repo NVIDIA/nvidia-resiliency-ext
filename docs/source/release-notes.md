@@ -24,10 +24,14 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   the end reason, the nodes that first observed the end and when, and each
   launcher's report with its failed or stopped workers. Requires gRPC log
   aggregation. See [operations](fault_tolerance/operations.rst).
-- `log_aggregation.proto` is renamed `data_records_aggregation.proto`; its stream
-  now also carries the end reports. The wire protocol is unchanged, but code that
-  imports the generated `log_aggregation_pb2*` modules must use
-  `data_records_aggregation_pb2*`.
+- The gRPC log aggregation protocol changed, so it is not compatible with earlier
+  versions: `LogAggregationService` is now `DataRecordAggregationService`, and its
+  `StreamLogs` call is now `StreamDataRecords`, a stream of `DataRecord` messages
+  that carry the log chunks and the end reports. Older launchers, leaf servers and
+  root servers get `UNIMPLEMENTED` from newer ones, health checks included, so
+  upgrade all of them together. `log_aggregation.proto` is renamed
+  `data_records_aggregation.proto`: code that imports the generated
+  `log_aggregation_pb2*` modules must use `data_records_aggregation_pb2*`.
 
 ### Removals
 

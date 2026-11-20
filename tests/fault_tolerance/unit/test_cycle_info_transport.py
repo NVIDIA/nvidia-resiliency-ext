@@ -16,8 +16,7 @@ class _ListTransport(CycleInfoPublisher, CycleInfoReader):
     """Minimal in-memory implementation of both interfaces."""
 
     def __init__(self):
-        self.infos = []
-        self.updates = []
+        self.infos = []  # cycle starts and ends, in arrival order
         self.reports = []
 
     def publish_cycle_info(self, info):
@@ -25,7 +24,7 @@ class _ListTransport(CycleInfoPublisher, CycleInfoReader):
         return True
 
     def update_cycle_info(self, info):
-        self.updates.append(info)
+        self.infos.append(info)
         return True
 
     def publish_end_report(self, report):
@@ -35,10 +34,6 @@ class _ListTransport(CycleInfoPublisher, CycleInfoReader):
     def read_cycle_infos(self):
         infos, self.infos = self.infos, []
         return infos
-
-    def read_cycle_info_updates(self):
-        updates, self.updates = self.updates, []
-        return updates
 
     def read_end_reports(self):
         reports, self.reports = self.reports, []
@@ -51,7 +46,7 @@ def test_interfaces_are_abstract(interface):
         interface()
 
 
-def test_each_kind_is_read_separately_once():
+def test_cycle_infos_and_end_reports_are_each_read_once():
     transport = _ListTransport()
     start = build_cycle_info(
         job_id="job1",
@@ -73,15 +68,14 @@ def test_each_kind_is_read_separately_once():
         for node in ("n0", "n1")
     ]
 
+    assert transport.publish_cycle_info(start)
     for report in reports:
         assert transport.publish_end_report(report)
     assert transport.update_cycle_info(end)
-    assert transport.publish_cycle_info(start)
 
     assert transport.read_end_reports() == reports
-    assert transport.read_cycle_infos() == [start]
-    assert transport.read_cycle_info_updates() == [end]
+    # The start and the end of a cycle are read together, in arrival order.
+    assert transport.read_cycle_infos() == [start, end]
     assert transport.read_end_reports() == []
     assert transport.read_cycle_infos() == []
-    assert transport.read_cycle_info_updates() == []
     transport.close()  # the default close is a no-op

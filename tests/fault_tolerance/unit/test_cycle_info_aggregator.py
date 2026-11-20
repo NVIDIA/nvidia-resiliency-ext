@@ -79,6 +79,20 @@ def test_no_restart_decision_first_is_the_job_reason(end_reason):
     assert list(end_report.launcher_end_reports) == [report]
 
 
+def test_an_attribution_stop_of_the_job_controller_is_the_job_reason():
+    """Under supervised control the job-controller latches the STOP and no launcher does:
+    every launcher reports it as the cause of its stop, so the job's end keeps it."""
+    reports = [
+        _report(node, pb.CycleEndReasonWorkerTerminatedByAttribution, at)
+        for node, at in (("n1", 10_100), ("n0", 10_000), ("n2", 10_200))
+    ]
+    end_report = aggregate(reports)
+
+    assert end_report.end_reason == pb.CycleEndReasonWorkerTerminatedByAttribution
+    assert end_report.first_detected_nodes == "n[0]"  # the first launcher to see the stop
+    assert [r.node_id for r in end_report.launcher_end_reports] == ["n0", "n1", "n2"]
+
+
 def test_job_reason_follows_the_first_detector():
     end_report = aggregate(
         [
