@@ -16,6 +16,18 @@ syntax = "proto3";
 
 package nvidia_resiliency_ext.fault_tolerance;
 
+// Publishes cycle records towards the CycleAnalyzer. Best effort.
+service CycleInfoService {
+  // Sent by the store host once per cycle, when it closes the rendezvous round.
+  rpc PublishCycleInfo(NVRxCycleInfo) returns (PublishReply);
+
+  // Sent by the store host once per cycle, when it the cycle ends.
+  rpc UpdateCycleInfo(NVRxCycleInfo) returns (PublishReply);
+
+  // Sent by each launcher, when the cycle ends for it.
+  rpc PublishNodeCycleEndReport(NodeCycleEndReport) returns (PublishReply);
+}
+
 // NVRxCycleInfo describes a single NVRx cycle for a Slurm job.
 // Serialized as JSON and stored in cycle_info.<job_id>.<attempt>.<cycleXX>
 // under <base_dir>/nvrx/. The workload reads the current cycle via
@@ -52,7 +64,92 @@ message NVRxCycleInfo {
   // in the request; after a successful write, the new generation is (previous + 1).
   uint64 generation = 9;
 
-  // Group ranks of active nodes, aligned with active_nodes (same sort order).
-  // SLURM-range-compressed, e.g. "0-3,6".
+  // Group ranks of the active launchers, one per launcher, in the host order of active_nodes.
+  // SLURM-range-compressed, e.g. "0-3,6". Aligned with active_nodes only with one launcher
+  // per host: active_nodes lists each host once.
   string active_ranks = 10;
+
+  // How the cycle ended for the job, concluded by the CycleAnalyzer from all launchers'
+  // end reports. Unset until the cycle's end reports are written, and left unset when none
+  // were received; {} in the cycle info file then. The time it ended is cycle_end_time.
+  JobCycleEndReport end_report = 11;
+
+  // Timestamp in the local node where the NVRxCycleInfo object was created, in milliseconds
+  // since the Unix epoch (UTC). Used for updates; internal to the CycleAnalyzer's checks,
+  // not written to the cycle info file
+  uint64 timestamp = 12;
 }
+
+// How a cycle ended for the job. Each launcher reports how the cycle ended for it; the
+// CycleAnalyzer summarizes the per-launcher reports and generates the job-wide report.
+message JobCycleEndReport {
+  // CycleEndReasonWorkerCompleted when every launcher completed; otherwise the end reason of
+  // the first launcher that observed the end (first_detected_nodes); otherwise
+  // CycleEndReasonUnspecified. The launchers' details are in launcher_end_reports.
+  EndReason end_reason = 1;
+
+  // When a launcher first detected the end of the cycle (its workers going from running to
+  // completed, unhealthy or failed), ISO 8601 UTC: the detected_timestamp of the first
+  // detecting launcher, or the earliest of all end reports when no launcher observed the end
+  // itself. From the end reports only; empty without them. Comparable across nodes only up
+  // to their clock skew. The cycle's end is NVRxCycleInfo.cycle_end_time.
+  string first_detected_timestamp = 2;
+
+  // Nodes whose launchers observed the end first (several when they tie), in SLURM node range
+  // format like active_nodes (e.g. "node[001-002]"): short host names, each once. Empty when
+  // no launcher observed the end itself.
+  string first_detected_nodes = 3;
+
+  // End reports of the launchers, sorted by detected_timestamp. Launchers that only followed
+  // a peer's restart (CycleEndReasonWorkerTerminatedDueToPeer) are omitted. All others are
+  // listed: the first detecting launchers (first_detected_nodes), but also those that
+  // detected the end themselves later, so this list has at least as many launchers as
+  // first_detected_nodes. In the cycle info file, without job_id, attempt_index and
+  // cycle_number (the cycle's own), and with detected_timestamp in ISO 8601 UTC.
+  repeated NodeCycleEndReport launcher_end_reports = 4;
+}
+
+// How a cycle ended on one launcher, as that launcher observed it.
+message NodeCycleEndReport {
+  // Slurm job id (or Slurm array job id)
+  string job_id = 1;
+
+  // Slurm attempt index (SLURM_RESTART_COUNT)
+  uint32 attempt_index = 2;
+
+  // Cycle number (0-based)
+  uint32 cycle_number = 3;
+
+  // Identifies the launcher: its host name, or "<host name>_<launcher pid>" when several
+  // launchers may share a host (NVRX_ENABLE_MULTI_LAUNCHERS_PER_NODE, for simulations)
+  string node_id = 4;
+
+  // Why the cycle ended on this launcher (see EndReason)
+  EndReason end_reason = 5;
+
+  // When the launcher observed the end, in milliseconds since the Unix epoch (UTC)
+  uint64 detected_timestamp = 6;
+
+  // Details about the node's ranks' failures
+  string exit_details = 7;
+}
+
+// Why a cycle ended, on a launcher (NodeCycleEndReport) or for the job (JobCycleEndReport)
+enum EndReason {
+  CycleEndReasonUnspecified = 0;
+  // The workers completed
+  CycleEndReasonWorkerCompleted = 1;
+  // A local worker failed
+  CycleEndReasonWorkerFailed = 2;
+  // Stopped to follow another launcher's restart, or its no-progress decision
+  CycleEndReasonWorkerTerminatedDueToPeer = 3;
+  // A rank monitor stopped a local worker on a timeout
+  CycleEndReasonWorkerTerminatedByRankMonitor = 4;
+  // Stopped by an attribution STOP verdict (no restart), whichever node latched it
+  CycleEndReasonWorkerTerminatedByAttribution = 5;
+  // Stopped for no training progress across restarts (no restart)
+  CycleEndReasonWorkerTerminatedDueToNoProgress = 6;
+}
+
+// Reply to the CycleInfoService RPCs: delivery is acknowledged, nothing else.
+message PublishReply {}

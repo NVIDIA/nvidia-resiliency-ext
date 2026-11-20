@@ -26,6 +26,7 @@ from .child_process import spawn_child, wait_or_kill_child
 from .cli_args import default_rendezvous_timeouts
 from .config import FaultToleranceConfig
 from .control_logging import ControlLogCapture
+from .cycle_info.analyzer import CycleAnalyzerProcess
 from .log_funnel import (
     LogFunnelPorts,
     _start_grpc_log_servers,
@@ -81,6 +82,33 @@ def _job_controller_args(args):
     return argparse.Namespace(**values)
 
 
+def _start_cycle_analyzer(args, ft_cfg, capture):
+    """Start the CycleAnalyzer, the only writer of the cycle info files, with its output in
+    the control log (`capture`).
+
+    Best effort: cycle info is diagnostics, so a failure is logged and control continues
+    without it.
+    """
+    # External control names the files by the training job given on the command line;
+    # colocated control by its own environment, the training job's (as the analyzer's).
+    analyzer = CycleAnalyzerProcess(
+        ft_cfg.cycle_info_dir,
+        cycle_info_job_id=(
+            args.ft_cycle_info_job_id if getattr(args, "ft_control_only", False) else None
+        ),
+        cycle_log_prefix=args.ft_per_cycle_applog_prefix,
+    )
+    try:
+        analyzer.start(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        capture.attach(analyzer.process.stdout)
+        analyzer.wait_until_ready()
+    except Exception as e:
+        logger.error("Cycle info will not be written: failed to start the CycleAnalyzer: %s", e)
+        analyzer.stop()
+        return None
+    return analyzer
+
+
 class _ShutdownRequested(Exception):
     pass
 
@@ -101,6 +129,7 @@ class ControlSupervisor:
         self.args = args
         self.capture = None
         self.grpc_processes = []
+        self.cycle_analyzer = None
         self.attribution = None
         self.job_controller = None
         self.node_agent = None
@@ -141,10 +170,21 @@ class ControlSupervisor:
         setup_logger()
         logger.info("Starting control-host supervisor; combined process log=%s", self.capture.path)
 
+        # Before the log servers: the root forwards the end reports to it.
+        if ft_cfg.cycle_info_dir:
+            self.cycle_analyzer = _start_cycle_analyzer(args, ft_cfg, self.capture)
+
         ports = None
         if args.ft_enable_log_server and (args.ft_per_cycle_applog_prefix or args.ft_nvrx_logfile):
             ports = LogFunnelPorts.from_launcher_args(args)
-            self.grpc_processes = _start_grpc_log_servers(args, ports, capture=self.capture)
+            self.grpc_processes = _start_grpc_log_servers(
+                args,
+                ports,
+                capture=self.capture,
+                cycle_analyzer_address=(
+                    self.cycle_analyzer.address if self.cycle_analyzer is not None else None
+                ),
+            )
             if not self.grpc_processes:
                 raise RuntimeError("failed to start gRPC log aggregation")
 
@@ -165,6 +205,10 @@ class ControlSupervisor:
 
         self._raise_if_shutdown_requested()
         control_args = _job_controller_args(args)
+        # The job-controller publishes the cycle infos to the analyzer.
+        control_args._cycle_analyzer_address = (
+            self.cycle_analyzer.address if self.cycle_analyzer is not None else None
+        )
         self.job_controller = spawn_child(
             "nvidia_resiliency_ext.fault_tolerance.job_controller",
             control_args,
@@ -243,6 +287,9 @@ class ControlSupervisor:
         protected = {p.pid for p in self._auxiliary_processes()}
         if self.job_controller is not None:
             protected.add(self.job_controller.pid)
+        # Not an auxiliary process: it is best effort, so its exit does not fail the job.
+        if self.cycle_analyzer is not None and self.cycle_analyzer.pid is not None:
+            protected.add(self.cycle_analyzer.pid)
         pending = [os.getpid()]
         if self.node_agent.poll() is None:
             pending.append(self.node_agent.pid)
@@ -284,6 +331,10 @@ class ControlSupervisor:
                     self.grpc_processes, float(self.args.ft_log_server_graceful_shutdown_timeout)
                 )
             )
+        if self.cycle_analyzer is not None:
+            # After the job-controller, which publishes the last cycle end to it, and the
+            # log servers, which forward the last end reports to it.
+            operations.append(self.cycle_analyzer.stop)
         for operation in operations:
             try:
                 operation()

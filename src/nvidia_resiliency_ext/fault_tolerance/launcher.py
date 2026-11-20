@@ -91,10 +91,26 @@ from nvidia_resiliency_ext.fault_tolerance.cli_args import (
 )
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
 from nvidia_resiliency_ext.fault_tolerance.control_logging import agent_log_path
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import (
+    LogStreamEndReportPublisher,
+)
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
+    build_node_cycle_end_report,
+    launcher_node_id,
+    now_ms,
+)
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.transport import CycleInfoPublisher
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
+    CycleInfoReporter,
+    _cycle_info_attempt_index_from_env,
+    _cycle_info_job_id_from_env,
+)
 from nvidia_resiliency_ext.fault_tolerance.data import (
     FT_LAUNCHER_IPC_SOCKET_ENV_VAR,
     FT_RANK_MONITOR_IPC_SOCKET_ENV_VAR,
+    LauncherChannelMsg,
+    RankTimeout,
+    TimeoutStopMsg,
     UpdateConfigMsg,
 )
 from nvidia_resiliency_ext.fault_tolerance.launcher_error_reporting import launcher_error_reporter
@@ -113,6 +129,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
     is_slurm_job_array,
     parse_bool_env,
     patched_method,
+    read_obj_from_ipc_stream,
     terminate_mp_processes,
     write_obj_to_ipc_stream,
 )
@@ -125,6 +142,14 @@ from nvidia_resiliency_ext.shared_utils.profiling import (
     ProfilingEvent,
     get_profiling_cycle,
     record_profiling_event,
+)
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import (
+    CycleEndReasonWorkerCompleted,
+    CycleEndReasonWorkerFailed,
+    CycleEndReasonWorkerTerminatedByAttribution,
+    CycleEndReasonWorkerTerminatedDueToNoProgress,
+    CycleEndReasonWorkerTerminatedDueToPeer,
+    NodeCycleEndReport,
 )
 
 # Re-export shared helpers for existing integrations that import launcher symbols.
@@ -149,6 +174,12 @@ if os.getenv('FT_LAUNCHER_LOGLEVEL') is not None:
 TORCHELASTIC_ENABLE_FILE_TIMER = "TORCHELASTIC_ENABLE_FILE_TIMER"
 TORCHELASTIC_TIMER_FILE = "TORCHELASTIC_TIMER_FILE"
 CYCLE_OUTCOME = "nv.nvrx.cycle.outcome"  # telemetry: how a restart cycle ended
+# Bound on joining the rank monitor listener thread at shutdown.
+RANK_MONITOR_LISTENER_JOIN_TIMEOUT = 2.0
+
+# Bound on waiting for a queued cycle end report to be handed to the gRPC log stream before
+# the job ends.
+CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT = 6.0
 
 FT_LAUNCHER_IPC_SOCKET = f"{tempfile.gettempdir()}/_ft_launcher{os.getpid()}.socket"
 
@@ -214,16 +245,6 @@ def _append_attribution_startup_failure(log_file: Optional[str], error: Exceptio
         # The caller owns availability and integrity of the agent log path. Never
         # replace the original launcher failure with an emergency logging error.
         pass
-
-
-def _shutdown_cycle_info_reporter_safely(rdzv_handler: Any) -> None:
-    shutdown_cycle_info_reporter = getattr(rdzv_handler, "shutdown_cycle_info_reporter", None)
-    if not callable(shutdown_cycle_info_reporter):
-        return
-    try:
-        shutdown_cycle_info_reporter()
-    except Exception:
-        logger.warning("Failed to shut down cycle info reporter", exc_info=True)
 
 
 def init_node_health_check(endpoint: Optional[str]) -> None:
@@ -352,8 +373,6 @@ class RankMonitorState:
     """State for a single rank monitor process and its IPC connections."""
     process: Any  # multiprocessing.Process
     socket_path: str = ""
-    listener_thread: Optional[threading.Thread] = None
-    stop_event: Optional[threading.Event] = None
 
 
 class LocalElasticAgent(SimpleElasticAgent):
@@ -471,6 +490,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         restart_policy: str = "any-failed",
         is_store_host: bool = False,
         rank_monitors: Optional[Dict[int, RankMonitorState]] = None,
+        cycle_info_publisher: Optional[CycleInfoPublisher] = None,
     ):
         super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
@@ -483,9 +503,18 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._term_timeout = term_timeout
         self._workers_stop_timeout = workers_stop_timeout
         self._is_store_host = is_store_host
-        # Rank monitor state (process, IPC connections, listener tasks) per local rank
+        # Rank monitor state (process, socket path, message channel) per local rank
         # Pre-created rank monitors passed from config (created before gRPC)
         self._rank_monitors: Dict[int, RankMonitorState] = rank_monitors or dict()
+        # Latest timeout stop each monitor reported, by local rank (TimeoutStopMsg). Set by
+        # the rank monitor listener thread, read and cleared by the main thread, both under
+        # _timeout_stops_lock.
+        self._timeout_stops: Dict[int, TimeoutStopMsg] = {}
+        self._timeout_stops_lock = threading.Lock()
+        # Background thread with its own event loop, listening to the monitors' messages.
+        self._rank_monitor_listener: Optional[threading.Thread] = None
+        self._rank_monitor_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._rank_monitor_listen_task: Optional[asyncio.Task] = None
         self._ft_cfg = fault_tol_cfg
 
         # Setup IPC connections to pre-created rank monitors
@@ -515,6 +544,11 @@ class LocalElasticAgent(SimpleElasticAgent):
 
         self._cycle_phase = telemetry.Phase()
         self._run_phase = telemetry.Phase()
+        # How the latest cycle ended on this launcher, recorded when the end is observed.
+        self._cycle_end_report: Optional[NodeCycleEndReport] = None
+        # Sends the end reports towards the CycleAnalyzer, on this launcher's gRPC log stream
+        # (it only queues them); None publishes nothing.
+        self._cycle_info_publisher = cycle_info_publisher
 
     DEFAULT_ROLE = "default"  # FIXME
 
@@ -660,8 +694,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             raise
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
-            if self._is_store_host:
-                _shutdown_cycle_info_reporter_safely(self._rdzv_handler)
             self._shutdown(e.sigval, timeout=self._term_timeout)
             shutdown_called = True
             raise
@@ -723,7 +755,18 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Same scheduler-facing meaning as an attribution STOP: NVRx decided, do not
             # requeue. Reported through the shared no-restart path so both causes are
             # indistinguishable to downstream tooling, rather than this one looking like
-            # an ordinary crash.
+            # an ordinary crash. Publish first: the shutdown reason ends the CycleAnalyzer.
+            # The end was recorded when it was detected (failure or peer restart). A launcher
+            # that saw the end itself now ends the job for no progress, so that is its end
+            # reason; one that only followed a peer's restart keeps DueToPeer, so it is not
+            # taken for an observer of the end. The failures and the detection time recorded
+            # with it are kept.
+            if (
+                self._cycle_end_report is not None
+                and self._cycle_end_report.end_reason != CycleEndReasonWorkerTerminatedDueToPeer
+            ):
+                self._cycle_end_report.end_reason = CycleEndReasonWorkerTerminatedDueToNoProgress
+            self._publish_cycle_end_report(wait=True)
             self._rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_NO_PROGRESS)
             self._stop_workers(self._worker_group)
             self._worker_group.state = WorkerState.FAILED
@@ -736,11 +779,70 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._remaining_restarts -= 1
             if open_rendezvous:
                 self._open_rendezvous_for_restart()
+            # Queued for the publisher thread; the restart does not wait for it.
+            self._publish_cycle_end_report()
             self._restart_workers(self._worker_group)
             return True
         else:
             # No more restarts available
             return False
+
+    def _record_cycle_end_report(
+        self, end_reason: int, failures: Optional[Dict[int, Any]] = None
+    ) -> None:
+        """Record how the current cycle ended on this launcher (a NodeCycleEndReport);
+        `end_reason` is an EndReason value of nvrx_interface.proto.
+
+        Call before stopping workers or deciding on a restart, so `detected_timestamp` is
+        the moment the end was observed rather than the end of teardown.
+
+        Best effort: a failure here is logged and never interrupts the restart path.
+        """
+        if not self._ft_cfg.is_cycle_end_report_enabled:
+            return
+        try:
+            detected_timestamp = now_ms()
+            cycle = self._get_global_cycle_number()
+            timeouts = self._collect_rank_monitor_timeouts(cycle, failures) if failures else None
+            self._cycle_end_report = build_node_cycle_end_report(
+                job_id=_cycle_info_job_id_from_env(),
+                attempt_index=_cycle_info_attempt_index_from_env(),
+                cycle=cycle,
+                node_id=launcher_node_id(self._node_id),
+                end_reason=end_reason,
+                workers=self._worker_group.workers,
+                failures=failures,
+                detected_timestamp=detected_timestamp,
+                timeouts=timeouts,
+            )
+            logger.debug("Cycle end report: %s", self._cycle_end_report)
+        except SignalException:
+            # Termination signals must reach run(), which shuts the workers down.
+            raise
+        except Exception as e:
+            self._cycle_end_report = None
+            logger.warning(f"Failed to record the cycle end report: {e}")
+
+    def _publish_cycle_end_report(self, wait: bool = False) -> None:
+        """Publish the end report of the cycle that just ended: queue it on the gRPC log
+        stream, ahead of the queued logs.
+
+        Returns at once, unless `wait`: then it waits, for a bounded time, until the end
+        report was handed to the stream. Wait before anything that ends the job, as the
+        shutdown key ends the CycleAnalyzer. Best effort: a failure is logged.
+        """
+        report = self._cycle_end_report
+        # Nothing recorded for this cycle: end reports are disabled or recording failed.
+        # Checked here, as the cycle number moves on once the next rendezvous completes.
+        if report is None or report.cycle_number != self._get_global_cycle_number():
+            return
+        publisher = self._cycle_info_publisher
+        if publisher is None or not publisher.publish_end_report(report):
+            return
+        if wait and not publisher.flush(CYCLE_END_REPORT_PUBLISH_WAIT_TIMEOUT):
+            logger.warning(
+                f"The end report of cycle {report.cycle_number} was not sent in time"
+            )
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
         return self._invoke_run_with_any_failed_policy(role)
@@ -768,6 +870,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             put_metric(f"workers.{role}.{state.name.lower()}", 1)
 
             if state == WorkerState.SUCCEEDED:
+                self._record_cycle_end_report(CycleEndReasonWorkerCompleted)
                 logger.info(
                     "[%s] worker group successfully finished."
                     " Waiting %s seconds for other agents to finish.",
@@ -776,6 +879,7 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
                 self._run_phase.close()
                 self._cycle_phase.close({CYCLE_OUTCOME: "completed"})
+                self._publish_cycle_end_report(wait=True)
                 self._exit_barrier()
                 return run_result
 
@@ -790,11 +894,17 @@ class LocalElasticAgent(SimpleElasticAgent):
             # Deliberately placed below SUCCEEDED: a workload that finished is not killed
             # because an earlier cycle was later attributed as fatal.
             if rdzv_handler.attribution_stop_requested():
+                # The worker group may also have failed in this same poll.
+                self._record_cycle_end_report(
+                    CycleEndReasonWorkerTerminatedByAttribution, run_result.failures
+                )
                 logger.error(
                     "[%s] Attribution recommended stopping the job; terminating workers "
                     "and signalling the rest of the job.",
                     role,
                 )
+                # Before the shutdown reason is written, which ends the CycleAnalyzer.
+                self._publish_cycle_end_report(wait=True)
                 # Writes the shutdown reason and opens the next round, which is what peers
                 # already poll for. No node needs a new steady-state check.
                 self._run_phase.close()
@@ -808,6 +918,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 )
 
             if state in {WorkerState.UNHEALTHY, WorkerState.FAILED}:
+                # WorkerTerminatedByRankMonitor instead if a rank monitor stopped a worker.
+                self._record_cycle_end_report(CycleEndReasonWorkerFailed, run_result.failures)
                 # Record failure detection event
                 record_profiling_event(
                     ProfilingEvent.FAILURE_DETECTED,
@@ -855,7 +967,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                 if should_restart:
                     continue  # Continue monitoring after restart
 
-                # No more restarts (either exhausted or early termination)
+                # No more restarts (either exhausted or early termination).
+                self._publish_cycle_end_report(wait=True)
                 self._stop_workers(self._worker_group)
                 self._cycle_phase.close()
                 self._worker_group.state = WorkerState.FAILED
@@ -869,14 +982,27 @@ class LocalElasticAgent(SimpleElasticAgent):
                     # The round may have been opened to broadcast a no-restart decision rather
                     # than to restart. One extra store read, only once, at the moment the
                     # job is ending.
+                    self._record_cycle_end_report(CycleEndReasonWorkerTerminatedDueToPeer)
                     no_restart = rdzv_handler.no_restart_reason()
                     if no_restart is not None:
+                        # An attribution STOP stopped these workers. Under supervised
+                        # control the job-controller latches it and no launcher can, so
+                        # carry the cause into this launcher's end report. The detection
+                        # time recorded with it is kept.
+                        if (
+                            no_restart == RDZV_SHUTDOWN_REASON_ATTRIBUTION_STOP
+                            and self._cycle_end_report is not None
+                        ):
+                            self._cycle_end_report.end_reason = (
+                                CycleEndReasonWorkerTerminatedByAttribution
+                            )
                         logger.error(
                             "[%s] Another launcher reported a no-restart decision (%s); "
                             "terminating workers.",
                             role,
                             no_restart,
                         )
+                        self._publish_cycle_end_report(wait=True)
                         self._run_phase.close()
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close({CYCLE_OUTCOME: "terminated"})
@@ -901,6 +1027,8 @@ class LocalElasticAgent(SimpleElasticAgent):
                     )
 
                     if not should_restart:
+                        # Publish before launch_agent writes the shutdown key.
+                        self._publish_cycle_end_report(wait=True)
                         self._stop_workers(self._worker_group)
                         self._cycle_phase.close()
                         self._worker_group.state = WorkerState.FAILED
@@ -963,8 +1091,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             rank_monitors[local_rank] = RankMonitorState(
                 process=rmon_proc,
                 socket_path="",  # Will be set later in _connect_to_rank_monitor
-                listener_thread=None,
-                stop_event=None,
             )
             new_monitors.append((local_rank, rmon_proc))
 
@@ -972,29 +1098,90 @@ class LocalElasticAgent(SimpleElasticAgent):
 
 
     def _setup_rank_monitor_connections(self):
-        """
-        Setup IPC connections to pre-created rank monitors.
+        """Record the pre-created monitors' socket paths and start listening to them.
 
-        This establishes bidirectional communication channels between the launcher
-        and each rank monitor subprocess for progress tracking and control.
+        One background thread runs an event loop with one listening task per monitor
+        (_listen_to_rank_monitor). The loop and its task are created here, so shutdown can
+        cancel them as soon as this returns.
         """
-        new_monitors = [
-            (local_rank, state.process)
-            for local_rank, state in self._rank_monitors.items()
-        ]
+        for local_rank, state in self._rank_monitors.items():
+            self._connect_to_rank_monitor(local_rank, state.process)
+        loop = asyncio.new_event_loop()
+        self._rank_monitor_loop = loop
+        self._rank_monitor_listen_task = loop.create_task(self._listen_to_rank_monitors())
+        self._rank_monitor_listener = threading.Thread(
+            target=self._run_rank_monitor_listener,
+            daemon=True,
+            name="RankMonitorListener",
+        )
+        self._rank_monitor_listener.start()
+        logger.debug(f"Listening to {len(self._rank_monitors)} rank monitors")
 
-        if new_monitors:
-            async def connect_all():
-                await asyncio.gather(
-                    *[self._connect_to_rank_monitor(lr, rmon) for lr, rmon in new_monitors]
-                )
-            asyncio.run(connect_all())
-            logger.debug(f"Established IPC connections to {len(new_monitors)} rank monitors")
+    def _run_rank_monitor_listener(self) -> None:
+        """Body of the listener thread: run the listening tasks until they end or are cancelled."""
+        loop = self._rank_monitor_loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._rank_monitor_listen_task)
+        except asyncio.CancelledError:
+            pass  # stopped by _stop_rank_monitor_listener
+        except Exception as e:
+            logger.error(f"Rank monitor listener failed: {e!r}")
+        finally:
+            loop.close()
+
+    async def _listen_to_rank_monitors(self) -> None:
+        await asyncio.gather(
+            *(
+                self._listen_to_rank_monitor(local_rank, state.socket_path)
+                for local_rank, state in self._rank_monitors.items()
+            ),
+            return_exceptions=True,  # one monitor's failure does not end the others
+        )
+
+    async def _listen_to_rank_monitor(self, local_rank: int, socket_path: str) -> None:
+        """Open the channel to one monitor and handle its messages until it closes.
+
+        The connection is marked with LauncherChannelMsg, so the monitor sends its messages
+        (e.g. TimeoutStopMsg) on it. Without the channel the monitor works as before, but
+        the launcher does not learn of its timeout stops.
+        """
+        try:
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+        except OSError as e:
+            logger.warning(f"Failed to open the channel from rank monitor {local_rank}: {e}")
+            return
+        try:
+            await write_obj_to_ipc_stream(LauncherChannelMsg(), writer)
+            while True:
+                msg = await read_obj_from_ipc_stream(reader)
+                self._handle_rank_monitor_msg(local_rank, msg)
+        except asyncio.IncompleteReadError:
+            logger.warning(f"Lost the channel from rank monitor {local_rank}: closed by it")
+        except (ConnectionError, OSError) as e:
+            logger.warning(f"Lost the channel from rank monitor {local_rank}: {e!r}")
+        except Exception as e:  # e.g. a message that cannot be unpickled
+            logger.error(f"Stopped listening to rank monitor {local_rank}: {e!r}")
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    def _stop_rank_monitor_listener(self) -> None:
+        """Cancel the listening tasks from the main thread and wait for the thread to end."""
+        loop, task = self._rank_monitor_loop, self._rank_monitor_listen_task
+        if loop is not None and task is not None:
+            with contextlib.suppress(RuntimeError):  # the loop already closed
+                loop.call_soon_threadsafe(task.cancel)
+        if self._rank_monitor_listener is not None:
+            self._rank_monitor_listener.join(timeout=RANK_MONITOR_LISTENER_JOIN_TIMEOUT)
 
     def shutdown_rank_monitors(self):
         # Skip if rank monitors were disabled
         if os.getenv('NVRX_DISABLE_RANK_MONITORS'):
             return
+
+        self._stop_rank_monitor_listener()
 
         # Terminate rank monitor processes
         for local_rank, state in self._rank_monitors.items():
@@ -1012,15 +1199,64 @@ class LocalElasticAgent(SimpleElasticAgent):
             with contextlib.suppress(Exception):
                 os.unlink(self.get_rank_mon_socket_path(local_rank))
 
-    async def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
-        """Record rank monitor socket path for cycle updates.
+    def _connect_to_rank_monitor(self, local_rank: int, rmon_proc) -> None:
+        """Record the monitor's socket path.
 
-        The launcher sends cycle updates to rank monitors via short-lived connections.
-        Progress is tracked via the checkpoint iteration file (when set), not from rank monitor.
+        The launcher sends its requests (e.g. cycle updates) on short-lived connections to
+        that socket; the listener thread keeps one more open for the monitor's messages.
         """
         launcher_to_rmon_socket = f"{tempfile.gettempdir()}/_ft_launcher{rmon_proc.pid}_to_rmon.socket"
         state = self._rank_monitors[local_rank]
         state.socket_path = launcher_to_rmon_socket
+
+    def _handle_rank_monitor_msg(self, local_rank: int, msg: Any) -> None:
+        """Handle one message from a monitor; runs on the listener thread."""
+        if isinstance(msg, TimeoutStopMsg):
+            with self._timeout_stops_lock:
+                # The first timeout stop of a cycle wins, as in the monitor.
+                previous = self._timeout_stops.get(local_rank)
+                if previous is None or previous.cycle < msg.cycle:
+                    self._timeout_stops[local_rank] = msg
+        else:
+            logger.debug(f"Ignored a message from rank monitor {local_rank}: {msg!r}")
+
+    def _collect_rank_monitor_timeouts(
+        self, cycle: int, failures: Dict[int, Any]
+    ) -> Dict[int, RankTimeout]:
+        """Return the timeouts on which the monitors stopped exited workers in `cycle`.
+
+        Reads the timeout stops the listener thread received. A monitor sends its
+        TimeoutStopMsg before it signals the worker, so the message is in the launcher's
+        socket buffer by the time the worker exits.
+
+        TODO: known race, not handled yet. Being in the socket buffer does not mean the
+        listener has read and stored the message: if this runs first, a worker stopped by
+        its monitor is reported as failed. The monitor cannot tell when the launcher has
+        read it; only a reply can. A possible fix: the monitor waits for an ack before it
+        signals the worker. This delays the kill, by up to the ack timeout if the launcher
+        is stuck, and makes the monitor's kill depend on the launcher. The wait must not
+        block the monitor's event loop.
+
+        Args:
+            cycle: The cycle in which the workers exited.
+            failures: Exited workers, keyed by global rank.
+
+        Returns:
+            Timeouts keyed by global rank, only for workers stopped by their monitor.
+        """
+        with self._timeout_stops_lock:
+            stops = dict(self._timeout_stops)
+        timeouts = {}
+        for worker in self._worker_group.workers:
+            msg = stops.get(worker.local_rank)
+            if (
+                worker.global_rank in failures
+                and msg is not None
+                and msg.cycle == cycle
+                and msg.pid == worker.id
+            ):
+                timeouts[worker.global_rank] = msg.timeout
+        return timeouts
 
     def _send_cycle_to_rank_monitors(self, current_cycle: int) -> None:
         """Send current cycle number to all rank monitors.
@@ -1028,12 +1264,15 @@ class LocalElasticAgent(SimpleElasticAgent):
         This updates the cycle number in rank monitors so they can include it in timeout logs.
         Should be called at the start of each cycle (in _start_workers).
 
-        Note: Creates short-lived connections for sending. The persistent listener connections
-        are read-only and run in separate thread event loops, so we can't reuse them for writing.
+        Note: Creates short-lived connections for sending. The timeout stops of earlier
+        cycles are dropped first.
 
         Args:
             current_cycle: The current training cycle number (0 = initial, 1 = first restart, etc.)
         """
+        with self._timeout_stops_lock:
+            self._timeout_stops.clear()
+
         async def send_cycle_to_monitor(local_rank: int, socket_path: str):
             try:
                 reader, writer = await asyncio.open_unix_connection(socket_path)
@@ -1060,6 +1299,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             asyncio.run(send_to_all())
         except Exception as e:
             logger.error(f"Error sending cycle to rank monitors: {e}")
+
 
     def _setup_local_watchdog(self, envs: Dict[int, Dict[str, str]]) -> None:
         enable_watchdog_env_name = TORCHELASTIC_ENABLE_FILE_TIMER
@@ -1701,6 +1941,8 @@ class LaunchConfig:
     metrics_cfg: Dict[str, str] = field(default_factory=dict)
     local_addr: Optional[str] = None
     rank_monitors: Dict[int, "RankMonitorState"] = field(default_factory=dict)
+    # gRPC log server this launcher sends its logs to; it also takes the cycle records.
+    log_server_address: Optional[str] = None
     is_control_host_agent: bool = False
 
     def __post_init__(self):
@@ -1801,6 +2043,25 @@ def _is_store_host(params: RendezvousParameters) -> bool:
     return _is_store_host_from_config(host, params.config)
 
 
+def _create_cycle_info_publisher(config: LaunchConfig) -> Optional[CycleInfoPublisher]:
+    """Create the publisher of this launcher's end reports: on its gRPC log stream to the
+    log server (StreamDataRecords), so no other channel or call is needed.
+
+    Returns:
+        None when end reports are not enabled (--ft-cycle-info-end-reports with
+        --ft-cycle-info-dir), or logs are not forwarded over gRPC.
+    """
+    logs_specs = config.logs_specs
+    if (
+        not config.fault_tol_cfg.is_cycle_end_report_enabled
+        or not config.log_server_address
+        or not isinstance(logs_specs, PipeBasedLogsSpecs)
+    ):
+        return None
+    logger.debug("Publishing the cycle end reports on the log stream to %s", config.log_server_address)
+    return LogStreamEndReportPublisher(logs_specs.publish_record, logs_specs.wait_for_records)
+
+
 def launch_agent(
     config: LaunchConfig,
     entrypoint: Union[Callable, str, None],
@@ -1863,8 +2124,6 @@ def launch_agent(
     rdzv_parameters.config["is_store_host"] = is_store_host
     # Add nproc_per_node so the rendezvous handler can restore local_world_size for standby->active transitions
     rdzv_parameters.config["nproc_per_node"] = config.nproc_per_node
-    if config.fault_tol_cfg.cycle_info_dir:
-        rdzv_parameters.config["cycle_info_dir"] = config.fault_tol_cfg.cycle_info_dir
 
     spec = WorkerSpec(
         role=config.role,
@@ -1879,6 +2138,9 @@ def launch_agent(
         local_addr=config.local_addr,
     )
 
+    # The publisher of this launcher's end reports, on its gRPC log stream.
+    cycle_info_publisher = _create_cycle_info_publisher(config)
+
     agent = LocalElasticAgent(
         spec=spec,
         fault_tol_cfg=config.fault_tol_cfg,
@@ -1890,12 +2152,14 @@ def launch_agent(
         restart_policy=config.restart_policy,
         is_store_host=is_store_host,
         rank_monitors=config.rank_monitors,  # Pass pre-created rank monitors
+        cycle_info_publisher=cycle_info_publisher,
     )
 
     # Set agent reference in rendezvous handler for callbacks
     # This allows the handler to directly sync agent state (like progress tracker)
     # when important events occur (e.g., rendezvous round updates)
     spec.rdzv_handler.set_agent(agent)
+    spec.rdzv_handler.set_cycle_info_publisher(cycle_info_publisher)
 
     # Keep the rendezvous open unless this launcher reaches an explicitly terminal
     # outcome. An unexpected exception is local to this launcher until proven
@@ -1987,6 +2251,8 @@ def launch_agent(
                 agent._rdzv_handler.shutdown()
         agent.shutdown_rank_monitors()
         _stop_diagnostic_collector()
+        # The queued end reports are sent with the last logs: logs_specs.cleanup() drains
+        # the log stream.
 
         # Store host: TCPStore lives in this process; on exit it is destroyed and rendezvous
         # ends. Wait a short grace period so other nodes can read final state (e.g. permanent close key,
@@ -1995,8 +2261,6 @@ def launch_agent(
         if is_store_host:
             # Trigger attribution service analysis for final cycle
             agent._request_terminal_attribution()
-
-            _shutdown_cycle_info_reporter_safely(agent._rdzv_handler)
 
             grace_period = 3.0  # seconds
             logger.info(
@@ -2419,7 +2683,8 @@ def get_args_parser() -> ArgumentParser:
         help="Start a local standalone rendezvous backend that is represented by a C10d TCP store "
         "on a free port. Useful when launching single-node, multi-worker job. If specified "
         "--rdzv-backend, --rdzv-endpoint, --rdzv-id are auto-assigned and any explicitly set values "
-        "are ignored. This single-node development mode uses local logging without gRPC aggregation.",
+        "are ignored. This single-node development mode uses local logging without gRPC aggregation, "
+        "and writes no cycle info (--ft-cycle-info-dir is ignored).",
     )
     parser.add_argument(
         "--ft-control-only",
@@ -3140,6 +3405,12 @@ def _validate_args(args: Any) -> None:
         raise ValueError(
             "--ft-nvrx-logfile cannot be used when NVRX_NODE_LOCAL_TMPDIR is set."
         )
+    if getattr(args, "ft_cycle_info_end_reports", None) and not getattr(
+        args, "ft_cycle_info_dir", None
+    ):
+        raise ValueError(
+            "--ft-cycle-info-end-reports requires --ft-cycle-info-dir to be specified."
+        )
 
 
 def _resolve_attribution_endpoint(fault_tol_cfg: FaultToleranceConfig) -> Optional[str]:
@@ -3169,12 +3440,32 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         if args.ft_enable_log_server:
             logger.info("Standalone development mode uses local logging; disabling gRPC aggregation.")
         args.ft_enable_log_server = False
+        # The cycle info files are written by the CycleAnalyzer of the control process, which
+        # standalone does not start. Cleared so workers get no NVRX_CURRENT_CYCLE_INFO.
+        if fault_tol_cfg.cycle_info_dir:
+            logger.warning(
+                "--ft-cycle-info-dir (and --ft-cycle-info-end-reports) is ignored with "
+                "--standalone: cycle info is written only by the control process, which "
+                "standalone does not start."
+            )
+            fault_tol_cfg.cycle_info_dir = None
+            args.ft_cycle_info_dir = None
     elif getattr(args, "ft_nvrx_logfile", None):
         if getattr(args, "ft_enable_log_server", None) is None:
             logger.info(
                 "--ft-nvrx-logfile is set; enabling --ft-enable-log-server automatically."
             )
             args.ft_enable_log_server = True
+    # End reports travel on the launchers' gRPC log streams, which exist only with both flags.
+    if fault_tol_cfg.is_cycle_end_report_enabled and not (
+        getattr(args, "ft_enable_log_server", False)
+        and getattr(args, "ft_per_cycle_applog_prefix", None)
+    ):
+        logger.warning(
+            "--ft-cycle-info-end-reports has no effect: end report gathering works only with "
+            "--ft-enable-log-server and --ft-per-cycle-applog-prefix. "
+            "Cycle info files will have an empty end_report."
+        )
 
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
@@ -3315,6 +3606,8 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
     if base_log_file:
         rdzv_configs['cycle_log_prefix'] = base_log_file
 
+    # Set only when this launcher sends its logs to a gRPC log server.
+    grpc_server_address = None
     if base_log_file:
         # Validate that the path is absolute (not relative)
         if not os.path.isabs(base_log_file):
@@ -3336,7 +3629,6 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         is_tcp_store_host = _is_store_host_from_config(host, rdzv_configs)
 
         # Configure gRPC if enabled
-        grpc_server_address = None
         node_id = None
         log_funnel_ports = None
 
@@ -3435,6 +3727,7 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         logs_specs=logs_specs,
         fault_tol_cfg=fault_tol_cfg,
         rank_monitors=rank_monitors,  # Pass pre-created rank monitors
+        log_server_address=grpc_server_address,
         is_control_host_agent=getattr(args, "_is_control_host_agent", False),
     )
 

@@ -16,13 +16,24 @@ syntax = "proto3";
 
 package nvidia_resiliency_ext.fault_tolerance;
 
-// Service for aggregating logs from multiple nodes into a single file
-service LogAggregationService {
-  // Stream log chunks from clients to server
-  rpc StreamLogs(stream LogChunk) returns (StreamResponse);
-  
+import "nvidia_resiliency_ext/shared_utils/proto/nvrx_interface.proto";
+
+// Service for aggregating data records from multiple nodes: log chunks into a single file,
+// and the launchers' cycle end reports
+service DataRecordAggregationService {
+  // Stream data records from clients to server
+  rpc StreamDataRecords(stream DataRecord) returns (StreamResponse);
+
   // Health check
   rpc HealthCheck(HealthRequest) returns (HealthResponse);
+}
+
+// One record of a client's stream: a log chunk, or a launcher's cycle end report
+message DataRecord {
+  oneof record {
+    LogChunk log_chunk = 1;
+    NodeCycleEndReport node_cycle_end_report = 2;
+  }
 }
 
 // Log chunk sent from client to server

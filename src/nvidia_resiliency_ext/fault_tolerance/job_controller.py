@@ -4,8 +4,9 @@
 """NVRx job-wide rendezvous and control process.
 
 ``job-controller`` runs under the control supervisor and owns the TCPStore,
-rendezvous state, attribution client, and cycle-info reporter. The supervisor
-owns all sibling service processes.
+rendezvous state, attribution client, and cycle-info publisher. The supervisor
+owns all sibling service processes, including the CycleAnalyzer that the
+cycle infos are published to.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Optional
 
+import grpc
 from torch.distributed import TCPStore
 from torch.distributed.elastic.rendezvous.api import (
     RendezvousClosedError,
@@ -38,7 +40,7 @@ from nvidia_resiliency_ext.fault_tolerance.attribution_manager import Attributio
 from nvidia_resiliency_ext.fault_tolerance.child_process import read_child_args
 from nvidia_resiliency_ext.fault_tolerance.cli_args import parse_min_max_nnodes
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoPublisher
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _get_replacement_group_size,
     _NodeDescGenerator,
@@ -56,6 +58,7 @@ from nvidia_resiliency_ext.fault_tolerance.utils import (
 from nvidia_resiliency_ext.shared_utils import telemetry
 from nvidia_resiliency_ext.shared_utils.health_check import AttributionService
 from nvidia_resiliency_ext.shared_utils.log_manager import LogConfig, setup_logger
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2_grpc import CycleInfoServiceStub
 
 logger = logging.getLogger(LogConfig.name)
 
@@ -65,7 +68,6 @@ class ControllerResources:
     # Despite its legacy name, AttributionService is a client with a poller thread.
     # ControlSupervisor owns the managed attribution server process.
     attribution_service: Optional[AttributionService] = None
-    cycle_info_reporter: Optional[CycleInfoReporter] = None
 
 
 def _validate_args(args: argparse.Namespace, ft_cfg: FaultToleranceConfig) -> None:
@@ -113,9 +115,6 @@ def _create_tcp_store(args: argparse.Namespace, read_timeout: float) -> TCPStore
 
 def _stop_controller_resources(resources: ControllerResources) -> None:
     with contextlib.suppress(Exception):
-        if resources.cycle_info_reporter is not None:
-            resources.cycle_info_reporter.shutdown()
-    with contextlib.suppress(Exception):
         if resources.attribution_service is not None:
             resources.attribution_service.stop_poller()
 
@@ -128,17 +127,6 @@ def _start_controller_resources(
 ) -> ControllerResources:
     resources = ControllerResources()
     try:
-        if ft_cfg.cycle_info_dir:
-            identity = {}
-            if getattr(args, "ft_control_only", False):
-                # Preserve the external controller's explicit training job ID
-                # and attempt-0 namespace, independent of the CPU allocation.
-                identity = {"cycle_info_job_id": args.ft_cycle_info_job_id, "attempt_index": 0}
-            resources.cycle_info_reporter = CycleInfoReporter(
-                ft_cfg.cycle_info_dir,
-                cycle_log_prefix=args.ft_per_cycle_applog_prefix,
-                **identity,
-            )
         if ft_cfg.attribution_endpoint:
             cfg = AttributionConfig.from_args(args, args.ft_per_cycle_applog_prefix, ft_cfg)
             endpoint = cfg.client_endpoint
@@ -197,26 +185,41 @@ def _run_control_rendezvous_loop(
         args.nnodes,
         args.rdzv_endpoint,
     )
-    if services.cycle_info_reporter is not None:
-        state._cycle_info_reporter = services.cycle_info_reporter
     state._attribution_service = services.attribution_service
+    # This host closes the rounds, so it publishes the cycle infos: at each start, and at
+    # each end. The supervisor runs the analyzer on this node: publish to it directly,
+    # without the gRPC log servers.
+    cycle_info_channel = None
+    cycle_analyzer_address = getattr(args, "_cycle_analyzer_address", None)
+    if cycle_analyzer_address:
+        cycle_info_channel = grpc.insecure_channel(cycle_analyzer_address)
+        state._cycle_info_publisher = GrpcCycleInfoPublisher(
+            cycle_info_stub=CycleInfoServiceStub(cycle_info_channel)
+        )
 
-    while not stop_event.is_set():
-        try:
-            closed_round = state.close_current_round_as_host(
-                node,
-                min_nodes,
-                max_nodes,
-                segment_check_interval=segment_check_interval,
-                stop_event=stop_event,
-            )
-        except (RendezvousGracefulExitError, RendezvousClosedError) as exc:
-            logger.info("job-controller rendezvous loop exiting: %s", exc)
-            break
+    try:
+        while not stop_event.is_set():
+            try:
+                closed_round = state.close_current_round_as_host(
+                    node,
+                    min_nodes,
+                    max_nodes,
+                    segment_check_interval=segment_check_interval,
+                    stop_event=stop_event,
+                )
+            except (RendezvousGracefulExitError, RendezvousClosedError) as exc:
+                logger.info("job-controller rendezvous loop exiting: %s", exc)
+                break
 
-        logger.info("job-controller closed rendezvous round %s", closed_round)
+            logger.info("job-controller closed rendezvous round %s", closed_round)
 
-    state._request_terminal_attribution_for_submitted_cycle()
+        state._request_terminal_attribution_for_submitted_cycle()
+    finally:
+        # The rendezvous shut down: the last cycle ended, as no next round will open.
+        state.publish_cycle_end_as_host()
+        state._cycle_info_publisher = None
+        if cycle_info_channel is not None:
+            cycle_info_channel.close()
 
     reason = state.get_shutdown_reason()
     if reason in RDZV_NO_RESTART_REASONS:
