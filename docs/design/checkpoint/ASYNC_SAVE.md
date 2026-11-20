@@ -245,14 +245,14 @@ Columns in the `entry` table:
 
 The `MetadataTemplate` class acts as a union over PyTorch's `Metadata` and NVRx's `StateDictTable`. It drops `storage_data`, which is constructed from write results collected from every rank. Once constructed, a `MetadataTemplate` is never modified or updated. The fqn list slot in a `CheckpointMetadataCache` is updated on finalize if the coordinator rank broadcasts a new fqn list to all ranks.
 
-Staging buffers are keyed by a hash of the rank's tensor write items, and hold the following:
+Staging buffers are keyed by the `PersistentShmBuffers` that owns them and a hash of the rank's tensor write items, so that a worker keeps the buffers of two stagers apart. They hold the following:
 
-| Cache                                      | Process  | Content                                                                       |
-| ------------------------------------------ | -------- | ----------------------------------------------------------------------------- |
-| `PersistentShmBuffers._buffers`            | training | The SHM tensors, reused by later saves with the same items.                   |
-| `PersistentAsyncCaller._worker_data_cache` | worker   | References to the same SHM tensors, so they are sent to the worker only once. |
+| Cache                                      | Process  | Content                                                                                                |
+| ------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------ |
+| `PersistentShmBuffers._holdings`           | training | The SHM tensors, reused by later saves with the same items, and the ids of the workers that hold them. |
+| `PersistentAsyncCaller._worker_data_cache` | worker   | References to the same SHM tensors, so they are sent to each worker only once.                         |
 
-The training-side caches belong to a `ShmStager` with `PersistentShmBuffers`. Writers that are not given a stager use the process's default one (`staging.default_stager`), which `FileSystemWriterAsync.cleanup_tensor_caches` clears when the worker restarts.
+The training-side caches belong to a `ShmStager` with `PersistentShmBuffers`; writers that are not given a stager use the process's default one (`staging.default_stager`). A save is planned to send only the key if some worker holds the SHM tensors. As the request is sent, the persistent caller checks it against the worker that receives it (`StagedTensors.for_worker`): a worker that doesn't hold them, such as one started after an abort or a worker death, gets the SHM tensors with the request.
 
 ## 1. First checkpoint of a cycle
 

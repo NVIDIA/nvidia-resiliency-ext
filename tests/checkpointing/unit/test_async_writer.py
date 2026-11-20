@@ -883,6 +883,40 @@ class TestAsyncSave:
         finally:
             async_queue.close()
 
+    @pytest.mark.parametrize('cpu_shm', [True, False], ids=['shm', 'ipc'])
+    def test_a_given_stager_reused_with_a_new_queue_sends_its_tensors(
+        self, tmp_path_dist_ckpt, cpu_shm
+    ):
+        """The new queue's worker doesn't hold what the stager sent the old queue's."""
+        Utils.initialize_distributed()
+        stager = make_stager(cpu_shm=cpu_shm, persistent=True)
+        # The same on every rank, so its replicated items load back. Updated in place, so that
+        # the IPC stager sees the same storage.
+        state_dict = {f'param_{i}': torch.full((64, 64), float(i), device='cuda') for i in range(4)}
+        for queue_number in range(2):
+            for tensor in state_dict.values():
+                tensor.add_(10)
+            async_queue = AsyncCallsQueue(persistent=True)
+            try:
+                with TempNamedDir(
+                    tmp_path_dist_ckpt / f'queue_{queue_number}', sync=True
+                ) as ckpt_dir:
+                    self.async_save_checkpoint(
+                        ckpt_dir,
+                        state_dict,
+                        DefaultSavePlanner(),
+                        async_queue,
+                        use_cached_data_structure=True,
+                        use_cpu_shm_for_gpu_tensors=cpu_shm,
+                        stager=stager,
+                    )
+                    async_queue.maybe_finalize_async_calls(blocking=True, no_dist=False)
+                    zeros = {name: torch.zeros_like(t) for name, t in state_dict.items()}
+                    loaded = self.load_checkpoint(ckpt_dir, zeros)
+                    assert not any(len(x) for x in diff(loaded, state_dict))
+            finally:
+                async_queue.close()
+
     def test_cached_data_structure(self, tmp_path_dist_ckpt):
         """
         Verifies that use_cached_data_structure correctly caches GPU tensors in the worker
