@@ -780,6 +780,28 @@ class TestCycleEndReportPublishedBeforeTheJobEnds(unittest.TestCase):
         self.assertEqual(report.end_reason, pb.CycleEndReasonWorkerTerminatedDueToNoProgress)
         self.assertEqual((report.detected_timestamp, report.exit_details), (123, '[{"rank":5}]'))
 
+    def test_no_progress_stop_keeps_due_to_peer_of_a_follower(self):
+        """A launcher that only followed a peer's restart is not reported as an observer."""
+        agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
+        agent._progress_tracker = MagicMock()
+        agent._progress_tracker.should_terminate_early.return_value = True
+
+        def record(end_reason, failures=None):
+            agent._cycle_end_report = pb.NodeCycleEndReport(
+                end_reason=pb.CycleEndReasonWorkerTerminatedDueToPeer, detected_timestamp=123
+            )
+
+        published = []
+        self._run(
+            agent,
+            WorkerState.FAILED,
+            _record_cycle_end_report=record,
+            _publish_cycle_end_report=lambda wait=False: published.append(
+                agent._cycle_end_report.end_reason
+            ),
+        )
+        self.assertEqual(published, [pb.CycleEndReasonWorkerTerminatedDueToPeer])
+
     def test_exhausted_restarts_publish_before_stopping_the_workers(self):
         """launch_agent writes the shutdown key after this returns."""
         agent = _healthy_agent(self.fault_tol_cfg, self.logs_specs)
@@ -1088,6 +1110,50 @@ def test_segment_health_check_dir_is_passed_to_rendezvous(tmp_path):
 
     assert config.fault_tol_cfg.segment_health_check_dir == str(tmp_path)
     assert config.rdzv_configs["segment_health_check_dir"] == str(tmp_path)
+
+
+def test_end_reports_without_log_server_warns(caplog, capture_nvrx_logs):
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = launcher.get_args_parser().parse_args(
+        ["--ft-cycle-info-dir", "/nvrx", "--ft-cycle-info-end-reports", "true", "train.py"]
+    )
+
+    with (
+        patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
+        caplog.at_level(logging.WARNING, logger=launcher.logger.name),
+    ):
+        launcher.config_from_args(args)
+
+    assert "end report gathering works only with --ft-enable-log-server" in caplog.text
+
+
+def test_standalone_ignores_cycle_info_dir(caplog, capture_nvrx_logs):
+    """Standalone starts no control process, so no CycleAnalyzer writes the cycle info."""
+    from nvidia_resiliency_ext.fault_tolerance import launcher
+
+    args = launcher.get_args_parser().parse_args(
+        [
+            "--standalone",
+            "--ft-cycle-info-dir",
+            "/nvrx",
+            "--ft-cycle-info-end-reports",
+            "true",
+            "train.py",
+        ]
+    )
+
+    with (
+        patch.object(launcher.LocalElasticAgent, "setup_rank_monitors_early", return_value={}),
+        caplog.at_level(logging.WARNING, logger=launcher.logger.name),
+    ):
+        config, _, _ = launcher.config_from_args(args)
+
+    assert config.fault_tol_cfg.cycle_info_dir is None
+    assert not config.fault_tol_cfg.is_cycle_end_report_enabled
+    assert "--ft-cycle-info-dir (and --ft-cycle-info-end-reports) is ignored" in caplog.text
+    # Disabled, so the end-reports warning does not fire as well.
+    assert "end report gathering works only" not in caplog.text
 
 
 def test_segment_health_check_dir_must_be_absolute():
@@ -1646,23 +1712,6 @@ def test_cycle_info_publisher_publishes_on_the_log_stream():
     logs_specs.wait_for_records.assert_called_once_with(1.5)
 
 
-def test_shutdown_cycle_info_reporter_safely_logs_reporter_exception(caplog, capture_nvrx_logs):
-    from types import SimpleNamespace
-
-    from nvidia_resiliency_ext.fault_tolerance import launcher
-
-    reporter_error = RuntimeError("reporter failed")
-    rdzv_handler = SimpleNamespace(
-        shutdown_cycle_info_reporter=MagicMock(side_effect=reporter_error)
-    )
-
-    with caplog.at_level(logging.WARNING, logger=launcher.logger.name):
-        launcher._shutdown_cycle_info_reporter_safely(rdzv_handler)
-
-    rdzv_handler.shutdown_cycle_info_reporter.assert_called_once_with()
-    assert "Failed to shut down cycle info reporter" in caplog.text
-
-
 @pytest.mark.parametrize("is_job_array", [False, True])
 def test_launch_agent_unhealthy_node_exits_failure_without_rdzv_shutdown(is_job_array):
     from types import SimpleNamespace
@@ -1694,7 +1743,6 @@ def test_launch_agent_unhealthy_node_exits_failure_without_rdzv_shutdown(is_job_
 
     rdzv_handler.shutdown.assert_not_called()
     rdzv_handler.shutdown_due_to_failure.assert_not_called()
-    rdzv_handler.shutdown_cycle_info_reporter.assert_called_once()
 
 
 def test_launch_agent_standby_exit_does_not_shutdown_rendezvous():

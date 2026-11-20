@@ -153,8 +153,8 @@ def build_node_cycle_end_report(
 ) -> pb.NodeCycleEndReport:
     """Describe how the cycle ended on this launcher, when it observed the end.
 
-    `node_id` identifies the launcher (launcher_node_id). `end_reason` is a pb.EndReason value, and `detected_timestamp` in milliseconds since the
-    epoch (now_ms()). Workers in `failures` (keyed by global rank) exited; those also in
+    `node_id` identifies the launcher (launcher_node_id). `end_reason` is a pb.EndReason
+    value, and `detected_timestamp` in milliseconds since the epoch (now_ms()). Workers in `failures` (keyed by global rank) exited; those also in
     `timeouts` (keyed by global rank) were stopped by their rank monitor, the others failed
     on their own. Each is listed in `exit_details`, as JSON: its global and local rank,
     pid, how it ended ("failed" or "stopped_by_rank_monitor"), its exit code, and for a

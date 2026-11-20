@@ -112,7 +112,9 @@ class FaultToleranceConfig:
       Default: None (disabled).
     * `cycle_info_end_reports` [bool] Record how each cycle ended on each launcher (its end
       report): the end reason and the local workers that failed or were stopped by their
-      rank monitor, with the timeout. Requires `cycle_info_dir`. Default: False.
+      rank monitor, with the timeout. Requires `cycle_info_dir`. Gathered only when the
+      launchers forward logs to the gRPC log server (--ft-enable-log-server and
+      --ft-per-cycle-applog-prefix). Default: False.
     * `segment_health_check_dir` [str|None] Shared directory containing per-task
       segment health decision artifacts. Allocation-unit process 0 checks its artifact
       before joining a rendezvous. Default: None (disabled).

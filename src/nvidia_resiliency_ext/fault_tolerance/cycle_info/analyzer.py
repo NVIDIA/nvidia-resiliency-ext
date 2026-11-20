@@ -284,16 +284,23 @@ class CycleAnalyzer:
         else:
             # One update: the job-wide end report. The cycle's end time comes only from
             # the store host's update (report_cycle_info_update).
-            self.cycle_info_reporter.report_cycle_end_report(cycle, end_report)
-            logger.info(
-                "Cycle %s ended: %s, first detected at %s by %s; %d launchers reported%s",
-                cycle,
-                pb.EndReason.Name(end_report.end_reason),
-                end_report.first_detected_timestamp or "unknown",
-                end_report.first_detected_nodes or "none",
-                len(reported),
-                missing_text,
+            written = self.cycle_info_reporter.report_cycle_end_report(cycle, end_report)
+            summary = (
+                f"{pb.EndReason.Name(end_report.end_reason)}, first detected at "
+                f"{end_report.first_detected_timestamp or 'unknown'} by "
+                f"{end_report.first_detected_nodes or 'none'}; {len(reported)} launchers "
+                f"reported{missing_text}"
             )
+            if written:
+                logger.info("Cycle %s ended: %s", cycle, summary)
+            else:
+                # The reporter writes only cycles it started, and nothing once shut down.
+                logger.warning(
+                    "Cycle %s ended: %s. Its end report was not written: the cycle's start "
+                    "was never received, or the cycle info reporter is shut down",
+                    cycle,
+                    summary,
+                )
         # Forgotten either way: its late end reports are ignored. If the store host's end
         # has not arrived yet, its start is kept so that end is still written.
         info = self._cycle_infos.pop(cycle, None)

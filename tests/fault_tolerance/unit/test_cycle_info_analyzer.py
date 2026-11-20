@@ -300,6 +300,22 @@ class TestUpdateCycleEndReports:
         assert reporter.report_cycle_end_report.call_args.args[0] == 3
         reporter.report_cycle_end.assert_not_called()
 
+    @pytest.mark.parametrize("written", [True, False])
+    def test_an_end_report_the_reporter_did_not_write_is_logged_as_a_warning(self, written):
+        """E.g. the start of the cycle never reached the analyzer, or the reporter is shut
+        down: the reporter then writes nothing."""
+        analyzer, reporter = self._analyzer_with_cycle()
+        reporter.report_cycle_end_report.return_value = written
+
+        with patch.object(analyzer_module, "logger") as logger:
+            analyzer.update_cycle_end_reports(3)
+
+        assert logger.info.called == written
+        assert logger.warning.called != written
+        if not written:
+            assert "was not written" in logger.warning.call_args.args[0]
+        assert 3 in analyzer._written
+
     def test_without_end_reports_nothing_is_written_and_the_cycle_is_forgotten(self):
         reporter = MagicMock()
         reporter.report_cycle_start.return_value = True

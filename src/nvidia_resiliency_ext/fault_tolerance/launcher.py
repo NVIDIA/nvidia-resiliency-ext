@@ -247,16 +247,6 @@ def _append_attribution_startup_failure(log_file: Optional[str], error: Exceptio
         pass
 
 
-def _shutdown_cycle_info_reporter_safely(rdzv_handler: Any) -> None:
-    shutdown_cycle_info_reporter = getattr(rdzv_handler, "shutdown_cycle_info_reporter", None)
-    if not callable(shutdown_cycle_info_reporter):
-        return
-    try:
-        shutdown_cycle_info_reporter()
-    except Exception:
-        logger.warning("Failed to shut down cycle info reporter", exc_info=True)
-
-
 def init_node_health_check(endpoint: Optional[str]) -> None:
     global _NODE_HEALTH_CHECK_INSTANCE
     if endpoint:
@@ -704,8 +694,6 @@ class LocalElasticAgent(SimpleElasticAgent):
             raise
         except SignalException as e:
             logger.warning("Received %s death signal, shutting down workers, timeout %s sec.", e.sigval, self._term_timeout)
-            if self._is_store_host:
-                _shutdown_cycle_info_reporter_safely(self._rdzv_handler)
             self._shutdown(e.sigval, timeout=self._term_timeout)
             shutdown_called = True
             raise
@@ -768,10 +756,15 @@ class LocalElasticAgent(SimpleElasticAgent):
             # requeue. Reported through the shared no-restart path so both causes are
             # indistinguishable to downstream tooling, rather than this one looking like
             # an ordinary crash. Publish first: the shutdown reason ends the CycleAnalyzer.
-            # The end was recorded when it was detected (failure or peer restart); the job
-            # now ends for no progress, so that is its end reason. The failures and the
-            # detection time recorded with it are kept.
-            if self._cycle_end_report is not None:
+            # The end was recorded when it was detected (failure or peer restart). A launcher
+            # that saw the end itself now ends the job for no progress, so that is its end
+            # reason; one that only followed a peer's restart keeps DueToPeer, so it is not
+            # taken for an observer of the end. The failures and the detection time recorded
+            # with it are kept.
+            if (
+                self._cycle_end_report is not None
+                and self._cycle_end_report.end_reason != CycleEndReasonWorkerTerminatedDueToPeer
+            ):
                 self._cycle_end_report.end_reason = CycleEndReasonWorkerTerminatedDueToNoProgress
             self._publish_cycle_end_report(wait=True)
             self._rdzv_handler.signal_no_restart(RDZV_SHUTDOWN_REASON_NO_PROGRESS)
@@ -2131,8 +2124,6 @@ def launch_agent(
     rdzv_parameters.config["is_store_host"] = is_store_host
     # Add nproc_per_node so the rendezvous handler can restore local_world_size for standby->active transitions
     rdzv_parameters.config["nproc_per_node"] = config.nproc_per_node
-    if config.fault_tol_cfg.cycle_info_dir:
-        rdzv_parameters.config["cycle_info_dir"] = config.fault_tol_cfg.cycle_info_dir
 
     spec = WorkerSpec(
         role=config.role,
@@ -2270,8 +2261,6 @@ def launch_agent(
         if is_store_host:
             # Trigger attribution service analysis for final cycle
             agent._request_terminal_attribution()
-
-            _shutdown_cycle_info_reporter_safely(agent._rdzv_handler)
 
             grace_period = 3.0  # seconds
             logger.info(
@@ -2694,7 +2683,8 @@ def get_args_parser() -> ArgumentParser:
         help="Start a local standalone rendezvous backend that is represented by a C10d TCP store "
         "on a free port. Useful when launching single-node, multi-worker job. If specified "
         "--rdzv-backend, --rdzv-endpoint, --rdzv-id are auto-assigned and any explicitly set values "
-        "are ignored. This single-node development mode uses local logging without gRPC aggregation.",
+        "are ignored. This single-node development mode uses local logging without gRPC aggregation, "
+        "and writes no cycle info (--ft-cycle-info-dir is ignored).",
     )
     parser.add_argument(
         "--ft-control-only",
@@ -3450,12 +3440,32 @@ def config_from_args(args, launcher_pipe_read_fd=None, launcher_log_file=None) -
         if args.ft_enable_log_server:
             logger.info("Standalone development mode uses local logging; disabling gRPC aggregation.")
         args.ft_enable_log_server = False
+        # The cycle info files are written by the CycleAnalyzer of the control process, which
+        # standalone does not start. Cleared so workers get no NVRX_CURRENT_CYCLE_INFO.
+        if fault_tol_cfg.cycle_info_dir:
+            logger.warning(
+                "--ft-cycle-info-dir (and --ft-cycle-info-end-reports) is ignored with "
+                "--standalone: cycle info is written only by the control process, which "
+                "standalone does not start."
+            )
+            fault_tol_cfg.cycle_info_dir = None
+            args.ft_cycle_info_dir = None
     elif getattr(args, "ft_nvrx_logfile", None):
         if getattr(args, "ft_enable_log_server", None) is None:
             logger.info(
                 "--ft-nvrx-logfile is set; enabling --ft-enable-log-server automatically."
             )
             args.ft_enable_log_server = True
+    # End reports travel on the launchers' gRPC log streams, which exist only with both flags.
+    if fault_tol_cfg.is_cycle_end_report_enabled and not (
+        getattr(args, "ft_enable_log_server", False)
+        and getattr(args, "ft_per_cycle_applog_prefix", None)
+    ):
+        logger.warning(
+            "--ft-cycle-info-end-reports has no effect: end report gathering works only with "
+            "--ft-enable-log-server and --ft-per-cycle-applog-prefix. "
+            "Cycle info files will have an empty end_report."
+        )
 
     min_nodes, max_nodes = parse_min_max_nnodes(args.nnodes)
     assert 0 < min_nodes <= max_nodes
