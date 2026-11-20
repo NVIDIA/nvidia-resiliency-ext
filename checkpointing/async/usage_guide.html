@@ -192,9 +192,12 @@ The following example shows how the routine can be used to synchronize the async
 <p>MSC (<a class="reference external" href="https://github.com/NVIDIA/multi-storage-client">GitHub repository</a>) provides a unified API for various storage backends, allowing you to write checkpoints to different storage services using the same code.</p>
 <section id="installation">
 <h3>Installation<a class="headerlink" href="#installation" title="Link to this heading"></a></h3>
-<p>Before using MSC integration, you need to install the Multi-Storage Client package:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install the Multi-Storage Client package with boto3 support</span>
-pip<span class="w"> </span>install<span class="w"> </span>multi-storage-client<span class="o">[</span>boto3<span class="o">]</span>
+<p>Install the package with its <code class="docutils literal notranslate"><span class="pre">msc</span></code> extra, which installs the Multi-Storage Client:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"nvidia-resiliency-ext[msc]"</span>
+</pre></div>
+</div>
+<p>Each storage backend also needs the matching Multi-Storage Client extra. For AWS S3, for example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"multi-storage-client[boto3]"</span>
 </pre></div>
 </div>
 </section>
