@@ -157,7 +157,7 @@ Names below have the prefix `nv.nvrx.ckpt.save.`.
 
 | Suffix            | Group                    | Process               | Covers                                                                       |
 | ----------------- | ------------------------ | --------------------- | ---------------------------------------------------------------------------- |
-| `schedule`        | `SPAN_GROUP_CKPT`        | Trainer               | `schedule_async_call`, including worker startup and preload wait when needed |
+| `schedule`        | `SPAN_GROUP_CKPT`        | Trainer               | Submitting the request, including worker startup and preload wait if needed  |
 | `stage_wait`      | `SPAN_GROUP_CKPT_PHASES` | Trainer               | Waiting for persistent-worker preload                                        |
 | `shm_drain`       | `SPAN_GROUP_CKPT_PHASES` | Trainer, CPU-shm mode | Draining writes before reusing shared buffers                                |
 | `stage`           | `SPAN_GROUP_CKPT_PHASES` | Trainer, CPU-shm mode | Shared-buffer allocation and tensor copying                                  |

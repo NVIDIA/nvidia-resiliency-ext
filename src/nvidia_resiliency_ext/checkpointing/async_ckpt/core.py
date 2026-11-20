@@ -27,12 +27,25 @@ import subprocess  # nosec B404
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
-from queue import Empty
-from time import sleep, time
-from typing import Callable, ClassVar, Dict, List, NamedTuple, Optional, Tuple
+from multiprocessing.connection import Connection
+from time import time
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Deque,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Protocol,
+    Tuple,
+    runtime_checkable,
+)
 
 import torch
 from torch import multiprocessing as mp
+from typing_extensions import deprecated
 
 from nvidia_resiliency_ext.shared_utils import semconv, telemetry
 
@@ -256,115 +269,176 @@ class ObjectTracker(type):
         return list(cls._instances)
 
 
-class AsyncCaller(ABC):
-    """Wrapper around mp.Process that ensures correct semantic of distributed finalization.
+class _SubmittedSave(ABC):
+    """A save that an `AsyncCaller` has started running in the background.
 
-    Starts process asynchronously and allows checking if all processes on all ranks are done.
+    Each query waits for the answer to become True if `blocking`.
     """
 
+    @abstractmethod
+    def staged(self, blocking: bool) -> bool:
+        """Whether the save has its own copy of the tensors it writes.
+
+        The trainer may modify the tensors once the save is staged.
+        """
+
+    @abstractmethod
+    def finished(self, blocking: bool) -> bool:
+        """Whether this rank is finished with the save.
+
+        A caller's saves must be asked about in the order they were submitted.
+        """
+
+
+class _EmptySave(_SubmittedSave):
+    """A save with nothing to run in the background."""
+
+    def staged(self, blocking: bool) -> bool:
+        return True
+
+    def finished(self, blocking: bool) -> bool:
+        return True
+
+
+_CALLER_API_DEPRECATED = (
+    "AsyncCaller.{} is deprecated; schedule and finalize saves with AsyncCallsQueue, or use "
+    "AsyncCaller.submit and the save it returns"
+)
+
+
+class AsyncCaller(ABC):
+    """Runs the background part of async requests."""
+
     def __init__(self):
-        self.process: Optional[mp.Process] = None
-        self.start_time: Optional[float] = None
-        # Store the rank for logging, in case torch.distributed is destroyed
-        # before AsyncCaller shuts down.
-        self.rank: int = None
+        # Saves submitted by `schedule_async_call` and not yet found done on every rank
+        self._legacy_saves: Deque[_SubmittedSave] = deque()
 
     @abstractmethod
+    def submit(self, async_req: AsyncRequest) -> _SubmittedSave:
+        """Start running `async_req` in the background.
+
+        This method must be called on all ranks.
+        """
+
+    @deprecated(_CALLER_API_DEPRECATED.format("schedule_async_call"))
     def schedule_async_call(self, async_req: AsyncRequest) -> None:
-        """Schedule `async_req` with some process forking or reusing
-           persistent worker
+        """Submit `async_req`, and wait until it is staged, for `is_current_async_call_done`.
 
         This method must be called on all ranks.
 
-        Args:
-            async_req (AsyncRequest): `AsyncRequest` object containing to
-                                       start async process
+        Warning:
+            Don't mix the deprecated methods with `submit` on the same caller, or use them on a
+            caller that an `AsyncCallsQueue` uses: `is_current_async_call_done` knows only about
+            saves from `schedule_async_call`.
         """
-        raise NotImplementedError("This should be implemented")
+        save = self.submit(async_req)
+        save.staged(blocking=True)
+        self._legacy_saves.append(save)
 
-    @abstractmethod
-    def is_current_async_call_done(self, blocking: bool, no_dist: bool) -> bool:
-        """Check if async save is finished on all ranks.
+    @deprecated(_CALLER_API_DEPRECATED.format("is_current_async_call_done"))
+    def is_current_async_call_done(self, blocking: bool = False, no_dist: bool = False) -> bool:
+        """Whether the oldest save from `schedule_async_call` is done on every rank.
 
-        For semantic correctness, requires rank synchronization in each check.
-        This method must be called on all ranks.
+        This method must be called on all ranks unless `no_dist`.
+
+        Warning:
+            Saves from `submit`, including those of an `AsyncCallsQueue`, are not asked about:
+            with none from `schedule_async_call`, this returns True even while they run.
 
         Args:
-            blocking (bool, optional): if True, will wait until the call is done
-                on all ranks. Otherwise, returns immediately if at least one rank
-                is still active. Defaults to False.
-            no_dist (bool, Optional): if True, training ranks simply check its
-                asynchronous checkpoint writer without synchronization.
-
-        Returns:
-            bool: True if all ranks are done (immediately of after active wait
-                if `blocking` is True), False if at least one rank is still active.
-
+            blocking (bool, optional): if True, wait until this rank is done with it.
+            no_dist (bool, optional): if True, ask about this rank only.
         """
-        raise NotImplementedError("This should be implemented")
+        finished_here = not self._legacy_saves or self._legacy_saves[0].finished(blocking)
+        done = finished_here if no_dist else _finished_on_all_ranks(finished_here)
+        if done and self._legacy_saves:
+            self._legacy_saves.popleft()
+        return done
 
-    @telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.completion_sync")
+    @deprecated(_CALLER_API_DEPRECATED.format("sync_all_async_calls"))
     def sync_all_async_calls(self, is_alive: int) -> bool:
-        """Check if all ranks have completed async checkpoint writing
-
-        Args:
-            is_alive (bool): if True, the current async request is not completed
-
-        Returns:
-            bool: True if all ranks are done, False if at least one rank is still active.
-
-        """
-        ten = torch.tensor([is_alive], dtype=torch.int, device=torch.cuda.current_device())
-        torch.distributed.all_reduce(ten)
-        return ten[0] == 0
+        """Whether no rank has a save alive. Called on all ranks."""
+        return _finished_on_all_ranks(not is_alive)
 
     @abstractmethod
-    def close(self, abort=False):
-        """Terminate the async caller at exit of an application or some termination conditions
+    def close(self, abort: bool = False) -> None:
+        """Stop the background processes.
 
         Args:
-            abort (bool, optional): Default to False. Needs to be manually set to true when
-                the checkpoint async process needs to be aborted.
+            abort (bool, optional): if True, stop them without waiting for the saves they
+                are running. Defaults to False.
         """
-        logger.info(f"AsyncCaller: {torch.distributed.get_rank()}, Destroying Async Caller")
 
-    @abstractmethod
-    def __del__(self):
-        raise NotImplementedError("This should be implemented")
+
+class _ForkedSave(_SubmittedSave):
+    """A save running in its own forked process."""
+
+    def __init__(self, process: mp.Process, preloaded: Any):
+        self.process = process
+        # Keep the preloaded tensors alive until the forked process is done with them.
+        self._preloaded = preloaded
+        self._start_time = time()
+
+    def staged(self, blocking: bool) -> bool:
+        # The trainer preloads the tensors before forking.
+        return True
+
+    def finished(self, blocking: bool) -> bool:
+        self.process.join(timeout=None if blocking else 0)
+        if self.process.exitcode is None:
+            return False
+        logger.debug(
+            "TemporalAsyncCaller: Async process join finished "
+            f"after {time() - self._start_time:.2f}s from forking"
+        )
+        self._preloaded = None
+        return True
+
+
+@runtime_checkable
+class _KeptByWorker(Protocol):
+    """An argument of an `AsyncRequest` that leaves out what a worker keeps between saves.
+
+    For example, the write data of `FileSystemWriterAsync`, which sends a persistent worker
+    only the key of tensors it received with an earlier save.
+    """
+
+    def received_here(self) -> Any:
+        """This argument with what the worker keeps filled in, as this process holds it."""
 
 
 class TemporalAsyncCaller(AsyncCaller):
-    """Wrapper around mp.Process that ensures correct semantic of distributed finalization.
-
-    Starts process asynchronously and allows checking if all processes on all ranks are done.
-    """
+    """Runs each async request in a newly forked process."""
 
     def __init__(self):
         super().__init__()
-        self.preloaded_holder = None
+        # Store the rank for logging, in case torch.distributed is destroyed
+        # before the caller shuts down.
+        self.rank: Optional[int] = None
+        self._saves: List[_ForkedSave] = []
 
     @_disable_gc()
-    def schedule_async_call(self, async_req: AsyncRequest) -> None:
-        """Spawn a process with `async_fn` as the target.
+    def submit(self, async_req: AsyncRequest) -> _SubmittedSave:
+        """Fork a process with `async_req.async_fn` as the target.
 
         This method must be called on all ranks.
-
-        Args:
-            async_fn (Callable, optional): async function to call. If None,
-                no process will be started.
-            async_req (AsyncRequest): `AsyncRequest` object containing to
-                                       start async process
         """
         if async_req.async_fn is None:
-            return  # nothing to do
+            return _EmptySave()
+        # Each forked process is a new worker, which keeps nothing between saves. This process
+        # keeps it for them instead, and they inherit it when forked.
+        async_req = async_req._replace(
+            async_fn_args=tuple(
+                arg.received_here() if isinstance(arg, _KeptByWorker) else arg
+                for arg in async_req.async_fn_args
+            )
+        )
 
         async_fn_args = list(async_req.async_fn_args)
+        preloaded = None
         if async_req.preload_fn:
-            # If there's a preload_fn in `async_req`, we call this func
-            # to do the defined action in `async_req.preload_fn` to
-            # stage GPU tensors to its defined destination
-            async_fn_args[1] = async_req.preload_fn()
-            self.preloaded_holder = async_fn_args[1]
+            # Stage GPU tensors to the destination `preload_fn` defines.
+            preloaded = async_fn_args[1] = async_req.preload_fn()
 
         if self.rank is None:
             self.rank = torch.distributed.get_rank()
@@ -375,82 +449,56 @@ class TemporalAsyncCaller(AsyncCaller):
         logger.debug(f"rank: {self.rank}, takes {end_sync - start_sync} to finish D2H ")
 
         ctx = mp.get_context('fork')
-        self.start_time = time()
-        async_fn_kwargs = dict(async_req.async_fn_kwargs or {})
-        self.process = ctx.Process(
-            target=async_req.async_fn, args=async_fn_args, kwargs=async_fn_kwargs
+        start_time = time()
+        process = ctx.Process(
+            target=async_req.async_fn,
+            args=async_fn_args,
+            kwargs=dict(async_req.async_fn_kwargs or {}),
         )
-        self.process.start()
-        init_time = time()
-        logger.debug(
-            f"rank: {self.rank}, takes {init_time - self.start_time} to schedule async ckpt "
-        )
+        process.start()
+        logger.debug(f"rank: {self.rank}, takes {time() - start_time} to schedule async ckpt ")
+        save = _ForkedSave(process, preloaded)
+        self._saves = [s for s in self._saves if s.process.exitcode is None]
+        self._saves.append(save)
+        return save
 
-    def is_current_async_call_done(self, blocking: bool = False, no_dist: bool = False) -> bool:
-        """Check if async save is finished on all ranks.
-
-        For semantic correctness, requires rank synchronization in each check.
-        This method must be called on all ranks.
-
-        Args:
-            blocking (bool, optional): if True, will wait until the call is done
-                on all ranks. Otherwise, returns immediately if at least one rank
-                is still active. Defaults to False.
-            no_dist (bool, Optional): if True, training ranks simply check its
-                asynchronous checkpoint writer without synchronization.
-
-        Returns:
-            bool: True if all ranks are done (immediately of after active wait
-                if `blocking` is True), False if at least one rank is still active.
-        """
-        # The following takes the same overhead
-        # as torch.distributed.barrier (single integer all-reduce)
-        is_alive = int(self.process.is_alive()) if self.process is not None else 0
-        is_done = not is_alive if no_dist else self.sync_all_async_calls(is_alive)
-
-        if is_done or blocking:
-            # Process join is called in the following cases
-            # 1. blocking == True -> regardless of is_done
-            # 2. blocking == False (non-blocking)
-            #    -> is_done == True: async requests on all ranks are identified to be finished
-            #    `self.close()` makes sure the async callers terminated
-            self.close()
-            is_done = True
-        return is_done
-
-    def close(self, abort=False):
-        """For TemporalAsyncCaller, this method is called explictly in `is_current_async_call_done`
-
-        This method make sure the TemporalAsyncCaller terminated
-        with all its assigned async request completed
-
-        Args:
-            abort (bool, optional): Default to False. Needs to be manually set to true when
-                the checkpoint async process needs to be aborted.
-        """
-        if self.process:
-            logger.debug(f"rank: {self.rank}, joining self.process")
-            if abort:
+    def close(self, abort: bool = False) -> None:
+        for save in self._saves:
+            if abort and save.process.is_alive():
                 logger.warning(f"Temporal worker aborted in rank {self.rank}")
-                self.process.kill()
-            else:
-                self.process.join()
-            self.process = None
-            logger.debug(
-                "TemporalAsyncCaller: Async process join finished "
-                f"after {time() - self.start_time:.2f}s from forking"
-            )
-            self.start_time = None
-            self.preloaded_holder = None
-
-    def __del__(self):
-        pass
+                save.process.kill()
+            save.process.join()
+        self._saves = []
 
     def _debug_is_async_process_running(self):
         """Utility for unit test purpose to validate expected state of the async process that performs async CP."""
-        if self.process is None:
-            return False
-        return self.process.is_alive()
+        return any(save.process.is_alive() for save in self._saves)
+
+
+class _QueuedSave(_SubmittedSave):
+    """A save sent to the persistent worker.
+
+    The caller records the worker's reports on the save: see `PersistentAsyncCaller._read_report`.
+    """
+
+    def __init__(self, caller: 'PersistentAsyncCaller', idx: int, preloads: bool):
+        self._caller = caller
+        self.idx = idx
+        # A save without a preload_fn was staged by the trainer before it was submitted.
+        self.is_staged = not preloads
+        self.is_finished = False
+
+    def staged(self, blocking: bool) -> bool:
+        while not self.is_staged:
+            if not self._caller._read_report(blocking):
+                return False
+        return True
+
+    def finished(self, blocking: bool) -> bool:
+        while not self.is_finished:
+            if not self._caller._read_report(blocking):
+                return False
+        return True
 
 
 class PersistentAsyncCaller(AsyncCaller):
@@ -483,19 +531,18 @@ class PersistentAsyncCaller(AsyncCaller):
         sigterm_timeout: float = 30.0,
         cpu_shm_mode: bool = False,
     ):
+        super().__init__()
         self.process: mp.Process = None
         self.start_time: Optional[float] = None
         self.sigterm_timeout = sigterm_timeout
         ctx = mp.get_context('spawn')
         # main queue to deliver `AsyncRequest` from host to the ckpt worker
         self.queue: mp.JoinableQueue = ctx.JoinableQueue()
-        # Queue used to synchronize for the completion of preloading tensors to host
-        # between a trainer and ckpt worker
-        self.preload_q: mp.JoinableQueue = ctx.JoinableQueue()
-        # Queue used to inform trainer when the saving is completed
-        self.comp_q: mp.Queue = ctx.Queue()
-        self.cur_item: int = None
-        self.cur_idx: int = -1
+        # Pipe the worker reports on, in order, when it has staged a save and when it has
+        # finished one
+        self._report_conn, self._report_send = ctx.Pipe(duplex=False)
+        # Saves sent to the worker that it has not reported finished, oldest first
+        self._unfinished: Deque[_QueuedSave] = deque()
         self.rank: int = None
         # When background_worker_is_daemon flag is True, the async background
         # worker is spawned as a daemon making async worker shutdown cleaner.
@@ -528,8 +575,7 @@ class PersistentAsyncCaller(AsyncCaller):
             args=(
                 rank,
                 self.queue,
-                self.preload_q,
-                self.comp_q,
+                self._report_send,
                 logger.getEffectiveLevel(),
                 self.cpu_priority,
                 self.io_priority,
@@ -555,7 +601,7 @@ class PersistentAsyncCaller(AsyncCaller):
         for cb in PersistentAsyncCaller._worker_restart_callbacks:
             cb()
 
-    def schedule_async_call(self, async_req: AsyncRequest) -> None:
+    def submit(self, async_req: AsyncRequest) -> _SubmittedSave:
         """Put `AsyncRequest` to the Persistent Async Caller
 
         This method must be called on all ranks. The async_req object is pickled and
@@ -569,84 +615,42 @@ class PersistentAsyncCaller(AsyncCaller):
                                        schedule a checkpointing request
         """
         if async_req.async_fn is None:
-            return  # nothing to do
+            return _EmptySave()
 
         if self.rank is None:
             self.rank = torch.distributed.get_rank()
-
-        start_sync = end_sync = None
 
         self.start_time = time()
         if self.process is None:
             self._start_worker(self.rank)
 
-        if async_req.preload_fn:
-            self.preload_q.put(async_req.call_idx)
         self.queue.put(async_req)
         logger.debug(f"rank: {self.rank}, put {async_req.call_idx}")
-
-        if async_req.preload_fn:
-            start_sync = time()
-            # Synchronize for pre-staging tensors
-            with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage_wait"):
-                self.preload_q.join()
-            end_sync = time()
-
-            logger.debug(f"rank: {self.rank}, takes {end_sync - start_sync} to finish D2H ")
+        save = _QueuedSave(self, async_req.call_idx, preloads=async_req.preload_fn is not None)
+        self._unfinished.append(save)
 
         init_time = time()
         logger.debug(
             f"rank: {self.rank}, takes {init_time - self.start_time} " "to schedule async ckpt "
         )
+        return save
 
-    def is_current_async_call_done(self, blocking: bool = False, no_dist: bool = False) -> bool:
-        """Check if async save is finished on all ranks.
+    def _read_report(self, blocking: bool) -> bool:
+        """Read the worker's next report and record it on the save it is about.
 
-        For semantic correctness, requires rank synchronization in each check.
-        This method must be called on all ranks.
-
-        Args:
-            blocking (bool, optional): if True, will wait until the call is done
-                on all ranks. Otherwise, returns immediately if at least one rank
-                is still active. Defaults to False.
-            no_dist (bool, Optional): if True, training ranks simply check its
-                asynchronous checkpoint writer without synchronization.
-
-        Returns:
-            bool: True if all ranks are done (immediately of after active wait
-                if `blocking` is True), False if at least one rank is still active.
+        Returns False if there is no report yet and `blocking` is False.
         """
-
-        is_alive: bool = False
-
-        if self.process:
-            while self.cur_item is None:
-                try:
-                    # Retrieve comp call_idx without waiting
-                    self.cur_item = self.comp_q.get_nowait()
-                except Empty:
-                    # This method is called after any `AsyncRequest` is pushed to the main loop
-                    # So, the background writing is still active
-                    # before the worker put call_idx to `comp_q`
-                    if not blocking:
-                        is_alive = True
-                        break
-                    sleep(0.1)
-
-        if self.cur_item is not None:
-            logger.debug(f"rank: {self.rank}, item: {self.cur_item}" f" is completed, {is_alive}")
-
-        is_done = not is_alive if no_dist else self.sync_all_async_calls(is_alive)
-        # This is set to False when blocking == False so this routine is called again
-        # to simply call `sync_all_async_calls` to check if other ranks complete the writing
-        if is_done:
-            # The current request is completed globally. Reset the current item for polling.
-            logger.debug(
-                f"rank: {self.rank}, item: {self.cur_item}" f" is completed globally, {is_done}"
-            )
-            self.cur_item = None
-
-        return is_done
+        if not self._report_conn.poll(None if blocking else 0):
+            return False
+        report, idx = self._report_conn.recv()
+        # The worker handles saves in order, so every report is about the oldest unfinished one.
+        save = self._unfinished[0]
+        assert save.idx == idx, f"worker reported {report} for call {idx}, expected {save.idx}"
+        save.is_staged = True
+        if report == 'finished':
+            save.is_finished = True
+            self._unfinished.popleft()
+        return True
 
     def close(self, abort=False):
         """Wait on the left async requests and terminate the PersistentAsyncCaller
@@ -678,12 +682,11 @@ class PersistentAsyncCaller(AsyncCaller):
                     # release any buffered CUDA IPC handles. Without this, SIGKILL
                     # leaves dangling IPC state that causes SIGSEGV in the parent
                     # during CUDA cleanup at exit.
-                    for q in (self.queue, self.preload_q):
-                        try:
-                            q.cancel_join_thread()
-                            q.close()
-                        except Exception:
-                            pass
+                    try:
+                        self.queue.cancel_join_thread()
+                        self.queue.close()
+                    except Exception:
+                        pass
                     gc.collect()
                     self.process.kill()
                     self.process.join()
@@ -693,6 +696,13 @@ class PersistentAsyncCaller(AsyncCaller):
                 self.process.join()
 
             self.process = None
+            # The worker is gone, so no more reports will come: discard any it sent that were
+            # not read, and treat its outstanding saves as done.
+            while self._report_conn.poll():
+                self._report_conn.recv()
+            for save in self._unfinished:
+                save.is_staged = save.is_finished = True
+            self._unfinished.clear()
 
     def __del__(self):
         self.close()
@@ -723,8 +733,7 @@ class PersistentAsyncCaller(AsyncCaller):
     def async_process_target(
         rank: int,
         queue: mp.JoinableQueue,
-        preload_q: mp.JoinableQueue,
-        comp_q: mp.Queue,
+        report_conn: Connection,
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
@@ -736,18 +745,17 @@ class PersistentAsyncCaller(AsyncCaller):
         when application calls `close()` explictily
 
         This routine receives `AsyncRequest` and does `preload_fn` first and
-        put the integer value in `preload_q` to inform the trainer to proceed.
+        reports `('staged', call_idx)` on `report_conn` to inform the trainer to proceed.
         When the `async_fn` from the request` is completed (background saving is done),
-        it puts a integer value to `comp_q` to notify the trainer the completion.
+        it reports `('finished', call_idx)` on `report_conn`.
 
         Args:
             rank (int): the rank of the trainer where the persistent worker is created.
             queue (mp.JoinableQueue): the main queue used to receive `AsyncRequest`
                                       from the training rank
-            preload_q (mp.JoinableQueue): a queue to inform trainer that preloading of tensors
-                                          from GPU to Host or dedicated location is completed
-            comp_q (mp.Queue): a queue to inform the training rank the completion of scheduled
-                               async checkpoint request
+            report_conn (Connection): write end of a pipe to inform the training rank that
+                                      a call's tensors are preloaded from GPU to Host or a
+                                      dedicated location, and that a call is completed
             log_level (int, Optional): an integer to set log-level in this spawned process
                                        to get aligned with the training rank's logging level
             cpu_priority (int): Nice value for CPU scheduling (0-19, higher = lower priority).
@@ -811,14 +819,13 @@ class PersistentAsyncCaller(AsyncCaller):
                     ):
                         async_fn_args = list(item.async_fn_args)
                         if item.preload_fn:
-                            call_idx = preload_q.get()
                             with telemetry.span(
                                 semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.preload"
                             ):
                                 # the 2nd arg is state dict
                                 async_fn_args[1] = item.preload_fn()
-                            logger.debug(f"{rank} has completed D2H of {call_idx}")
-                            preload_q.task_done()
+                            logger.debug(f"{rank} has completed D2H of {item.call_idx}")
+                            report_conn.send(('staged', item.call_idx))
                         if item.async_fn is not None:
                             async_fn_kwargs = dict(item.async_fn_kwargs or {})
                             with telemetry.span(
@@ -826,7 +833,7 @@ class PersistentAsyncCaller(AsyncCaller):
                             ):
                                 item.async_fn(*async_fn_args, **async_fn_kwargs)
                         logger.debug(f"{rank} has completed saving {item.call_idx}")
-                        comp_q.put(item.call_idx)
+                        report_conn.send(('finished', item.call_idx))
                         queue.task_done()
                         del async_fn_args
                 del item
@@ -855,8 +862,7 @@ class PersistentAsyncCaller(AsyncCaller):
     def async_loop(
         rank: int,
         queue: mp.JoinableQueue,
-        preload_q: mp.JoinableQueue,
-        comp_q: mp.Queue,
+        report_conn: Connection,
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
@@ -867,15 +873,14 @@ class PersistentAsyncCaller(AsyncCaller):
         In this loop, child processes may be created (For example: to parallelize File IO)
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank, queue, report_conn, log_level, cpu_priority, io_priority, cpu_shm_mode
         )
 
     @staticmethod
     def async_loop_for_daemon_worker(
         rank: int,
         queue: mp.JoinableQueue,
-        preload_q: mp.JoinableQueue,
-        comp_q: mp.Queue,
+        report_conn: Connection,
         log_level: int = logging.INFO,
         cpu_priority: int = 10,
         io_priority: Optional[int] = None,
@@ -885,7 +890,7 @@ class PersistentAsyncCaller(AsyncCaller):
         Main function for the persistent checkpoint worker called by a daemon async process
         """
         PersistentAsyncCaller.async_process_target(
-            rank, queue, preload_q, comp_q, log_level, cpu_priority, io_priority, cpu_shm_mode
+            rank, queue, report_conn, log_level, cpu_priority, io_priority, cpu_shm_mode
         )
 
 
@@ -894,14 +899,23 @@ class _ActiveAsyncRequest(NamedTuple):
 
     Args:
         idx (int): index of the call (starting from 0)
-        async_caller (DistributedAsyncCaller): async caller instance that represents
-            the async process handling the async request
+        save (_SubmittedSave): the call's background part, as started by an `AsyncCaller`
         async_request (AsyncRequest):  async request that is being called
     """
 
     idx: int
-    async_caller: AsyncCaller
+    save: _SubmittedSave
     async_request: AsyncRequest
+
+
+@telemetry.trace_fn(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.completion_sync")
+def _finished_on_all_ranks(finished_here: bool) -> bool:
+    """Whether every rank is finished with its oldest async call. Called on all ranks."""
+    unfinished = torch.tensor(
+        [int(not finished_here)], dtype=torch.int, device=torch.cuda.current_device()
+    )
+    torch.distributed.all_reduce(unfinished)
+    return unfinished.item() == 0
 
 
 class AsyncCallsQueue(metaclass=ObjectTracker):
@@ -932,7 +946,9 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         self.io_priority = io_priority
         self.sigterm_timeout = sigterm_timeout
         self.cpu_shm_mode = cpu_shm_mode
-        self.persistent_caller: AsyncCaller = None
+        self._caller: Optional[AsyncCaller] = None
+        # Whether this rank is finished with the oldest call in `async_calls`.
+        self._head_finished_here = False
 
         if cpu_shm_mode:
             # Deferred import avoids circular dependency (filesystem_async imports core).
@@ -945,36 +961,49 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 lambda: self.maybe_finalize_async_calls(blocking=True, no_dist=True)
             )
 
-    def _get_async_caller(self):
+    def _get_async_caller(self) -> AsyncCaller:
+        if self._caller is None:
+            self._caller = self._new_async_caller()
+        return self._caller
+
+    @property
+    @deprecated("AsyncCallsQueue.persistent_caller is deprecated; the queue manages its caller")
+    def persistent_caller(self) -> Optional[AsyncCaller]:
+        """The persistent caller, once the first save has started it; None if not persistent.
+
+        Warning:
+            Don't call the caller's deprecated methods: the queue submits its saves with
+            `submit`, which `AsyncCaller.is_current_async_call_done` doesn't know about.
+        """
+        return self._caller if self.persistent else None
+
+    def _new_async_caller(self) -> AsyncCaller:
         if not self.persistent:
             logger.warning("The TemporalAsyncCaller will be deprecated soon. ")
             return TemporalAsyncCaller()
-        if self.persistent_caller is None:
-            # Consume the pre-warmed caller if available.
-            # No locking needed: _warmup_persistent_caller is a class-level variable that is not
-            # shared across processes (each process has its own copy), and we expect only the
-            # main trainer thread to call this routine, so there is no concurrent access.
-            if AsyncCallsQueue._warmup_persistent_caller is not None:
-                warmed = AsyncCallsQueue._warmup_persistent_caller
-                AsyncCallsQueue._warmup_persistent_caller = None
-                if warmed.process is not None and not warmed.process.is_alive():
-                    logger.warning(
-                        "Pre-warmed async caller process (PID %s) is no longer alive; "
-                        "starting a fresh worker.",
-                        warmed.process.pid,
-                    )
-                    warmed.process.join()  # reap the zombie before discarding
-                    warmed.process = None
-                self.persistent_caller = warmed
-            else:
-                self.persistent_caller = PersistentAsyncCaller(
-                    is_daemon=self.is_daemon,
-                    cpu_priority=self.cpu_priority,
-                    io_priority=self.io_priority,
-                    sigterm_timeout=self.sigterm_timeout,
-                    cpu_shm_mode=self.cpu_shm_mode,
-                )
-        return self.persistent_caller
+        # Consume the pre-warmed caller if available.
+        # No locking needed: _warmup_persistent_caller is a class-level variable that is not
+        # shared across processes (each process has its own copy), and we expect only the
+        # main trainer thread to call this routine, so there is no concurrent access.
+        warmed = AsyncCallsQueue._warmup_persistent_caller
+        if warmed is None:
+            return PersistentAsyncCaller(
+                is_daemon=self.is_daemon,
+                cpu_priority=self.cpu_priority,
+                io_priority=self.io_priority,
+                sigterm_timeout=self.sigterm_timeout,
+                cpu_shm_mode=self.cpu_shm_mode,
+            )
+        AsyncCallsQueue._warmup_persistent_caller = None
+        if warmed.process is not None and not warmed.process.is_alive():
+            logger.warning(
+                "Pre-warmed async caller process (PID %s) is no longer alive; "
+                "starting a fresh worker.",
+                warmed.process.pid,
+            )
+            warmed.process.join()  # reap the zombie before discarding
+            warmed.process = None
+        return warmed
 
     @classmethod
     def warmup_persistent_caller(
@@ -1030,8 +1059,12 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
         async_request = async_request._replace(call_idx=self.call_idx).freeze()
         schedule_attrs = {semconv.CKPT_CALL_IDX: self.call_idx}
         with telemetry.span(semconv.SPAN_GROUP_CKPT, "nv.nvrx.ckpt.save.schedule", schedule_attrs):
-            async_caller.schedule_async_call(async_request._replace(finalize_fns=[]))
-        self.async_calls.append(_ActiveAsyncRequest(self.call_idx, async_caller, async_request))
+            save = async_caller.submit(async_request._replace(finalize_fns=[]))
+            # Return only once the trainer may modify the tensors again.
+            if not save.staged(blocking=False):
+                with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage_wait"):
+                    save.staged(blocking=True)
+        self.async_calls.append(_ActiveAsyncRequest(self.call_idx, save, async_request))
         return self.call_idx
 
     def maybe_finalize_async_calls(self, blocking=False, no_dist=False) -> List[int]:
@@ -1053,14 +1086,10 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                 writing, the exceptions are wrapped and raised on all ranks.
         """
         call_idx_finalized = []
-        while self.async_calls:
-            next_async_done = self.async_calls[0].async_caller.is_current_async_call_done(
-                blocking, no_dist
-            )
-            if not next_async_done:
-                break
+        while self.async_calls and self._head_finished(blocking, no_dist):
             with debug_time("finalize", logger):
                 idx, _, async_request = self.async_calls.popleft()
+                self._head_finished_here = False
                 with telemetry.span(
                     semconv.SPAN_GROUP_CKPT,
                     "nv.nvrx.ckpt.save.finalize",
@@ -1071,6 +1100,17 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
                     )
                 call_idx_finalized.append(call_idx)
         return call_idx_finalized
+
+    def _head_finished(self, blocking: bool, no_dist: bool) -> bool:
+        """Whether the oldest call is finished on this rank, and on every rank unless `no_dist`.
+
+        Must be called on all ranks unless `no_dist`.
+        """
+        if not self._head_finished_here:
+            self._head_finished_here = self.async_calls[0].save.finished(blocking)
+        if no_dist:
+            return self._head_finished_here
+        return _finished_on_all_ranks(self._head_finished_here)
 
     def get_num_unfinalized_calls(self):
         """Get the number of active async calls."""
@@ -1090,10 +1130,10 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
 
         # For a clean shut down scenario with valid async processes running,
         # finalize all pending async calls
-        if not abort and (self.persistent is False or self.persistent_caller is not None):
+        if not abort and self._caller is not None:
             self.maybe_finalize_async_calls(blocking=True)
-        if self.persistent and self.persistent_caller:
-            self.persistent_caller.close(abort=abort)
+        if self._caller is not None:
+            self._caller.close(abort=abort)
 
         # Clean up any pre-warmed worker that was never consumed by a checkpoint schedule.
         if AsyncCallsQueue._warmup_persistent_caller is not None:
@@ -1102,7 +1142,7 @@ class AsyncCallsQueue(metaclass=ObjectTracker):
 
         # Reset all class params
         self.call_idx = -1
-        self.persistent_caller = None
+        self._caller = None
 
     def __del__(self):
         """Ensure clean closure of AsyncCallsQueue at object deletion"""

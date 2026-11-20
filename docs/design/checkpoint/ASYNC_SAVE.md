@@ -28,7 +28,7 @@ This document describes how NVRx saves a checkpoint on the decentralized path wi
 
 ## Phases of a save
 
-1. **Schedule:** In the training process, `save_state_dict_async_plan` plans the save, has `FileSystemWriterAsync.prepare_write_data` copy every tensor to SHM (CPU SHM mode only), and returns a `PendingSave` object.
+1. **Schedule:** In the training process, `save_state_dict_async_plan` plans the save, has `FileSystemWriterAsync.prepare_write_data` resolve the plan and `ShmStager` copy every tensor to SHM (CPU SHM mode only), and returns a `PendingSave` object.
 2. **Write:** In the worker process, every asynchronous worker writes to disk tensors copied into CPU SHM during the Schedule phase, and BytesIO objects. (In the non SHM mode, device-to-host copies also happen here, but that is not part of this document.)
 3. **Finalize:** In the training process, after all ranks have finished writing their data to disk, collect their write results (file relative paths and offsets into the file for each tensor or BytesIO object written), and write the `.metadata` file as a pickled representation of `Metadata`. Other finalize functions may be registered by the user, e.g., to delete older checkpoints.
 
@@ -247,13 +247,12 @@ The `MetadataTemplate` class acts as a union over PyTorch's `Metadata` and NVRx'
 
 Staging buffers are keyed by a hash of the rank's tensor write items, and hold the following:
 
-| Cache                                       | Process  | Content                                                                       |
-| ------------------------------------------- | -------- | ----------------------------------------------------------------------------- |
-| `FileSystemWriterAsync._shm_tensor_cache`   | training | The SHM tensors, reused by later saves with the same items.                   |
-| `FileSystemWriterAsync._cached_identifiers` | training | Keys whose SHM tensors the worker already holds.                              |
-| `PersistentAsyncCaller._worker_data_cache`  | worker   | References to the same SHM tensors, so they are sent to the worker only once. |
+| Cache                                      | Process  | Content                                                                       |
+| ------------------------------------------ | -------- | ----------------------------------------------------------------------------- |
+| `PersistentShmBuffers._buffers`            | training | The SHM tensors, reused by later saves with the same items.                   |
+| `PersistentAsyncCaller._worker_data_cache` | worker   | References to the same SHM tensors, so they are sent to the worker only once. |
 
-`FileSystemWriterAsync.cleanup_tensor_caches` clears the training-side caches when the worker restarts.
+The training-side caches belong to a `ShmStager` with `PersistentShmBuffers`. Writers that are not given a stager use the process's default one (`staging.default_stager`), which `FileSystemWriterAsync.cleanup_tensor_caches` clears when the worker restarts.
 
 ## 1. First checkpoint of a cycle
 
@@ -291,7 +290,7 @@ sequenceDiagram
         C->>C: create_global_plan, convert to a state dict table
     end
     R->>R: decentralized global plan, finish_plan
-    R->>R: prepare_write_data: allocate SHM tensors, copy GPU to SHM
+    R->>R: ShmStager.stage: allocate SHM tensors, copy GPU to SHM
     end
 
     rect rgba(70, 180, 110, 0.12)
@@ -360,7 +359,7 @@ sequenceDiagram
             W-->>R: wait for this rank's worker to finish writing
             R<<->>C: finalize the previous checkpoint: the collectives of Finalize below
         end
-        R->>R: prepare_write_data: copy GPU to the cached SHM tensors
+        R->>R: ShmStager.stage: copy GPU to the cached SHM tensors
         Note over R,C: Cached: the coordinator's state dict table, reused as it is
     end
     end
@@ -418,7 +417,7 @@ Without `enable_cache`, nothing is kept: planning builds a `Metadata` every save
 
 ## Other transfer path
 
-Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemWriterAsync` default), `prepare_write_data` hands the GPU tensors to the worker through CUDA IPC, and the worker copies them to host memory in `preload_tensors`. Planning and metadata reuse are the same.
+Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemWriterAsync` default), `IpcStager` hands the GPU tensors to the worker through CUDA IPC, and the worker copies them to host memory in `preload_tensors`. Planning and metadata reuse are the same.
 
 ## Code map
 
@@ -427,8 +426,9 @@ Without CPU shared memory (`use_cpu_shm_for_gpu_tensors=False`, the `FileSystemW
 | Planning, cache, reuse decision               | `state_dict_saver.py`: `save_state_dict_async_plan`, `PendingSave`, `CheckpointMetadataCache`, `_verify_global_metadata_reuse`, `_check_plan_unchanged` |
 | Reuse check against loaded metadata           | `_metadata_reuse.py`, reading a state dict table through `TableEntries`                                                                                 |
 | Finalization                                  | `state_dict_saver.py`: `save_state_dict_async_finalize`                                                                                                 |
-| Staging into shared memory, `.metadata`       | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                              |
-| Writing in the worker                         | `filesystem_async.py`: `preload_tensors`, `write_preloaded_data_*`                                                                                      |
+| Resolving the plan, `.metadata`               | `filesystem_async.py`: `FileSystemWriterAsync` (`prepare_write_data`, `finish`, `_finish`)                                                              |
+| Staging into shared memory, or through IPC    | `staging.py`: `ShmStager` and its `ShmBuffers`, `IpcStager` and its `IpcHandles`, `receive_cached`                                                      |
+| Writing in the worker                         | `filesystem_async.py`: `write_staged_data`, `_make_write_buckets`, `write_preloaded_data_*`                                                             |
 | Cached metadata template                      | `_metadata_template.py`: `MetadataTemplate`                                                                                                             |
 | Pickle opcodes of small objects               | `_metadata_pickler/opcodes.py`                                                                                                                          |
 | State dict table and its Python producer      | `_metadata_pickler/state_dict_table.py`                                                                                                                 |
