@@ -106,12 +106,17 @@ MSC (`GitHub repository <https://github.com/NVIDIA/multi-storage-client>`_) prov
 
 Installation
 ^^^^^^^^^^^^
-Before using MSC integration, you need to install the Multi-Storage Client package:
+Install the package with its ``msc`` extra, which installs the Multi-Storage Client:
 
 .. code-block:: bash
-    
-    # Install the Multi-Storage Client package with boto3 support
-    pip install multi-storage-client[boto3]
+
+    pip install "nvidia-resiliency-ext[msc]"
+
+Each storage backend also needs the matching Multi-Storage Client extra. For AWS S3, for example:
+
+.. code-block:: bash
+
+    pip install "multi-storage-client[boto3]"
 
 
 Configuration

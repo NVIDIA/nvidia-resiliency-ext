@@ -15,6 +15,12 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   [deployment guide](fault_tolerance/deployment.rst) for ownership, shutdown,
   and accepted exit-handling differences.
 
+### Installation
+
+- **New `msc` extra.** `pip install "nvidia-resiliency-ext[msc]"` installs Multi-Storage
+  Client, which `FileSystemWriterAsync(use_msc=True)` needs. It wasn't declared before, so it
+  had to be installed separately.
+
 ### Removals
 
 - Replaced the experimental `nvrx-control` command with
