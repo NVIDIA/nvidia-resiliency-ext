@@ -5,6 +5,7 @@
 
 import hashlib
 import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +13,8 @@ import pytest
 from nvidia_resiliency_ext.fault_tolerance.utils import (
     get_infrastructure_rank,
     get_log_aggregator_shard_index,
+    hostnames_to_slurm_nodelist,
+    slurm_sort_addrs,
 )
 
 
@@ -412,3 +415,39 @@ class TestGetLogAggregatorShardIndex:
             'nvidia_resiliency_ext.fault_tolerance.utils.socket.gethostname', return_value=host
         ):
             assert get_log_aggregator_shard_index(5) == want
+
+
+def _expand_slurm_nodelist(nodelist):
+    """Minimal SLURM expansion: a range is zero-padded to the width of its lower bound."""
+    hosts = []
+    for prefix, body in re.findall(r"([^,\[]+)\[([^\]]*)\]", nodelist):
+        for part in body.split(","):
+            low, _, high = part.partition("-")
+            for number in range(int(low), int(high or low) + 1):
+                hosts.append(f"{prefix}{number:0{len(low)}d}")
+    return hosts
+
+
+class TestHostnamesToSlurmNodelist:
+    """Tests for hostnames_to_slurm_nodelist."""
+
+    @pytest.mark.parametrize(
+        "hosts,expected",
+        [
+            (["node001", "node002", "node005"], "node[001-002,005]"),
+            (["node08", "node09", "node10"], "node[08-10]"),
+            (["node1", "node2", "node3"], "node[1-3]"),
+            (["gpu9", "gpu10"], "gpu[9-10]"),
+            (["node98", "node99", "node100"], "node[98-100]"),
+            (["ip-10-0-1-5", "ip-10-0-1-23"], "ip-10-0-1-[5,23]"),
+            (["node1", "node02", "node3"], "node[1,02,3]"),
+            (["node002.cluster.com", "node001.cluster.com"], "node[001-002]"),
+        ],
+    )
+    def test_nodelist(self, hosts, expected):
+        nodelist = hostnames_to_slurm_nodelist(hosts)
+        assert nodelist == expected
+        # active_ranks are ordered by slurm_sort_addrs and must align with the expansion.
+        assert _expand_slurm_nodelist(nodelist) == [
+            h.split(".")[0] for h in slurm_sort_addrs(hosts)
+        ]
