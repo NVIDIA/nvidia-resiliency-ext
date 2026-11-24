@@ -60,9 +60,11 @@ from nvidia_resiliency_ext.attribution.restart_agent import (
     RestartAgentRequest,
     RestartAgentRuntime,
 )
+from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
 
 from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperationalLogger
 from .slack import AnalysisIdentity, SlackNotifier, run_name_from_log_path
+from .slurm_wrapper import operator_cancellation as wrapper_cancellation
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,12 @@ _PUBLIC_PENDING = "pending"
 _PUBLIC_IN_FLIGHT = "in_flight"
 _PUBLIC_COMPLETED = "completed"
 _ELIGIBLE_NVRX_USES = frozenset({"eligible", "eligible_degraded"})
+
+#: Cat 1 already describes a clean external cancellation and already names
+#: the slurmstepd marker. It has never been able to fire because that marker
+#: lives in the batch output rather than the application log.
+_SCHEDULER_CANCELLED_CATEGORY_ID = 1
+_SCHEDULER_CANCELLED_BASIS = "scheduler_cancelled"
 
 
 @dataclass(frozen=True)
@@ -248,11 +256,15 @@ class RestartAgentServiceBackend:
         accumulator_factory: Callable[[str], ProgressiveL0Accumulator] = (ProgressiveL0Accumulator),
         slack_notifier: SlackNotifier | None = None,
         cache_file: str = "",
+        wrapper_cancellation_enabled: bool = False,
     ) -> None:
         self._cache_file = (cache_file or "").strip()
         self._allowed_root = os.path.realpath(allowed_root)
         self._runtime = runtime
         self._config = config
+        # Off by default: skipping analysis is a behaviour change, and the
+        # deployment that wants it should say so.
+        self._wrapper_cancellation_enabled = wrapper_cancellation_enabled
         self._operational_log = RestartAgentOperationalLogger(logger)
         self._convergence = convergence
         self._progressive = progressive
@@ -849,6 +861,91 @@ class RestartAgentServiceBackend:
         )
         entry.future = self._executor.submit(self._execute_terminal, entry.key)
 
+    def _settle_from_wrapper_cancellation(
+        self,
+        key: Hashable,
+        request: RestartAgentRequest,
+        log_context: RestartAgentLogContext,
+    ) -> bool:
+        """Settle a cancelled run from slurm's output, without reading the log.
+
+        The application log holds no record of a cancellation, so analysing it
+        produces an attribution to whatever surface noticed the shutdown.
+        slurmstepd writes the fact beside the log on the same filesystem, and
+        writes it as the step dies - ahead of any terminal analysis of it.
+
+        Returning True skips L0 through L4. There is nothing in the log for
+        them to find, and the model call is the expensive half of being wrong.
+        """
+
+        if not self._wrapper_cancellation_enabled:
+            return False
+        cancellation = wrapper_cancellation(
+            request.log_path, request.job_id, allowed_root=self._allowed_root
+        )
+        if cancellation is None:
+            return False
+
+        category = category_by_id(_SCHEDULER_CANCELLED_CATEGORY_ID)
+        final = AnalysisResult(
+            decision=RECOMMENDATION_RESTART,
+            decision_basis=_SCHEDULER_CANCELLED_BASIS,
+            justification=(
+                f"The scheduler's own output records that {cancellation.summary}. "
+                "A cancellation leaves no trace in the application log, so the log was "
+                "not analyzed: whatever surface it shows is the shutdown being noticed, "
+                "not a failure."
+            ),
+            result_provenance={
+                "nvrx_use": "eligible",
+                "source": _SCHEDULER_CANCELLED_BASIS,
+                "cancelled_at": cancellation.cancelled_at,
+                "cancellation_reason": cancellation.reason,
+                "tasks_cancelled": cancellation.tasks_cancelled,
+                "tasks_seen": cancellation.tasks_seen,
+                "job_wide_marker": cancellation.job_wide_marker,
+            },
+            l1_assessment={
+                "category_selection": {
+                    "category_id": _SCHEDULER_CANCELLED_CATEGORY_ID,
+                    "category_confidence": 100,
+                    "category_rationale": cancellation.summary,
+                }
+            },
+        )
+
+        with self._lock:
+            current = self._entries.get(key)
+            if current is None:
+                return True
+            current.final_result = final
+            current.best_result = final
+            current.best_source = _SCHEDULER_CANCELLED_BASIS
+            current.status = _STATUS_COMPLETED
+            current.progressive_phase = "completed"
+            current.completed_at = time.monotonic()
+            if current.terminal_at is not None:
+                current.analysis_completed_wall_clock_s = current.completed_at - current.terminal_at
+            current.future = None
+            self._trim_completed_results()
+
+        self._emit_operational(
+            self._operational_log.info,
+            "restart_agent.analysis.skipped",
+            log_context,
+            status="completed",
+            decision=final.decision,
+            decision_basis=final.decision_basis,
+            category_id=_SCHEDULER_CANCELLED_CATEGORY_ID,
+            category_name=category.name if category else "",
+            cancellation_reason=cancellation.reason,
+            tasks_cancelled=cancellation.tasks_cancelled,
+            tasks_seen=cancellation.tasks_seen,
+        )
+        self._save_cache(self._cache_file)
+        self._schedule_notification(key)
+        return True
+
     def _execute_terminal(self, key: Hashable) -> None:
         with self._lock:
             entry = self._entries.get(key)
@@ -861,6 +958,8 @@ class RestartAgentServiceBackend:
                 cycle_id=entry.cycle_id,
             )
             accumulator = entry.accumulator
+        if self._settle_from_wrapper_cancellation(key, request, log_context):
+            return
         try:
             drain = self._wait_for_log_convergence(request.log_path, accumulator)
             drain_fields = {
