@@ -60,7 +60,6 @@
 <li class="toctree-l3"><a class="reference internal" href="#deprecations-removals">Deprecations &amp; Removals</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#id1">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#known-issues-limitations">Known Issues &amp; Limitations</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#deprecations">Deprecations</a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-7-0">NVIDIA Resiliency Extension v0.7.0</a><ul>
@@ -254,6 +253,10 @@ instead, or build the config in code with <code class="docutils literal notransl
 through <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring(num_warmup_iters=...)</span></code>.
 The <code class="docutils literal notranslate"><span class="pre">--ft-ignore-missing-cfg</span></code> flag, which has had no effect since v0.4, is
 removed as well; drop it from launch scripts (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/462">#462</a>).</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync(is_multiproc_io=True)</span></code> is deprecated and ignored.</strong>
+Checkpoint files are always written by threads in the async worker, and the
+writer no longer forks child processes. Passing <code class="docutils literal notranslate"><span class="pre">True</span></code> emits a
+<code class="docutils literal notranslate"><span class="pre">DeprecationWarning</span></code>; the argument will be removed in a future release.</p></li>
 </ul>
 </section>
 <section id="id1">
@@ -285,15 +288,6 @@ pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvid
 <li><p>Attribution and Restart Agent features remain experimental. Enabling diagnostics or telemetry does not establish the root cause of a failure or replace workload-specific recovery validation.</p></li>
 <li><p>The optional native metadata writer requires a C++20 compiler when building from source; checkpointing retains a Python fallback if that extension cannot be built.</p></li>
 <li><p>Per-cycle log aggregation remains best-effort. Retain launcher and rank-monitor evidence when investigating failure-adjacent gaps.</p></li>
-</ul>
-</section>
-<section id="deprecations">
-<h3>Deprecations<a class="headerlink" href="#deprecations" title="Link to this heading"></a></h3>
-<ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync(is_multiproc_io=True)</span></code> is deprecated and ignored.</strong>
-Checkpoint files are always written by threads in the async worker, and the
-writer no longer forks child processes. Passing <code class="docutils literal notranslate"><span class="pre">True</span></code> emits a
-<code class="docutils literal notranslate"><span class="pre">DeprecationWarning</span></code>; the argument will be removed in a future release.</p></li>
 </ul>
 </section>
 </section>
