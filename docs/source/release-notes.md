@@ -91,6 +91,11 @@ to 0.7.0. Final release validation is ongoing.
   The `--ft-ignore-missing-cfg` flag, which has had no effect since v0.4, is
   removed as well; drop it from launch scripts ([#462](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/462)).
 
+- **`FileSystemWriterAsync(is_multiproc_io=True)` is deprecated and ignored.**
+  Checkpoint files are always written by threads in the async worker, and the
+  writer no longer forks child processes. Passing `True` emits a
+  `DeprecationWarning`; the argument will be removed in a future release.
+
 ### Installation
 
 After the final 0.7.1 release is published:
@@ -121,13 +126,6 @@ These installation requirements are specific to the 0.7.1 release branch.
 - Attribution and Restart Agent features remain experimental. Enabling diagnostics or telemetry does not establish the root cause of a failure or replace workload-specific recovery validation.
 - The optional native metadata writer requires a C++20 compiler when building from source; checkpointing retains a Python fallback if that extension cannot be built.
 - Per-cycle log aggregation remains best-effort. Retain launcher and rank-monitor evidence when investigating failure-adjacent gaps.
-
-### Deprecations
-
-- **`FileSystemWriterAsync(is_multiproc_io=True)` is deprecated and ignored.**
-  Checkpoint files are always written by threads in the async worker, and the
-  writer no longer forks child processes. Passing `True` emits a
-  `DeprecationWarning`; the argument will be removed in a future release.
 
 ## NVIDIA Resiliency Extension v0.7.0
 
