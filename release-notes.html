@@ -51,6 +51,7 @@
 <li class="toctree-l2"><a class="reference internal" href="#unreleased">Unreleased</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#injob-control-host-processes">InJob control-host processes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#installation">Installation</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#deprecations">Deprecations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#removals">Removals</a></li>
 </ul>
 </li>
@@ -169,6 +170,15 @@ Client, which <code class="docutils literal notranslate"><span class="pre">FileS
 had to be installed separately.</p></li>
 </ul>
 </section>
+<section id="deprecations">
+<h3>Deprecations<a class="headerlink" href="#deprecations" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync(is_multiproc_io=True)</span></code> is deprecated and ignored.</strong>
+Checkpoint files are always written by threads in the async worker, and the
+writer no longer forks child processes. Passing <code class="docutils literal notranslate"><span class="pre">True</span></code> emits a
+<code class="docutils literal notranslate"><span class="pre">DeprecationWarning</span></code>; the argument will be removed in a future release.</p></li>
+</ul>
+</section>
 <section id="removals">
 <h3>Removals<a class="headerlink" href="#removals" title="Link to this heading"></a></h3>
 <ul class="simple">
@@ -253,10 +263,6 @@ instead, or build the config in code with <code class="docutils literal notransl
 through <code class="docutils literal notranslate"><span class="pre">RankMonitorClient.init_workload_monitoring(num_warmup_iters=...)</span></code>.
 The <code class="docutils literal notranslate"><span class="pre">--ft-ignore-missing-cfg</span></code> flag, which has had no effect since v0.4, is
 removed as well; drop it from launch scripts (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/462">#462</a>).</p></li>
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">FileSystemWriterAsync(is_multiproc_io=True)</span></code> is deprecated and ignored.</strong>
-Checkpoint files are always written by threads in the async worker, and the
-writer no longer forks child processes. Passing <code class="docutils literal notranslate"><span class="pre">True</span></code> emits a
-<code class="docutils literal notranslate"><span class="pre">DeprecationWarning</span></code>; the argument will be removed in a future release.</p></li>
 </ul>
 </section>
 <section id="id1">
