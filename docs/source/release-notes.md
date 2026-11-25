@@ -40,16 +40,16 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   are no longer supported. `--standalone` uses local logging without gRPC
   aggregation, including when `--ft-enable-log-server` is set.
 
-## NVIDIA Resiliency Extension v0.7.1 (Unreleased)
+## NVIDIA Resiliency Extension v0.7.1
 
-These notes describe the changes selected for the 0.7.1 release candidate relative
-to 0.7.0. Final release validation is ongoing.
+Released November 25, 2026. This patch release updates checkpointing, timeout diagnostics, and InJob recovery. [PyPI release files](https://pypi.org/project/nvidia-resiliency-ext/0.7.1/#files) · [Changes since v0.7.0](https://github.com/NVIDIA/nvidia-resiliency-ext/compare/v0.7.0...v0.7.1)
 
 ### Highlights
 
 - **Checkpoint metadata and async-save finalization**
     - Adds faster PyTorch distributed-checkpoint `.metadata` serialization, including an optional native C++ writer with a Python fallback. Cached global metadata is represented as compact tables, and finalization gathers compact write-result tables instead of large Python object lists ([#438](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438), [#446](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/446), [#454](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/454)).
     - Reuses compatible metadata from a loaded checkpoint on the first save and reuses plans and metadata on subsequent saves when caching is enabled. Cached metadata no longer retains per-save `storage_data` ([#438](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438), [#445](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/445)).
+    - The cached reader can load metadata written by older PyTorch versions ([#517](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/517)).
 
 - **Timeout diagnostics**
     - Adds opt-in Python, native CPU, and CUDA diagnostics through `py-spy`, GDB, and CUDA-GDB when a selected workload section times out. Captures are staged locally and uploaded to the job's diagnostic directory; tools and capture budgets are configurable ([#451](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/451), [#463](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/463), [#464](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/464), [#465](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/465)).
@@ -65,6 +65,7 @@ to 0.7.0. Final release validation is ongoing.
     - Adds category-driven STOP context and corrects CPU-OOM policy, unknown-progress accounting, cancellation classification, checkpoint-OOM classification, and transient JIT-cache attribution ([#411](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/411), [#430](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/430), [#431](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/431), [#439](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/439), [#456](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/456), [#477](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/477)).
     - Improves external Attribution Service lifecycle handling, provides an attrsvc container build without workload dependencies, and adds Slack alerts and persisted attribution results ([#441](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/441), [#452](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/452), [#449](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/449)).
     - Adds optional NeMo Lens/OpenTelemetry instrumentation for launcher and async-checkpoint operations, including checkpoint-stage and finalization spans to distinguish snapshot, persistence, synchronization, and metadata costs. NVRx-owned processes read `NVRX_OTEL_` settings with fallback to `NEMO_LENS_`; core training remains usable without telemetry dependencies ([#406](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/406), [#435](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/435), [#437](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/437), [#440](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/440)).
+    - Launcher termination signals propagate during a telemetry flush ([#520](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/520)).
 
 - **Documentation and integration**
     - Reorganizes the InJob configuration, deployment, operations, and integration guides and adds a Megatron GPT walkthrough ([#455](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/455)). Release notes and API documentation are included in the official documentation, with strict Sphinx validation ([#425](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/425), [#426](https://github.com/NVIDIA/nvidia-resiliency-ext/pull/426)).
@@ -100,7 +101,7 @@ to 0.7.0. Final release validation is ongoing.
 
 ### Installation
 
-After the final 0.7.1 release is published:
+Linux wheels are available for CPython 3.12 and 3.14 on x86_64 and aarch64 (manylinux_2_39, glibc 2.39 or newer).
 
 ```bash
 # Core resiliency and attribution service
@@ -108,9 +109,6 @@ pip install 'nvidia-resiliency-ext==0.7.1'
 
 # Optional MCP and Slack attribution integrations
 pip install 'nvidia-resiliency-ext[attribution]==0.7.1'
-
-# Optional telemetry, once NeMo Lens 0.3.0 is published to PyPI
-pip install 'nvidia-resiliency-ext==0.7.1' 'nemo-lens[sdk]==0.3.0'
 
 # Optional telemetry, from the Lens v0.3.0 Git tag
 pip install 'nvidia-resiliency-ext==0.7.1' \
