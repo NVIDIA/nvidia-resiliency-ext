@@ -193,6 +193,12 @@ class Settings(BaseSettings):
             "RESTART_AGENT_CONFIG file is supplied; set false for deterministic-only analysis."
         ),
     )
+    SCHEDULER_CANCELLATION_SHORTCIRCUIT: bool = Field(
+        default=False,
+        description=(
+            "Settle a run as cancelled from the scheduler's batch output, beside the application log, and skip analysis. Off by default: a run stopped from outside leaves nothing in its own log, but the batch output is a site convention."
+        ),
+    )
     RESTART_AGENT_LOG_QUIET_SECONDS: float = Field(
         default=5.0,
         description=("Required unchanged-log interval before live terminal source convergence."),

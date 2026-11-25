@@ -927,6 +927,14 @@ class RestartAgentServiceBackend:
             if current.terminal_at is not None:
                 current.analysis_completed_wall_clock_s = current.completed_at - current.terminal_at
             current.future = None
+            # The ordinary completion path releases these; returning early
+            # must too, or a progressively tracked log keeps its open file
+            # and line index until the completed entry is evicted.
+            current.accumulator = None
+            current.precompute_future = None
+            # Without an identity the cache drops this result, so a restart
+            # would redo the lookup and alert again.
+            current.source_identity = self._file_identity(request.log_path)
             self._trim_completed_results()
 
         self._emit_operational(

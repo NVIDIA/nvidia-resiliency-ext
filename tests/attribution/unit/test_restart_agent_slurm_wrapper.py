@@ -30,6 +30,10 @@ CANCELLED = (
     "DUE to SIGNAL Terminated ***\n"
 )
 ALL_TASKS = "Cancelling all remaining tasks of 2200100.\n"
+#: Task 0 cancels its peers on every exit, so its own ordering is what
+#: separates an outside stop from the run ending on its own terms.
+TASK0_EXTERNAL = CANCELLED + "Task 0 exiting (rc=0), creating RDZV_CLOSED\n" + ALL_TASKS
+TASK0_SELF = "Task 0 exiting (rc=0), creating RDZV_CLOSED\n" + ALL_TASKS + CANCELLED
 HEALTHY = "srun: launching StepId=2200100.0 on host node0001-T01\nTask 0 exiting (rc=0)\n"
 
 
@@ -162,3 +166,81 @@ def test_only_this_job_is_read(tmp_path):
     (out / "slurm-9999_0.out").write_text(CANCELLED + ALL_TASKS)
 
     assert operator_cancellation(log, "7") is None
+
+
+# ---------------------------------------------------------------------------
+# Intent: task 0 cancels the array on every exit, so the marker alone is not it
+# ---------------------------------------------------------------------------
+
+
+def test_a_self_teardown_is_not_an_outside_stop(tmp_path):
+    """task0_exit is an EXIT trap that runs on success and failure alike, and
+    unconditionally scancels the array. Its peers' markers are identical either
+    way; only task 0's ordering says which happened."""
+    log = _layout(tmp_path, "7", [TASK0_SELF] + [CANCELLED] * 3)
+
+    assert operator_cancellation(log, "7") is None
+
+
+def test_an_outside_stop_is_reported(tmp_path):
+    log = _layout(tmp_path, "7", [TASK0_EXTERNAL] + [CANCELLED] * 3)
+
+    found = operator_cancellation(log, "7")
+
+    assert found is not None and found.task0_cancelled_before_exit is True
+
+
+def test_without_task_zero_nothing_is_claimed(tmp_path):
+    """Peers agreeing says the array came down, not why."""
+    log = _layout(tmp_path, "7", [CANCELLED] * 4)
+    (tmp_path / "exp" / "slurm_out" / "slurm-7_0.out").unlink()
+
+    assert operator_cancellation(log, "7") is None
+
+
+# ---------------------------------------------------------------------------
+# Findings from review
+# ---------------------------------------------------------------------------
+
+
+def test_a_longer_job_id_does_not_vote(tmp_path):
+    """slurm-70_0.out and slurm-71_0.out must not decide job 7."""
+    log = _layout(tmp_path, "7", [HEALTHY])
+    out = tmp_path / "exp" / "slurm_out"
+    for other in ("70", "71", "700"):
+        (out / f"slurm-{other}_0.out").write_text(TASK0_EXTERNAL)
+
+    assert operator_cancellation(log, "7") is None
+
+
+def test_a_node_failure_anywhere_keeps_the_analysis(tmp_path):
+    """Mixed reasons previously counted toward a clean cancellation because
+    only the first reason was kept."""
+    node_fail = (
+        "error: *** JOB 7 ON node CANCELLED AT 2026-11-22T17:18:27 DUE TO NODE FAILURE ***\n"
+    )
+    log = _layout(tmp_path, "7", [TASK0_EXTERNAL, node_fail, node_fail])
+
+    assert operator_cancellation(log, "7") is None
+
+
+def test_unreadable_siblings_still_count_against_the_majority(tmp_path):
+    """One cancelled spare beside five empty outputs is not a cancelled job;
+    dropping the unreadable ones from the denominator invented a majority."""
+    log = _layout(tmp_path, "7", [CANCELLED] + [""] * 5)
+
+    assert operator_cancellation(log, "7") is None
+
+
+def test_a_symlinked_output_directory_is_refused(tmp_path):
+    """A sibling slurm_out pointing outside the root would otherwise be read."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "slurm-7_0.out").write_text(TASK0_EXTERNAL)
+    root = tmp_path / "root"
+    (root / "exp" / "logs").mkdir(parents=True)
+    log = root / "exp" / "logs" / "run_7_date_x_cycle1.log"
+    log.write_text("0: iteration 10/100\n")
+    (root / "exp" / "slurm_out").symlink_to(outside)
+
+    assert operator_cancellation(str(log), "7", allowed_root=str(root)) is None
