@@ -6,7 +6,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Release Notes &mdash; nvidia-resiliency-ext 0.7.0 documentation</title>
+  <title>Release Notes &mdash; nvidia-resiliency-ext 0.7.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
       <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
       <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
@@ -14,7 +14,7 @@
   
       <script src="_static/jquery.js?v=5d32c60e"></script>
       <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-      <script src="_static/documentation_options.js?v=fe7df9b0"></script>
+      <script src="_static/documentation_options.js?v=5a057da9"></script>
       <script src="_static/doctools.js?v=fd6eb6e6"></script>
       <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
       <script src="_static/clipboard.min.js?v=a7894cd8"></script>
@@ -55,7 +55,7 @@
 <li class="toctree-l3"><a class="reference internal" href="#removals">Removals</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-7-1-unreleased">NVIDIA Resiliency Extension v0.7.1 (Unreleased)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#nvidia-resiliency-extension-v0-7-1">NVIDIA Resiliency Extension v0.7.1</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#highlights">Highlights</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#requirements-integration-changes">Requirements &amp; Integration Changes</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#deprecations-removals">Deprecations &amp; Removals</a></li>
@@ -193,10 +193,9 @@ aggregation, including when <code class="docutils literal notranslate"><span cla
 </ul>
 </section>
 </section>
-<section id="nvidia-resiliency-extension-v0-7-1-unreleased">
-<h2>NVIDIA Resiliency Extension v0.7.1 (Unreleased)<a class="headerlink" href="#nvidia-resiliency-extension-v0-7-1-unreleased" title="Link to this heading"></a></h2>
-<p>These notes describe the changes selected for the 0.7.1 release candidate relative
-to 0.7.0. Final release validation is ongoing.</p>
+<section id="nvidia-resiliency-extension-v0-7-1">
+<h2>NVIDIA Resiliency Extension v0.7.1<a class="headerlink" href="#nvidia-resiliency-extension-v0-7-1" title="Link to this heading"></a></h2>
+<p>Released November 25, 2026. This patch release updates checkpointing, timeout diagnostics, and InJob recovery. <a class="reference external" href="https://pypi.org/project/nvidia-resiliency-ext/0.7.1/#files">PyPI release files</a> · <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/compare/v0.7.0...v0.7.1">Changes since v0.7.0</a></p>
 <section id="highlights">
 <h3>Highlights<a class="headerlink" href="#highlights" title="Link to this heading"></a></h3>
 <ul class="simple">
@@ -204,6 +203,7 @@ to 0.7.0. Final release validation is ongoing.</p>
 <ul>
 <li><p>Adds faster PyTorch distributed-checkpoint <code class="docutils literal notranslate"><span class="pre">.metadata</span></code> serialization, including an optional native C++ writer with a Python fallback. Cached global metadata is represented as compact tables, and finalization gathers compact write-result tables instead of large Python object lists (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438">#438</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/446">#446</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/454">#454</a>).</p></li>
 <li><p>Reuses compatible metadata from a loaded checkpoint on the first save and reuses plans and metadata on subsequent saves when caching is enabled. Cached metadata no longer retains per-save <code class="docutils literal notranslate"><span class="pre">storage_data</span></code> (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/438">#438</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/445">#445</a>).</p></li>
+<li><p>The cached reader can load metadata written by older PyTorch versions (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/517">#517</a>).</p></li>
 </ul>
 </li>
 <li><p><strong>Timeout diagnostics</strong></p>
@@ -225,6 +225,7 @@ to 0.7.0. Final release validation is ongoing.</p>
 <li><p>Adds category-driven STOP context and corrects CPU-OOM policy, unknown-progress accounting, cancellation classification, checkpoint-OOM classification, and transient JIT-cache attribution (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/411">#411</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/430">#430</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/431">#431</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/439">#439</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/456">#456</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/477">#477</a>).</p></li>
 <li><p>Improves external Attribution Service lifecycle handling, provides an attrsvc container build without workload dependencies, and adds Slack alerts and persisted attribution results (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/441">#441</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/452">#452</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/449">#449</a>).</p></li>
 <li><p>Adds optional NeMo Lens/OpenTelemetry instrumentation for launcher and async-checkpoint operations, including checkpoint-stage and finalization spans to distinguish snapshot, persistence, synchronization, and metadata costs. NVRx-owned processes read <code class="docutils literal notranslate"><span class="pre">NVRX_OTEL_</span></code> settings with fallback to <code class="docutils literal notranslate"><span class="pre">NEMO_LENS_</span></code>; core training remains usable without telemetry dependencies (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/406">#406</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/435">#435</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/437">#437</a>, <a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/440">#440</a>).</p></li>
+<li><p>Launcher termination signals propagate during a telemetry flush (<a class="reference external" href="https://github.com/NVIDIA/nvidia-resiliency-ext/pull/520">#520</a>).</p></li>
 </ul>
 </li>
 <li><p><strong>Documentation and integration</strong></p>
@@ -267,15 +268,12 @@ removed as well; drop it from launch scripts (<a class="reference external" href
 </section>
 <section id="id1">
 <h3>Installation<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
-<p>After the final 0.7.1 release is published:</p>
+<p>Linux wheels are available for CPython 3.12 and 3.14 on x86_64 and aarch64 (manylinux_2_39, glibc 2.39 or newer).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Core resiliency and attribution service</span>
 pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext==0.7.1'</span>
 
 <span class="c1"># Optional MCP and Slack attribution integrations</span>
 pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext[attribution]==0.7.1'</span>
-
-<span class="c1"># Optional telemetry, once NeMo Lens 0.3.0 is published to PyPI</span>
-pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext==0.7.1'</span><span class="w"> </span><span class="s1">'nemo-lens[sdk]==0.3.0'</span>
 
 <span class="c1"># Optional telemetry, from the Lens v0.3.0 Git tag</span>
 pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'nvidia-resiliency-ext==0.7.1'</span><span class="w"> </span><span class="se">\</span>
