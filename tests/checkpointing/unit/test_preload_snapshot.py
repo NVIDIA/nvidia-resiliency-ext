@@ -15,13 +15,24 @@
 
 """nvbug 6439229 regression tests for async CPU tensor snapshots."""
 
+import queue
 from unittest.mock import Mock
 
 import torch
 from torch.distributed.checkpoint.metadata import MetadataIndex
 from torch.distributed.checkpoint.planner import SavePlan, WriteItem, WriteItemType
 
-from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import FileSystemWriterAsync
+from nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async import (
+    FileSystemWriterAsync,
+    _WriteData,
+)
+from nvidia_resiliency_ext.checkpointing.async_ckpt.staging import (
+    ConsistentDataIdentifier,
+    PerSaveShmBuffers,
+    PersistentShmBuffers,
+    ShmStager,
+    StagedTensors,
+)
 
 
 def _tensor_write_items(count):
@@ -41,7 +52,7 @@ class TestFileSystemWriterPrepareSnapshot:
 
     def _prepare(self, checkpoint_dir, tensors):
         writer = self._prepare_writer(checkpoint_dir, tensors)
-        _, snapshotted = writer.uncached_tensor_data
+        _, snapshotted = writer._write_data.tensors.uncached
         return snapshotted
 
     def test_cpu_tensors_are_snapshotted_before_queueing(self, tmp_path):
@@ -72,42 +83,62 @@ class TestFileSystemWriterPrepareSnapshot:
         cuda_synchronize = Mock()
         monkeypatch.setattr(torch.cuda, "synchronize", cuda_synchronize)
         drain = Mock()
-        FileSystemWriterAsync.cleanup_tensor_caches()
-        FileSystemWriterAsync.register_shm_drain_callback(drain)
+        buffers = PersistentShmBuffers(drain)
+        stager = ShmStager(buffers)
         source = torch.tensor(1.0)
 
+        first_writer = self._prepare_writer(tmp_path, [source], stager=stager)
+
+        assert first_writer._write_data.tensors.uncached is None
+        _, first_snapshots = first_writer._write_data.tensors.cached
+        (first_snapshot,) = first_snapshots
+        assert first_snapshot.untyped_storage().is_shared()
+        assert first_snapshot.data_ptr() != source.data_ptr()
+
+        source.fill_(2.0)
+        assert torch.equal(first_snapshot, torch.tensor(1.0))
+
+        second_writer = self._prepare_writer(tmp_path, [source], stager=stager)
+
+        assert second_writer._write_data.tensors.uncached is None
+        assert second_writer._write_data.tensors.cached is None
+        (cached_snapshots,) = buffers._buffers.values()
+        (reused_snapshot,) = cached_snapshots
+        assert reused_snapshot.data_ptr() == first_snapshot.data_ptr()
+        assert torch.equal(reused_snapshot, torch.tensor(2.0))
+        drain.assert_called_once_with()
+        cuda_synchronize.assert_not_called()
+
+    def test_a_given_stager_uses_the_registered_drain(self, tmp_path):
+        """Buffers a writer is given drain like the default ones before they are reused."""
+        drain = Mock()
+        stager = ShmStager(PersistentShmBuffers())
+        FileSystemWriterAsync.register_shm_drain_callback(drain)
         try:
-            first_writer = self._prepare_writer(
-                tmp_path,
-                [source],
-                use_cached_data_structure=True,
-                use_cpu_shm_for_gpu_tensors=True,
-            )
-
-            assert first_writer.uncached_tensor_data is None
-            _, first_snapshots = first_writer.cached_tensor_data
-            (first_snapshot,) = first_snapshots
-            assert first_snapshot.untyped_storage().is_shared()
-            assert first_snapshot.data_ptr() != source.data_ptr()
-
-            source.fill_(2.0)
-            assert torch.equal(first_snapshot, torch.tensor(1.0))
-
-            second_writer = self._prepare_writer(
-                tmp_path,
-                [source],
-                use_cached_data_structure=True,
-                use_cpu_shm_for_gpu_tensors=True,
-            )
-
-            assert second_writer.uncached_tensor_data is None
-            assert second_writer.cached_tensor_data is None
-            _, cached_snapshots = next(iter(FileSystemWriterAsync._shm_tensor_cache.values()))
-            (reused_snapshot,) = cached_snapshots
-            assert reused_snapshot.data_ptr() == first_snapshot.data_ptr()
-            assert torch.equal(reused_snapshot, torch.tensor(2.0))
-            drain.assert_called_once_with()
-            cuda_synchronize.assert_not_called()
+            for _ in range(2):
+                self._prepare_writer(tmp_path, [torch.tensor(1.0)], stager=stager)
         finally:
             FileSystemWriterAsync.register_shm_drain_callback(None)
-            FileSystemWriterAsync.cleanup_tensor_caches()
+        drain.assert_called_once_with()  # before the second save reuses the buffers
+
+    def test_new_buffers_for_every_save_wait_for_the_writes_in_flight(self, tmp_path):
+        """Otherwise saves scheduled faster than they are written would pile up in shared
+        memory."""
+        drain = Mock()
+        stager = ShmStager(PerSaveShmBuffers(drain))
+        for _ in range(2):
+            self._prepare_writer(tmp_path, [torch.tensor(1.0)], stager=stager)
+        assert drain.call_count == 2
+
+
+def test_a_save_that_cant_be_made_into_buckets_is_reported_as_failed(tmp_path):
+    """The error reaches finalize like a failed write, rather than ending the worker."""
+    # Only the key of tensors this process never received
+    missing = StagedTensors(ConsistentDataIdentifier('never sent'), None, None)
+    write_data = _WriteData(str(tmp_path), None, missing, None, 1, None)
+    results, write_buckets = queue.Queue(), Mock()
+
+    FileSystemWriterAsync.write_staged_data(write_buckets, 0, write_data, results)
+
+    assert isinstance(results.get_nowait(), RuntimeError)
+    write_buckets.assert_not_called()

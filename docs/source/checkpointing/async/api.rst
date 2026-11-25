@@ -7,5 +7,6 @@ API documentation
 
    api/core
    api/filesystem_async
+   api/staging
    api/state_dict_saver
    api/torch_ckpt

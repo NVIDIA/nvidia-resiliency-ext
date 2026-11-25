@@ -24,7 +24,7 @@ Implementation Changes and Evolution
 
 * Now, we don't need :py:func:`~nvidia_resiliency_ext.checkpointing.utils.wrap_for_async` anymore because :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` is safe to call garbage collection in the spawned process.
 
-* :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` runs :py:func:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors` in the spawned process. 
+* Without CPU shared memory, :py:class:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.PersistentAsyncCaller` runs :py:func:`~nvidia_resiliency_ext.checkpointing.async_ckpt.filesystem_async.FileSystemWriterAsync.preload_tensors` in the spawned process, to copy the GPU tensors to host memory.
    So, we've added a new field, :py:attr:`~nvidia_resiliency_ext.checkpointing.async_ckpt.core.AsyncRequest.preload_fn`, to pass the preload function(preload_fn) to the spawned process.
   
   * The preload_fn should be self-contained with a proper list of arguments with :py:class:`functools.partial`.
@@ -62,18 +62,16 @@ For example, if a checkpointing routine needs to write metadata (e.g., iteration
 global synchronization ensures that all ranks finish their asynchronous checkpointing before proceeding.
 
 This global synchronization is implemented using a single integer collective operation, ensuring that all ranks have completed their asynchronous checkpoint writes.
-The synchronization logic is handled within
-:py:meth:`nvidia_resiliency_ext.checkpointing.async_ckpt.core.DistributedAsyncCaller.is_current_async_call_done`, which is invoked by :py:meth:`AsyncCallsQueue.maybe_finalize_async_calls`.
-
-The following snippet demonstrates how global synchronization is performed when `no_dist` is set to `False` (indicating that synchronization is required):
+The synchronization is in :py:meth:`AsyncCallsQueue.maybe_finalize_async_calls`.
+The following snippet shows how it checks whether every rank is finished with its oldest async call when `no_dist` is `False`:
 
 .. code-block:: python
 
-   is_alive = int(self.process.is_alive()) if self.process is not None else 0
-
-   is_done = is_alive
-   if not no_dist:
-       ten = torch.tensor([is_alive], dtype=torch.int, device=torch.cuda.current_device())
+   unfinished = torch.tensor(
+       [int(not finished_here)], dtype=torch.int, device=torch.cuda.current_device()
+   )
+   torch.distributed.all_reduce(unfinished)
+   finished_on_all_ranks = unfinished.item() == 0
 
 
 

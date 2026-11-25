@@ -40,6 +40,24 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   are no longer supported. `--standalone` uses local logging without gRPC
   aggregation, including when `--ft-enable-log-server` is set.
 
+### Deprecations
+
+- **`AsyncCaller.schedule_async_call`, `is_current_async_call_done`, and
+  `sync_all_async_calls` are deprecated**, as is `AsyncCallsQueue.persistent_caller`.
+  They warn and will be removed in a future release. Schedule and finalize calls through
+  `AsyncCallsQueue`, whose methods are unchanged, or use the new `AsyncCaller.submit`.
+  It returns the submitted save, which reports when the request is staged and when it is
+  finished; unlike `schedule_async_call`, `submit` doesn't wait for staging.
+
+### Behavior changes
+
+- **`FileSystemWriterAsync.preload_tensors` only copies GPU tensors to host memory;**
+  CPU tensors are copied in the training process when the save is staged. It returns
+  the save's write data instead of write buckets; the save function makes the buckets.
+  With CPU shared memory, `get_save_function_and_args` returns no preload function,
+  because every tensor is already copied into shared memory. Pass its results to
+  `AsyncRequest` unchanged, as before.
+
 ## NVIDIA Resiliency Extension v0.7.1 (Unreleased)
 
 These notes describe the changes selected for the 0.7.1 release candidate relative

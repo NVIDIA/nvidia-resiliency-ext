@@ -32,6 +32,7 @@ def _start_worker(carrier, start_error=None, observed=None):
 
     fake_context = mock.Mock()
     fake_context.Process = FakeProcess
+    fake_context.Pipe.side_effect = lambda duplex: (mock.Mock(), mock.Mock())
     with (
         mock.patch.dict("os.environ", {}, clear=False),
         mock.patch.object(core.mp, "get_context", return_value=fake_context),
