@@ -22,6 +22,10 @@ code: `abs` is a call the worker finishes, and `os._exit` is one it dies in.
 import functools
 import multiprocessing.context
 import os
+import signal
+import subprocess
+import sys
+import time
 from unittest import mock
 
 import pytest
@@ -30,14 +34,7 @@ from nvidia_resiliency_ext.checkpointing.async_ckpt import core
 
 
 @pytest.fixture
-def restart_callback():
-    callback = mock.Mock()
-    with mock.patch.object(core.PersistentAsyncCaller, "_worker_restart_callbacks", [callback]):
-        yield callback
-
-
-@pytest.fixture
-def caller(restart_callback):
+def caller():
     caller = core.PersistentAsyncCaller(cpu_shm_mode=True)
     caller.rank = 0
     yield caller
@@ -56,11 +53,8 @@ def test_a_worker_dying_while_preloading_does_not_block_staging(caller):
     assert save.finished(blocking=True)
 
 
-def test_a_new_worker_takes_over_from_a_dead_one(caller, restart_callback):
+def test_a_new_worker_takes_over_from_a_dead_one(caller):
     assert caller.submit(_request(0, os._exit, 1)).finished(blocking=True)
-    # Once at the first start, and again when the worker is found dead, so the training-side
-    # caches are cleared before the next save is prepared.
-    assert restart_callback.call_count == 2
 
     assert caller.submit(_request(1, abs, 0)).finished(blocking=True)
     assert caller._debug_is_async_process_running()
@@ -74,3 +68,39 @@ def test_a_worker_that_failed_to_start_is_started_again(caller):
             caller.submit(_request(0, abs, 0))
 
     assert caller.submit(_request(1, abs, 0)).finished(blocking=True)
+
+
+_TRAINER = """
+import time
+from nvidia_resiliency_ext.checkpointing.async_ckpt.core import PersistentAsyncCaller
+
+caller = PersistentAsyncCaller(cpu_shm_mode=True)
+caller._start_worker(0)
+print(caller.process.pid, flush=True)
+time.sleep(600)
+"""
+
+
+def _is_running(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            state = stat.read().rsplit(")", 1)[1].split()[0]
+    except FileNotFoundError:
+        return False
+    return state != "Z"  # an exited worker its new parent hasn't reaped yet
+
+
+def test_a_worker_exits_when_its_trainer_is_killed():
+    trainer = subprocess.Popen([sys.executable, "-c", _TRAINER], stdout=subprocess.PIPE, text=True)
+    worker_pid = int(trainer.stdout.readline())
+    assert _is_running(worker_pid)
+    trainer.kill()
+    trainer.wait()
+
+    deadline = time.monotonic() + 10
+    while _is_running(worker_pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    outlived = _is_running(worker_pid)
+    if outlived:
+        os.kill(worker_pid, signal.SIGKILL)
+    assert not outlived, "the worker outlived its trainer"

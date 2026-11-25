@@ -74,7 +74,7 @@ except ImportError:
 from ..utils import _disable_gc
 from . import _metadata_pickler
 from ._metadata_template import MetadataTemplate
-from .core import PersistentAsyncCaller
+from .core import worker_should_stop
 from .staging import (  # noqa: F401 (ConsistentDataIdentifier is re-exported)
     ConsistentDataIdentifier,
     IpcStager,
@@ -188,12 +188,10 @@ class _WriteData(NamedTuple):
     storage_plan: Any
     save_id: int
 
-    def received_here(self) -> '_WriteData':
-        """This write data with the kept tensors filled in, from this process's worker cache.
-
-        For a forked worker, which keeps nothing between saves; see `TemporalAsyncCaller`.
-        """
-        return self._replace(tensors=StagedTensors(None, receive(self.tensors), None))
+    def for_worker(self, worker_id: int) -> '_WriteData':
+        """The write data to send to worker `worker_id`; see `StagedTensors.for_worker`."""
+        tensors = self.tensors.for_worker(worker_id)
+        return self if tensors is self.tensors else self._replace(tensors=tensors)
 
 
 def _make_write_buckets(write_data: _WriteData) -> List[WriteBucket]:
@@ -363,7 +361,7 @@ class FileSystemWriterAsync(FileSystemWriter):
 
     @classmethod
     def cleanup_tensor_caches(cls) -> None:
-        """Make the default stagers send everything again. Called when a new worker starts."""
+        """Forget what the default stagers have staged, so that their next saves start afresh."""
         clear_default_stagers()
 
     @classmethod
@@ -527,15 +525,23 @@ class FileSystemWriterAsync(FileSystemWriter):
             assert len(transform_list) <= 1
             write_fn = partial(_write_item, *transform_list)
 
+        def check_not_stopping():
+            # Stop between items if the worker is being stopped, rather than finishing a write
+            # that nobody will finalize while the worker holds its memory.
+            if worker_should_stop():
+                raise RuntimeError(f"Stopped writing {file_name}: the worker is stopping")
+
         local_results = []
         with open_file(file_name, "wb") as stream:
             for write_item, data in bytes_data:
+                check_not_stopping()
                 local_results.append(
                     write_fn(stream, data, write_item, storage_key, **extra_kwargs)
                 )
 
             for write_item, tensor in tensor_data:
                 assert tensor.is_cpu
+                check_not_stopping()
                 local_results.append(
                     write_fn(stream, tensor, write_item, storage_key, **extra_kwargs)
                 )
@@ -831,12 +837,6 @@ class FileSystemWriterAsync(FileSystemWriter):
             return FileSystemWriter.validate_checkpoint_id(checkpoint_id)
 
         return False
-
-
-# Register cleanup hook so that when PersistentAsyncCaller spawns a new worker process
-# (e.g., after an abort/restart), the training-side shm tensor cache is invalidated and
-# the next checkpoint re-sends actual shm tensors to the fresh worker.
-PersistentAsyncCaller.register_worker_restart_callback(FileSystemWriterAsync.cleanup_tensor_caches)
 
 
 def _split_by_size_and_type(bins: int, items: List[WriteItem]) -> List[List[WriteItem]]:
