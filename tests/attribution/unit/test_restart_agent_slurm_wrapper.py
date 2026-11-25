@@ -258,8 +258,8 @@ def test_a_cached_cancellation_is_ignored_once_the_shortcut_is_off(tmp_path):
     A restored entry is already completed, so resubmitting the log could never
     reach the analysis the operator just asked for by disabling the shortcut.
     """
+    from nvidia_resiliency_ext.services.attrsvc.corroborating import SCHEDULER_CANCELLED_BASIS
     from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
-        _SCHEDULER_CANCELLED_BASIS,
         RestartAgentServiceBackend,
     )
 
@@ -267,13 +267,13 @@ def test_a_cached_cancellation_is_ignored_once_the_shortcut_is_off(tmp_path):
     log.write_text("0: iteration 10/100\n")
     item = {
         "log_path": str(log),
-        "source": _SCHEDULER_CANCELLED_BASIS,
-        "result": {"decision": "RESTART", "decision_basis": _SCHEDULER_CANCELLED_BASIS},
+        "source": SCHEDULER_CANCELLED_BASIS,
+        "result": {"decision": "RESTART", "decision_basis": SCHEDULER_CANCELLED_BASIS},
         "size": log.stat().st_size,
         "mtime": log.stat().st_mtime_ns,
     }
 
     backend = RestartAgentServiceBackend.__new__(RestartAgentServiceBackend)
-    backend._wrapper_cancellation_enabled = False
+    backend._corroborating_enabled = False
 
     assert backend._restore_entry(item) is False, "a disabled shortcut must not be restored"
