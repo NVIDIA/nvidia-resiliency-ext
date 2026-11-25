@@ -244,3 +244,36 @@ def test_a_symlinked_output_directory_is_refused(tmp_path):
     (root / "exp" / "slurm_out").symlink_to(outside)
 
     assert operator_cancellation(str(log), "7", allowed_root=str(root)) is None
+
+
+# ---------------------------------------------------------------------------
+# A cached shortcut must not outlive the setting that allowed it
+# ---------------------------------------------------------------------------
+
+
+def test_a_cached_cancellation_is_ignored_once_the_shortcut_is_off(tmp_path):
+    """Giving these results a cache identity let them persist, which in turn
+    let them survive the setting being turned off.
+
+    A restored entry is already completed, so resubmitting the log could never
+    reach the analysis the operator just asked for by disabling the shortcut.
+    """
+    from nvidia_resiliency_ext.services.attrsvc.restart_agent_backend import (
+        _SCHEDULER_CANCELLED_BASIS,
+        RestartAgentServiceBackend,
+    )
+
+    log = tmp_path / "run_7_date_x_cycle1.log"
+    log.write_text("0: iteration 10/100\n")
+    item = {
+        "log_path": str(log),
+        "source": _SCHEDULER_CANCELLED_BASIS,
+        "result": {"decision": "RESTART", "decision_basis": _SCHEDULER_CANCELLED_BASIS},
+        "size": log.stat().st_size,
+        "mtime": log.stat().st_mtime_ns,
+    }
+
+    backend = RestartAgentServiceBackend.__new__(RestartAgentServiceBackend)
+    backend._wrapper_cancellation_enabled = False
+
+    assert backend._restore_entry(item) is False, "a disabled shortcut must not be restored"

@@ -460,6 +460,19 @@ class RestartAgentServiceBackend:
         result_payload = item.get("result")
         if not log_path or not isinstance(result_payload, Mapping):
             return False
+        # A cancellation settled without reading the log is only valid while
+        # the deployment still wants that shortcut. Restoring one after it was
+        # turned off would leave the entry completed, so resubmitting the log
+        # could never reach the analysis the operator just asked for.
+        if (
+            str(item.get("source") or "") == _SCHEDULER_CANCELLED_BASIS
+            and not self._wrapper_cancellation_enabled
+        ):
+            logger.info(
+                "Ignoring cached scheduler-cancellation result for %s: the shortcut is disabled",
+                log_path,
+            )
+            return False
         identity = self._file_identity(log_path)
         if not identity:
             return False  # log is gone
