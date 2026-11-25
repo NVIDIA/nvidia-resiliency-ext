@@ -62,7 +62,12 @@ from nvidia_resiliency_ext.attribution.restart_agent import (
 )
 from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
 
-from .corroborating import DEFAULT_PROBES, SCHEDULER_CANCELLED_BASIS, first_finding
+from .corroborating import (
+    DEFAULT_PROBES,
+    SCHEDULER_CANCELLED_BASIS,
+    SECTION_TIMEOUT_BASIS,
+    first_finding,
+)
 from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperationalLogger
 from .slack import AnalysisIdentity, SlackNotifier, run_name_from_log_path
 
@@ -90,7 +95,7 @@ _ELIGIBLE_NVRX_USES = frozenset({"eligible", "eligible_degraded"})
 #: the slurmstepd marker. It has never been able to fire because that marker
 #: lives in the batch output rather than the application log.
 #: Results settled from evidence beside the log, rather than from the log.
-_CORROBORATED_BASES = frozenset({SCHEDULER_CANCELLED_BASIS})
+_CORROBORATED_BASES = frozenset({SCHEDULER_CANCELLED_BASIS, SECTION_TIMEOUT_BASIS})
 
 
 @dataclass(frozen=True)
