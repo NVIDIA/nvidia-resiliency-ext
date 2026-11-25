@@ -84,6 +84,38 @@ def first_finding(
 SCHEDULER_CANCELLED_CATEGORY_ID = 1
 SCHEDULER_CANCELLED_BASIS = "scheduler_cancelled"
 
+#: The fault-tolerance layer killing a section it decided was stuck.
+SECTION_TIMEOUT_CATEGORY_ID = 43
+SECTION_TIMEOUT_BASIS = "nvrx_section_timeout"
+
+
+def probe_section_timeout(
+    log_path: str,
+    job_id: str | None,
+    cycle_id: int | None,
+    allowed_root: str | None,
+) -> CorroboratedFinding | None:
+    """Asked first: it names why the run ended, not merely that it was stopped."""
+
+    from .nvrx_launcher import section_timeout
+
+    found = section_timeout(log_path, job_id, cycle_id, allowed_root=allowed_root)
+    if found is None:
+        return None
+    return CorroboratedFinding(
+        source="nvrx_launcher",
+        category_id=SECTION_TIMEOUT_CATEGORY_ID,
+        decision="RESTART",
+        basis=SECTION_TIMEOUT_BASIS,
+        summary=found.summary,
+        provenance={
+            "section": found.section,
+            "timeout_seconds": found.timeout_seconds,
+            "ranks_reporting": found.ranks_reporting,
+            "monitor_killed_ranks": found.monitor_killed_ranks,
+        },
+    )
+
 
 def probe_scheduler_cancellation(
     log_path: str,
@@ -91,7 +123,12 @@ def probe_scheduler_cancellation(
     cycle_id: int | None,
     allowed_root: str | None,
 ) -> CorroboratedFinding | None:
-    """A cancellation establishes that the run was stopped from outside."""
+    """A cancellation says the run was stopped, not why it stalled.
+
+    A section timeout ends with the launcher exiting, which cancels the array,
+    so both sources can fire on the same run. The timeout is the better answer
+    because it names the mechanism; the cancellation is its consequence.
+    """
 
     from .slurm_wrapper import operator_cancellation
 
@@ -117,4 +154,4 @@ def probe_scheduler_cancellation(
 
 #: Order is the contract: a source that names *why* a run ended is asked
 #: before one that only says it was stopped.
-DEFAULT_PROBES: tuple[Probe, ...] = (probe_scheduler_cancellation,)
+DEFAULT_PROBES: tuple[Probe, ...] = (probe_section_timeout, probe_scheduler_cancellation)

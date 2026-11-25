@@ -41,8 +41,11 @@ def test_nothing_found_is_the_normal_case():
     )
 
 
-def test_only_the_cancellation_source_is_registered_here():
-    """Sources are added one per change, so the registry is asserted rather
-    than left to grow silently."""
+def test_the_registered_sources_are_asserted_not_assumed():
+    """Sources are added one per change, so the registry is pinned rather than
+    left to grow silently."""
 
-    assert [p.__name__ for p in DEFAULT_PROBES] == ["probe_scheduler_cancellation"]
+    assert [p.__name__ for p in DEFAULT_PROBES] == [
+        "probe_section_timeout",
+        "probe_scheduler_cancellation",
+    ]
