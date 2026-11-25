@@ -367,17 +367,17 @@ class ShmStager(Stager):
         key = _compute_data_structure_key_from_plan(items)
         shm_tensors, identifier, planned = self.buffers.acquire(key, items, tensors)
         with telemetry.span(semconv.SPAN_GROUP_CKPT_PHASES, "nv.nvrx.ckpt.save.stage"):
-            pending_cuda_copies = 0
+            cuda_devices = set()
             for shm_t, source_t in zip(shm_tensors, tensors):
                 shm_t.copy_(source_t, non_blocking=True)
-                # Periodically sync to avoid exhausting CUDA's pageable staging
-                # pages (shm tensors are not pinned so copy_ is not a pinned DMA).
-                pending_cuda_copies += int(source_t.device.type == "cuda")
-                if pending_cuda_copies == 8:
-                    torch.cuda.synchronize()
-                    pending_cuda_copies = 0
-            if pending_cuda_copies:
-                torch.cuda.synchronize()
+                if source_t.device.type == "cuda":
+                    cuda_devices.add(source_t.device)
+            # Wait for the copies on the streams that ran them, not for the whole device, which
+            # would wait for training's work on other streams too. A copy into pageable memory,
+            # as shm is, returns once it is done, so this costs nothing unless the buffers are
+            # pinned.
+            for device in cuda_devices:
+                torch.cuda.current_stream(device).synchronize()
         logger.debug(f"Copied {len(shm_tensors)} tensors into shm (key={key})")
         # Send the buffers unless a worker kept them from an earlier save: their values are
         # fresh after the copy above.
