@@ -1,0 +1,774 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import subprocess
+import threading
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from nvidia_resiliency_ext.fault_tolerance.cycle_info import analyzer as analyzer_module
+from nvidia_resiliency_ext.fault_tolerance.cycle_info import grpc_transport
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer import (
+    CycleAnalyzer,
+    CycleAnalyzerProcess,
+    _StopRequest,
+)
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.grpc_transport import GrpcCycleInfoReader
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import (
+    build_cycle_info,
+    ended_cycle_info,
+)
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.transport import CycleInfoReader
+from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoReporter, utc_iso
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
+
+
+class _ListReader(CycleInfoReader):
+    def __init__(self):
+        self.infos = []  # cycle starts and ends, in arrival order
+        self.end_reports = []
+
+    def read_cycle_infos(self):
+        infos, self.infos = self.infos, []
+        return infos
+
+    def read_end_reports(self):
+        end_reports, self.end_reports = self.end_reports, []
+        return end_reports
+
+
+def _replace(message, **fields):
+    """A copy of the proto `message` with `fields` set, like dataclasses.replace."""
+    copy = type(message)()
+    copy.CopyFrom(message)
+    for name, value in fields.items():
+        setattr(copy, name, value)
+    return copy
+
+
+def _start(cycle, nodes=("node0",)):
+    """The store host's start of `cycle`, at 10 + cycle seconds since the epoch."""
+    return build_cycle_info(
+        job_id="job1",
+        attempt_index=0,
+        cycle_number=cycle,
+        started_at_ms=10_000 + cycle * 1000,
+        active_nodes=nodes,
+        active_ranks=range(len(nodes)),
+    )
+
+
+def _end(cycle, nodes=("node0",)):
+    """The store host's update of `_start(cycle)`: stamped later, with its end time."""
+    return ended_cycle_info(_start(cycle, nodes), 30_000 + cycle * 1000)
+
+
+def _end_report(cycle, node):
+    return pb.NodeCycleEndReport(
+        job_id="job1",
+        cycle_number=cycle,
+        node_id=node,
+        end_reason=pb.CycleEndReasonWorkerFailed,
+        detected_timestamp=20_000 + cycle,
+    )
+
+
+def _analyzer(reader):
+    analyzer = CycleAnalyzer(reader, MagicMock(), poll_interval=0.01)
+    analyzer.report_cycle_start = MagicMock()
+    return analyzer
+
+
+def test_cycle_starts_are_reported_in_arrival_order():
+    reader = _ListReader()
+    analyzer = _analyzer(reader)
+    reader.infos = [_start(0), _start(1)]
+
+    analyzer.process_received()
+
+    assert [c.args[0].cycle_number for c in analyzer.report_cycle_start.call_args_list] == [0, 1]
+
+
+def test_end_reports_are_kept_by_cycle():
+    reader = _ListReader()
+    analyzer = _analyzer(reader)
+    reader.end_reports = [_end_report(0, "n0"), _end_report(1, "n0")]
+    analyzer.process_received()
+    reader.end_reports = [_end_report(0, "n1")]
+    analyzer.process_received()
+
+    assert {cycle: reports.listed() for cycle, reports in analyzer._end_reports.items()} == {
+        0: [_end_report(0, "n0"), _end_report(0, "n1")],
+        1: [_end_report(1, "n0")],
+    }
+
+
+def test_a_start_and_its_end_read_together_are_both_handled():
+    """A cycle's start and end can arrive between two reads; read in arrival order, the
+    start is handled before the end, so the end is not dropped as for an unknown cycle."""
+    reader = _ListReader()
+    reporter = MagicMock()
+    analyzer = CycleAnalyzer(reader, reporter)
+    reader.infos = [_start(3, ("n0", "n1")), _end(3, ("n0", "n1"))]
+
+    with patch.object(analyzer_module, "logger") as logger:
+        analyzer.process_received()
+
+    assert analyzer._cycle_infos == {3: _end(3, ("n0", "n1"))}
+    reporter.report_cycle_start.assert_called_once()
+    reporter.report_cycle_end.assert_called_once()
+    logger.warning.assert_not_called()
+
+
+def test_run_processes_records_until_stopped_then_writes_the_open_cycles():
+    reader = _ListReader()
+    analyzer = _analyzer(reader)
+    stop_event = threading.Event()
+
+    def stop_after_first_records(info):
+        # Records that arrive while stopping are still processed.
+        reader.end_reports.append(_end_report(0, "late"))
+        stop_event.set()
+
+    analyzer.report_cycle_start.side_effect = stop_after_first_records
+    reader.infos = [_start(0)]
+    thread = threading.Thread(target=analyzer.run, args=(stop_event,))
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    cycle, end_report = analyzer.cycle_info_reporter.report_cycle_end_report.call_args.args
+    assert (cycle, list(end_report.launcher_end_reports)) == (0, [_end_report(0, "late")])
+
+
+def test_a_failing_record_is_logged_and_the_loop_continues():
+    reader = MagicMock()
+    reader.read_cycle_infos.side_effect = [RuntimeError("boom"), [], []]
+    reader.read_end_reports.return_value = []
+    analyzer = CycleAnalyzer(reader, MagicMock(), poll_interval=0.01)
+    stop_event = MagicMock()
+    stop_event.is_set.side_effect = [False, False, True]
+    stop_event.wait.return_value = False
+
+    with patch.object(analyzer_module, "logger") as logger:
+        analyzer.run(stop_event)
+
+    logger.warning.assert_called_once()
+    assert reader.read_cycle_infos.call_count == 3  # two loop passes and the final one
+
+
+def test_stop_request_is_set_by_a_signal():
+    stop = _StopRequest()
+    assert not stop.is_set() and not stop.wait(0)
+    stop.signalled = True
+    assert stop.is_set() and stop.wait(0)
+
+
+class TestCycleAnalyzerProcess:
+    def test_start_spawns_the_analyzer_module_as_a_supervisor_child(self):
+        process = CycleAnalyzerProcess(
+            "/nvrx", "job-a", "/logs/train.log", address="unix:/tmp/a.sock"
+        )
+        with patch.object(analyzer_module, "spawn_child") as spawn:
+            process.start(stdout=subprocess.PIPE)
+
+        (module, args), kwargs = spawn.call_args
+        assert module == "nvidia_resiliency_ext.fault_tolerance.cycle_info.analyzer"
+        assert vars(args) == dict(
+            cycle_info_dir="/nvrx",
+            cycle_info_job_id="job-a",
+            cycle_log_prefix="/logs/train.log",
+            address="unix:/tmp/a.sock",
+        )
+        assert kwargs == dict(stdout=subprocess.PIPE)
+        assert process.process is spawn.return_value
+        assert process.pid == spawn.return_value.pid
+
+    def test_wait_until_ready_returns_once_the_analyzer_receives(self):
+        reader = GrpcCycleInfoReader("127.0.0.1:0")
+        try:
+            process = CycleAnalyzerProcess("/nvrx", address=f"127.0.0.1:{reader.port}")
+            process.process = MagicMock()
+            process.process.poll.return_value = None
+            process.wait_until_ready()
+        finally:
+            reader.close()
+
+    def test_wait_until_ready_fails_when_the_process_exits(self):
+        process = CycleAnalyzerProcess("/nvrx", address="unix:/tmp/a.sock")
+        process.process = MagicMock()
+        process.process.poll.return_value = 3
+        with (
+            patch.object(process, "_accepts_connections", return_value=False),
+            pytest.raises(RuntimeError, match=r"exited during startup \(exit code 3\)"),
+        ):
+            process.wait_until_ready()
+
+    def test_wait_until_ready_gives_up_after_the_start_timeout(self):
+        process = CycleAnalyzerProcess("/nvrx", address="unix:/tmp/a.sock")
+        process.process = MagicMock()
+        process.process.poll.return_value = None
+        with (
+            patch.object(process, "_accepts_connections", return_value=False),
+            patch.object(analyzer_module.time, "monotonic", side_effect=[0.0, 200.0]),
+            pytest.raises(RuntimeError, match="not ready"),
+        ):
+            process.wait_until_ready()
+
+    def test_wait_until_ready_stops_waiting_on_a_shutdown_request(self):
+        """The supervisor's check raises once it received a signal: the wait ends there,
+        not after START_TIMEOUT."""
+
+        class Shutdown(Exception):
+            pass
+
+        process = CycleAnalyzerProcess("/nvrx", address="unix:/tmp/a.sock")
+        process.process = MagicMock()
+        process.process.poll.return_value = None
+        check = MagicMock(side_effect=[None, Shutdown()])  # the signal arrives on 2nd check
+        with (
+            patch.object(process, "_accepts_connections", return_value=False),
+            pytest.raises(Shutdown),
+        ):
+            process.wait_until_ready(raise_if_shutdown_requested=check)
+        assert check.call_count == 2
+
+    def test_stop_sends_sigterm_then_waits_or_kills(self):
+        process = CycleAnalyzerProcess("/nvrx", address="unix:/tmp/a.sock")
+        child = process.process = MagicMock()
+        child.poll.return_value = None
+        with patch.object(analyzer_module, "wait_or_kill_child") as wait_or_kill:
+            process.stop()
+            process.stop()  # a second stop does nothing
+        child.terminate.assert_called_once_with()
+        wait_or_kill.assert_called_once_with(child, CycleAnalyzerProcess.STOP_TIMEOUT)
+        assert process.process is None and process.pid is None
+
+    def test_main_requires_the_supervisor(self):
+        with (
+            patch.object(analyzer_module, "read_child_args", return_value=None),
+            pytest.raises(RuntimeError, match="started by ft_launcher"),
+        ):
+            analyzer_module.main()
+
+    def test_default_address_is_a_unix_socket(self):
+        address = CycleAnalyzerProcess("/nvrx", "job-a").address
+        assert address.startswith("unix:") and address.endswith(".sock")
+
+    @pytest.mark.parametrize(
+        "job_id,expected",
+        [("training-job", ("training-job", 0)), (None, ("slurm-job", 3))],
+        ids=["external", "colocated"],
+    )
+    def test_file_namespace(self, monkeypatch, tmp_path, job_id, expected):
+        """An explicit job id comes with attempt 0; without one, both come from the
+        environment, so a requeued (colocated) job writes a new attempt."""
+        monkeypatch.delenv("SLURM_ARRAY_JOB_ID", raising=False)
+        monkeypatch.setenv("SLURM_JOB_ID", "slurm-job")
+        monkeypatch.setenv("SLURM_RESTART_COUNT", "3")
+        reporters = []
+
+        def make_reporter(*args, **kwargs):
+            reporters.append(CycleInfoReporter(*args, **kwargs))
+            return reporters[-1]
+
+        with (
+            patch.object(analyzer_module, "CycleInfoReporter", side_effect=make_reporter),
+            patch.object(analyzer_module, "setup_logger"),
+            patch.object(analyzer_module.signal, "signal"),
+            patch.object(grpc_transport, "GrpcCycleInfoReader"),
+            patch.object(analyzer_module, "CycleAnalyzer"),
+        ):
+            analyzer_module._run_cycle_analyzer(str(tmp_path), job_id, None, "127.0.0.1:0")
+        (reporter,) = reporters
+        assert reporter._resolve_file_namespace() == expected
+
+
+class TestUpdateCycleEndReports:
+    def _analyzer_with_cycle(self, started_cycle=3):
+        reporter = MagicMock()
+        reporter.report_cycle_start.return_value = True
+        analyzer = CycleAnalyzer(_ListReader(), reporter)
+        analyzer.report_cycle_start(_start(3))
+        analyzer.add_end_report(_end_report(3, "node0"))
+        if started_cycle != 3:
+            analyzer.report_cycle_start(_start(started_cycle))
+        return analyzer, reporter
+
+    def test_writes_the_end_and_the_end_reports_then_forgets_the_cycle(self):
+        analyzer, reporter = self._analyzer_with_cycle()
+        analyzer.report_cycle_info_update(_end(3))
+
+        analyzer.update_cycle_end_reports(3)
+
+        cycle, end_report = reporter.report_cycle_end_report.call_args.args
+        assert (cycle, list(end_report.launcher_end_reports)) == (3, [_end_report(3, "node0")])
+        assert end_report.end_reason == pb.CycleEndReasonWorkerFailed
+        assert end_report.first_detected_timestamp == "1970-01-01T00:00:20.003Z"
+        # Only the store host's end, when the update arrived: not again when written.
+        reporter.report_cycle_end.assert_called_once_with(3, _end(3).cycle_end_time)
+        assert 3 not in analyzer._end_reports and 3 not in analyzer._cycle_infos
+
+    def test_writes_the_cycle_even_after_a_later_cycle_started(self):
+        analyzer, reporter = self._analyzer_with_cycle(started_cycle=4)
+
+        analyzer.update_cycle_end_reports(3)
+
+        assert reporter.report_cycle_end_report.call_args.args[0] == 3
+        reporter.report_cycle_end.assert_not_called()
+
+    @pytest.mark.parametrize("written", [True, False])
+    def test_an_end_report_the_reporter_did_not_write_is_logged_as_a_warning(self, written):
+        """E.g. the start of the cycle never reached the analyzer, or the reporter is shut
+        down: the reporter then writes nothing."""
+        analyzer, reporter = self._analyzer_with_cycle()
+        reporter.report_cycle_end_report.return_value = written
+
+        with patch.object(analyzer_module, "logger") as logger:
+            analyzer.update_cycle_end_reports(3)
+
+        assert logger.info.called == written
+        assert logger.warning.called != written
+        if not written:
+            assert "was not written" in logger.warning.call_args.args[0]
+        assert 3 in analyzer._written
+
+    def test_without_end_reports_nothing_is_written_and_the_cycle_is_forgotten(self):
+        reporter = MagicMock()
+        reporter.report_cycle_start.return_value = True
+        analyzer = CycleAnalyzer(_ListReader(), reporter)
+        analyzer.report_cycle_start(_start(3))
+
+        analyzer.update_cycle_end_reports(3)
+
+        # No end report to write; the cycle end time comes only from the store host.
+        reporter.report_cycle_end_report.assert_not_called()
+        reporter.report_cycle_end.assert_not_called()
+        assert 3 in analyzer._written and 3 not in analyzer._cycle_infos
+        assert not analyzer.add_end_report(_end_report(3, "node0"))  # a late end report
+
+    def test_the_start_of_the_store_host_is_reported_as_received(self):
+        reporter = MagicMock()
+        analyzer = CycleAnalyzer(_ListReader(), reporter)
+        start = _start(3)
+
+        analyzer.report_cycle_start(start)
+
+        reporter.report_cycle_start.assert_called_once()
+        assert reporter.report_cycle_start.call_args.args[0] is start
+
+
+class TestReportCycleStart:
+    """A start is accepted once per cycle, in cycle order."""
+
+    def _analyzer(self):
+        reporter = MagicMock()
+        reporter.report_cycle_start.return_value = True
+        return CycleAnalyzer(_ListReader(), reporter), reporter
+
+    def test_a_start_opens_its_cycle(self):
+        analyzer, reporter = self._analyzer()
+        with patch.object(analyzer_module, "logger") as logger:
+            assert analyzer.report_cycle_start(_start(3))
+        reporter.report_cycle_start.assert_called_once()
+        logger.warning.assert_not_called()
+
+    def test_a_start_without_active_nodes_is_logged_and_still_opens_its_cycle(self):
+        analyzer, reporter = self._analyzer()
+        with patch.object(analyzer_module, "logger") as logger:
+            assert analyzer.report_cycle_start(_start(3, nodes=()))
+        reporter.report_cycle_start.assert_called_once()
+        logger.warning.assert_called_once()
+
+    @pytest.mark.parametrize("written", [False, True], ids=["open", "already_written"])
+    def test_a_duplicate_start_is_ignored(self, written):
+        analyzer, reporter = self._analyzer()
+        analyzer.report_cycle_start(_start(3))
+        if written:
+            analyzer.update_cycle_end_reports(3)
+
+        with patch.object(analyzer_module, "logger") as logger:
+            assert not analyzer.report_cycle_start(_start(3, nodes=("other",)))
+
+        reporter.report_cycle_start.assert_called_once()
+        logger.warning.assert_called_once()
+        if not written:
+            assert analyzer._cycle_infos[3] == _start(3)  # the first start is kept
+
+    def test_a_start_older_than_the_latest_is_ignored(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.report_cycle_start(_start(4))
+
+        with patch.object(analyzer_module, "logger") as logger:
+            assert not analyzer.report_cycle_start(_start(3))
+
+        reporter.report_cycle_start.assert_called_once()
+        logger.warning.assert_called_once()
+        assert 3 not in analyzer._cycle_infos
+
+    def test_an_ignored_start_does_not_schedule_earlier_cycles(self):
+        reader = _ListReader()
+        analyzer = CycleAnalyzer(reader, MagicMock())
+        reader.infos = [_start(4)]
+        analyzer.process_received()
+        reader.end_reports = [_end_report(2, "node0")]  # an open earlier cycle
+        analyzer.process_received()
+
+        reader.infos = [_start(3)]  # older than 4: ignored
+        analyzer.process_received()
+
+        assert 2 not in analyzer._write_deadlines
+
+
+class TestReportCycleInfoUpdate:
+    """The store host's update ends its cycle at the reporter and marks the cycle ended."""
+
+    def _analyzer(self):
+        reporter = MagicMock()
+        reporter.report_cycle_start.return_value = True
+        analyzer = CycleAnalyzer(_ListReader(), reporter)
+        analyzer.report_cycle_start(_start(3))
+        return analyzer, reporter
+
+    def _assert_ignored(self, analyzer, reporter, update):
+        with patch.object(analyzer_module, "logger") as logger:
+            assert not analyzer.report_cycle_info_update(update)
+        logger.warning.assert_called_once()
+        reporter.report_cycle_end.assert_not_called()
+
+    def test_the_end_is_written_and_the_cycle_marked_ended(self):
+        analyzer, reporter = self._analyzer()
+
+        assert analyzer.report_cycle_info_update(_end(3))
+
+        reporter.report_cycle_end.assert_called_once_with(3, _end(3).cycle_end_time)
+        assert analyzer._cycle_infos[3] == _end(3)
+
+    def test_the_cycle_is_kept_for_its_end_reports(self):
+        analyzer, _ = self._analyzer()
+        analyzer.report_cycle_info_update(_end(3))
+        assert analyzer.add_end_report(_end_report(3, "node0"))
+
+    def test_a_reporter_failure_is_logged_and_the_cycle_still_marked_ended(self):
+        analyzer, reporter = self._analyzer()
+        reporter.report_cycle_end.return_value = False
+        with patch.object(analyzer_module, "logger") as logger:
+            assert analyzer.report_cycle_info_update(_end(3))
+        logger.warning.assert_called_once()
+        assert analyzer._cycle_infos[3] == _end(3)
+
+    def test_an_update_of_a_cycle_never_started_is_ignored(self):
+        analyzer, reporter = self._analyzer()
+        self._assert_ignored(analyzer, reporter, _end(4))
+        assert 4 not in analyzer._cycle_infos
+
+    def test_an_end_after_the_end_reports_is_still_written(self):
+        """The store host's end can arrive after the cycle's end reports were written."""
+        analyzer, reporter = self._analyzer()
+        analyzer.add_end_report(_end_report(3, "node0"))
+        analyzer.update_cycle_end_reports(3)
+        reporter.report_cycle_end_report.assert_called_once()
+
+        assert analyzer.report_cycle_info_update(_end(3))
+
+        reporter.report_cycle_end.assert_called_once_with(3, _end(3).cycle_end_time)
+        assert 3 not in analyzer._awaiting_end
+        # Not reopened: its end reports are not written again.
+        analyzer.finish()
+        reporter.report_cycle_end_report.assert_called_once()
+        assert 3 not in analyzer._cycle_infos
+
+    def test_a_second_end_after_the_end_reports_is_ignored(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.update_cycle_end_reports(3)
+        analyzer.report_cycle_info_update(_end(3))
+        reporter.report_cycle_end.reset_mock()
+        self._assert_ignored(analyzer, reporter, ended_cycle_info(_start(3), 40_000))
+
+    def test_an_end_already_received_is_not_kept_once_written(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.report_cycle_info_update(_end(3))
+        analyzer.update_cycle_end_reports(3)
+        assert 3 not in analyzer._awaiting_end
+        reporter.report_cycle_end.reset_mock()
+        self._assert_ignored(analyzer, reporter, _end(3))
+
+    def test_an_end_of_a_written_cycle_never_started_is_ignored(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.add_end_report(_end_report(4, "node0"))  # its start never arrives
+        analyzer.update_cycle_end_reports(4)
+        self._assert_ignored(analyzer, reporter, _end(4))
+
+    def test_an_invalid_end_after_the_end_reports_keeps_waiting(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.update_cycle_end_reports(3)
+        self._assert_ignored(analyzer, reporter, _replace(_end(3), timestamp=5_000))
+        assert analyzer._awaiting_end[3] == _start(3)
+        assert analyzer.report_cycle_info_update(_end(3))  # the valid end is still written
+
+    def test_a_second_update_is_ignored(self):
+        analyzer, reporter = self._analyzer()
+        analyzer.report_cycle_info_update(_end(3))
+        later = ended_cycle_info(_start(3), 40_000)
+        with patch.object(analyzer_module, "logger") as logger:
+            assert not analyzer.report_cycle_info_update(later)
+        logger.warning.assert_called_once()
+        reporter.report_cycle_end.assert_called_once()  # the first update only
+        assert analyzer._cycle_infos[3] == _end(3)
+
+    @pytest.mark.parametrize("timestamp", [5_000, 13_000], ids=["older", "same"])
+    def test_an_update_not_newer_than_the_start_is_ignored(self, timestamp):
+        analyzer, reporter = self._analyzer()
+        self._assert_ignored(analyzer, reporter, _replace(_end(3), timestamp=timestamp))
+        assert analyzer._cycle_infos[3] == _start(3)
+
+    # The start is at 13 s since the epoch.
+    @pytest.mark.parametrize(
+        "cycle_end_time", ["", utc_iso(5.0), utc_iso(13.0)], ids=["none", "before", "at_start"]
+    )
+    def test_an_update_without_a_valid_end_time_is_ignored(self, cycle_end_time):
+        analyzer, reporter = self._analyzer()
+        self._assert_ignored(analyzer, reporter, _replace(_end(3), cycle_end_time=cycle_end_time))
+        assert analyzer._cycle_infos[3] == _start(3)
+
+
+class TestAddEndReport:
+    """An end report is kept once per launcher, for a cycle that can still be written."""
+
+    def _analyzer(self, started=()):
+        reporter = MagicMock()
+        reporter.report_cycle_start.return_value = True
+        analyzer = CycleAnalyzer(_ListReader(), reporter)
+        for cycle in started:
+            analyzer.report_cycle_start(_start(cycle))
+        return analyzer
+
+    def test_a_duplicate_is_ignored_and_the_first_kept(self):
+        analyzer = self._analyzer(started=[3])
+        first = _end_report(3, "node0")
+        assert analyzer.add_end_report(first)
+
+        with patch.object(analyzer_module, "logger") as logger:
+            assert not analyzer.add_end_report(_replace(first, detected_timestamp=1))
+
+        assert analyzer._end_reports[3].listed() == [first]
+        logger.warning.assert_called_once()
+
+    def test_the_listed_end_reports_are_capped_as_configured(self):
+        reporter = MagicMock()
+        reporter.report_cycle_start.return_value = True
+        analyzer = CycleAnalyzer(_ListReader(), reporter, max_listed_end_reports=2)
+        analyzer.report_cycle_start(_start(3))
+        for node in ("node0", "node1", "node2"):
+            assert analyzer.add_end_report(_end_report(3, node))
+
+        assert len(analyzer._end_reports[3]) == 3  # every launcher counted
+        assert len(analyzer._end_reports[3].listed()) == 2
+
+    def test_the_listed_end_reports_need_a_positive_cap(self):
+        with pytest.raises(ValueError):
+            CycleAnalyzer(_ListReader(), MagicMock(), max_listed_end_reports=0)
+
+    def test_launchers_sharing_a_host_are_duplicates(self):
+        """Known limitation: end reports are told apart by node name only."""
+        analyzer = self._analyzer(started=[3])
+        assert analyzer.add_end_report(_end_report(3, "host"))
+        assert not analyzer.add_end_report(_end_report(3, "host"))
+        assert len(analyzer._end_reports[3]) == 1
+
+    def test_an_end_report_of_a_cycle_never_started_is_ignored(self):
+        analyzer = self._analyzer(started=[4])  # cycle 3 was skipped
+
+        with patch.object(analyzer_module, "logger") as logger:
+            assert not analyzer.add_end_report(_end_report(3, "node0"))
+
+        assert 3 not in analyzer._end_reports
+        logger.warning.assert_called_once()
+
+    def test_an_end_report_before_its_cycle_start_is_kept(self):
+        """Starts and end reports travel on different paths: the start may come later."""
+        analyzer = self._analyzer(started=[3])
+        assert analyzer.add_end_report(_end_report(4, "node0"))
+        assert analyzer._end_reports[4].listed() == [_end_report(4, "node0")]
+
+    def test_a_late_end_report_is_ignored(self):
+        analyzer = self._analyzer(started=[3])
+        analyzer.update_cycle_end_reports(3)
+
+        with patch.object(analyzer_module, "logger") as logger:
+            assert not analyzer.add_end_report(_end_report(3, "node0"))
+
+        assert 3 not in analyzer._end_reports
+        logger.warning.assert_called_once()
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+class TestWhenCyclesAreWritten:
+    """The end of a cycle is written once, at the earliest of its triggers."""
+
+    @pytest.fixture(autouse=True)
+    def _fake_clock(self):
+        # The analyzer times its triggers with time.monotonic(); these tests run synchronously.
+        self._clock = _Clock()
+        with patch.object(analyzer_module.time, "monotonic", self._clock):
+            yield
+
+    def _analyzer(self):
+        reader, reporter = _ListReader(), MagicMock()
+        reporter.report_cycle_start.return_value = True
+        analyzer = CycleAnalyzer(
+            reader, reporter, next_start_grace=10.0, end_report_quiet_period=60.0
+        )
+        analyzer.update_cycle_end_reports = MagicMock(side_effect=analyzer.update_cycle_end_reports)
+        return analyzer, reader, self._clock
+
+    @staticmethod
+    def _written(analyzer):
+        return [c.args[0] for c in analyzer.update_cycle_end_reports.call_args_list]
+
+    def test_when_every_active_launcher_reported(self):
+        analyzer, reader, _ = self._analyzer()
+        reader.infos = [_start(3, ("n0", "n1"))]
+        reader.end_reports = [_end_report(3, "n0")]
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+
+        reader.end_reports = [_end_report(3, "n1")]
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+    def test_when_the_start_arrives_after_every_end_report(self):
+        """A delayed start completes the cycle when it arrives, without waiting for a
+        later cycle, the quiet period or the shutdown."""
+        analyzer, reader, _ = self._analyzer()
+        reader.end_reports = [_end_report(3, "n0"), _end_report(3, "n1")]
+        analyzer.process_received()
+        assert self._written(analyzer) == []  # its launchers are not known yet
+
+        reader.infos = [_start(3, ("n0", "n1"))]
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+    def test_a_start_without_end_reports_does_not_write_its_cycle(self):
+        analyzer, reader, _ = self._analyzer()
+        reader.infos = [_start(3, ("n0", "n1"))]
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+        assert 3 not in analyzer._end_reports  # no empty entry was created for it
+
+    def test_launchers_reporting_their_fqdn_complete_the_cycle(self):
+        """The start's node lists carry short host names; end reports may carry the FQDN."""
+        analyzer, reader, _ = self._analyzer()
+        reader.infos = [_start(3, ("n0", "n1"))]
+        reader.end_reports = [_end_report(3, "n0.cluster"), _end_report(3, "n1.cluster")]
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+    def test_launchers_sharing_a_host_complete_the_cycle_once_all_reported(self):
+        """Simulations run several launchers on a host: the start lists the host once, with
+        one active rank per launcher, and each launcher reports as "<host>_<pid>"."""
+        analyzer, reader, _ = self._analyzer()
+        reader.infos = [_start(3, ("n0", "n0", "n0"))]
+        reader.end_reports = [_end_report(3, "n0_100"), _end_report(3, "n0_101")]
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+
+        reader.end_reports = [_end_report(3, "n0_101"), _end_report(3, "n0_102")]  # 1 duplicate
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+    def test_after_the_grace_period_of_the_next_start(self):
+        analyzer, reader, clock = self._analyzer()
+        reader.infos = [_start(3, ("n0", "n1"))]
+        reader.end_reports = [_end_report(3, "n0")]  # n1 never reports
+        analyzer.process_received()
+        reader.infos = [_start(4, ("n0", "n1"))]
+        analyzer.process_received()
+
+        clock.now += 9.9
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+        clock.now += 0.1
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]  # not the running cycle 4
+
+    def test_after_a_quiet_period_without_end_reports(self):
+        analyzer, reader, clock = self._analyzer()
+        reader.infos = [_start(3, ("n0", "n1"))]
+        reader.end_reports = [_end_report(3, "n0")]
+        analyzer.process_received()
+
+        clock.now += 59.9
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+        clock.now += 0.1
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+    def test_the_quiet_period_waits_for_a_delayed_start(self):
+        """End reports quiet for longer than the quiet period do not write a cycle not started
+        yet: its start, when it arrives, still opens the cycle, which is then written."""
+        analyzer, reader, clock = self._analyzer()
+        reader.end_reports = [_end_report(3, "n0")]  # n1 never reports
+        analyzer.process_received()
+        clock.now += 100
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+
+        reader.infos = [_start(3, ("n0", "n1"))]
+        analyzer.process_received()
+        analyzer.cycle_info_reporter.report_cycle_start.assert_called_once()
+        assert self._written(analyzer) == [3]  # the quiet period is over
+
+    def test_a_cycle_never_started_is_written_after_the_grace_period_of_a_later_start(self):
+        analyzer, reader, clock = self._analyzer()
+        reader.end_reports = [_end_report(3, "n0")]
+        analyzer.process_received()
+        clock.now += 100
+        reader.infos = [_start(4, ("n0", "n1"))]
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+
+        clock.now += 10
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+    def test_the_end_update_alone_does_not_write_the_cycle(self):
+        analyzer, reader, _ = self._analyzer()
+        reader.infos = [_start(3, ("n0", "n1")), _end(3, ("n0", "n1"))]
+        analyzer.process_received()
+        assert self._written(analyzer) == []
+
+    def test_every_open_cycle_when_finishing(self):
+        analyzer, reader, _ = self._analyzer()
+        reader.infos = [_start(3), _start(4)]
+        analyzer.process_received()
+
+        analyzer.finish()
+
+        assert self._written(analyzer) == [3, 4]
+
+    def test_a_cycle_is_written_once_and_late_end_reports_are_ignored(self):
+        analyzer, reader, clock = self._analyzer()
+        reader.infos = [_start(3, ("n0",))]
+        reader.end_reports = [_end_report(3, "n0")]
+        analyzer.process_received()
+        assert self._written(analyzer) == [3]
+
+        reader.end_reports = [_end_report(3, "n0")]
+        with patch.object(analyzer_module, "logger") as logger:
+            analyzer.process_received()
+        clock.now += 100
+        analyzer.process_received()
+        analyzer.finish()
+
+        assert self._written(analyzer) == [3]
+        logger.warning.assert_called_once()

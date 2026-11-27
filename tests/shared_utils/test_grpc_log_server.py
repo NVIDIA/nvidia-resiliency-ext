@@ -9,17 +9,29 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent import futures
 from unittest.mock import MagicMock
 
 import grpc
 import pytest
 
+from nvidia_resiliency_ext.shared_utils import grpc_log_server
 from nvidia_resiliency_ext.shared_utils.grpc_log_server import LogAggregationServicer, serve
-from nvidia_resiliency_ext.shared_utils.proto import log_aggregation_pb2
+from nvidia_resiliency_ext.shared_utils.proto import (
+    data_records_aggregation_pb2,
+    nvrx_interface_pb2,
+    nvrx_interface_pb2_grpc,
+)
 
 # These tests exercise buffering/flush behaviour, not path confinement (see
 # test_grpc_log_server_confinement.py). Every path they write to lives under the temp dir.
 _TEST_ROOTS = ["/tmp", tempfile.gettempdir()]
+
+
+def _records(chunks):
+    """`chunks` as the DataRecord stream StreamDataRecords receives."""
+    for chunk in chunks:
+        yield data_records_aggregation_pb2.DataRecord(log_chunk=chunk)
 
 
 class TestLogAggregationServicer:
@@ -43,13 +55,13 @@ class TestLogAggregationServicer:
 
         # Create mock chunks for different files
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data for file1\n", file_path=file1
             ),
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"More data for file1\n", file_path=file1
             ),
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data for file2\n", file_path=file2
             ),
         ]
@@ -58,7 +70,7 @@ class TestLogAggregationServicer:
         mock_context = MagicMock()
 
         # Stream the chunks
-        response = servicer.StreamLogs(iter(chunks), mock_context)
+        response = servicer.StreamDataRecords(_records(chunks), mock_context)
 
         # Force flush
         servicer.shutdown()
@@ -90,7 +102,7 @@ class TestLogAggregationServicer:
         chunks = []
         for i in range(5):
             chunks.append(
-                log_aggregation_pb2.LogChunk(
+                data_records_aggregation_pb2.LogChunk(
                     node_id="node_1",
                     data=f"Line {i}: {'X' * 30}\n".encode('utf-8'),  # ~40 bytes each
                     file_path=log_file,
@@ -100,7 +112,7 @@ class TestLogAggregationServicer:
         mock_context = MagicMock()
 
         # Stream chunks
-        response = servicer_small_buffer.StreamLogs(iter(chunks), mock_context)
+        response = servicer_small_buffer.StreamDataRecords(_records(chunks), mock_context)
 
         # Shutdown to flush
         servicer_small_buffer.shutdown()
@@ -116,7 +128,7 @@ class TestLogAggregationServicer:
         log_file = os.path.join(temp_log_dir, "disconnect.log")
 
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Log before disconnect\n", file_path=log_file
             ),
         ]
@@ -124,7 +136,7 @@ class TestLogAggregationServicer:
         mock_context = MagicMock()
 
         # Stream and complete (simulates disconnect)
-        response = servicer.StreamLogs(iter(chunks), mock_context)
+        response = servicer.StreamDataRecords(_records(chunks), mock_context)
 
         # Wait for periodic flush (happens every 1s)
         time.sleep(1.5)
@@ -141,19 +153,19 @@ class TestLogAggregationServicer:
 
         # Simulate 3 clients
         client1_chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Client 1 log\n", file_path=log_file
             ),
         ]
 
         client2_chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_2", data=b"Client 2 log\n", file_path=log_file
             ),
         ]
 
         client3_chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_3", data=b"Client 3 log\n", file_path=log_file
             ),
         ]
@@ -161,9 +173,9 @@ class TestLogAggregationServicer:
         mock_context = MagicMock()
 
         # Stream from all clients
-        servicer.StreamLogs(iter(client1_chunks), mock_context)
-        servicer.StreamLogs(iter(client2_chunks), mock_context)
-        servicer.StreamLogs(iter(client3_chunks), mock_context)
+        servicer.StreamDataRecords(_records(client1_chunks), mock_context)
+        servicer.StreamDataRecords(_records(client2_chunks), mock_context)
+        servicer.StreamDataRecords(_records(client3_chunks), mock_context)
 
         # Shutdown and flush
         servicer.shutdown()
@@ -178,15 +190,15 @@ class TestLogAggregationServicer:
     def test_invalid_file_path_raises_value_error(self, servicer):
         """Test that empty file_path raises ValueError."""
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data\n", file_path=""  # Empty file_path
             ),
         ]
 
         mock_context = MagicMock()
 
-        # StreamLogs should call context.abort with INVALID_ARGUMENT
-        servicer.StreamLogs(iter(chunks), mock_context)
+        # StreamDataRecords should call context.abort with INVALID_ARGUMENT
+        servicer.StreamDataRecords(_records(chunks), mock_context)
 
         # Verify context.abort was called with INVALID_ARGUMENT
         assert mock_context.abort.called, "context.abort should have been called"
@@ -200,7 +212,7 @@ class TestLogAggregationServicer:
         mock_context = MagicMock()
 
         # Call HealthCheck
-        response = servicer.HealthCheck(log_aggregation_pb2.HealthRequest(), mock_context)
+        response = servicer.HealthCheck(data_records_aggregation_pb2.HealthRequest(), mock_context)
 
         # Should return healthy
         assert response.healthy is True
@@ -212,16 +224,16 @@ class TestLogAggregationServicer:
 
         # Write to multiple files without exceeding buffer
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Pending data file1\n", file_path=file1
             ),
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Pending data file2\n", file_path=file2
             ),
         ]
 
         mock_context = MagicMock()
-        servicer.StreamLogs(iter(chunks), mock_context)
+        servicer.StreamDataRecords(_records(chunks), mock_context)
 
         # Data may still be in buffer, not flushed yet
         # Now shutdown - should flush everything
@@ -240,12 +252,12 @@ class TestLogAggregationServicer:
         # Stream 1000 chunks
         def chunk_generator():
             for i in range(1000):
-                yield log_aggregation_pb2.LogChunk(
+                yield data_records_aggregation_pb2.LogChunk(
                     node_id="node_1", data=f"Line {i}\n".encode('utf-8'), file_path=log_file
                 )
 
         mock_context = MagicMock()
-        response = servicer.StreamLogs(chunk_generator(), mock_context)
+        response = servicer.StreamDataRecords(_records(chunk_generator()), mock_context)
 
         # Shutdown to flush
         servicer.shutdown()
@@ -265,11 +277,13 @@ class TestLogAggregationServicer:
         binary_data = b'\x00\x01\x02\xff\xfe\n'
 
         chunks = [
-            log_aggregation_pb2.LogChunk(node_id="node_1", data=binary_data, file_path=log_file),
+            data_records_aggregation_pb2.LogChunk(
+                node_id="node_1", data=binary_data, file_path=log_file
+            ),
         ]
 
         mock_context = MagicMock()
-        servicer.StreamLogs(iter(chunks), mock_context)
+        servicer.StreamDataRecords(_records(chunks), mock_context)
         servicer.shutdown()
 
         # Read as binary and verify
@@ -285,13 +299,13 @@ class TestLogAggregationServicer:
         servicer = LogAggregationServicer(allowed_roots=_TEST_ROOTS)
 
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data in nested dir\n", file_path=nested_file
             ),
         ]
 
         mock_context = MagicMock()
-        servicer.StreamLogs(iter(chunks), mock_context)
+        servicer.StreamDataRecords(_records(chunks), mock_context)
         servicer.shutdown()
 
         # Verify file was created
@@ -317,13 +331,13 @@ class TestPeriodicFlush:
 
         # Write small amount of data (won't trigger buffer flush)
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Small data\n", file_path=str(log_file)
             ),
         ]
 
         mock_context = MagicMock()
-        servicer.StreamLogs(iter(chunks), mock_context)
+        servicer.StreamDataRecords(_records(chunks), mock_context)
 
         # Wait for periodic flush
         time.sleep(1.0)
@@ -360,10 +374,10 @@ class TestHeuristicCycleLogCompletion:
         ]
 
     def _stream_chunk(self, servicer, log_file, data=b"cycle data\n"):
-        servicer.StreamLogs(
-            iter(
+        servicer.StreamDataRecords(
+            _records(
                 [
-                    log_aggregation_pb2.LogChunk(
+                    data_records_aggregation_pb2.LogChunk(
                         node_id="node_1",
                         data=data,
                         file_path=str(log_file),
@@ -445,10 +459,10 @@ class TestHeuristicCycleLogCompletion:
         )
         try:
             with caplog.at_level(logging.INFO, logger="LogAggregationServer"):
-                servicer.StreamLogs(
-                    iter(
+                servicer.StreamDataRecords(
+                    _records(
                         [
-                            log_aggregation_pb2.LogChunk(
+                            data_records_aggregation_pb2.LogChunk(
                                 node_id="node_1",
                                 data=b"regular data\n",
                                 file_path=str(log_file),
@@ -581,13 +595,13 @@ class TestGracefulShutdown:
 
         # Write data
         chunks = [
-            log_aggregation_pb2.LogChunk(
+            data_records_aggregation_pb2.LogChunk(
                 node_id="node_1", data=b"Data before graceful shutdown\n", file_path=str(log_file)
             ),
         ]
 
         mock_context = MagicMock()
-        servicer.StreamLogs(iter(chunks), mock_context)
+        servicer.StreamDataRecords(_records(chunks), mock_context)
 
         # Graceful shutdown should flush
         servicer.graceful_shutdown()
@@ -600,7 +614,7 @@ class TestGracefulShutdown:
 
 
 def _chunk(file_path, data=b"payload\n", node_id="evil"):
-    return log_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
+    return data_records_aggregation_pb2.LogChunk(node_id=node_id, data=data, file_path=file_path)
 
 
 @pytest.fixture
@@ -625,7 +639,7 @@ class TestRootServerConfinement:
         servicer = LogAggregationServicer(flush_interval=1000.0, allowed_roots=[log_root])
         target = os.path.join(log_root, "sub", "train.log")
         try:
-            resp = servicer.StreamLogs(iter([_chunk(target, b"hello\n")]), MagicMock())
+            resp = servicer.StreamDataRecords(_records([_chunk(target, b"hello\n")]), MagicMock())
             assert resp.status == "OK"
         finally:
             servicer.shutdown()
@@ -644,7 +658,7 @@ class TestRootServerConfinement:
         context.abort.side_effect = grpc.RpcError("aborted")
         try:
             with pytest.raises(grpc.RpcError):
-                servicer.StreamLogs(iter([_chunk(target)]), MagicMock(wraps=context))
+                servicer.StreamDataRecords(_records([_chunk(target)]), MagicMock(wraps=context))
         finally:
             servicer.shutdown()
 
@@ -661,7 +675,7 @@ class TestRootServerConfinement:
         context.abort.side_effect = grpc.RpcError("aborted")
         try:
             with pytest.raises(grpc.RpcError):
-                servicer.StreamLogs(iter([_chunk(target)]), context)
+                servicer.StreamDataRecords(_records([_chunk(target)]), context)
             assert servicer.files == {}
         finally:
             servicer.shutdown()
@@ -679,7 +693,7 @@ class TestRootServerConfinement:
         context.abort.side_effect = grpc.RpcError("aborted")
         try:
             with pytest.raises(grpc.RpcError):
-                servicer.StreamLogs(iter([_chunk(link, b"ssh-rsa AAAA...\n")]), context)
+                servicer.StreamDataRecords(_records([_chunk(link, b"ssh-rsa AAAA...\n")]), context)
         finally:
             servicer.shutdown()
 
@@ -699,7 +713,9 @@ class TestRootServerConfinement:
         monkeypatch.setattr(servicer, "_resolve_target_path", counting)
         target = os.path.join(log_root, "train.log")
         try:
-            servicer.StreamLogs(iter([_chunk(target, b"a\n") for _ in range(50)]), MagicMock())
+            servicer.StreamDataRecords(
+                _records([_chunk(target, b"a\n") for _ in range(50)]), MagicMock()
+            )
         finally:
             servicer.shutdown()
         assert len(calls) == 1
@@ -738,3 +754,150 @@ class TestServeRequiresAllowedRoots:
         )
         assert proc.returncode != 0
         assert "--allowed-root" in proc.stderr
+
+
+def _end_report(cycle=3, node="node0"):
+    return nvrx_interface_pb2.NodeCycleEndReport(
+        job_id="job1",
+        cycle_number=cycle,
+        node_id=node,
+        end_reason=nvrx_interface_pb2.CycleEndReasonWorkerFailed,
+        detected_timestamp=1_700_000_000_000,
+    )
+
+
+class _Analyzer(nvrx_interface_pb2_grpc.CycleInfoServiceServicer):
+    """A CycleInfoService on localhost that records the end reports it receives."""
+
+    def __init__(self):
+        self.reports = []
+        self._server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+        nvrx_interface_pb2_grpc.add_CycleInfoServiceServicer_to_server(self, self._server)
+        self.address = f"127.0.0.1:{self._server.add_insecure_port('127.0.0.1:0')}"
+        self._server.start()
+
+    def PublishNodeCycleEndReport(self, request, context):
+        self.reports.append(request)
+        return nvrx_interface_pb2.PublishResponse()
+
+    def wait_for(self, count, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while len(self.reports) < count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.reports
+
+    def stop(self):
+        self._server.stop(grace=None)
+
+
+@pytest.fixture
+def analyzer():
+    analyzer = _Analyzer()
+    try:
+        yield analyzer
+    finally:
+        analyzer.stop()
+
+
+class TestEndReportForwarding:
+    """The root forwards the end reports of its streams to the CycleAnalyzer, if any."""
+
+    def test_records_are_handled_by_their_type(self, analyzer, tmp_path):
+        servicer = LogAggregationServicer(
+            allowed_roots=[str(tmp_path)], cycle_analyzer_address=analyzer.address
+        )
+        log_file = str(tmp_path / "train.log")
+        records = [
+            data_records_aggregation_pb2.DataRecord(
+                log_chunk=data_records_aggregation_pb2.LogChunk(
+                    node_id="n0", data=b"hello\n", file_path=log_file
+                )
+            ),
+            data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node="n0")),
+            data_records_aggregation_pb2.DataRecord(),  # empty: skipped
+            data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node="n1")),
+        ]
+
+        response = servicer.StreamDataRecords(iter(records), MagicMock())
+
+        assert (response.status, response.bytes_received) == ("OK", 6)
+        assert analyzer.wait_for(2) == [_end_report(node="n0"), _end_report(node="n1")]
+        servicer.shutdown()
+        with open(log_file, "rb") as f:
+            assert f.read() == b"hello\n"
+        assert servicer.end_report_forwarder.forwarded == 2
+
+    def test_without_an_analyzer_end_reports_are_dropped_with_one_warning(self, tmp_path, caplog):
+        servicer = LogAggregationServicer(allowed_roots=[str(tmp_path)])
+        records = [data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report())] * 3
+
+        with caplog.at_level(logging.WARNING, logger="LogAggregationServer"):
+            response = servicer.StreamDataRecords(iter(records), MagicMock())
+        servicer.shutdown()
+
+        assert response.status == "OK"
+        assert servicer.end_report_forwarder is None
+        assert len([r for r in caplog.records if "Dropping cycle end reports" in r.message]) == 1
+
+    def test_shutdown_forwards_the_queued_reports(self, analyzer, tmp_path):
+        servicer = LogAggregationServicer(
+            allowed_roots=[str(tmp_path)], cycle_analyzer_address=analyzer.address
+        )
+        records = [
+            data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report(node=f"n{i}"))
+            for i in range(20)
+        ]
+        servicer.StreamDataRecords(iter(records), MagicMock())
+
+        servicer.shutdown()
+
+        assert len(analyzer.reports) == 20  # no wait: shutdown returned after forwarding them
+
+    def test_failed_forward_is_logged_and_counted(self, tmp_path, caplog):
+        # Nothing listens on port 1.
+        servicer = LogAggregationServicer(
+            allowed_roots=[str(tmp_path)], cycle_analyzer_address="127.0.0.1:1"
+        )
+        record = data_records_aggregation_pb2.DataRecord(node_cycle_end_report=_end_report())
+
+        with caplog.at_level(logging.WARNING, logger="LogAggregationServer"):
+            response = servicer.StreamDataRecords(iter([record]), MagicMock())
+            servicer.shutdown()
+
+        assert response.status == "OK"  # the stream does not wait for the analyzer
+        forwarder = servicer.end_report_forwarder
+        assert (forwarder.forwarded, forwarder.failed) == (0, 1)
+        (warning,) = [r for r in caplog.records if "Failed to forward" in r.message]
+        assert "UNAVAILABLE" in warning.message
+
+    def test_a_full_queue_drops_the_report_with_a_warning(self, monkeypatch, caplog):
+        # A forwarding thread that never takes a report off the queue.
+        monkeypatch.setattr(grpc_log_server._EndReportForwarder, "_run", lambda self: None)
+        logger = logging.getLogger("test_end_report_forwarder")
+        forwarder = grpc_log_server._EndReportForwarder("127.0.0.1:1", logger, max_queue=1)
+
+        with caplog.at_level(logging.WARNING, logger=logger.name):
+            assert forwarder.put(_end_report(node="n0"))
+            assert not forwarder.put(_end_report(node="n1"))
+
+        assert "Dropping the end report of cycle 3 from n1" in caplog.text
+        forwarder.stop(timeout=0.1)
+
+    def test_cli_passes_the_analyzer_address(self, monkeypatch):
+        serve_mock = MagicMock()
+        monkeypatch.setattr(grpc_log_server, "serve", serve_mock)
+        argv = ["grpc_log_server", "--allowed-root", "/tmp", "--cycle-analyzer-address", "a:1"]
+        monkeypatch.setattr(sys, "argv", argv)
+
+        grpc_log_server.main()
+
+        assert serve_mock.call_args.kwargs["cycle_analyzer_address"] == "a:1"
+
+    def test_cli_without_the_analyzer_address(self, monkeypatch):
+        serve_mock = MagicMock()
+        monkeypatch.setattr(grpc_log_server, "serve", serve_mock)
+        monkeypatch.setattr(sys, "argv", ["grpc_log_server", "--allowed-root", "/tmp"])
+
+        grpc_log_server.main()
+
+        assert serve_mock.call_args.kwargs["cycle_analyzer_address"] is None

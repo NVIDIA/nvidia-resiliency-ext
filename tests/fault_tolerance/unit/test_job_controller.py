@@ -15,7 +15,6 @@ import pytest
 from nvidia_resiliency_ext.fault_tolerance import control_supervisor, job_controller, launcher
 from nvidia_resiliency_ext.fault_tolerance.child_process import spawn_child
 from nvidia_resiliency_ext.fault_tolerance.config import FaultToleranceConfig
-from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import CycleInfoRoundSnapshot
 from nvidia_resiliency_ext.shared_utils import telemetry
 
 
@@ -46,7 +45,7 @@ def _isolated_controller_runtime():
         yield real_setup
 
 
-def test_controller_owns_clients_and_reporter_without_service_processes(tmp_path):
+def test_controller_owns_clients_without_service_processes(tmp_path):
     args = _args(
         "--ft-per-cycle-applog-prefix",
         str(tmp_path / "train.log"),
@@ -55,24 +54,20 @@ def test_controller_owns_clients_and_reporter_without_service_processes(tmp_path
         "--ft-attribution-endpoint=localhost",
         "--ft-attribution-stop-action=no-restart",
     )
-    client, reporter = MagicMock(), MagicMock()
+    client = MagicMock()
     with (
         patch.object(job_controller, "_create_tcp_store", return_value=object()),
         patch.object(job_controller, "AttributionService", return_value=client) as client_class,
-        patch.object(job_controller, "CycleInfoReporter", return_value=reporter) as reporter_class,
         patch.object(job_controller, "_run_control_rendezvous_loop", return_value=0),
         patch("subprocess.Popen") as spawn,
     ):
         assert job_controller.run(args) == 0
     client_class.assert_called_once_with(endpoint="http://127.0.0.1:50050", enforce_stop=True)
-    reporter_class.assert_called_once_with(
-        str(tmp_path / "cycle-info"), cycle_log_prefix=str(tmp_path / "train.log")
-    )
     client.start_poller.assert_called_once_with(
         node_id=job_controller.socket.getfqdn(job_controller.socket.gethostname())
     )
     client.stop_poller.assert_called_once()
-    reporter.shutdown.assert_called_once()
+    # The cycle info files are written by the supervisor's CycleAnalyzer, not here.
     spawn.assert_not_called()
 
 
@@ -263,38 +258,31 @@ print(json.dumps({
     assert os.environ["OTEL_RESOURCE_ATTRIBUTES"] == carrier
 
 
-def test_partial_startup_stops_client_and_reporter(tmp_path):
+def test_partial_startup_stops_client(tmp_path):
     args = _args(
         "--ft-per-cycle-applog-prefix",
         str(tmp_path / "train.log"),
-        "--ft-cycle-info-dir",
-        str(tmp_path / "cycle-info"),
         "--ft-attribution-endpoint=localhost",
     )
-    client, reporter = MagicMock(), MagicMock()
+    client = MagicMock()
     client.start_poller.side_effect = RuntimeError("poller startup failed")
     with (
         patch.object(job_controller, "AttributionService", return_value=client),
-        patch.object(job_controller, "CycleInfoReporter", return_value=reporter),
         pytest.raises(RuntimeError, match="poller startup failed"),
     ):
         job_controller._start_controller_resources(
             args, FaultToleranceConfig.from_args(args), node_id="control.example"
         )
     client.stop_poller.assert_called_once()
-    reporter.shutdown.assert_called_once()
 
 
 @pytest.mark.parametrize("failure", [False, True])
 def test_controller_cleanup_holds_store_open_after_stopping_its_resources(failure):
     args = _args()
-    client, reporter = MagicMock(), MagicMock()
+    client = MagicMock()
     events = []
     client.stop_poller.side_effect = lambda: events.append("client-stopped")
-    reporter.shutdown.side_effect = lambda: events.append("reporter-stopped")
-    resources = job_controller.ControllerResources(
-        attribution_service=client, cycle_info_reporter=reporter
-    )
+    resources = job_controller.ControllerResources(attribution_service=client)
     with (
         patch.object(job_controller, "_create_tcp_store", return_value=object()),
         patch.object(job_controller, "_start_controller_resources", return_value=resources),
@@ -315,7 +303,7 @@ def test_controller_cleanup_holds_store_open_after_stopping_its_resources(failur
                 job_controller.run(args)
         else:
             assert job_controller.run(args) == 0
-    assert events == ["reporter-stopped", "client-stopped", "store-grace"]
+    assert events == ["client-stopped", "store-grace"]
 
 
 def test_store_read_grace_waits_out_the_remainder():
@@ -397,10 +385,7 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
     )
     ft_cfg = SimpleNamespace(segment=None)
     attribution_service = MagicMock()
-    services = job_controller.ControllerResources(
-        attribution_service=attribution_service,
-        cycle_info_reporter=MagicMock(),
-    )
+    services = job_controller.ControllerResources(attribution_service=attribution_service)
     stop_event = threading.Event()
     states = []
 
@@ -408,12 +393,9 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
         def __init__(self, *args, **kwargs):
             states.append(self)
             self._rounds = iter([0, 1])
-            self._cycle_info_reporter = None
+            self.closed_rounds = []
             self._attribution_service = None
             self._cycle_log_prefix = kwargs.get("cycle_log_prefix")
-            self._active_node_addrs = ["node-a", "node-b"]
-            self._standby_node_addrs = ["node-c"]
-            self._active_ranks = [0, 1]
             self.final_terminal_requested = False
 
         def close_current_round_as_host(self, *args, **kwargs):
@@ -421,15 +403,7 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
                 round_id = next(self._rounds)
             except StopIteration as exc:
                 raise job_controller.RendezvousClosedError("done") from exc
-
-            self._cycle_info_reporter.report_cycle_start(
-                CycleInfoRoundSnapshot(
-                    cycle_number=round_id,
-                    active_node_addrs=self._active_node_addrs,
-                    standby_node_addrs=self._standby_node_addrs,
-                    active_ranks=self._active_ranks,
-                )
-            )
+            self.closed_rounds.append(round_id)
             return round_id
 
         def get_shutdown_reason(self):
@@ -437,6 +411,9 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
 
         def _request_terminal_attribution_for_submitted_cycle(self):
             self.final_terminal_requested = True
+
+        def publish_cycle_end_as_host(self):
+            pass
 
     node_generator = MagicMock()
     node_generator.generate.return_value = object()
@@ -453,12 +430,7 @@ def test_control_rendezvous_loop_wires_attribution_to_barrier_state(tmp_path):
             stop_event=stop_event,
         )
 
-    reported_rounds = [
-        call.args[0].cycle_number
-        for call in services.cycle_info_reporter.report_cycle_start.call_args_list
-    ]
-    assert reported_rounds == [0, 1]
-    assert states[0]._cycle_info_reporter is services.cycle_info_reporter
+    assert states[0].closed_rounds == [0, 1]
     assert states[0]._attribution_service is attribution_service
     assert states[0]._cycle_log_prefix == str(tmp_path / "train.log")
     assert states[0].final_terminal_requested
@@ -510,25 +482,65 @@ def test_controller_rejects_independent_module_invocation():
     assert "Starting control TCPStore" not in result.stdout + result.stderr
 
 
-def test_external_cycle_reporter_uses_explicit_compute_job_identity(tmp_path, monkeypatch):
-    monkeypatch.setenv("SLURM_JOB_ID", "cpu-allocation")
-    monkeypatch.setenv("SLURM_RESTART_COUNT", "9")
-    args = launcher.parse_args(
-        [
-            "--ft-control-only",
-            "--rdzv-endpoint=localhost:29500",
-            "--ft-cycle-info-dir",
-            str(tmp_path / "cycles"),
-            "--ft-cycle-info-job-id=training-job",
-        ]
+@pytest.mark.parametrize("with_analyzer", [True, False], ids=["analyzer", "no_analyzer"])
+def test_control_rendezvous_loop_publishes_cycle_infos_to_the_analyzer(with_analyzer):
+    """The job-controller closes the rounds, so its barrier state publishes the cycle infos:
+    the starts, and at shutdown the end of the last cycle, before the channel is closed."""
+    args = SimpleNamespace(
+        nnodes="1",
+        rdzv_conf="",
+        rdzv_id="job-a",
+        rdzv_endpoint="127.0.0.1:29500",
+        local_addr=None,
+        ft_per_cycle_applog_prefix=None,
+        _cycle_analyzer_address="unix:/tmp/analyzer.sock" if with_analyzer else None,
     )
-    with patch.object(job_controller, "CycleInfoReporter") as reporter:
-        job_controller._start_controller_resources(
-            args, FaultToleranceConfig.from_args(args), node_id="control.example"
+    publishers_while_closing = []
+    publishers_at_end = []
+    channel = MagicMock()
+
+    class FakeState:
+        def __init__(self, *args, **kwargs):
+            self._cycle_info_publisher = None
+
+        def close_current_round_as_host(self, *args, **kwargs):
+            if publishers_while_closing:
+                raise job_controller.RendezvousClosedError("done")
+            publishers_while_closing.append(self._cycle_info_publisher)
+            return 0
+
+        def get_shutdown_reason(self):
+            return job_controller.RDZV_SHUTDOWN_REASON_GRACEFUL
+
+        def _request_terminal_attribution_for_submitted_cycle(self):
+            pass
+
+        def publish_cycle_end_as_host(self):
+            channel.close.assert_not_called()  # still open for the publish
+            publishers_at_end.append(self._cycle_info_publisher)
+
+    with (
+        patch.object(job_controller, "_RendezvousBarrierState", FakeState),
+        patch.object(job_controller, "_NodeDescGenerator", return_value=MagicMock()),
+        patch.object(job_controller.grpc, "insecure_channel", return_value=channel) as open_channel,
+    ):
+        job_controller._run_control_rendezvous_loop(
+            args,
+            SimpleNamespace(segment=None),
+            store=object(),
+            services=job_controller.ControllerResources(),
+            stop_event=threading.Event(),
         )
-    reporter.assert_called_once_with(
-        str(tmp_path / "cycles"),
-        cycle_log_prefix=None,
-        cycle_info_job_id="training-job",
-        attempt_index=0,
-    )
+
+    (publisher,) = publishers_while_closing
+    assert publishers_at_end == [publisher]
+    if with_analyzer:
+        open_channel.assert_called_once_with("unix:/tmp/analyzer.sock")
+        # Queued, and sent by a background thread through the gRPC publisher.
+        assert isinstance(publisher, job_controller.QueuedCycleInfoPublisher)
+        assert isinstance(publisher._publisher, job_controller.GrpcCycleInfoPublisher)
+        assert not publisher._thread.is_alive()  # stopped before the channel closed
+        channel.close.assert_called_once()
+    else:
+        open_channel.assert_not_called()
+        assert publisher is None
