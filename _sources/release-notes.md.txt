@@ -15,6 +15,27 @@ NVIDIA Resiliency Extension is a Python package for framework developers and use
   [deployment guide](fault_tolerance/deployment.rst) for ownership, shutdown,
   and accepted exit-handling differences.
 
+### Cycle records
+
+- Cycle records (`--ft-cycle-info-dir`) are now written by a single cycle analyzer
+  process on the control host. 
+- Cycle end reports: with `--ft-cycle-info-dir`, each launcher also reports how the
+  cycle ended on its node, and the record's new `end_report` field holds the job-wide summary:
+  the end reason, the nodes that first observed the end and when, and each
+  launcher's report with its failed or stopped workers. Requires gRPC log
+  aggregation. Known limitation: with leaf log servers (`--ft-log-aggregator-count`
+  greater than 1, the automatic default for large jobs), the last cycle's reports can
+  be missing, as a leaf stops reading the launchers' streams as soon as the job ends.
+  See [operations](fault_tolerance/operations.rst).
+- The gRPC log aggregation protocol changed, so it is not compatible with earlier
+  versions: `LogAggregationService` is now `DataRecordAggregationService`, and its
+  `StreamLogs` call is now `StreamDataRecords`, a stream of `DataRecord` messages
+  that carry the log chunks and the end reports. Older launchers, leaf servers and
+  root servers get `UNIMPLEMENTED` from newer ones, health checks included, so
+  upgrade all of them together. `log_aggregation.proto` is renamed
+  `data_records_aggregation.proto`: code that imports the generated
+  `log_aggregation_pb2*` modules must use `data_records_aggregation_pb2*`.
+
 ### Installation
 
 - **New `msc` extra.** `pip install "nvidia-resiliency-ext[msc]"` installs Multi-Storage

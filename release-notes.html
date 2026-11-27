@@ -50,6 +50,7 @@
 <li class="toctree-l1 current"><a class="current reference internal" href="#">Release Notes</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="#unreleased">Unreleased</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#injob-control-host-processes">InJob control-host processes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#cycle-records">Cycle records</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#installation">Installation</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#deprecations">Deprecations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#removals">Removals</a></li>
@@ -160,6 +161,29 @@ through the existing gRPC aggregation path. Update tools that read agent logs
 from the configured path to use the derived agent file. See the
 <a class="reference internal" href="fault_tolerance/deployment.html"><span class="std std-doc">deployment guide</span></a> for ownership, shutdown,
 and accepted exit-handling differences.</p></li>
+</ul>
+</section>
+<section id="cycle-records">
+<h3>Cycle records<a class="headerlink" href="#cycle-records" title="Link to this heading"></a></h3>
+<ul class="simple">
+<li><p>Cycle records (<code class="docutils literal notranslate"><span class="pre">--ft-cycle-info-dir</span></code>) are now written by a single cycle analyzer
+process on the control host.</p></li>
+<li><p>Cycle end reports: with <code class="docutils literal notranslate"><span class="pre">--ft-cycle-info-dir</span></code>, each launcher also reports how the
+cycle ended on its node, and the record’s new <code class="docutils literal notranslate"><span class="pre">end_report</span></code> field holds the job-wide summary:
+the end reason, the nodes that first observed the end and when, and each
+launcher’s report with its failed or stopped workers. Requires gRPC log
+aggregation. Known limitation: with leaf log servers (<code class="docutils literal notranslate"><span class="pre">--ft-log-aggregator-count</span></code>
+greater than 1, the automatic default for large jobs), the last cycle’s reports can
+be missing, as a leaf stops reading the launchers’ streams as soon as the job ends.
+See <a class="reference internal" href="fault_tolerance/operations.html"><span class="std std-doc">operations</span></a>.</p></li>
+<li><p>The gRPC log aggregation protocol changed, so it is not compatible with earlier
+versions: <code class="docutils literal notranslate"><span class="pre">LogAggregationService</span></code> is now <code class="docutils literal notranslate"><span class="pre">DataRecordAggregationService</span></code>, and its
+<code class="docutils literal notranslate"><span class="pre">StreamLogs</span></code> call is now <code class="docutils literal notranslate"><span class="pre">StreamDataRecords</span></code>, a stream of <code class="docutils literal notranslate"><span class="pre">DataRecord</span></code> messages
+that carry the log chunks and the end reports. Older launchers, leaf servers and
+root servers get <code class="docutils literal notranslate"><span class="pre">UNIMPLEMENTED</span></code> from newer ones, health checks included, so
+upgrade all of them together. <code class="docutils literal notranslate"><span class="pre">log_aggregation.proto</span></code> is renamed
+<code class="docutils literal notranslate"><span class="pre">data_records_aggregation.proto</span></code>: code that imports the generated
+<code class="docutils literal notranslate"><span class="pre">log_aggregation_pb2*</span></code> modules must use <code class="docutils literal notranslate"><span class="pre">data_records_aggregation_pb2*</span></code>.</p></li>
 </ul>
 </section>
 <section id="installation">

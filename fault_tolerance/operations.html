@@ -55,7 +55,11 @@
 <li class="toctree-l2"><a class="reference internal" href="configuration.html">Configuration and timeouts</a></li>
 <li class="toctree-l2"><a class="reference internal" href="deployment.html">Multinode deployment</a></li>
 <li class="toctree-l2 current"><a class="current reference internal" href="#">Operations and troubleshooting</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#cycle-records-and-checkpoint-progress">Cycle records and checkpoint progress</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#cycle-records-and-checkpoint-progress">Cycle records and checkpoint progress</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#cycle-end-reports">Cycle end reports</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#checkpoint-progress">Checkpoint progress</a></li>
+</ul>
+</li>
 <li class="toctree-l3"><a class="reference internal" href="#no-restart-distinguishing-a-terminal-decision-from-a-failure">No restart: distinguishing a terminal decision from a failure</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#gpu-memory-reclaim">GPU Memory Reclaim</a></li>
 <li class="toctree-l3"><a class="reference internal" href="#per-cycle-logging-and-grpc-log-aggregation">Per-cycle logging and gRPC log aggregation</a></li>
@@ -109,6 +113,69 @@ symlink. Workers receive <code class="docutils literal notranslate"><span class=
 or singleton generation in its own namespace so cycle numbers starting at zero
 do not overwrite an older attempt. Correlate cycle, hostname, worker rank, and
 PID rather than reading the latest cycle’s placement as an earlier map.</p>
+<p>Each cycle is recorded in a JSON file, <code class="docutils literal notranslate"><span class="pre">cycle_info.&lt;job_id&gt;.&lt;attempt&gt;.&lt;cycle&gt;</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">cycle_info.&lt;job_id&gt;.current</span></code> links to the latest one. Colocated control
+takes the job ID and attempt from the Slurm environment (<code class="docutils literal notranslate"><span class="pre">SLURM_ARRAY_JOB_ID</span></code> or
+<code class="docutils literal notranslate"><span class="pre">SLURM_JOB_ID</span></code>, and <code class="docutils literal notranslate"><span class="pre">SLURM_RESTART_COUNT</span></code>); external control uses
+<code class="docutils literal notranslate"><span class="pre">--ft-cycle-info-job-id</span></code> and attempt <code class="docutils literal notranslate"><span class="pre">0</span></code> (see <a class="reference internal" href="deployment.html"><span class="doc">Multinode deployment</span></a>).</p>
+<p>The files have one writer, the cycle analyzer, a process on the control host.
+The job-controller sends it each cycle’s start and end: the file is written when
+the cycle starts and rewritten with <code class="docutils literal notranslate"><span class="pre">cycle_end_time</span></code> when it ends. A record holds
+the job ID, attempt, cycle number, start and end times, the cycle’s log file, the
+active and standby nodes, the active launchers’ group ranks, and <code class="docutils literal notranslate"><span class="pre">end_report</span></code>.
+<code class="docutils literal notranslate"><span class="pre">cycle_end_time</span></code> stays empty when the control host is killed before the cycle
+ends. <code class="docutils literal notranslate"><span class="pre">--standalone</span></code> runs no cycle analyzer and writes no records.</p>
+<section id="cycle-end-reports">
+<h3>Cycle end reports<a class="headerlink" href="#cycle-end-reports" title="Link to this heading"></a></h3>
+<p>With <code class="docutils literal notranslate"><span class="pre">--ft-cycle-info-dir</span></code>, each launcher also reports how the cycle ended on its
+node, and the cycle analyzer writes the job-wide summary to the record’s
+<code class="docutils literal notranslate"><span class="pre">end_report</span></code>:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">end_reason</span></code>: <code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerCompleted</span></code> when every launcher completed,
+otherwise the end reason of the first launcher that observed the end.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">first_detected_timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">first_detected_nodes</span></code>: when, and on which
+nodes (Slurm range format), the end was first observed.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">launcher_end_reports</span></code>: the 256 earliest launchers’ reports, sorted by detection
+time, each with <code class="docutils literal notranslate"><span class="pre">node_id</span></code> (the host name), <code class="docutils literal notranslate"><span class="pre">end_reason</span></code>, <code class="docutils literal notranslate"><span class="pre">detected_timestamp</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">exit_details</span></code> (the failed or stopped workers, with rank monitor timeouts and
+sections). Launchers that only followed a peer’s restart are omitted.</p></li>
+</ul>
+<p>The end reasons are <code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerCompleted</span></code>, <code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerFailed</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerTerminatedDueToPeer</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerTerminatedByRankMonitor</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerTerminatedByAttribution</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerTerminatedDueToNoProgress</span></code>.</p>
+<p>Launchers send their end reports on their gRPC data record streams, so end reports also
+need gRPC log aggregation (<code class="docutils literal notranslate"><span class="pre">--ft-enable-log-server</span></code>, on by default with
+<code class="docutils literal notranslate"><span class="pre">--ft-nvrx-logfile</span></code>); without it none are sent. The summary is best effort: it
+is written at the first of: every active launcher has reported, 3 minutes after the
+next cycle starts, 1 minute without a new report, or the control host stopping.
+Later reports are dropped with a warning. It stays <code class="docutils literal notranslate"><span class="pre">{}</span></code> when no report arrived.
+Detection times are comparable across nodes only up to their clock skew.</p>
+<p>A launcher sends its end report ahead of its own queued logs, but on the same gRPC
+log stream, so the report still waits behind the logs already sent: in transit, and
+queued at the leaf and root log servers. Heavy worker logging therefore delays it.
+While the log servers receive less than the workers write, the delay grows with
+each cycle and can exceed the 3 minutes. The affected cycles are then written with
+some or all of their reports missing, and reports still queued when the job ends
+are lost. A cycle’s <code class="docutils literal notranslate"><span class="pre">end_report</span></code> can also appear only minutes after the next
+cycle started.</p>
+<p>The last cycle’s reports are the most exposed, because the log servers stop
+shortly after the job ends: the control host keeps the rendezvous store for 3
+seconds, then stops its node-agent and the log servers. With leaf log servers
+(<code class="docutils literal notranslate"><span class="pre">--ft-log-aggregator-count</span></code> greater than 1, which its automatic default selects
+for large jobs), a leaf stops reading the launchers’ streams as soon as it is told
+to stop. What a launcher had already sent and its leaf had not read yet is
+dropped: its last end report and the end of its logs. The leaf still forwards what
+it had queued to the root, for up to 5 seconds more than
+<code class="docutils literal notranslate"><span class="pre">--ft-log-server-graceful-shutdown-timeout</span></code>. So the last cycle’s <code class="docutils literal notranslate"><span class="pre">end_report</span></code>
+lacks the reports of the launchers whose logs were more than those few seconds
+behind, and stays <code class="docutils literal notranslate"><span class="pre">{}</span></code> when all of them were. Without leaf servers, the root
+keeps reading the open streams until the launchers close them or
+<code class="docutils literal notranslate"><span class="pre">--ft-log-server-graceful-shutdown-timeout</span></code> passes.</p>
+</section>
+<section id="checkpoint-progress">
+<h3>Checkpoint progress<a class="headerlink" href="#checkpoint-progress" title="Link to this heading"></a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">--ft-checkpoint-iteration-file</span></code> should point at the workload’s <strong>completed</strong>
 checkpoint marker, for Megatron <code class="docutils literal notranslate"><span class="pre">latest_checkpointed_iteration.txt</span></code>. It does
 not measure live optimizer iterations or async save requests. No new completed
@@ -126,6 +193,7 @@ the count or baseline. <code class="docutils literal notranslate"><span class="p
 <p>For recovery qualification, record detection, cleanup, rendezvous, initialization,
 checkpoint restoration, and first committed optimizer-step timestamps. Process
 startup alone is not recovered training. No fixed restart latency is guaranteed.</p>
+</section>
 </section>
 <section id="no-restart-distinguishing-a-terminal-decision-from-a-failure">
 <span id="ft-no-restart"></span><h2>No restart: distinguishing a terminal decision from a failure<a class="headerlink" href="#no-restart-distinguishing-a-terminal-decision-from-a-failure" title="Link to this heading"></a></h2>
@@ -156,7 +224,12 @@ successful completion with <code class="docutils literal notranslate"><span clas
 example policy is separate from this control-host refactor.</p>
 <p>The specific cause is recorded in the rendezvous store shutdown key as <code class="docutils literal notranslate"><span class="pre">attribution_stop</span></code>
 or <code class="docutils literal notranslate"><span class="pre">no_progress</span></code>, and is named in the launcher logs, so the two remain distinguishable
-for diagnosis without complicating the scheduler contract.</p>
+for diagnosis without complicating the scheduler contract. With cycle end reports
+enabled, the last cycle’s record also names it. After an attribution stop, every
+launcher reports <code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerTerminatedByAttribution</span></code>, including when the
+job-controller latched the verdict. After a no-progress stop, the launchers that
+found no progress report <code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerTerminatedDueToNoProgress</span></code> and the
+others <code class="docutils literal notranslate"><span class="pre">CycleEndReasonWorkerTerminatedDueToPeer</span></code>.</p>
 <p>Running out of restarts is deliberately <em>not</em> one of these cases. Exhausting
 <code class="docutils literal notranslate"><span class="pre">--max-restarts</span></code> means this launcher used up its retry budget, not that the job is
 unrecoverable, so it still exits <code class="docutils literal notranslate"><span class="pre">1</span></code> and leaves requeueing to your scheduler policy.

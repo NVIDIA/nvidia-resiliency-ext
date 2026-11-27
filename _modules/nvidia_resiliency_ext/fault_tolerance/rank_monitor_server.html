@@ -105,7 +105,7 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">tempfile</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">traceback</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Mapping</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Tuple</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.multiprocessing</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mp</span>
@@ -120,15 +120,19 @@
     <span class="n">ErrorMsg</span><span class="p">,</span>
     <span class="n">HeartbeatMsg</span><span class="p">,</span>
     <span class="n">InitMsg</span><span class="p">,</span>
+    <span class="n">LauncherChannelMsg</span><span class="p">,</span>
     <span class="n">OkMsg</span><span class="p">,</span>
+    <span class="n">RankTimeout</span><span class="p">,</span>
     <span class="n">SectionAction</span><span class="p">,</span>
     <span class="n">SectionMsg</span><span class="p">,</span>
+    <span class="n">TimeoutKind</span><span class="p">,</span>
+    <span class="n">TimeoutStopMsg</span><span class="p">,</span>
     <span class="n">UpdateConfigMsg</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.launcher_error_reporting</span><span class="w"> </span><span class="kn">import</span> <span class="n">launcher_error_reporter</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.rank_monitor_state_machine</span><span class="w"> </span><span class="kn">import</span> <span class="n">RankMonitorStateMachine</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">.timeout_dump</span><span class="w"> </span><span class="kn">import</span> <span class="n">TimeoutDumpManager</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">,</span> <span class="n">write_obj_to_ipc_stream</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">encode_ipc_frame</span><span class="p">,</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">,</span> <span class="n">write_obj_to_ipc_stream</span>
 
 
 <div class="viewcode-block" id="RankMonitorLogger">
@@ -268,7 +272,9 @@
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">tempfile</span><span class="o">.</span><span class="n">gettempdir</span><span class="p">()</span><span class="si">}</span><span class="s2">/_ft_launcher</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">_to_rmon.socket"</span>
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">launcher_server</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Keep connection to launcher for bidirectional IPC</span>
+        <span class="c1"># The connection the launcher keeps open for the monitor's messages (LauncherChannelMsg);</span>
+        <span class="c1"># its other connections are short-lived requests.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_launcher_channel</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">asyncio</span><span class="o">.</span><span class="n">StreamWriter</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="c1"># Track periodic tasks for cleanup on shutdown</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_tasks</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_initial_iteration</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># Track starting iteration of current cycle (for warmup)</span>
@@ -277,6 +283,9 @@
         <span class="c1"># workload step reporting does not include warmup iterations.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_step_section_seen_this_cycle</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">current_cycle</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Track current cycle number for logging</span>
+        <span class="c1"># (cycle, timeout) of the latest worker stopped on a timeout; the launcher is sent each</span>
+        <span class="c1"># one once (TimeoutStopMsg).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_timeout_stop</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">RankTimeout</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">timeout_dump</span> <span class="o">=</span> <span class="p">(</span>
             <span class="n">TimeoutDumpManager</span><span class="p">(</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump</span><span class="p">,</span> <span class="n">logger</span><span class="p">)</span> <span class="k">if</span> <span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump</span><span class="o">.</span><span class="n">enabled</span> <span class="k">else</span> <span class="kc">None</span>
         <span class="p">)</span>
@@ -304,13 +313,25 @@
         <span class="c1"># without affecting core functionality.</span>
         <span class="k">return</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rank_process</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rank_process</span><span class="p">,</span> <span class="n">timeout_stop</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
         <span class="c1"># First sends SIGCONT to wake up the process, then "rank_termination_signal" to terminate it</span>
         <span class="n">sig</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">rank_termination_signal</span>
         <span class="k">try</span><span class="p">:</span>
-            <span class="c1"># Process.send_signal checks PID reuse against its saved creation time.</span>
-            <span class="n">rank_process</span><span class="o">.</span><span class="n">send_signal</span><span class="p">(</span><span class="n">signal</span><span class="o">.</span><span class="n">SIGCONT</span><span class="p">)</span>
-            <span class="n">rank_process</span><span class="o">.</span><span class="n">send_signal</span><span class="p">(</span><span class="n">sig</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">timeout_stop</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                    <span class="c1"># Sent before the termination signal, so it is in the launcher's socket</span>
+                    <span class="c1"># buffer by the time the worker exits from it. The message does not prove</span>
+                    <span class="c1"># that the signal ended the worker: in the meantime the worker may have</span>
+                    <span class="c1"># exited on its own or been killed by something else, or the signal below</span>
+                    <span class="c1"># may fail.</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_notify_timeout_stop</span><span class="p">(</span><span class="n">timeout_stop</span><span class="p">,</span> <span class="n">rank_process</span><span class="o">.</span><span class="n">pid</span><span class="p">)</span>
+            <span class="k">except</span> <span class="p">(</span><span class="ne">OSError</span><span class="p">,</span> <span class="ne">RuntimeError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Failed to notify the launcher of the timeout stop: </span><span class="si">{</span><span class="n">e</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+            <span class="k">finally</span><span class="p">:</span>
+                <span class="c1"># The worker is stopped whatever happened to the notification.</span>
+                <span class="c1"># Process.send_signal checks PID reuse against its saved creation time.</span>
+                <span class="n">rank_process</span><span class="o">.</span><span class="n">send_signal</span><span class="p">(</span><span class="n">signal</span><span class="o">.</span><span class="n">SIGCONT</span><span class="p">)</span>
+                <span class="n">rank_process</span><span class="o">.</span><span class="n">send_signal</span><span class="p">(</span><span class="n">sig</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                 <span class="sa">f</span><span class="s2">"Rank monitor sent SIGCONT then </span><span class="si">{</span><span class="n">sig</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> to the rank (PID=</span><span class="si">{</span><span class="n">rank_process</span><span class="o">.</span><span class="n">pid</span><span class="si">}</span><span class="s2">)"</span>
             <span class="p">)</span>
@@ -319,16 +340,21 @@
                 <span class="sa">f</span><span class="s2">"Rank monitor could not send </span><span class="si">{</span><span class="n">sig</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> to the rank (PID=</span><span class="si">{</span><span class="n">rank_process</span><span class="o">.</span><span class="n">pid</span><span class="si">}</span><span class="s2">). Exception=</span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">"</span>
             <span class="p">)</span>
             <span class="c1"># do nothing, most probably rank process is terminated anyway</span>
+            <span class="k">return</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank_if_alive</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rank_process</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">"""Terminate `rank_process`, or by default the currently connected rank."""</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">_shutdown_rank_if_alive</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rank_process</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">timeout_stop</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">"""Terminate `rank_process`, or by default the currently connected rank.</span>
+
+<span class="sd">        `timeout_stop` is the draft from `_draft_timeout_stop` when a timeout triggered the</span>
+<span class="sd">        shutdown; it is recorded only if the worker is still alive and gets signalled.</span>
+<span class="sd">        """</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="k">if</span> <span class="n">rank_process</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                 <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
                     <span class="k">return</span>
                 <span class="n">rank_process</span> <span class="o">=</span> <span class="n">Process</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span><span class="o">.</span><span class="n">pid</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">rank_process</span><span class="o">.</span><span class="n">is_running</span><span class="p">()</span> <span class="ow">and</span> <span class="n">rank_process</span><span class="o">.</span><span class="n">status</span><span class="p">()</span> <span class="o">!=</span> <span class="n">STATUS_ZOMBIE</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank</span><span class="p">(</span><span class="n">rank_process</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank</span><span class="p">(</span><span class="n">rank_process</span><span class="p">,</span> <span class="n">timeout_stop</span><span class="p">)</span>
             <span class="k">else</span><span class="p">:</span>
                 <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
                     <span class="sa">f</span><span class="s2">"_shutdown_rank_if_alive: rank process </span><span class="si">{</span><span class="n">rank_process</span><span class="o">.</span><span class="n">pid</span><span class="si">}</span><span class="s2"> is dead."</span>
@@ -344,12 +370,15 @@
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_unhealthy_nic</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
 
-    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_timeout</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timed_out_sections</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">"""Terminate the timed-out rank, first capturing it if a selected section expired."""</span>
+    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_timeout</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timed_out_sections</span><span class="p">,</span> <span class="n">timeout_stop</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">"""Terminate the timed-out rank, first capturing it if a selected section expired.</span>
+
+<span class="sd">        `timeout_stop` is passed on to every shutdown attempt (see `_shutdown_rank_if_alive`).</span>
+<span class="sd">        """</span>
         <span class="n">rank_info</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">rank_info</span>
         <span class="n">reasons</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeout_dump</span><span class="o">.</span><span class="n">reasons</span><span class="p">(</span><span class="n">timed_out_sections</span><span class="p">)</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeout_dump</span> <span class="k">else</span> <span class="nb">set</span><span class="p">()</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="n">reasons</span> <span class="ow">or</span> <span class="n">rank_info</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">(</span><span class="n">timeout_stop</span><span class="o">=</span><span class="n">timeout_stop</span><span class="p">)</span>
             <span class="k">return</span>
         <span class="n">cycle</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">current_cycle</span>
         <span class="k">try</span><span class="p">:</span>
@@ -361,11 +390,14 @@
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Could not retain timeout worker identity: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
             <span class="c1"># Preserve recovery without yielding or attempting diagnostics.</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">(</span><span class="n">timeout_stop</span><span class="o">=</span><span class="n">timeout_stop</span><span class="p">)</span>
             <span class="k">return</span>
 
         <span class="n">timer</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_running_loop</span><span class="p">()</span><span class="o">.</span><span class="n">call_later</span><span class="p">(</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump</span><span class="o">.</span><span class="n">capture_timeout</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">,</span> <span class="n">rank_process</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">timeout_dump</span><span class="o">.</span><span class="n">capture_timeout</span><span class="p">,</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">,</span>
+            <span class="n">rank_process</span><span class="p">,</span>
+            <span class="n">timeout_stop</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">captures</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="n">cancelled</span> <span class="o">=</span> <span class="kc">False</span>
@@ -380,7 +412,7 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"Timeout capture failed: </span><span class="si">%s</span><span class="s2">"</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
         <span class="k">finally</span><span class="p">:</span>
             <span class="n">timer</span><span class="o">.</span><span class="n">cancel</span><span class="p">()</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">(</span><span class="n">rank_process</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_shutdown_rank_if_alive</span><span class="p">(</span><span class="n">rank_process</span><span class="p">,</span> <span class="n">timeout_stop</span><span class="p">)</span>
         <span class="c1"># Local filesystem writes happen after worker termination was requested,</span>
         <span class="c1"># so they cannot extend the capture grace period.</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">timeout_dump</span><span class="o">.</span><span class="n">stage</span><span class="p">(</span><span class="n">captures</span><span class="p">,</span> <span class="n">rank_info</span><span class="p">,</span> <span class="n">cycle</span><span class="p">,</span> <span class="n">reasons</span><span class="p">)</span>
@@ -536,13 +568,13 @@
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_handle_launcher_ipc_connection</span><span class="p">(</span>
         <span class="bp">self</span><span class="p">,</span> <span class="n">reader</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">StreamReader</span><span class="p">,</span> <span class="n">writer</span><span class="p">:</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">StreamWriter</span>
     <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">        </span><span class="sd">"""Handle IPC connection from the launcher. Keeps connection open for bidirectional communication."""</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="o">=</span> <span class="n">writer</span>
-
+<span class="w">        </span><span class="sd">"""Handle an IPC connection from the launcher, until the launcher closes it."""</span>
         <span class="k">try</span><span class="p">:</span>
             <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
                 <span class="n">msg</span> <span class="o">=</span> <span class="k">await</span> <span class="n">read_obj_from_ipc_stream</span><span class="p">(</span><span class="n">reader</span><span class="p">)</span>
-                <span class="k">if</span> <span class="n">msg</span> <span class="o">==</span> <span class="s2">"close_worker_ipc_connection"</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">LauncherChannelMsg</span><span class="p">):</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_launcher_channel</span> <span class="o">=</span> <span class="n">writer</span>
+                <span class="k">elif</span> <span class="n">msg</span> <span class="o">==</span> <span class="s2">"close_worker_ipc_connection"</span><span class="p">:</span>
                     <span class="c1"># Normal shutdown request - close worker connection</span>
                     <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">close_current_connection</span><span class="p">()</span>
                 <span class="k">elif</span> <span class="n">msg</span> <span class="o">==</span> <span class="s2">"shutdown"</span><span class="p">:</span>
@@ -559,7 +591,8 @@
         <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Error handling launcher IPC connection: </span><span class="si">{</span><span class="n">e</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
         <span class="k">finally</span><span class="p">:</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">launcher_writer</span> <span class="o">=</span> <span class="kc">None</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_launcher_channel</span> <span class="ow">is</span> <span class="n">writer</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_launcher_channel</span> <span class="o">=</span> <span class="kc">None</span>
             <span class="n">writer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
             <span class="k">await</span> <span class="n">writer</span><span class="o">.</span><span class="n">wait_closed</span><span class="p">()</span>
 
@@ -685,6 +718,49 @@
             <span class="p">)</span>
         <span class="k">return</span> <span class="n">is_elapsed</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">_draft_timeout_stop</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> <span class="n">expired_sections</span><span class="p">,</span> <span class="n">out_of_section_timed_out</span>
+    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">RankTimeout</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">"""Describe the timeout just detected in the current cycle, as (cycle, timeout).</span>
+
+<span class="sd">        Only a draft: it is recorded once the monitor signals the worker, so a worker</span>
+<span class="sd">        that exits on its own first is not reported as stopped by the monitor.</span>
+<span class="sd">        """</span>
+        <span class="k">if</span> <span class="n">expired_sections</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">RankTimeout</span><span class="p">(</span><span class="n">TimeoutKind</span><span class="o">.</span><span class="n">SECTION</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">expired_sections</span><span class="p">)))</span>
+        <span class="k">elif</span> <span class="n">out_of_section_timed_out</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">RankTimeout</span><span class="p">(</span><span class="n">TimeoutKind</span><span class="o">.</span><span class="n">OUT_OF_SECTION</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">RankTimeout</span><span class="p">(</span><span class="n">TimeoutKind</span><span class="o">.</span><span class="n">HEARTBEAT</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">current_cycle</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_notify_timeout_stop</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout_stop</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">RankTimeout</span><span class="p">],</span> <span class="n">pid</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Record the timeout stop of worker `pid` and send it on the launcher channel.</span>
+
+<span class="sd">        Only the first timeout that stops the worker in its cycle is recorded and sent: the</span>
+<span class="sd">        shutdown paths of one timeout share its draft. The message is written with a single</span>
+<span class="sd">        transport write and no await, so `_shutdown_rank` stays synchronous. Nothing confirms</span>
+<span class="sd">        that the launcher read it before the worker exits; see the TODO in the launcher's</span>
+<span class="sd">        `_collect_rank_monitor_timeouts`.</span>
+<span class="sd">        """</span>
+        <span class="n">cycle</span><span class="p">,</span> <span class="n">timeout</span> <span class="o">=</span> <span class="n">timeout_stop</span>
+        <span class="c1"># Cycles only grow: already recorded for this cycle, or a late shutdown of an earlier</span>
+        <span class="c1"># cycle, which must not replace a newer record.</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_timeout_stop</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_timeout_stop</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">cycle</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_timeout_stop</span> <span class="o">=</span> <span class="n">timeout_stop</span>
+        <span class="n">channel</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_launcher_channel</span>
+        <span class="k">if</span> <span class="n">channel</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">channel</span><span class="o">.</span><span class="n">is_closing</span><span class="p">():</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">"No launcher channel: the launcher is not told of the timeout stop"</span><span class="p">)</span>
+            <span class="k">return</span>
+        <span class="n">channel</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">encode_ipc_frame</span><span class="p">(</span><span class="n">TimeoutStopMsg</span><span class="p">(</span><span class="n">cycle</span><span class="p">,</span> <span class="n">pid</span><span class="p">,</span> <span class="n">timeout</span><span class="p">)))</span>
+        <span class="k">if</span> <span class="n">channel</span><span class="o">.</span><span class="n">transport</span><span class="o">.</span><span class="n">get_write_buffer_size</span><span class="p">()</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="c1"># The launcher has not read for long enough to fill its socket buffer.</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="s2">"The timeout stop notification is still buffered: the launcher may read it "</span>
+                <span class="s2">"after the worker exits"</span>
+            <span class="p">)</span>
+
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_periodic_rank_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
             <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">timeout_dump</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
@@ -695,7 +771,12 @@
                 <span class="n">expired_sections</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_expired_sections</span><span class="p">(</span><span class="n">curr_time</span><span class="p">)</span>
                 <span class="n">out_of_section_timed_out</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_is_out_of_section_timeout_elapsed</span><span class="p">(</span><span class="n">curr_time</span><span class="p">)</span>
                 <span class="k">if</span> <span class="n">hb_timed_out</span> <span class="ow">or</span> <span class="n">expired_sections</span> <span class="ow">or</span> <span class="n">out_of_section_timed_out</span><span class="p">:</span>
-                    <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_handle_timeout</span><span class="p">(</span><span class="n">expired_sections</span><span class="p">)</span>
+                    <span class="n">timeout_stop</span> <span class="o">=</span> <span class="kc">None</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">is_cycle_info_enabled</span><span class="p">:</span>
+                        <span class="n">timeout_stop</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_draft_timeout_stop</span><span class="p">(</span>
+                            <span class="n">expired_sections</span><span class="p">,</span> <span class="n">out_of_section_timed_out</span>
+                        <span class="p">)</span>
+                    <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_handle_timeout</span><span class="p">(</span><span class="n">expired_sections</span><span class="p">,</span> <span class="n">timeout_stop</span><span class="p">)</span>
             <span class="k">await</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cfg</span><span class="o">.</span><span class="n">workload_check_interval</span><span class="p">)</span>
 
     <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">_periodic_restart_check</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>

@@ -190,7 +190,11 @@ launcher-managed attribution service postprocessing.</p></li>
 <li><p><cite>cycle_info_dir</cite> [str|None] Full path to the NVRx cycle info directory (e.g.
 &lt;base&gt;/nvrx/). If set, the rendezvous host writes cycle info JSON files and
 the cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path
-to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
+to the current cycle file via NVRX_CURRENT_CYCLE_INFO. If set, each launcher also
+records how each cycle ended on it (its end report: the end reason and the local
+workers that failed or were stopped by their rank monitor, with the timeout); the
+reports are gathered only when the launchers forward logs to the gRPC log server
+(–ft-enable-log-server and –ft-per-cycle-applog-prefix).
 Default: None (disabled).</p></li>
 <li><p><cite>segment_health_check_dir</cite> [str|None] Shared directory containing per-task
 segment health decision artifacts. Allocation-unit process 0 checks its artifact
@@ -276,6 +280,13 @@ All timeouts can be deduced and set during runtime.</p>
 <dd class="field-even"><p><a class="reference external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError" title="(in Python v3.15)"><strong>ValueError</strong></a> – If there are unrecognized arguments and ignore_not_recognized is False.</p>
 </dd>
 </dl>
+</dd></dl>
+
+<dl class="py property">
+<dt class="sig sig-object py" id="nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.is_cycle_info_enabled">
+<span class="property"><span class="k"><span class="pre">property</span></span><span class="w"> </span></span><span class="sig-name descname"><span class="pre">is_cycle_info_enabled</span></span><span class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><span class="pre">bool</span></a></span><a class="headerlink" href="#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.is_cycle_info_enabled" title="Link to this definition"></a></dt>
+<dd><p>Check if cycle info is written (cycle_info_dir set); the launchers then also
+record their cycle end reports.</p>
 </dd></dl>
 
 <dl class="py property">

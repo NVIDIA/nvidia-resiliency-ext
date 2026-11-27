@@ -10,6 +10,76 @@ or singleton generation in its own namespace so cycle numbers starting at zero
 do not overwrite an older attempt. Correlate cycle, hostname, worker rank, and
 PID rather than reading the latest cycle's placement as an earlier map.
 
+Each cycle is recorded in a JSON file, ``cycle_info.<job_id>.<attempt>.<cycle>``,
+and ``cycle_info.<job_id>.current`` links to the latest one. Colocated control
+takes the job ID and attempt from the Slurm environment (``SLURM_ARRAY_JOB_ID`` or
+``SLURM_JOB_ID``, and ``SLURM_RESTART_COUNT``); external control uses
+``--ft-cycle-info-job-id`` and attempt ``0`` (see :doc:`deployment`).
+
+The files have one writer, the cycle analyzer, a process on the control host.
+The job-controller sends it each cycle's start and end: the file is written when
+the cycle starts and rewritten with ``cycle_end_time`` when it ends. A record holds
+the job ID, attempt, cycle number, start and end times, the cycle's log file, the
+active and standby nodes, the active launchers' group ranks, and ``end_report``.
+``cycle_end_time`` stays empty when the control host is killed before the cycle
+ends. ``--standalone`` runs no cycle analyzer and writes no records.
+
+Cycle end reports
+^^^^^^^^^^^^^^^^^
+
+With ``--ft-cycle-info-dir``, each launcher also reports how the cycle ended on its
+node, and the cycle analyzer writes the job-wide summary to the record's
+``end_report``:
+
+* ``end_reason``: ``CycleEndReasonWorkerCompleted`` when every launcher completed,
+  otherwise the end reason of the first launcher that observed the end.
+* ``first_detected_timestamp`` and ``first_detected_nodes``: when, and on which
+  nodes (Slurm range format), the end was first observed.
+* ``launcher_end_reports``: the 256 earliest launchers' reports, sorted by detection
+  time, each with ``node_id`` (the host name), ``end_reason``, ``detected_timestamp``,
+  and ``exit_details`` (the failed or stopped workers, with rank monitor timeouts and
+  sections). Launchers that only followed a peer's restart are omitted.
+
+The end reasons are ``CycleEndReasonWorkerCompleted``, ``CycleEndReasonWorkerFailed``,
+``CycleEndReasonWorkerTerminatedDueToPeer``,
+``CycleEndReasonWorkerTerminatedByRankMonitor``,
+``CycleEndReasonWorkerTerminatedByAttribution``, and
+``CycleEndReasonWorkerTerminatedDueToNoProgress``.
+
+Launchers send their end reports on their gRPC data record streams, so end reports also
+need gRPC log aggregation (``--ft-enable-log-server``, on by default with
+``--ft-nvrx-logfile``); without it none are sent. The summary is best effort: it
+is written at the first of: every active launcher has reported, 3 minutes after the
+next cycle starts, 1 minute without a new report, or the control host stopping.
+Later reports are dropped with a warning. It stays ``{}`` when no report arrived.
+Detection times are comparable across nodes only up to their clock skew.
+
+A launcher sends its end report ahead of its own queued logs, but on the same gRPC
+log stream, so the report still waits behind the logs already sent: in transit, and
+queued at the leaf and root log servers. Heavy worker logging therefore delays it.
+While the log servers receive less than the workers write, the delay grows with
+each cycle and can exceed the 3 minutes. The affected cycles are then written with
+some or all of their reports missing, and reports still queued when the job ends
+are lost. A cycle's ``end_report`` can also appear only minutes after the next
+cycle started.
+
+The last cycle's reports are the most exposed, because the log servers stop
+shortly after the job ends: the control host keeps the rendezvous store for 3
+seconds, then stops its node-agent and the log servers. With leaf log servers
+(``--ft-log-aggregator-count`` greater than 1, which its automatic default selects
+for large jobs), a leaf stops reading the launchers' streams as soon as it is told
+to stop. What a launcher had already sent and its leaf had not read yet is
+dropped: its last end report and the end of its logs. The leaf still forwards what
+it had queued to the root, for up to 5 seconds more than
+``--ft-log-server-graceful-shutdown-timeout``. So the last cycle's ``end_report``
+lacks the reports of the launchers whose logs were more than those few seconds
+behind, and stays ``{}`` when all of them were. Without leaf servers, the root
+keeps reading the open streams until the launchers close them or
+``--ft-log-server-graceful-shutdown-timeout`` passes.
+
+Checkpoint progress
+^^^^^^^^^^^^^^^^^^^
+
 ``--ft-checkpoint-iteration-file`` should point at the workload's **completed**
 checkpoint marker, for Megatron ``latest_checkpointed_iteration.txt``. It does
 not measure live optimizer iterations or async save requests. No new completed
@@ -64,7 +134,12 @@ example policy is separate from this control-host refactor.
 
 The specific cause is recorded in the rendezvous store shutdown key as ``attribution_stop``
 or ``no_progress``, and is named in the launcher logs, so the two remain distinguishable
-for diagnosis without complicating the scheduler contract.
+for diagnosis without complicating the scheduler contract. With cycle end reports
+enabled, the last cycle's record also names it. After an attribution stop, every
+launcher reports ``CycleEndReasonWorkerTerminatedByAttribution``, including when the
+job-controller latched the verdict. After a no-progress stop, the launchers that
+found no progress report ``CycleEndReasonWorkerTerminatedDueToNoProgress`` and the
+others ``CycleEndReasonWorkerTerminatedDueToPeer``.
 
 Running out of restarts is deliberately *not* one of these cases. Exhausting
 ``--max-restarts`` means this launcher used up its retry budget, not that the job is

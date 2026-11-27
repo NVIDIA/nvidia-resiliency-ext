@@ -190,7 +190,11 @@
 <span class="sd">    * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.</span>
 <span class="sd">      &lt;base&gt;/nvrx/). If set, the rendezvous host writes cycle info JSON files and</span>
 <span class="sd">      the cycle_info.&lt;job_id&gt;.current symlink there. The workload receives the path</span>
-<span class="sd">      to the current cycle file via NVRX_CURRENT_CYCLE_INFO.</span>
+<span class="sd">      to the current cycle file via NVRX_CURRENT_CYCLE_INFO. If set, each launcher also</span>
+<span class="sd">      records how each cycle ended on it (its end report: the end reason and the local</span>
+<span class="sd">      workers that failed or were stopped by their rank monitor, with the timeout); the</span>
+<span class="sd">      reports are gathered only when the launchers forward logs to the gRPC log server</span>
+<span class="sd">      (--ft-enable-log-server and --ft-per-cycle-applog-prefix).</span>
 <span class="sd">      Default: None (disabled).</span>
 <span class="sd">    * `segment_health_check_dir` [str|None] Shared directory containing per-task</span>
 <span class="sd">      segment health decision artifacts. Allocation-unit process 0 checks its artifact</span>
@@ -258,6 +262,12 @@
     <span class="k">def</span><span class="w"> </span><span class="nf">is_progress_tracking_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">"""Check if progress tracking is enabled (controlled by max_no_progress_cycles &gt; 0)."""</span>
         <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_no_progress_cycles</span> <span class="o">&gt;</span> <span class="mi">0</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">is_cycle_info_enabled</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">        </span><span class="sd">"""Check if cycle info is written (cycle_info_dir set); the launchers then also</span>
+<span class="sd">        record their cycle end reports."""</span>
+        <span class="k">return</span> <span class="nb">bool</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cycle_info_dir</span><span class="p">)</span>
 
 <div class="viewcode-block" id="FaultToleranceConfig.from_kwargs">
 <a class="viewcode-back" href="../../../fault_tolerance/api/config.html#nvidia_resiliency_ext.fault_tolerance.config.FaultToleranceConfig.from_kwargs">[docs]</a>
