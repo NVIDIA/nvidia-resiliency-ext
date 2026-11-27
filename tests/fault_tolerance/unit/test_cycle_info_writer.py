@@ -24,12 +24,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import build_cycle_info
 from nvidia_resiliency_ext.fault_tolerance.cycle_info_writer import (
     CycleInfoReporter,
-    CycleInfoRoundSnapshot,
     CycleInfoWriter,
+    utc_iso_ms,
     utc_iso_now,
+    utc_iso_to_ms,
 )
+from nvidia_resiliency_ext.shared_utils.proto import nvrx_interface_pb2 as pb
 
 
 @pytest.fixture
@@ -37,6 +40,30 @@ def tmp_dir():
     """Temporary directory for cycle info files."""
     with tempfile.TemporaryDirectory() as d:
         yield d
+
+
+def _file_info(job_id, cycle_number, **fields):
+    """An NVRxCycleInfo as the writer gets it: in its file format, named by its own fields."""
+    return pb.NVRxCycleInfo(
+        job_id=job_id,
+        attempt_index=0,
+        cycle_number=cycle_number,
+        cycle_start_time="2024-01-01T00:00:00Z",
+        **fields,
+    )
+
+
+def _store_host_info(cycle_number=0, **kwargs):
+    """An NVRxCycleInfo as the store host publishes it, in its own (environment) namespace."""
+    kwargs.setdefault("active_nodes", ["node002", "node001"])
+    kwargs.setdefault("active_ranks", [1, 0])
+    return build_cycle_info(
+        job_id="store-host-job",
+        attempt_index=9,
+        cycle_number=cycle_number,
+        started_at_ms=10_250,
+        **kwargs,
+    )
 
 
 def test_cycle_info_writer_init_empty_dir_raises():
@@ -63,19 +90,20 @@ def test_cycle_info_writer_get_current_cycle_info_path(tmp_dir):
 
 
 def test_cycle_info_writer_write_cycle_start_creates_file_and_symlink(tmp_dir):
-    """write_cycle_start creates JSON file and .current symlink."""
+    """write_cycle_start writes the NVRxCycleInfo as JSON and points the .current symlink at it."""
     writer = CycleInfoWriter(tmp_dir)
     job_id = "job1"
     attempt_index = 0
     cycle_number = 0
     writer.write_cycle_start(
-        job_id=job_id,
-        attempt_index=attempt_index,
-        cycle_number=cycle_number,
-        cycle_start_time="2024-01-01T00:00:00Z",
-        cycle_log_file="/path/to/log",
-        active_nodes="node[001-002]",
-        standby_nodes="node003",
+        _file_info(
+            job_id,
+            cycle_number,
+            cycle_log_file="/path/to/log",
+            active_nodes="node[001-002]",
+            standby_nodes="node003",
+            generation=5,  # reset to 0 by the writer
+        )
     )
     writer.shutdown()
 
@@ -115,15 +143,7 @@ def test_cycle_info_writer_update_cycle_end(tmp_dir):
     job_id = "job2"
     attempt_index = 0
     cycle_number = 0
-    writer.write_cycle_start(
-        job_id=job_id,
-        attempt_index=attempt_index,
-        cycle_number=cycle_number,
-        cycle_start_time="2024-01-01T00:00:00Z",
-        cycle_log_file="/log",
-        active_nodes="node001",
-        standby_nodes="",
-    )
+    writer.write_cycle_start(_file_info(job_id, cycle_number, active_nodes="node001"))
     end_time = "2024-01-01T01:00:00Z"
     writer.update_cycle_end(
         job_id=job_id,
@@ -157,8 +177,108 @@ def test_cycle_info_writer_update_cycle_end_missing_file_no_crash(tmp_dir):
     assert not os.path.isfile(path)
 
 
-def test_cycle_info_reporter_formats_and_starts_cycle(tmp_dir):
-    """CycleInfoReporter formats round snapshots and writes cycle start."""
+def _launcher_end_report(node, detected_timestamp):
+    return pb.NodeCycleEndReport(
+        job_id="job1",
+        cycle_number=3,
+        node_id=node,
+        end_reason=pb.CycleEndReasonWorkerFailed,
+        detected_timestamp=detected_timestamp,
+    )
+
+
+def _job_end_report(node, detected_timestamp):
+    return pb.JobCycleEndReport(
+        end_reason=pb.CycleEndReasonWorkerFailed,
+        first_detected_timestamp="2024-01-01T00:00:59.000Z",
+        first_detected_nodes=node,
+        launcher_end_reports=[_launcher_end_report(node, detected_timestamp)],
+    )
+
+
+def test_cycle_info_writer_update_cycle_end_report(tmp_dir):
+    """The end report is added to the existing file; a second update replaces it."""
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start(_file_info("job1", 3, active_nodes="node[001-002]"))
+    writer.update_cycle_end("job1", 0, 3, "2024-01-01T00:01:00Z")
+
+    def update(node, detected_timestamp):
+        return lambda: {
+            "end_report": _job_end_report(node, detected_timestamp),
+            "not_a_field": "ignored",
+        }
+
+    writer.update_cycle_later("job1", 0, 3, update("node001", 1))
+    writer.update_cycle_later("job1", 0, 3, update("node002", 1704067199000))
+    writer.update_cycle_later("job1", 0, 3, lambda: None)  # nothing to add: file unchanged
+    writer.shutdown()
+
+    data = _read_cycle_info(tmp_dir, "job1", 3)
+    assert data["cycle_end_time"] == "2024-01-01T00:01:00Z"
+    assert "not_a_field" not in data
+    end_report = data["end_report"]
+    assert end_report["end_reason"] == "CycleEndReasonWorkerFailed"
+    assert end_report["first_detected_nodes"] == "node002"
+    # Without the cycle's own job id, attempt index and cycle number; the end reason by
+    # name and the detection time in ISO 8601 UTC.
+    assert end_report["launcher_end_reports"] == [
+        {
+            "node_id": "node002",
+            "end_reason": "CycleEndReasonWorkerFailed",
+            "detected_timestamp": "2023-12-31T23:59:59.000Z",
+            "exit_details": "",
+        }
+    ]
+    assert data["generation"] == "3"  # create, end, and two end report updates
+
+
+def test_cycle_info_writer_updates_a_file_with_launcher_end_reports(tmp_dir):
+    """The store host's end after the end reports: the file is read back and rewritten with
+    the launchers' end reports unchanged."""
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start(_file_info("job1", 3))
+    end_report = _job_end_report("node001", 1_700_000_000_123)
+    writer.update_cycle_later("job1", 0, 3, lambda: {"end_report": end_report})
+    writer.update_cycle_end("job1", 0, 3, "2024-01-01T00:01:00Z")
+    writer.shutdown()
+
+    data = _read_cycle_info(tmp_dir, "job1", 3)
+    assert data["cycle_end_time"] == "2024-01-01T00:01:00Z"
+    assert data["generation"] == "2"
+    (entry,) = data["end_report"]["launcher_end_reports"]
+    assert entry["detected_timestamp"] == "2023-11-14T22:13:20.123Z"
+    assert "cycle_number" not in entry
+
+
+def _read_cycle_info(tmp_dir, job_id, cycle_number):
+    with open(os.path.join(tmp_dir, f"cycle_info.{job_id}.0.{cycle_number}")) as f:
+        return json.load(f)
+
+
+def test_cycle_info_writer_does_not_write_the_internal_timestamp(tmp_dir):
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start(_file_info("job1", 3, timestamp=1_700_000_000_500))
+    writer.shutdown()  # also updates the file: stamps the cycle end
+
+    data = _read_cycle_info(tmp_dir, "job1", 3)
+    assert "timestamp" not in data
+    assert data["generation"] == "1"
+    assert data["end_report"] == {}  # by default, before any end report is written
+
+
+def test_cycle_info_writer_writes_an_empty_end_report_as_an_empty_object(tmp_dir):
+    """No end reports received for the cycle: its end report is {}."""
+    writer = CycleInfoWriter(tmp_dir)
+    writer.write_cycle_start(_file_info("job1", 3))
+    writer.update_cycle_later("job1", 0, 3, lambda: {"end_report": pb.JobCycleEndReport()})
+    writer.shutdown()
+
+    assert _read_cycle_info(tmp_dir, "job1", 3)["end_report"] == {}
+
+
+def test_cycle_info_reporter_writes_the_store_host_start_in_its_namespace(tmp_dir):
+    """The start is written as the store host built it, with the reporter's file namespace and
+    the cycle log file of its prefix; the received message is left unmodified."""
     writer = MagicMock()
     reporter = CycleInfoReporter(
         tmp_dir,
@@ -167,57 +287,49 @@ def test_cycle_info_reporter_formats_and_starts_cycle(tmp_dir):
         attempt_index=7,
         writer=writer,
     )
-    snapshot = CycleInfoRoundSnapshot(
-        cycle_number=0,
-        active_node_addrs=["node002", "node001"],
-        standby_node_addrs=["node003"],
-        active_ranks=[1, 0],
+    info = _store_host_info(standby_nodes=["node003"])
+
+    assert reporter.report_cycle_start(info)
+
+    (written,) = writer.write_cycle_start.call_args.args
+    assert written is not info
+    assert (written.job_id, written.attempt_index, written.cycle_number) == ("job1", 7, 0)
+    assert written.cycle_start_time == info.cycle_start_time
+    assert written.cycle_log_file == "/logs/train_cycle0.log"
+    # Compressed once, by the store host.
+    assert (written.active_nodes, written.standby_nodes) == ("node[001-002]", "node[003]")
+    assert written.active_ranks == "0-1"
+    assert (info.job_id, info.attempt_index, info.cycle_log_file) == ("store-host-job", 9, "")
+
+
+def test_cycle_info_reporter_keeps_the_store_host_cycle_log_file(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(
+        tmp_dir, cycle_log_prefix="/logs/train.log", cycle_info_job_id="job1", writer=writer
     )
-
-    with patch(
-        "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
-        return_value="2024-01-01T00:00:00Z",
-    ):
-        assert reporter.report_cycle_start(snapshot)
-
-    writer.write_cycle_start.assert_called_once()
-    call_kw = writer.write_cycle_start.call_args.kwargs
-    assert call_kw["job_id"] == "job1"
-    assert call_kw["attempt_index"] == 7
-    assert call_kw["cycle_number"] == 0
-    assert call_kw["cycle_start_time"] == "2024-01-01T00:00:00Z"
-    assert call_kw["cycle_log_file"] == "/logs/train_cycle0.log"
-    assert call_kw["active_nodes"] == "node[001-002]"
-    assert call_kw["standby_nodes"] == "node[003]"
-    assert call_kw["active_ranks"] == "0-1"
+    assert reporter.report_cycle_start(_store_host_info(cycle_log_file="/other/log_cycle0.log"))
+    assert writer.write_cycle_start.call_args.args[0].cycle_log_file == "/other/log_cycle0.log"
 
 
 def test_cycle_info_reporter_derives_file_namespace_from_env(tmp_dir):
     """Colocated reporter derives cycle-info file naming from its SLURM environment."""
     writer = MagicMock()
     reporter = CycleInfoReporter(tmp_dir, writer=writer)
-    snapshot = CycleInfoRoundSnapshot(cycle_number=0, active_node_addrs=["node001"])
 
-    with (
-        patch.dict(
-            os.environ,
-            {
-                "SLURM_ARRAY_JOB_ID": "array-job",
-                "SLURM_JOB_ID": "job",
-                "SLURM_RESTART_COUNT": "4",
-            },
-            clear=False,
-        ),
-        patch(
-            "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
-            return_value="2024-01-01T00:00:00Z",
-        ),
+    with patch.dict(
+        os.environ,
+        {
+            "SLURM_ARRAY_JOB_ID": "array-job",
+            "SLURM_JOB_ID": "job",
+            "SLURM_RESTART_COUNT": "4",
+        },
+        clear=False,
     ):
-        assert reporter.report_cycle_start(snapshot)
+        assert reporter.report_cycle_start(_store_host_info())
 
-    call_kw = writer.write_cycle_start.call_args.kwargs
-    assert call_kw["job_id"] == "array-job"
-    assert call_kw["attempt_index"] == 4
+    written = writer.write_cycle_start.call_args.args[0]
+    assert written.job_id == "array-job"
+    assert written.attempt_index == 4
 
 
 def test_cycle_info_reporter_defaults_missing_restart_count_to_zero(tmp_dir):
@@ -232,11 +344,11 @@ def test_cycle_info_reporter_defaults_missing_restart_count_to_zero(tmp_dir):
         },
         clear=True,
     ):
-        assert reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=0))
+        assert reporter.report_cycle_start(_store_host_info())
 
-    call_kw = writer.write_cycle_start.call_args.kwargs
-    assert call_kw["job_id"] == "array-job"
-    assert call_kw["attempt_index"] == 0
+    written = writer.write_cycle_start.call_args.args[0]
+    assert written.job_id == "array-job"
+    assert written.attempt_index == 0
 
 
 def test_cycle_info_reporter_invalid_restart_count_falls_back_to_zero(
@@ -257,12 +369,20 @@ def test_cycle_info_reporter_invalid_restart_count_falls_back_to_zero(
         ),
         caplog.at_level(logging.WARNING),
     ):
-        assert reporter.report_cycle_start(CycleInfoRoundSnapshot(cycle_number=0))
+        assert reporter.report_cycle_start(_store_host_info())
 
-    call_kw = writer.write_cycle_start.call_args.kwargs
-    assert call_kw["job_id"] == "array-job"
-    assert call_kw["attempt_index"] == 0
+    written = writer.write_cycle_start.call_args.args[0]
+    assert written.job_id == "array-job"
+    assert written.attempt_index == 0
     assert "Invalid SLURM_RESTART_COUNT='invalid' for cycle info; using 0" in caplog.text
+
+
+def test_cycle_info_reporter_ignores_a_second_start_of_a_cycle(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", writer=writer)
+    assert reporter.report_cycle_start(_store_host_info(3))
+    assert not reporter.report_cycle_start(_store_host_info(3))
+    writer.write_cycle_start.assert_called_once()
 
 
 def test_cycle_info_reporter_closes_cycle_on_shutdown(tmp_dir):
@@ -274,16 +394,12 @@ def test_cycle_info_reporter_closes_cycle_on_shutdown(tmp_dir):
         attempt_index=2,
         writer=writer,
     )
-    snapshot = CycleInfoRoundSnapshot(cycle_number=3, active_node_addrs=["node001"])
 
     with patch(
         "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
-        side_effect=[
-            "2024-01-01T00:00:00Z",
-            "2024-01-01T00:01:00Z",
-        ],
+        return_value="2024-01-01T00:01:00Z",
     ):
-        reporter.report_cycle_start(snapshot)
+        reporter.report_cycle_start(_store_host_info(3))
         reporter.shutdown()
 
     writer.update_cycle_end.assert_called_once_with(
@@ -304,19 +420,13 @@ def test_cycle_info_reporter_closes_previous_cycle_on_next_start(tmp_dir):
         attempt_index=2,
         writer=writer,
     )
-    snapshot0 = CycleInfoRoundSnapshot(cycle_number=0, active_node_addrs=["node001"])
-    snapshot1 = CycleInfoRoundSnapshot(cycle_number=1, active_node_addrs=["node002"])
 
     with patch(
         "nvidia_resiliency_ext.fault_tolerance.cycle_info_writer.utc_iso_now",
-        side_effect=[
-            "2024-01-01T00:00:00Z",
-            "2024-01-01T00:01:00Z",
-            "2024-01-01T00:02:00Z",
-        ],
+        return_value="2024-01-01T00:01:00Z",
     ):
-        reporter.report_cycle_start(snapshot0)
-        reporter.report_cycle_start(snapshot1)
+        reporter.report_cycle_start(_store_host_info(0, active_nodes=["node001"], active_ranks=[0]))
+        reporter.report_cycle_start(_store_host_info(1, active_nodes=["node002"], active_ranks=[0]))
 
     writer.update_cycle_end.assert_called_once_with(
         job_id="job1",
@@ -325,7 +435,68 @@ def test_cycle_info_reporter_closes_previous_cycle_on_next_start(tmp_dir):
         cycle_end_time="2024-01-01T00:01:00Z",
     )
     assert writer.write_cycle_start.call_count == 2
-    assert writer.write_cycle_start.call_args_list[1].kwargs["cycle_number"] == 1
+    assert writer.write_cycle_start.call_args_list[1].args[0].cycle_number == 1
+
+
+def _reporter_with_cycle(tmp_dir, **kwargs):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(
+        tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer, **kwargs
+    )
+    reporter.report_cycle_start(_store_host_info(3))
+    return reporter, writer
+
+
+def test_cycle_info_reporter_reports_the_job_end_report(tmp_dir):
+    """One update: the end report only, not the cycle end time."""
+    reporter, writer = _reporter_with_cycle(tmp_dir)
+    end_report = _job_end_report("node001", 10_250)
+
+    assert reporter.report_cycle_end_report(3, end_report)
+
+    job_id, attempt_index, cycle_number, build_update = writer.update_cycle_later.call_args.args
+    assert (job_id, attempt_index, cycle_number) == ("job1", 0, 3)
+    payload = build_update()
+    assert payload == {"end_report": end_report}  # the store host's end is not in it
+    # Its end reports are written, so shutdown does not stamp the cycle.
+    reporter.shutdown()
+    writer.update_cycle_end.assert_not_called()
+
+
+def test_cycle_info_reporter_ignores_the_end_report_of_an_unstarted_cycle(tmp_dir):
+    writer = MagicMock()
+    reporter = CycleInfoReporter(tmp_dir, cycle_info_job_id="job1", attempt_index=0, writer=writer)
+    assert not reporter.report_cycle_end_report(3, pb.JobCycleEndReport())
+    writer.update_cycle_later.assert_not_called()
+
+
+def test_cycle_info_reporter_ends_a_given_cycle_at_a_given_time(tmp_dir):
+    reporter, writer = _reporter_with_cycle(tmp_dir, end_previous_on_start=False)
+    reporter.report_cycle_start(_store_host_info(4))
+    writer.update_cycle_end.assert_not_called()  # starting 4 did not end 3
+
+    assert reporter.report_cycle_end(3, "1970-01-01T00:00:10.250000Z")
+    assert not reporter.report_cycle_end(7)  # never started
+
+    writer.update_cycle_end.assert_called_once_with(
+        job_id="job1",
+        attempt_index=0,
+        cycle_number=3,
+        cycle_end_time="1970-01-01T00:00:10.250000Z",
+    )
+    # Cycle 4 is still open: shutdown ends it.
+    reporter.shutdown()
+    assert writer.update_cycle_end.call_args.kwargs["cycle_number"] == 4
+
+
+def test_utc_iso_ms_is_exact():
+    assert utc_iso_ms(0) == "1970-01-01T00:00:00.000Z"
+    assert utc_iso_ms(1_700_000_000_123) == "2023-11-14T22:13:20.123Z"
+
+
+@pytest.mark.parametrize("timestamp_ms", [0, 1, 1_700_000_000_123, 1_794_838_593_057])
+def test_utc_iso_to_ms_is_the_exact_inverse(timestamp_ms):
+    assert utc_iso_to_ms(utc_iso_ms(timestamp_ms)) == timestamp_ms
 
 
 def test_utc_iso_now_format():

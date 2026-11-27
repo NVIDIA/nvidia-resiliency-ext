@@ -31,12 +31,14 @@ The public command remains ``ft_launcher`` on every node. Existing ``sbatch`` /
    |   +-- rank monitors / local helpers
    +-- gRPC root / leaves (if enabled)
    +-- managed attribution (if enabled)
+   +-- cycle analyzer (with --ft-cycle-info-dir)
 
 The host is selected from the rendezvous endpoint, honoring the existing
 ``is_host`` override; it is not selected from the training rank. The control-host
 agent joins the same compute rendezvous as agents on the other nodes. ``job-controller``
-owns the TCPStore, rendezvous rounds, membership decisions, attribution client,
-and existing cycle-info reporter. The agent owns worker restart cycles and
+owns the TCPStore, rendezvous rounds, membership decisions, and attribution client,
+and sends each cycle's start and end to the cycle analyzer, which writes the cycle
+records (see :doc:`operations`). The agent owns worker restart cycles and
 node-local helpers. Both roles use the effective ``--ft-segment`` setting.
 Other nodes retain their existing process and logging path.
 
@@ -72,9 +74,11 @@ control-host refactor.
 
 On SIGTERM, SIGINT, SIGHUP, or SIGQUIT, the supervisor disables restarts and signals
 its critical children with SIGTERM. It waits for their cleanup, stops managed
-attribution, then stops the gRPC aggregation funnel and finally closes the local
-control log. The aggregators
-remain alive while the node agent drains its final logs. Children exceeding
+attribution, then stops the gRPC aggregation funnel, then the cycle analyzer, and
+finally closes the local control log. The aggregators
+remain alive while the node agent drains its final logs. The cycle analyzer
+outlives both the job-controller, which sends it the last cycle's end, and the
+aggregators, which forward it the launchers' last end reports. Children exceeding
 their shutdown deadline receive SIGKILL. The supervisor allows the node-agent
 ``--term-timeout`` plus 15 seconds for monitor cleanup and log draining. The
 additional allowance is best effort and must fit within the scheduler's
@@ -157,6 +161,9 @@ For example, with training job ID ``12345`` and a reachable CPU host named
 and cannot be combined with ``--standalone`` or a training command. No separate
 controller CLI or service-startup branch is used. Successful completion requires
 only the job-controller to exit zero; auxiliary-service failures remain fatal.
+The cycle analyzer is the exception: cycle records are diagnostics, so if it
+fails, training continues without them. The compute launchers record the end
+reports whenever ``--ft-cycle-info-dir`` is set.
 
 When cycle-info output is enabled, ``--ft-cycle-info-job-id`` is required on the
 control-only invocation. Supply the compute allocation's effective job ID

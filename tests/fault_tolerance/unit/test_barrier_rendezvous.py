@@ -48,6 +48,7 @@ from torch.distributed.elastic.rendezvous.api import (
 from nvidia_resiliency_ext.fault_tolerance import (
     ft_rendezvous_barrier as ft_rendezvous_barrier_module,
 )
+from nvidia_resiliency_ext.fault_tolerance.cycle_info.messages import active_hosts, iso_to_seconds
 from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     RDZV_SHUTDOWN_REASON_FAILURE,
     FtRendezvousBarrierHandler,
@@ -63,6 +64,8 @@ from nvidia_resiliency_ext.fault_tolerance.ft_rendezvous_barrier import (
     _StaleRendezvousRoundError,
 )
 from nvidia_resiliency_ext.fault_tolerance.segment_health_check import SegmentHealthCheck
+from nvidia_resiliency_ext.fault_tolerance.utils import range_str_to_ranks
+from nvidia_resiliency_ext.shared_utils.proto.nvrx_interface_pb2 import NVRxCycleInfo
 
 # Test timeout configuration - use short timeouts to make tests run faster
 TEST_SEGMENT_CHECK_INTERVAL_SECS = 0.1  # seconds - for segment constraint check interval
@@ -1552,46 +1555,137 @@ class GroupRankAssignmentTest(TestCase):
         self.assertEqual((total_0, total_1), (2, 2))
         self.assertEqual((round_0, round_1), (0, 0))
 
-    def test_control_host_reports_cycle_start_when_round_closes(self):
-        """A colocated store host reports cycle start after rank assignment."""
+    def _close_round_with_publisher(self, publisher, cycle_log_prefix=None):
+        """Close round 0 as the control host with two joined nodes; returns the state."""
         state = _RendezvousBarrierState(
             store=self.store,
             run_id=self.run_id,
             is_store_host=True,
             join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+            cycle_log_prefix=cycle_log_prefix,
         )
-        reporter = MagicMock()
-        state._cycle_info_reporter = reporter
-
-        join_count_key = state.join_count_key
-        prefix = state.prefix
-        train_0 = _NodeDesc("node_a", 100, 0)
-        train_1 = _NodeDesc("node_b", 101, 0)
-
-        self.store.add(join_count_key, 1)
-        self.store.add(join_count_key, 1)
-        self.store.set(
-            f"{prefix}:slot_1",
-            state._pack_participant_value(train_0, 0, "none", 0),
-        )
-        self.store.set(
-            f"{prefix}:slot_2",
-            state._pack_participant_value(train_1, 1, "none", 0),
-        )
-
+        state._cycle_info_publisher = publisher
+        for slot, node in enumerate(("node_a", "node_b"), start=1):
+            self.store.add(state.join_count_key, 1)
+            self.store.set(
+                f"{state.prefix}:slot_{slot}",
+                state._pack_participant_value(_NodeDesc(node, 99 + slot, 0), slot - 1, "none", 0),
+            )
         state.close_current_round_as_host(
             _NodeDesc("control", 10, 0),
             min_nodes=2,
             max_nodes=2,
             segment_check_interval=_test_segment_check_interval(),
         )
+        return state
 
-        reporter.report_cycle_start.assert_called_once()
-        snapshot = reporter.report_cycle_start.call_args.args[0]
-        self.assertEqual(snapshot.cycle_number, 0)
-        self.assertEqual(snapshot.active_node_addrs, ["node_a", "node_b"])
-        self.assertEqual(snapshot.standby_node_addrs, [])
-        self.assertEqual(snapshot.active_ranks, [0, 1])
+    def test_control_host_publishes_cycle_start_when_round_closes(self):
+        """The store host publishes the rank assignment of the round it closed."""
+        publisher = MagicMock()
+        before = time.time()
+        self._close_round_with_publisher(publisher, cycle_log_prefix="/tmp/train.log")
+
+        publisher.publish_cycle_info.assert_called_once()
+        info = publisher.publish_cycle_info.call_args.args[0]
+        self.assertIsInstance(info, NVRxCycleInfo)
+        # The node and rank lists are compressed by the store host.
+        self.assertEqual(
+            (info.cycle_number, active_hosts(info), info.standby_nodes),
+            (0, ["node_a", "node_b"], ""),
+        )
+        self.assertEqual(range_str_to_ranks(info.active_ranks), [0, 1])
+        self.assertEqual(info.cycle_log_file, "/tmp/train_cycle0.log")
+        self.assertEqual(info.cycle_end_time, "")
+        started_at = iso_to_seconds(info.cycle_start_time)
+        self.assertGreaterEqual(started_at, before - 0.001)
+        # One clock reading: the start time, and the record's timestamp in ms.
+        self.assertAlmostEqual(started_at, info.timestamp / 1000, places=3)
+
+    def test_cycle_start_has_no_log_file_without_a_prefix(self):
+        publisher = MagicMock()
+        self._close_round_with_publisher(publisher)
+        self.assertEqual(publisher.publish_cycle_info.call_args.args[0].cycle_log_file, "")
+
+    def test_publish_failure_does_not_block_the_round(self):
+        """A publisher failure is logged; the round is still released."""
+        publisher = MagicMock()
+        publisher.publish_cycle_info.side_effect = RuntimeError("queue full")
+        with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
+            state = self._close_round_with_publisher(publisher)
+        self.assertEqual(self.store.get(state.round_done_key), b"1")
+        mock_warning.assert_called_once()
+
+    def test_cycle_end_is_published_once_with_the_start(self):
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher, cycle_log_prefix="/tmp/train.log")
+        start = publisher.publish_cycle_info.call_args.args[0]
+
+        state.publish_cycle_end_as_host()
+        state.publish_cycle_end_as_host()  # already published: nothing more
+
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertIsNot(end, start)
+        self.assertEqual(start.cycle_end_time, "")  # the published start is not modified
+        # The start with its end time and a later timestamp.
+        start_with_end = NVRxCycleInfo()
+        start_with_end.CopyFrom(start)
+        start_with_end.cycle_end_time = end.cycle_end_time
+        start_with_end.timestamp = end.timestamp
+        self.assertEqual(end, start_with_end)
+        self.assertGreaterEqual(end.timestamp, start.timestamp)
+        self.assertAlmostEqual(iso_to_seconds(end.cycle_end_time), end.timestamp / 1000, places=3)
+
+    def test_control_host_publishes_cycle_end_when_it_sees_the_next_round_open(self):
+        """nvrx-control's scan advances _round before the next round opens; Step 0 then sees
+        that round open and publishes the end of the cycle it started, once."""
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher)
+        start = publisher.publish_cycle_info.call_args.args[0]
+        control = _NodeDesc("control", 10, 0)
+
+        # The first Step 0 pass of the next close: round 1 is not opened yet.
+        state._last_stale_check_time = 0.0
+        self.assertTrue(state._sync_from_per_round_state())
+        self.assertEqual(state._round, 1)
+        publisher.update_cycle_info.assert_not_called()
+
+        # A launcher opens round 1.
+        self.store.set(f"{state.prefix}:round_done_1", "0".encode("utf-8"))
+        state._wait_for_rendezvous_open(control)
+        state._wait_for_rendezvous_open(control)  # seen again: nothing more
+
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertEqual(end.cycle_number, start.cycle_number)
+        self.assertNotEqual(end.cycle_end_time, "")
+
+    def test_no_cycle_end_without_a_published_start(self):
+        publisher = MagicMock()
+        state = _RendezvousBarrierState(
+            store=self.store,
+            run_id=self.run_id,
+            is_store_host=True,
+            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
+        )
+        state._cycle_info_publisher = publisher
+        state.publish_cycle_end_as_host()
+        publisher.update_cycle_info.assert_not_called()
+
+    def test_cycle_end_publish_failure_is_logged(self):
+        publisher = MagicMock()
+        publisher.update_cycle_info.side_effect = RuntimeError("unavailable")
+        state = self._close_round_with_publisher(publisher)
+        with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
+            state.publish_cycle_end_as_host()
+        mock_warning.assert_called_once()
+
+    def test_handler_sets_the_cycle_info_publisher(self):
+        handler = FtRendezvousBarrierHandler.__new__(FtRendezvousBarrierHandler)
+        handler._barrier_state = MagicMock()
+        publisher = MagicMock()
+        handler.set_cycle_info_publisher(publisher)
+        self.assertIs(handler._barrier_state._cycle_info_publisher, publisher)
 
     def test_control_host_submits_attribution_log_when_round_closes(self):
         """The control host submits the just-started cycle log at round close."""
@@ -1649,36 +1743,33 @@ class GroupRankAssignmentTest(TestCase):
         state._attribution_service.request_terminal_analysis.assert_called_once_with()
         self.assertEqual(state._attribution_terminal_requested_cycle, 2)
 
-    def test_open_rendezvous_reports_cycle_end_when_round_created(self):
-        """Opening the next round closes the store-host's current cycle."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        reporter = MagicMock()
-        state._cycle_info_reporter = reporter
+    def test_open_rendezvous_publishes_cycle_end_when_round_created(self):
+        """Opening the next round ends the cycle the store host started."""
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher)
+        start = publisher.publish_cycle_info.call_args.args[0]
 
         state.open_rendezvous()
 
-        reporter.report_cycle_end.assert_called_once_with()
+        self.assertEqual(self.store.get(f"{state.prefix}:round_done_1"), b"0")
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertEqual(end.cycle_number, start.cycle_number)
+        self.assertNotEqual(end.cycle_end_time, "")
 
-    def test_open_rendezvous_reports_cycle_end_when_round_already_exists(self):
-        """Store host closes the current cycle even if another node opened the next round."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        reporter = MagicMock()
-        state._cycle_info_reporter = reporter
+    def test_open_rendezvous_publishes_cycle_end_when_round_already_exists(self):
+        """The store host ends its cycle even if another node opened the next round."""
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher)
+        start = publisher.publish_cycle_info.call_args.args[0]
         self.store.set(f"{state.prefix}:round_done_1", b"0")
 
         state.open_rendezvous()
 
-        reporter.report_cycle_end.assert_called_once_with()
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertEqual(end.cycle_number, start.cycle_number)
+        self.assertNotEqual(end.cycle_end_time, "")
 
     def test_open_rendezvous_without_cycle_info_reporter_does_not_write_cycle_end(self):
         """Non-store-host paths have no reporter and only open the next round."""
@@ -1693,74 +1784,35 @@ class GroupRankAssignmentTest(TestCase):
 
         self.assertTrue(self.store.check([f"{state.prefix}:round_done_1"]))
 
-    def test_is_next_round_open_reports_cycle_end(self):
-        """Healthy store host closes the current cycle when it observes peer restart."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        reporter = MagicMock()
-        state._cycle_info_reporter = reporter
-        self.store.set(f"{state.prefix}:round_done_1", b"0")
+    def test_is_next_round_open_publishes_cycle_end(self):
+        """A healthy store host ends its cycle when it sees a peer open the next round."""
+        publisher = MagicMock()
+        state = self._close_round_with_publisher(publisher)
+        start = publisher.publish_cycle_info.call_args.args[0]
 
+        self.assertFalse(state.is_next_round_open())
+        publisher.update_cycle_info.assert_not_called()
+
+        self.store.set(f"{state.prefix}:round_done_1", b"0")
         self.assertTrue(state.is_next_round_open())
+        self.assertTrue(state.is_next_round_open())  # seen again: nothing more
 
-        reporter.report_cycle_end.assert_called_once_with()
+        publisher.update_cycle_info.assert_called_once()
+        end = publisher.update_cycle_info.call_args.args[0]
+        self.assertEqual(end.cycle_number, start.cycle_number)
+        self.assertNotEqual(end.cycle_end_time, "")
 
-    def test_sync_from_per_round_state_reports_cycle_end_for_open_round(self):
-        """Store host closes the current cycle after syncing to an opened later round."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        reporter = MagicMock()
-        state._cycle_info_reporter = reporter
-        self.store.set(f"{state.prefix}:round_done_0", b"1")
-        self.store.set(f"{state.prefix}:round_done_1", b"0")
-
-        self.assertTrue(state._sync_from_per_round_state())
-
-        self.assertEqual(state._round, 1)
-        reporter.report_cycle_end.assert_called_once_with()
-
-    def test_sync_from_per_round_state_does_not_close_without_open_round(self):
-        """Advancing past a closed round alone does not mean the cycle has ended."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        reporter = MagicMock()
-        state._cycle_info_reporter = reporter
-        self.store.set(f"{state.prefix}:round_done_0", b"1")
-
-        self.assertTrue(state._sync_from_per_round_state())
-
-        self.assertEqual(state._round, 1)
-        reporter.report_cycle_end.assert_not_called()
-
-    def test_cycle_end_reporter_exception_does_not_block_open_rendezvous(self):
-        """Cycle info failures are logged without interrupting rendezvous progress."""
-        state = _RendezvousBarrierState(
-            store=self.store,
-            run_id=self.run_id,
-            is_store_host=True,
-            join_timeout_seconds=TEST_JOIN_TIMEOUT_SECS,
-        )
-        reporter = MagicMock()
-        reporter.report_cycle_end.side_effect = RuntimeError("cycle info failed")
-        state._cycle_info_reporter = reporter
+    def test_cycle_end_publish_failure_does_not_block_open_rendezvous(self):
+        """A publisher failure is logged; the next round is still opened."""
+        publisher = MagicMock()
+        publisher.update_cycle_info.side_effect = RuntimeError("unavailable")
+        state = self._close_round_with_publisher(publisher)
 
         with patch.object(ft_rendezvous_barrier_module.log, "warning") as mock_warning:
             state.open_rendezvous()
 
-        self.assertTrue(self.store.check([f"{state.prefix}:round_done_1"]))
-        reporter.report_cycle_end.assert_called_once_with()
+        self.assertEqual(self.store.get(f"{state.prefix}:round_done_1"), b"0")
+        publisher.update_cycle_info.assert_called_once()
         mock_warning.assert_called_once()
 
     def test_previous_active_last_call_gate_waits_for_missing_infra_rank(self):

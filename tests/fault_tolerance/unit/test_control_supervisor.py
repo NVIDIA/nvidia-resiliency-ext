@@ -289,11 +289,14 @@ def test_cleanup_drains_agent_before_stopping_attribution_and_log_servers(monkey
     owner.attribution = Mock()
     owner.attribution.stop.side_effect = lambda: events.append("attribution-stop")
     owner.grpc_processes = [Mock()]
+    owner.cycle_analyzer = Mock()
+    owner.cycle_analyzer.stop.side_effect = lambda: events.append("analyzer-stop")
     monkeypatch.setattr(owner, "_stop_node_agent", lambda **_: events.append("agent-drained"))
     monkeypatch.setattr(
         control_supervisor, "stop_grpc_log_servers", lambda *_: events.append("grpc-stop")
     )
     owner._cleanup()
+    # The analyzer outlives the controller's last cycle end and the log root's last reports.
     assert events == [
         "agent-term",
         "controller-term",
@@ -301,6 +304,7 @@ def test_cleanup_drains_agent_before_stopping_attribution_and_log_servers(monkey
         "controller-exit",
         "attribution-stop",
         "grpc-stop",
+        "analyzer-stop",
     ]
 
 
@@ -586,6 +590,126 @@ def test_control_only_start_spawns_the_controller_without_an_agent(monkeypatch):
     capture.attach.assert_called_once_with(controller.stdout)
 
 
+def test_cycle_analyzer_starts_before_the_log_servers_and_its_address_reaches_them(
+    monkeypatch, tmp_path
+):
+    args = launcher.parse_args(
+        [
+            "--ft-control-only",
+            "--rdzv-endpoint=localhost:29500",
+            f"--ft-nvrx-logfile={tmp_path}/nvrx.log",
+            f"--ft-cycle-info-dir={tmp_path}/cycles",
+            "--ft-cycle-info-job-id=training-job",
+        ]
+    )
+    owner = control_supervisor.ControlSupervisor(args)
+    events = []
+    analyzer = Mock(address="unix:/tmp/analyzer.sock")
+    analyzer.wait_until_ready.side_effect = lambda **_: events.append("analyzer-ready")
+
+    def start_grpc(*_, **__):
+        events.append("grpc-start")
+        return [Mock()]
+
+    start_grpc_servers = Mock(side_effect=start_grpc)
+    spawn = Mock()
+    monkeypatch.setattr(control_supervisor, "ControlLogCapture", Mock())
+    monkeypatch.setattr(control_supervisor, "setup_logger", Mock())
+    monkeypatch.setattr(control_supervisor, "LogFunnelPorts", Mock())
+    monkeypatch.setattr(control_supervisor, "CycleAnalyzerProcess", Mock(return_value=analyzer))
+    monkeypatch.setattr(control_supervisor, "_start_grpc_log_servers", start_grpc_servers)
+    monkeypatch.setattr(control_supervisor, "spawn_child", spawn)
+    owner._start()
+    assert events == ["analyzer-ready", "grpc-start"]
+    assert owner.cycle_analyzer is analyzer
+    # Its startup wait honors a termination signal, as managed attribution's does.
+    assert (
+        analyzer.wait_until_ready.call_args.kwargs["raise_if_shutdown_requested"]
+        == owner._raise_if_shutdown_requested
+    )
+    # The log root forwards the end reports to it; the job-controller publishes the cycle infos.
+    assert start_grpc_servers.call_args.kwargs["cycle_analyzer_address"] == analyzer.address
+    assert spawn.call_args.args[1]._cycle_analyzer_address == analyzer.address
+
+
+@pytest.mark.parametrize("control_only", [True, False], ids=["external", "colocated"])
+def test_cycle_analyzer_job_identity(monkeypatch, tmp_path, control_only):
+    """External control names the files by the training job given on the command line;
+    colocated control gives none, so the analyzer takes the job id and attempt from its
+    environment, the training job's."""
+    args = SimpleNamespace(
+        ft_control_only=control_only,
+        ft_cycle_info_job_id="training-job",
+        ft_per_cycle_applog_prefix=None,
+    )
+    analyzer_class = Mock()
+    capture = Mock()
+    monkeypatch.setattr(control_supervisor, "CycleAnalyzerProcess", analyzer_class)
+    analyzer = control_supervisor._start_cycle_analyzer(
+        args, SimpleNamespace(cycle_info_dir=str(tmp_path / "cycles")), capture
+    )
+    assert analyzer is analyzer_class.return_value
+    analyzer_class.assert_called_once_with(
+        str(tmp_path / "cycles"),
+        cycle_info_job_id="training-job" if control_only else None,
+        cycle_log_prefix=None,
+    )
+    # A supervisor child like the job-controller: its output goes to the control log.
+    analyzer.start.assert_called_once_with(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    capture.attach.assert_called_once_with(analyzer.process.stdout)
+    analyzer.wait_until_ready.assert_called_once_with(raise_if_shutdown_requested=None)
+
+
+def test_a_shutdown_while_the_cycle_analyzer_starts_stops_it_and_is_raised(monkeypatch, tmp_path):
+    """Unlike a start failure, a termination signal is not swallowed by the best-effort
+    start: the analyzer is stopped and the supervisor shuts down."""
+    args = SimpleNamespace(
+        ft_control_only=True, ft_cycle_info_job_id="job-a", ft_per_cycle_applog_prefix=None
+    )
+    analyzer = Mock()
+    analyzer.wait_until_ready.side_effect = lambda raise_if_shutdown_requested: (
+        raise_if_shutdown_requested()
+    )
+    error = Mock()
+    monkeypatch.setattr(control_supervisor, "CycleAnalyzerProcess", Mock(return_value=analyzer))
+    monkeypatch.setattr(control_supervisor.logger, "error", error)
+
+    def shutdown_requested():
+        raise control_supervisor._ShutdownRequested()
+
+    with pytest.raises(control_supervisor._ShutdownRequested):
+        control_supervisor._start_cycle_analyzer(
+            args,
+            SimpleNamespace(cycle_info_dir=str(tmp_path / "cycles")),
+            Mock(),
+            raise_if_shutdown_requested=shutdown_requested,
+        )
+    analyzer.stop.assert_called_once_with()
+    error.assert_not_called()
+
+
+@pytest.mark.parametrize("failing", ["start", "wait_until_ready"])
+def test_cycle_analyzer_start_failure_is_logged_and_control_continues(
+    monkeypatch, tmp_path, failing
+):
+    args = SimpleNamespace(
+        ft_control_only=True, ft_cycle_info_job_id="job-a", ft_per_cycle_applog_prefix=None
+    )
+    analyzer = Mock()
+    getattr(analyzer, failing).side_effect = RuntimeError("exited during startup")
+    error = Mock()
+    monkeypatch.setattr(control_supervisor, "CycleAnalyzerProcess", Mock(return_value=analyzer))
+    monkeypatch.setattr(control_supervisor.logger, "error", error)
+    assert (
+        control_supervisor._start_cycle_analyzer(
+            args, SimpleNamespace(cycle_info_dir=str(tmp_path / "cycles")), Mock()
+        )
+        is None
+    )
+    error.assert_called_once()
+    analyzer.stop.assert_called_once_with()  # no process is left behind
+
+
 def test_child_shutdown_waits_without_killing_a_finished_child():
     child = Mock(wait=Mock(return_value=0))
     assert child_process.wait_or_kill_child(child, 3)
@@ -648,6 +772,7 @@ def test_agent_descendant_discovery_takes_one_snapshot_and_protects_services(mon
     owner.node_agent = Mock(pid=10001, poll=Mock(return_value=None))
     owner.job_controller = Mock(pid=10002)
     owner.grpc_processes = [Mock(pid=10003)]
+    owner.cycle_analyzer = Mock(pid=10011)
 
     def process(pid, parent):
         return SimpleNamespace(pid=pid, info={"pid": pid, "ppid": parent})
@@ -664,6 +789,8 @@ def test_agent_descendant_discovery_takes_one_snapshot_and_protects_services(mon
         process(10008, 10002),
         process(10009, 10003),
         process(10010, 1),
+        process(10011, root),
+        process(10012, 10011),
     ]
     scan = Mock(return_value=iter(snapshot))
     monkeypatch.setattr(control_supervisor.psutil, "process_iter", scan)

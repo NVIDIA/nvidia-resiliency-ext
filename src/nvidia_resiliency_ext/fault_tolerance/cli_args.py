@@ -423,10 +423,14 @@ def _add_cycle_info_arg(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         dest="ft_cycle_info_dir",
-        help="Full path to NVRx cycle info directory (e.g. <base>/nvrx/). The rendezvous "
-        "host writes cycle_info.<job_id>.<attempt>.<cycle> and symlink "
+        help="Full path to NVRx cycle info directory (e.g. <base>/nvrx/). The control host "
+        "writes cycle_info.<job_id>.<attempt>.<cycle> and symlink "
         "cycle_info.<job_id>.current there. Workload receives current cycle file path via "
-        "NVRX_CURRENT_CYCLE_INFO env.",
+        "NVRX_CURRENT_CYCLE_INFO env. Each launcher also reports how each cycle ended on it "
+        "(its end report: the end reason and the local workers that failed or were stopped "
+        "by their rank monitor); the reports are sent on the gRPC data record stream, so they are "
+        "gathered only with --ft-enable-log-server and --ft-per-cycle-applog-prefix. "
+        "Ignored with --standalone, which starts no control process to write it.",
     )
 
 

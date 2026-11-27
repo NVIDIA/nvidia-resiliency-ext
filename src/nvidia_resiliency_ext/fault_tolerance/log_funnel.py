@@ -10,7 +10,7 @@ import subprocess  # nosec B404
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, List, Set
+from typing import Any, List, Optional, Set
 
 from ..shared_utils.log_manager import LogConfig
 from .child_process import wait_or_kill_child
@@ -165,12 +165,19 @@ _GRPC_LOG_FUNNEL_BIND_HOST = "0.0.0.0"  # nosec B104
 
 
 def _start_grpc_log_servers(
-    args: Any, funnel_ports: LogFunnelPorts, *, capture
+    args: Any,
+    funnel_ports: LogFunnelPorts,
+    *,
+    capture,
+    cycle_analyzer_address: Optional[str] = None,
 ) -> List[subprocess.Popen]:
     """
     On TCP store host: start root log server (Lustre writer), and optionally N leaf
     aggregators that forward to the root. In two-level mode the root is given
     ``2 * graceful_shutdown_timeout`` so it outlasts leaf drain after SIGTERM.
+
+    With `cycle_analyzer_address`, the root forwards the cycle end reports it receives to
+    that CycleAnalyzer; without it, it drops them.
 
     Returns:
         Non-empty list of Popen [root] or [root, leaf0, ...] on success, [] on failure.
@@ -193,6 +200,9 @@ def _start_grpc_log_servers(
         for root in allowed_roots:
             allowed_root_args += ['--allowed-root', root]
         logger.info(f"gRPC log server(s) confined to allowed roots: {allowed_roots}")
+        root_analyzer_args: List[str] = (
+            ['--cycle-analyzer-address', cycle_analyzer_address] if cycle_analyzer_address else []
+        )
 
         if not funnel_ports.uses_two_level:
             max_workers = min(4096, max(100, max_nodes + 10))
@@ -210,6 +220,7 @@ def _start_grpc_log_servers(
                     '--graceful-shutdown-timeout',
                     str(graceful_shutdown_timeout),
                     *allowed_root_args,
+                    *root_analyzer_args,
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -251,6 +262,7 @@ def _start_grpc_log_servers(
                 '--graceful-shutdown-timeout',
                 str(root_graceful_shutdown_timeout),
                 *allowed_root_args,
+                *root_analyzer_args,
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

@@ -108,7 +108,11 @@ class FaultToleranceConfig:
     * `cycle_info_dir` [str|None] Full path to the NVRx cycle info directory (e.g.
       <base>/nvrx/). If set, the rendezvous host writes cycle info JSON files and
       the cycle_info.<job_id>.current symlink there. The workload receives the path
-      to the current cycle file via NVRX_CURRENT_CYCLE_INFO.
+      to the current cycle file via NVRX_CURRENT_CYCLE_INFO. If set, each launcher also
+      records how each cycle ended on it (its end report: the end reason and the local
+      workers that failed or were stopped by their rank monitor, with the timeout); the
+      reports are gathered only when the launchers forward logs to the gRPC log server
+      (--ft-enable-log-server and --ft-per-cycle-applog-prefix).
       Default: None (disabled).
     * `segment_health_check_dir` [str|None] Shared directory containing per-task
       segment health decision artifacts. Allocation-unit process 0 checks its artifact
@@ -176,6 +180,12 @@ class FaultToleranceConfig:
     def is_progress_tracking_enabled(self) -> bool:
         """Check if progress tracking is enabled (controlled by max_no_progress_cycles > 0)."""
         return self.max_no_progress_cycles > 0
+
+    @property
+    def is_cycle_info_enabled(self) -> bool:
+        """Check if cycle info is written (cycle_info_dir set); the launchers then also
+        record their cycle end reports."""
+        return bool(self.cycle_info_dir)
 
     @staticmethod
     def from_kwargs(ignore_not_recognized: bool = True, **kwargs) -> 'FaultToleranceConfig':
