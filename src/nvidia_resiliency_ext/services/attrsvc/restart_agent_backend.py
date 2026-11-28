@@ -60,7 +60,9 @@ from nvidia_resiliency_ext.attribution.restart_agent import (
     RestartAgentRequest,
     RestartAgentRuntime,
 )
+from nvidia_resiliency_ext.attribution.restart_agent.l1.categories import category_by_id
 
+from .corroborating import DEFAULT_PROBES, SCHEDULER_CANCELLED_BASIS, first_finding
 from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperationalLogger
 from .slack import AnalysisIdentity, SlackNotifier, run_name_from_log_path
 
@@ -83,6 +85,12 @@ _PUBLIC_PENDING = "pending"
 _PUBLIC_IN_FLIGHT = "in_flight"
 _PUBLIC_COMPLETED = "completed"
 _ELIGIBLE_NVRX_USES = frozenset({"eligible", "eligible_degraded"})
+
+#: Cat 1 already describes a clean external cancellation and already names
+#: the slurmstepd marker. It has never been able to fire because that marker
+#: lives in the batch output rather than the application log.
+#: Results settled from evidence beside the log, rather than from the log.
+_CORROBORATED_BASES = frozenset({SCHEDULER_CANCELLED_BASIS})
 
 
 @dataclass(frozen=True)
@@ -248,11 +256,15 @@ class RestartAgentServiceBackend:
         accumulator_factory: Callable[[str], ProgressiveL0Accumulator] = (ProgressiveL0Accumulator),
         slack_notifier: SlackNotifier | None = None,
         cache_file: str = "",
+        corroborating_sources_enabled: bool = False,
     ) -> None:
         self._cache_file = (cache_file or "").strip()
         self._allowed_root = os.path.realpath(allowed_root)
         self._runtime = runtime
         self._config = config
+        # Off by default: skipping analysis is a behaviour change, and the
+        # deployment that wants it should say so.
+        self._corroborating_enabled = corroborating_sources_enabled
         self._operational_log = RestartAgentOperationalLogger(logger)
         self._convergence = convergence
         self._progressive = progressive
@@ -447,6 +459,16 @@ class RestartAgentServiceBackend:
         log_path = str(item.get("log_path") or "")
         result_payload = item.get("result")
         if not log_path or not isinstance(result_payload, Mapping):
+            return False
+        # A cancellation settled without reading the log is only valid while
+        # the deployment still wants that shortcut. Restoring one after it was
+        # turned off would leave the entry completed, so resubmitting the log
+        # could never reach the analysis the operator just asked for.
+        if str(item.get("source") or "") in _CORROBORATED_BASES and not self._corroborating_enabled:
+            logger.info(
+                "Ignoring cached scheduler-cancellation result for %s: the shortcut is disabled",
+                log_path,
+            )
             return False
         identity = self._file_identity(log_path)
         if not identity:
@@ -849,6 +871,98 @@ class RestartAgentServiceBackend:
         )
         entry.future = self._executor.submit(self._execute_terminal, entry.key)
 
+    def _settle_from_corroborating_source(
+        self,
+        key: Hashable,
+        request: RestartAgentRequest,
+        log_context: RestartAgentLogContext,
+    ) -> bool:
+        """Settle from evidence beside the log, when a source establishes one.
+
+        Some runs end for reasons the application never records: an operator
+        cancels the allocation, or fault tolerance decides a section is stuck
+        and kills the ranks. The log then holds only the wake, and analysing it
+        attributes the run to a mechanism that did not fail.
+
+        Returning True skips L0 through L4. There is nothing in the log for
+        them to find, and the model call is the expensive half of being wrong.
+        """
+
+        if not self._corroborating_enabled:
+            return False
+        finding = first_finding(
+            DEFAULT_PROBES,
+            log_path=request.log_path,
+            job_id=request.job_id,
+            cycle_id=request.cycle_id,
+            allowed_root=self._allowed_root,
+        )
+        if finding is None:
+            return False
+
+        category = category_by_id(finding.category_id)
+        final = AnalysisResult(
+            decision=finding.decision,
+            decision_basis=finding.basis,
+            justification=(
+                f"Established from {finding.source}, beside the application log: "
+                f"{finding.summary}. The application log does not record this, so it "
+                "was not analyzed: whatever surface it shows is the shutdown being "
+                "noticed, not a failure."
+            ),
+            result_provenance={
+                "nvrx_use": "eligible",
+                "source": finding.basis,
+                "corroborating_source": finding.source,
+                **finding.provenance,
+            },
+            l1_assessment={
+                "category_selection": {
+                    "category_id": finding.category_id,
+                    "category_confidence": 100,
+                    "category_rationale": finding.summary,
+                }
+            },
+        )
+
+        with self._lock:
+            current = self._entries.get(key)
+            if current is None:
+                return True
+            current.final_result = final
+            current.best_result = final
+            current.best_source = finding.basis
+            current.status = _STATUS_COMPLETED
+            current.progressive_phase = "completed"
+            current.completed_at = time.monotonic()
+            if current.terminal_at is not None:
+                current.analysis_completed_wall_clock_s = current.completed_at - current.terminal_at
+            current.future = None
+            # The ordinary completion path releases these; returning early
+            # must too, or a progressively tracked log keeps its open file
+            # and line index until the completed entry is evicted.
+            current.accumulator = None
+            current.precompute_future = None
+            # Without an identity the cache drops this result, so a restart
+            # would redo the lookup and alert again.
+            current.source_identity = self._file_identity(request.log_path)
+            self._trim_completed_results()
+
+        self._emit_operational(
+            self._operational_log.info,
+            "restart_agent.analysis.skipped",
+            log_context,
+            status="completed",
+            decision=final.decision,
+            decision_basis=final.decision_basis,
+            corroborating_source=finding.source,
+            category_id=finding.category_id,
+            category_name=category.name if category else "",
+        )
+        self._save_cache(self._cache_file)
+        self._schedule_notification(key)
+        return True
+
     def _execute_terminal(self, key: Hashable) -> None:
         with self._lock:
             entry = self._entries.get(key)
@@ -861,6 +975,8 @@ class RestartAgentServiceBackend:
                 cycle_id=entry.cycle_id,
             )
             accumulator = entry.accumulator
+        if self._settle_from_corroborating_source(key, request, log_context):
+            return
         try:
             drain = self._wait_for_log_convergence(request.log_path, accumulator)
             drain_fields = {
