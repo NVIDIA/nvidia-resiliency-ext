@@ -62,6 +62,7 @@ from nvidia_resiliency_ext.attribution.restart_agent import (
 )
 
 from .restart_agent_logging import RestartAgentLogContext, RestartAgentOperationalLogger
+from .scheduler_state import operator_cancellation
 from .slack import AnalysisIdentity, SlackNotifier, run_name_from_log_path
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,9 @@ _PUBLIC_PENDING = "pending"
 _PUBLIC_IN_FLIGHT = "in_flight"
 _PUBLIC_COMPLETED = "completed"
 _ELIGIBLE_NVRX_USES = frozenset({"eligible", "eligible_degraded"})
+
+#: Decision basis for a run the scheduler says an operator stopped.
+_OPERATOR_CANCELLED_BASIS = "operator_cancelled"
 
 
 @dataclass(frozen=True)
@@ -248,11 +252,17 @@ class RestartAgentServiceBackend:
         accumulator_factory: Callable[[str], ProgressiveL0Accumulator] = (ProgressiveL0Accumulator),
         slack_notifier: SlackNotifier | None = None,
         cache_file: str = "",
+        scheduler_cancellation_shortcircuit: bool = False,
+        scheduler_query_timeout_seconds: float = 10.0,
     ) -> None:
         self._cache_file = (cache_file or "").strip()
         self._allowed_root = os.path.realpath(allowed_root)
         self._runtime = runtime
         self._config = config
+        # Off by default: skipping analysis is a behaviour change, and the
+        # deployment that wants it should say so.
+        self._scheduler_shortcircuit = scheduler_cancellation_shortcircuit
+        self._scheduler_query_timeout_s = scheduler_query_timeout_seconds
         self._operational_log = RestartAgentOperationalLogger(logger)
         self._convergence = convergence
         self._progressive = progressive
@@ -849,6 +859,82 @@ class RestartAgentServiceBackend:
         )
         entry.future = self._executor.submit(self._execute_terminal, entry.key)
 
+    def _settle_as_operator_cancellation(
+        self,
+        key: Hashable,
+        request: RestartAgentRequest,
+        log_context: RestartAgentLogContext,
+    ) -> bool:
+        """Settle an operator-cancelled job without reading its log.
+
+        A cancellation writes nothing to the application log. The ranks stop
+        and whichever thread was mid-handoff reports its peer gone, so analysis
+        attributes the run to that surface - a dataloader queue read, a
+        collective, a checkpoint writer - none of which failed. The deciding
+        fact is in the scheduler, and it is already there: the accounting
+        record exists when the job ends, which precedes any terminal analysis
+        of it.
+
+        Returning True skips L0 through L4 entirely. That is the point: there
+        is nothing in the log for them to find, and the model call is the
+        expensive part of being wrong.
+        """
+
+        if not self._scheduler_shortcircuit:
+            return False
+        cancellation = operator_cancellation(
+            request.job_id,
+            timeout_seconds=self._scheduler_query_timeout_s,
+        )
+        if cancellation is None:
+            return False
+
+        final = AnalysisResult(
+            decision=RECOMMENDATION_RESTART,
+            decision_basis=_OPERATOR_CANCELLED_BASIS,
+            justification=(
+                f"The scheduler records that {cancellation.summary}. An operator stopping a "
+                "run leaves no trace in the application log, so the log was not analyzed: "
+                "whatever surface it shows is the shutdown being noticed, not a failure."
+            ),
+            result_provenance={
+                "nvrx_use": "eligible",
+                "source": _OPERATOR_CANCELLED_BASIS,
+                "cancelled_by_uid": cancellation.cancelled_by_uid,
+                "scheduler_end": (
+                    cancellation.ended_at.isoformat() if cancellation.ended_at else None
+                ),
+            },
+        )
+
+        with self._lock:
+            current = self._entries.get(key)
+            if current is None:
+                return True
+            current.final_result = final
+            current.best_result = final
+            current.best_source = _OPERATOR_CANCELLED_BASIS
+            current.status = _STATUS_COMPLETED
+            current.progressive_phase = "completed"
+            current.completed_at = time.monotonic()
+            if current.terminal_at is not None:
+                current.analysis_completed_wall_clock_s = current.completed_at - current.terminal_at
+            current.future = None
+            self._trim_completed_results()
+
+        self._emit_operational(
+            self._operational_log.info,
+            "restart_agent.analysis.skipped",
+            log_context,
+            status="completed",
+            decision=final.decision,
+            decision_basis=final.decision_basis,
+            cancelled_by_uid=cancellation.cancelled_by_uid,
+        )
+        self._save_cache(self._cache_file)
+        self._schedule_notification(key)
+        return True
+
     def _execute_terminal(self, key: Hashable) -> None:
         with self._lock:
             entry = self._entries.get(key)
@@ -861,6 +947,8 @@ class RestartAgentServiceBackend:
                 cycle_id=entry.cycle_id,
             )
             accumulator = entry.accumulator
+        if self._settle_as_operator_cancellation(key, request, log_context):
+            return
         try:
             drain = self._wait_for_log_convergence(request.log_path, accumulator)
             drain_fields = {
