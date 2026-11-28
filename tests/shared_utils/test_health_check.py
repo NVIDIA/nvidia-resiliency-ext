@@ -14,10 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import signal
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, mock_open, patch
@@ -754,6 +756,296 @@ class TestNodeHealthCheck(unittest.TestCase):
         result = checker._perform_health_check()
 
         self.assertFalse(result)
+
+    def _clock_idle_retry_checker(self, retry_results, reclaimed=True, args=None):
+        checker, stub = self._checker_with_mocked_grpc(args=args)
+        checker.gpu_memory_reclaimed = reclaimed
+        outputs = [
+            {
+                "failed_checks": ["hw_drv_gpu_clock_idle"],
+                "failed_detail": [
+                    {"name": "hw_drv_gpu_clock_idle", "error": "gpu util: 10% >= 3%"}
+                ],
+            },
+            *retry_results,
+        ]
+        stub.RunHealthCheck.side_effect = [
+            (
+                value
+                if isinstance(value, Exception)
+                else SimpleNamespace(
+                    success=True,
+                    exit_code=0,
+                    error="",
+                    output=value if isinstance(value, str) else json.dumps(value),
+                )
+            )
+            for value in outputs
+        ]
+        return checker, stub
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_clock_idle_retry_stops_on_first_explicit_pass(self, sleep):
+        checker, stub = self._clock_idle_retry_checker(
+            [
+                {"failed_checks": [], "passed_checks": ["hw_drv_gpu_clock_idle"]},
+            ]
+        )
+        with self.assertLogs('nvrx', level='INFO') as logs:
+            self.assertTrue(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 2)
+        sleep.assert_called_once_with(5)
+        self.assertEqual(
+            stub.RunHealthCheck.call_args.args[0].args,
+            ['--no-slurm', '--checks', 'hw_drv_gpu_clock_idle'],
+        )
+        self.assertIn('gpu util: 10% >= 3%', '\n'.join(logs.output))
+        self.assertIn('retry 1 completed in', '\n'.join(logs.output))
+        self.assertNotIn('Node health check failed:', '\n'.join(logs.output))
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_clock_idle_second_retry_can_pass(self, sleep):
+        checker, stub = self._clock_idle_retry_checker(
+            [
+                {"failed_checks": ["hw_drv_gpu_clock_idle"]},
+                {"failed_checks": [], "passed_checks": ["hw_drv_gpu_clock_idle"]},
+            ]
+        )
+        self.assertTrue(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [unittest.mock.call(5)] * 2)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_clock_idle_can_pass_after_more_than_two_retries(self, sleep):
+        checker, stub = self._clock_idle_retry_checker(
+            [
+                {'failed_checks': ['hw_drv_gpu_clock_idle']},
+                {'failed_checks': ['hw_drv_gpu_clock_idle']},
+                {'failed_checks': [], 'passed_checks': ['hw_drv_gpu_clock_idle']},
+            ]
+        )
+        self.assertTrue(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 4)
+        self.assertEqual(sleep.call_args_list, [unittest.mock.call(5)] * 3)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.monotonic')
+    def test_clock_idle_retries_exhausted(self, monotonic, sleep):
+        clock = [0]
+        monotonic.side_effect = lambda: clock[0]
+        sleep.side_effect = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        checker, stub = self._clock_idle_retry_checker(
+            [{"failed_checks": ["hw_drv_gpu_clock_idle"]}] * 5
+        )
+        with self.assertLogs('nvrx', level='INFO') as logs:
+            self.assertFalse(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 6)
+        self.assertEqual(sleep.call_count, 5)
+        self.assertEqual('\n'.join(logs.output).count('Node health check failed:'), 1)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_clock_idle_not_retried_without_successful_cleanup(self, sleep):
+        checker, stub = self._clock_idle_retry_checker([], reclaimed=False)
+        self.assertFalse(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 1)
+        sleep.assert_not_called()
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_mixed_failure_not_retried_after_cleanup(self, sleep):
+        checker, stub = self._checker_with_mocked_grpc(
+            output=json.dumps(
+                {
+                    'failed_checks': ['hw_drv_gpu_clock_idle', 'sw_sys_logs_nvidia_xid'],
+                }
+            )
+        )
+        checker.gpu_memory_reclaimed = True
+        self.assertFalse(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 1)
+        sleep.assert_not_called()
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_custom_args_allow_targeted_retry(self, sleep):
+        checker, stub = self._clock_idle_retry_checker(
+            [{'failed_checks': [], 'passed_checks': ['hw_drv_gpu_clock_idle']}],
+            args=['--group', 'epilog'],
+        )
+        self.assertTrue(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 2)
+        self.assertEqual(stub.RunHealthCheck.call_args_list[0].args[0].args, ['--group', 'epilog'])
+        self.assertEqual(
+            stub.RunHealthCheck.call_args.args[0].args,
+            ['--no-slurm', '--checks', 'hw_drv_gpu_clock_idle'],
+        )
+        self.assertEqual(checker.args, ['--group', 'epilog'])
+        sleep.assert_called_once_with(5)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_retry_requires_valid_failed_checks(self, sleep):
+        for result in [
+            'not json',
+            'null',
+            '[]',
+            {},
+            {'failed_checks': None},
+            {'failed_checks': False},
+            {'failed_checks': ''},
+            {'failed_checks': ['another_check']},
+            RuntimeError('RPC deadline exceeded'),
+        ]:
+            with self.subTest(result=result):
+                checker, stub = self._clock_idle_retry_checker([result])
+                self.assertFalse(checker())
+                self.assertEqual(stub.RunHealthCheck.call_count, 2)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_retry_accepts_empty_failed_checks_without_pass_confirmation(self, sleep):
+        for result in [
+            {'failed_checks': []},
+            {'failed_checks': [], 'passed_checks': []},
+            {'failed_checks': [], 'passed_checks': ['another_check']},
+        ]:
+            with self.subTest(result=result):
+                checker, stub = self._clock_idle_retry_checker([result])
+                with self.assertLogs('nvrx', level='INFO') as logs:
+                    self.assertTrue(checker())
+                self.assertEqual(stub.RunHealthCheck.call_count, 2)
+                self.assertIn(str(result), '\n'.join(logs.output))
+                self.assertNotIn('Node health check failed:', '\n'.join(logs.output))
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_retry_execution_failure_cannot_clear_original_failure(self, sleep):
+        checker, stub = self._clock_idle_retry_checker([])
+        initial = SimpleNamespace(
+            success=True,
+            exit_code=0,
+            error='',
+            output=json.dumps(
+                {
+                    'failed_checks': ['hw_drv_gpu_clock_idle'],
+                }
+            ),
+        )
+        for output in (
+            'health check timed out without JSON',
+            json.dumps({'failed_checks': [], 'passed_checks': ['hw_drv_gpu_clock_idle']}),
+        ):
+            with self.subTest(output=output):
+                stub.reset_mock()
+                retry = SimpleNamespace(success=False, exit_code=-1, error='timeout', output=output)
+                stub.RunHealthCheck.side_effect = [initial, retry]
+                with self.assertLogs('nvrx', level='INFO') as logs:
+                    self.assertFalse(checker())
+                self.assertEqual(stub.RunHealthCheck.call_count, 2)
+                self.assertIn(output, '\n'.join(logs.output))
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.monotonic')
+    def test_retry_window_does_not_shorten_rpc_timeout(self, monotonic, sleep):
+        for timeout in (None, 7, 60):
+            with self.subTest(timeout=timeout):
+                monotonic.side_effect = [0, 0, 5, 35, 35]
+                sleep.reset_mock()
+                checker, stub = self._clock_idle_retry_checker(
+                    [
+                        {'failed_checks': ['hw_drv_gpu_clock_idle']},
+                    ]
+                )
+                checker.request_timeout_sec = timeout
+                self.assertFalse(checker())
+                self.assertEqual(stub.RunHealthCheck.call_count, 2)
+                expected = {} if timeout is None else {'timeout': timeout}
+                self.assertEqual(stub.RunHealthCheck.call_args.kwargs, expected)
+                sleep.assert_called_once_with(5)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.monotonic')
+    def test_retry_started_within_window_can_pass_after_window(self, monotonic, sleep):
+        clock = [0]
+        monotonic.side_effect = lambda: clock[0]
+        sleep.side_effect = lambda seconds: clock.__setitem__(0, 29)
+        checker, stub = self._clock_idle_retry_checker([])
+
+        def respond(request, **kwargs):
+            if '--checks' not in request.args:
+                result = {'failed_checks': ['hw_drv_gpu_clock_idle']}
+            else:
+                self.assertEqual(clock[0], 29)
+                clock[0] = 70
+                result = {'failed_checks': [], 'passed_checks': ['hw_drv_gpu_clock_idle']}
+            return SimpleNamespace(success=True, exit_code=0, error='', output=json.dumps(result))
+
+        stub.RunHealthCheck.side_effect = respond
+        self.assertTrue(checker())
+        self.assertEqual(clock[0], 70)
+        self.assertEqual(stub.RunHealthCheck.call_count, 2)
+        self.assertEqual(stub.RunHealthCheck.call_args.kwargs['timeout'], 60)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.monotonic')
+    def test_retry_requires_wait_plus_invocation_allowance(self, monotonic, sleep):
+        for elapsed in (24, 25):
+            with self.subTest(elapsed=elapsed):
+                monotonic.side_effect = [0, elapsed]
+                sleep.reset_mock()
+                checker, stub = self._clock_idle_retry_checker([])
+                self.assertFalse(checker())
+                self.assertEqual(stub.RunHealthCheck.call_count, 1)
+                sleep.assert_not_called()
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    @patch(
+        'nvidia_resiliency_ext.shared_utils.health_check.time.monotonic', side_effect=[0, 0, 31, 31]
+    )
+    def test_retry_budget_checked_before_wait(self, monotonic, sleep):
+        checker, stub = self._clock_idle_retry_checker(
+            [{'failed_checks': [], 'passed_checks': ['hw_drv_gpu_clock_idle']}]
+        )
+        self.assertTrue(checker())
+        self.assertEqual(stub.RunHealthCheck.call_count, 2)
+        sleep.assert_called_once_with(5)
+
+    @patch('nvidia_resiliency_ext.shared_utils.health_check.time.sleep')
+    def test_clock_idle_retry_over_real_uds(self, sleep):
+        with tempfile.TemporaryDirectory(dir='/tmp') as directory:
+            checker = NodeHealthCheck(endpoint=f'{directory}/nvhcd.sock')
+            if checker._grpc is None:
+                self.skipTest('gRPC client/protobuf modules are unavailable')
+            requests = []
+            pb2 = checker._pb2
+
+            class Service(checker._pb2_grpc.HealthCheckServiceServicer):
+                def RunHealthCheck(self, request, context):
+                    requests.append(list(request.args))
+                    result = (
+                        {'failed_checks': ['hw_drv_gpu_clock_idle']}
+                        if len(requests) < 3
+                        else {'failed_checks': [], 'passed_checks': ['hw_drv_gpu_clock_idle']}
+                    )
+                    return pb2.HealthCheckResponse(success=True, output=json.dumps(result))
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                server = checker._grpc.server(executor)
+                checker._pb2_grpc.add_HealthCheckServiceServicer_to_server(Service(), server)
+                target = f'unix://{directory}/nvhcd.sock'
+                self.assertNotEqual(server.add_insecure_port(target), 0)
+                server.start()
+                try:
+                    checker._channel_target = target
+                    checker.gpu_memory_reclaimed = True
+                    self.assertTrue(checker())
+                finally:
+                    server.stop(0).wait()
+            self.assertEqual(len(requests), 3)
+            self.assertEqual(requests[0], checker.args)
+            self.assertEqual(
+                requests[1:],
+                [
+                    ['--no-slurm', '--checks', 'hw_drv_gpu_clock_idle'],
+                    ['--no-slurm', '--checks', 'hw_drv_gpu_clock_idle'],
+                ],
+            )
+            self.assertEqual(sleep.call_args_list, [unittest.mock.call(5)] * 2)
 
 
 class TestAttributionService(unittest.TestCase):
