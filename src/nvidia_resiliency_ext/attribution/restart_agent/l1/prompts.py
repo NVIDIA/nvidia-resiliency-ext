@@ -133,8 +133,8 @@ claims and rationale "{L1_RESPONSE_CONTRACT.insufficient_rationale}". Related fa
 diagnostic references, not additional policy-claim citations, and remain empty when no
 primary was identified.
 
-Category classification (optional evidence signal):
-- After the required fields above, you MAY include one additional top-level JSON field
+Category classification (advisory signal, always present):
+- Alongside the required fields above, you MUST include one more top-level JSON field
   named category_selection with three keys: category_id (integer, 0-N where N is the taxonomy size),
   category_confidence (integer 0-100), and category_rationale (string, at most 400
   characters).
@@ -143,7 +143,9 @@ Category classification (optional evidence signal):
 - Ground category_rationale in current-log evidence. The rationale is advisory; the
   L4 policy stage decides STOP/RESTART - the category signal only informs a
   policy_context match at that stage, it does not itself control the action.
-- Omitting the category_selection field entirely is a valid, contract-compliant response.
+- Never omit category_selection. The response contract requires the field on every
+  response, so a reply without it is rejected whatever else it contains. Emit the
+  category_id=0 placeholder instead when nothing matches.
 - The curated categories are:
 {_CATEGORY_LIST}
 
